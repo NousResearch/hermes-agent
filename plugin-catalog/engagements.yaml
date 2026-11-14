@@ -1,0 +1,46 @@
+name: engagements
+title: Hermes Engagements
+repo: https://github.com/latentoperator/hermes-engagements-plugin
+sha: a74ae82b6e4a5b416ef93705dbd696e4bc138a62
+version: "1.0.0-rc1"
+description: >-
+  Hermes is a powerful tool for shipping work to clients, no matter the industry or vertical.
+  Engagements gives it a client notebook: each client and project is a plain Markdown record on your
+  machine. Add a client or project from the Clients page or by pasting notes in any chat, approve the
+  draft, and every agent working for that client can look up who to contact, how they like to work
+  and where the files live. The agent keeps the record current with a dated source for every change.
+  The Clients page works in Hermes Desktop and the web dashboard; it shows records but never edits
+  them, and its Add buttons only start the chat that drafts one.
+  Disclosure: local files only, no network requests, no telemetry, no shell commands, no background
+  processes and no stored credentials. Reads and writes Markdown records under the library folder
+  you choose (default is the profile's plugin-data folder), and reads the session's working
+  directory, id and surface to link a chat to a project. Installs PyYAML 6.x.
+maintainer: latentoperator
+tier: community
+category: memory
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/latentoperator/hermes-engagements-plugin/blob/a74ae82b6e4a5b416ef93705dbd696e4bc138a62/README.md
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/latentoperator/hermes-engagements-plugin/a74ae82b6e4a5b416ef93705dbd696e4bc138a62/docs/images/clients-client-record.png
+  - https://raw.githubusercontent.com/latentoperator/hermes-engagements-plugin/a74ae82b6e4a5b416ef93705dbd696e4bc138a62/docs/images/chat-client-answer.png
+  - https://raw.githubusercontent.com/latentoperator/hermes-engagements-plugin/a74ae82b6e4a5b416ef93705dbd696e4bc138a62/docs/images/clients-project-record.png
+platforms: []
+known_issues:
+  - Client scoping organizes context. It is not isolation between clients; use a fresh session per client when confidentiality matters.
+  - Runtime evidence is from Linux. Windows reads and writes are covered by native CI only, and macOS has not been exercised.
+  - Messaging gateways and Hermes Desktop SSH remote mode are not verified.
+capabilities:
+  provides_tools:
+    - engagements_find
+    - engagements_bind
+    - engagements_context
+    - engagements_create
+    - engagements_update
+  provides_hooks:
+    - pre_llm_call
+    - post_compaction
+    - on_session_reset
+    - on_session_delete
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,16 @@
+name: ledger-guard
+repo: https://github.com/tonightsthenight/Ledger-guard
+sha: b1328d8e63803c2bc06aba7fb453d69bdf923295
+subdir: ""
+description: Deterministic double-count and arithmetic checker for stacked sales/event goal ledgers.
+maintainer: tonightsthenight
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools: [ledger_guard_check]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

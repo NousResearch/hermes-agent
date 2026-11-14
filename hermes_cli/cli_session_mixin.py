@@ -135,6 +135,81 @@ def _apply_new_session_title(cli, title: str) -> Optional[str]:
     return sanitized
 
 
+def _print_save_refusal(error) -> None:
+    """A gateway's ``/save`` refusal: ``not_found`` (no stored conversation yet) is main's nothing-to-save."""
+    print(t("cli.session.save_nothing") if str(error) == "not_found" else t("cli.session.save_failed", error=error))
+
+
+def _export_on_gateway(connection, session_id, fmt, filename, redact):
+    """The owner's ``/save`` rendering of its stored row (``session.export``: the snapshot ``hermes
+    sessions export`` writes, with title, metadata and archived rows), never this process's
+    in-memory history. Nothing is written on the gateway host, so a remote owner's disk is never
+    taken for this machine's. None when refused (printed), and also None when an older gateway
+    without ``session.export`` was handed to ``_save_on_older_gateway`` (which may save on the
+    gateway host and prints its own outcome)."""
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+    try:
+        content = (connection.call("session.export", session_id=session_id, format=fmt,
+                                   redact=redact) or {}).get("content")
+    except GatewayClientError as e:
+        if not (isinstance(e, GatewayRPCError) and e.unknown_method):
+            _print_save_refusal(e)
+            return None
+        _save_on_older_gateway(connection, session_id, fmt, filename, redact)
+        return None
+    if not isinstance(content, str):
+        print(t("cli.session.save_failed", error="the gateway returned no export"))
+        return None
+    return content
+
+
+def _save_on_older_gateway(connection, session_id, fmt, filename, redact):
+    """An owner without ``session.export``: its ``session.save`` writes default-named, unredacted
+    JSON on the gateway host, so only a plain ``/save json`` may use it (as Desktop does)."""
+    from hermes_cli.gateway_client import GatewayClientError
+    if redact or fmt != "json" or filename:
+        print("(._.) This gateway predates this CLI: only a plain /save json works until it restarts "
+              "(it saves on the gateway host).")
+        return
+    try:
+        saved = (connection.call("session.save", session_id=session_id) or {}).get("file")
+    except GatewayClientError as e:
+        _print_save_refusal(e)
+        return
+    print(f"(^_^)v Conversation saved on the gateway host: {saved}" if saved
+          else t("cli.session.save_failed", error="the gateway returned no file"))
+
+
+def _write_save(session_id, fmt, filename, render):
+    """Write a ``/save`` export on this machine: ``filename`` as typed (relative to the cwd), else
+    ``sessions/saved/hermes_conversation_<ts>.<fmt>`` under this CLI's home."""
+    from cli import datetime
+    saved_dir = get_hermes_home() / "sessions" / "saved"
+    try:
+        saved_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(t("cli.session.save_dir_failed", path=saved_dir, error=e))
+        return
+    if filename:
+        path = Path(filename).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
+
+    try:
+        content = render()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        label = {"json": "JSON", "md": t("cli.session.format_markdown"), "html": "HTML"}[fmt]
+        print(t("cli.session.save_ok", path=path, label=label))
+        if session_id:
+            print(f"       {t('cli.session.save_resume_hint', session_id=session_id)}")
+    except Exception as e:  # health: allow BLE001 -- /save's user boundary (main's, moved here): any render/write failure is printed
+        print(t("cli.session.save_failed", error=e))
+
+
 class CLISessionMixin:
     """Session lifecycle for the interactive CLI: new/resume/save, undo/retry rewinds, yolo
     persistence, manual compression, and exit summary."""
@@ -189,15 +264,13 @@ class CLISessionMixin:
         return buf.getvalue().rstrip("\n").splitlines()
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """Resolve a 1-indexed checkpoint number (or pass through a git hash)."""
+        """A 1-indexed checkpoint number or a hash (``tools/checkpoint_refs.py``, every surface's rule)."""
+        from tools.checkpoint_refs import resolve_checkpoint_ref
         try:
-            idx = int(ref) - 1
+            return resolve_checkpoint_ref(checkpoints, ref)
         except ValueError:
-            return ref
-        if 0 <= idx < len(checkpoints):
-            return checkpoints[idx]["hash"]
-        print(f"  {t('cli.session.invalid_checkpoint', count=len(checkpoints))}")
-        return None
+            print(f"  {t('cli.session.invalid_checkpoint', count=len(checkpoints))}")
+            return None
 
     def _show_status(self):
         """Show compact startup status line."""
@@ -626,7 +699,6 @@ class CLISessionMixin:
         the live session stays resumable regardless. ``redact`` runs the force-mode secret
         redaction pass before writing.
         """
-        from cli import datetime
         from hermes_cli.session_export import (
             SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
 
@@ -644,6 +716,16 @@ class CLISessionMixin:
             print(SAVE_USAGE)
             return
         filename = parts[1] if len(parts) > 1 else None
+        from hermes_cli.gateway_tools_notify import gateway_store
+        store = gateway_store(self)
+        if store is not None:  # the gateway owns the session: it renders its stored row, this machine writes it
+            if not self.conversation_history:  # as Ink: nothing said yet, nothing exported
+                print(t("cli.session.save_nothing"))
+                return
+            content = _export_on_gateway(store.connection, self.session_id, fmt, filename, redact)
+            if content is not None:
+                _write_save(self.session_id, fmt, filename, lambda: content)
+            return
 
         # Prefer the durable DB row (metadata + tool calls); fall back to in-memory history.
         # getattr: test doubles may not carry _session_db / session_id.
@@ -670,36 +752,7 @@ class CLISessionMixin:
             from hermes_cli.session_export_md import redact_session_data
 
             session_data = redact_session_data(session_data)
-
-        saved_dir = get_hermes_home() / "sessions" / "saved"
-        try:
-            saved_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(t("cli.session.save_dir_failed", path=saved_dir, error=e))
-            return
-        if filename:
-            path = Path(filename).expanduser()
-            if not path.is_absolute():
-                path = Path.cwd() / path
-        else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
-
-        try:
-            content = render_session_for_save(session_data, fmt)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            label = {"json": "JSON", "md": t("cli.session.format_markdown"), "html": "HTML"}[fmt]
-            print(t("cli.session.save_ok", path=path, label=label))
-            # #76354 review F5: the worker thread also rebound the session ContextVar inside its own
-            # (copied) context, which the caller never sees — and get_session_env() prefers an already-bound
-            # ContextVar over os.environ. Rebind in the CALLER's context so post-compression
-            # tools/subprocesses on this thread resolve HERMES_SESSION_ID to the child id after an
-            # out-of-place rotation (idempotent when no rotation happened).
-            if self.session_id:
-                print(f"       {t('cli.session.save_resume_hint', session_id=self.session_id)}")
-        except Exception as e:
-            print(t("cli.session.save_failed", error=e))
+        _write_save(self.session_id, fmt, filename, lambda: render_session_for_save(session_data, fmt))
 
     def _publish_truncated_history(self, truncated: list, *, invalidate_prompt: bool) -> None:
         """Install a rewound history and mirror it onto the agent (flush index reset so the
@@ -728,7 +781,7 @@ class CLISessionMixin:
 
         from agent.context_compressor import (
             history_before_user_originated_turn, retryable_user_text)
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         warm_history = list(self.conversation_history)
         user_indices = _user_turn_indices(warm_history)
@@ -775,58 +828,67 @@ class CLISessionMixin:
         that must not touch the input buffer. Returns the number of user turns undone (None when
         nothing changed).
         """
-        from cli import logger
         if not self.conversation_history:
             print(t("cli.session.undo_no_messages"))
             return
         n = max(n, 1)
-
-        from agent.context_compressor import history_before_user_originated_turn
-
-        warm_history = list(self.conversation_history)
-        user_indices = _user_turn_indices(warm_history)
+        user_indices = _user_turn_indices(self.conversation_history)
         if not user_indices:
             print(t("cli.session.undo_no_user_message"))
             return
 
         turns_undone = min(n, len(user_indices))
-        target_ordinal = len(user_indices) - turns_undone
-        cut_idx = user_indices[target_ordinal]
-        removed_count = len(warm_history) - cut_idx
-        truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
-        removed_text = self._undo_content_to_text(live_view.get("content"))
-
-        rewound_rows = 0
-        if self._session_db is not None and self.session_id:
-            try:
-                outcome = self._session_db.rewind_user_turn(
-                    self.session_id, target_ordinal, warm_history=warm_history)
-                truncated = outcome.prefix
-                # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
-                removed_text = outcome.live_text or removed_text
-                rewound_rows = outcome.rewound_count
-            except Exception as e:
-                logger.debug("undo: durable rewind failed: %s", e)
-                print(t("cli.session.undo_failed", error=e))
-                return
-
-        # Publish only after the durable rewind succeeds (or no store exists).
-        self._publish_truncated_history(truncated, invalidate_prompt=True)
-        # Same hook /branch fires; rewound=True invalidates per-turn document caches.
-        _mm = getattr(self.agent, "_memory_manager", None)
-        # See #21910, #6672.
-        if _mm is not None and self.session_id:
-            with contextlib.suppress(Exception):
-                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
-
+        rewound = self._rewind_to_user_ordinal(len(user_indices) - turns_undone)
+        if rewound is None:
+            return
+        removed_text, removed_count = rewound
         key = "cli.session.undo_ok_one" if turns_undone == 1 else "cli.session.undo_ok_other"
-        print(t(key, count=turns_undone, messages=rewound_rows or removed_count,
+        print(t(key, count=turns_undone, messages=removed_count,
                 backup=f"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}"))
         print(f"  {t('cli.session.undo_remaining', count=len(self.conversation_history))}")
         # Editable, not auto-sent (Claude-Code-style).
         if prefill and removed_text:
             self._prefill_input_buffer(removed_text)
         return turns_undone
+
+    def _rewind_to_user_ordinal(self, target_ordinal: int, *, failure_key: str = "cli.session.undo_failed"):
+        """Cut the session back to just before real user turn ``target_ordinal`` (0 = oldest).
+
+        The shared /undo and /rewind primitive: soft-deletes the rows on disk (``active=0``) via
+        ``SessionDB.rewind_user_turn`` before publishing the shorter history, patches the agent,
+        and fires the memory providers' ``rewound`` hook. Returns ``(live_text, archived_count)``,
+        or None after printing ``failure_key`` when the durable rewind refused (history untouched).
+        """
+        from cli import logger
+        from agent.context_compressor import history_before_user_originated_turn
+
+        warm_history = list(self.conversation_history)
+        cut_idx = _user_turn_indices(warm_history)[target_ordinal]
+        removed_count = len(warm_history) - cut_idx
+        truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
+        removed_text = self._undo_content_to_text(live_view.get("content"))
+
+        if self._session_db is not None and self.session_id:
+            try:
+                outcome = self._session_db.rewind_user_turn(
+                    self.session_id, target_ordinal, warm_history=warm_history)
+            except Exception as e:  # health: allow BLE001 -- moved from undo_last: any refusal (local SessionDB or the gateway store) must leave history untouched and be shown
+                logger.debug("rewind: durable rewind failed: %s", e, exc_info=True)
+                print(t(failure_key, error=e))
+                return None
+            truncated = outcome.prefix
+            # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
+            removed_text = outcome.live_text or removed_text
+            removed_count = outcome.rewound_count or removed_count
+
+        # Publish only after the durable rewind succeeds (or no store exists).
+        self._publish_truncated_history(truncated, invalidate_prompt=True)
+        # Same hook /branch fires; rewound=True invalidates per-turn document caches (#21910, #6672).
+        _mm = getattr(self.agent, "_memory_manager", None)
+        if _mm is not None and self.session_id:
+            with contextlib.suppress(Exception):
+                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
+        return removed_text, removed_count
 
     @staticmethod
     def _undo_content_to_text(content) -> str:
@@ -966,7 +1028,8 @@ class CLISessionMixin:
                     print(f"     {summary['note']}")
             except Exception as e:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
-                print(f"  {t('cli.session.compress_failed', error=e)}")
+                from hermes_cli.cli_chat_error_copy import refusal_text
+                print(f"  {t('cli.session.compress_failed', error=refusal_text(e))}")
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify

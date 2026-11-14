@@ -15,6 +15,8 @@ import pytest
 from tests.gateway.test_plugin_origin_injection_authority import _context, _plugin_rows, _publish
 from tests.waiting import async_wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.mark.asyncio
 async def test_keyless_injection_from_a_cli_session_turn_lands_in_that_session(tmp_path, monkeypatch):
@@ -22,7 +24,7 @@ async def test_keyless_injection_from_a_cli_session_turn_lands_in_that_session(t
     from gateway.run import GatewayRunner
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_context import set_session_vars
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_policy import _ACTIVE_POLICY
     from hermes_state import SessionDB
@@ -35,7 +37,7 @@ async def test_keyless_injection_from_a_cli_session_turn_lands_in_that_session(t
     runner._session_db = db
     authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner", db=db)
     try:
-        actor = Principal("test-owner", "default", frozenset({"session:create", "session:submit", "session:read"}),
+        actor = SessionActor("test-owner", "default", frozenset({"session:create", "session:submit", "session:read"}),
                           "fixture")
         ref = create_local_session(authority, actor, dict(request_id="cli", source="cli", model="fixture",
                                                          toolsets=[]))
@@ -67,7 +69,7 @@ async def test_keyed_local_injection_stays_inside_the_plugins_own_profile(tmp_pa
     from gateway.session_authorities import SessionAuthorities
     from gateway.session_authority import SessionAuthority
     from gateway.session_context import set_session_vars
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_policy import _ACTIVE_POLICY
     from hermes_state import SessionDB
@@ -94,7 +96,7 @@ async def test_keyed_local_injection_stays_inside_the_plugins_own_profile(tmp_pa
     try:
         for name, home in (("default", launch), ("beta", beta)):
             authority = authorities[name]
-            actor = Principal("test-owner", authority.profile_id,
+            actor = SessionActor("test-owner", authority.profile_id,
                               frozenset({"session:create", "session:submit", "session:read"}), "fixture")
             with _profile_runtime_scope(home, hydrate_secrets=False):
                 ref = create_local_session(authority, actor, dict(request_id="cli", source="cli", model="fixture",

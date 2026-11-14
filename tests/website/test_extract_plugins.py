@@ -144,6 +144,20 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
     assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
 
 
+def test_non_https_docs_url_is_dropped_not_fatal(mod, tmp_path):
+    # docsUrl is the one field the docs site renders as an <a href>, so a
+    # javascript: value must never survive extraction; the entry stays.
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "scripted", docs_url="javascript:alert(document.domain)")
+    _write_entry(catalog, "linked", docs_url="https://example.com/docs")
+    _write_entry(catalog, "malformed", docs_url="https://[")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["scripted"]["docsUrl"] == "" and entries["malformed"]["docsUrl"] == ""
+    assert entries["linked"]["docsUrl"] == "https://example.com/docs"
+
+
 def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
     resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) BY DEFAULT, is off for
@@ -210,6 +224,29 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     live = json.loads((out_dir / "plugin-catalog.json").read_text(encoding="utf-8"))
     assert [entry_from_mapping(raw, "live").name for raw in live["entries"]] == ["alpha", "beta", "gamma"]
     assert live["removed"] == [{"name": "gone"}]
+
+
+def test_curated_featured_ranks_are_stamped_from_the_curation_file(mod, tmp_path, monkeypatch):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    for name in ("alpha", "beta", "gamma"):
+        _write_entry(catalog, name)
+    curation = tmp_path / "apps" / "shared" / "src" / "catalog-curation.json"
+    curation.parent.mkdir(parents=True)
+    curation.write_text(json.dumps({"featured": {"plugins": ["gamma", "missing", "alpha"]}}), encoding="utf-8")
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+
+    assert mod.main(catalog_dir=catalog, output_dir=tmp_path / "api") == 0
+
+    plugins = {p["name"]: p for p in json.loads((tmp_path / "api" / "plugins.json").read_text(encoding="utf-8"))}
+    # Rank is the position in the curated list, so a pick missing from the catalog keeps its slot.
+    assert plugins["gamma"]["featured"] == 1
+    assert plugins["alpha"]["featured"] == 3
+    assert "featured" not in plugins["beta"]
+
+
+def test_missing_curation_file_features_nothing(mod, tmp_path):
+    assert mod.load_featured(tmp_path / "absent.json") == []
 
 
 def test_missing_catalog_dir_degrades_to_empty_outputs_exit_zero(mod, tmp_path):

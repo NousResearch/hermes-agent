@@ -7,12 +7,14 @@ development before the first push).
 
 from __future__ import annotations
 
+import contextlib
 import operator
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -20,12 +22,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
 
+from agent.skill_utils import DIST_SWAP_DIR
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store,
     profile_path_is_private,
 )
+from hermes_constants import clear_named_profile_deleted
 from utils import rmtree_readonly
 
 
@@ -376,12 +380,36 @@ def _remove_existing(path: Path) -> None:
 
 def _replace_entry(src: Path, dest: Path) -> None:
     """Replace *dest* with *src* wholesale so files retired upstream disappear and
-    file<->directory transitions cannot raise or leave stale content behind."""
-    _remove_existing(dest)
-    if src.is_dir():
-        shutil.copytree(src, dest)
-    else:
+    file<->directory transitions cannot raise or leave stale content behind.
+
+    A directory is copied beside *dest* and swapped in, so a copy or swap that fails
+    part-way (a Windows file lock, say) leaves the existing *dest* in place. Both the
+    copy and the old tree sit in ``DIST_SWAP_DIR``, which skill scanners skip."""
+    if not src.is_dir():
+        _remove_existing(dest)
         shutil.copy2(src, dest)
+        return
+    holder = dest.parent / DIST_SWAP_DIR
+    token = uuid.uuid4().hex
+    staging = holder / f"{dest.name}.staging-{token}"
+    backup = holder / f"{dest.name}.old-{token}"
+    holder.mkdir(exist_ok=True)
+    try:
+        shutil.copytree(src, staging)
+        if os.path.lexists(dest):
+            dest.rename(backup)
+        try:
+            staging.rename(dest)
+        except BaseException:
+            if os.path.lexists(backup):
+                backup.rename(dest)
+            raise
+        with contextlib.suppress(OSError):
+            _remove_existing(backup)  # the new tree is in place; a locked leftover must not fail the install
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            holder.rmdir()  # kept while it still holds a leftover
 
 
 def _shipped_cron_store(entries: list[tuple[Path, tuple[str, ...]]]) -> Optional[Path]:
@@ -539,6 +567,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     A top-level owned directory, and an owned container (``_is_container``), is merged per
     authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
     shipped definitions merge by job id instead of replacing the file."""
+    from hermes_cli.config_backend import drop_other_access, require_file_tooling
+    require_file_tooling("Profile distribution install")
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
@@ -559,12 +589,13 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 # _replace_entry unlinks first so copy2 cannot write through a symlinked .env.EXAMPLE.
                 _replace_entry(src, target / ENV_EXAMPLE_FILENAME)
                 continue
-            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():  # config-reader: ok — file tooling
                 continue
         if _merges_per_root(src, rel_parts):
             _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
             continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
+    drop_other_access(target / "config.yaml")  # copy2 carries the staged checkout's mode
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
@@ -597,6 +628,7 @@ def install_distribution(
 
         # Fresh install (or --force): config.yaml comes from the distribution. Roots the
         # payload does not ship are left alone either way, so --force keeps user skills.
+        clear_named_profile_deleted(plan.target_dir)
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:

@@ -193,13 +193,14 @@ class _CatalogBackend:
         process, so an unserialised write here drops whichever landed first."""
         from hermes_cli.config import load_config, save_config
         from hermes_cli.web_routers._common import config_write_scope
+        from tools.mcp_tool_common import write_mcp_server_enabled
 
         with config_write_scope(None):
             config = load_config()
             servers = config.get("mcp_servers")
             if not isinstance(servers, dict) or not isinstance(servers.get(name), dict):
                 raise ValueError(f"'{name}' is not a configured MCP server")
-            servers[name]["enabled"] = True
+            write_mcp_server_enabled(servers[name], True)
             save_config(config)
 
 
@@ -834,8 +835,10 @@ def run_mcp_operation(
     if connection_callback is None:
         return _no_card_result(runner, names, action, session_key)
     try:
+        from tools.connectors.mcp_launch import launch_for
+
         return run_operation(
-            [Target(n, "mcp", action) for n in names],
+            [Target(n, "mcp", action, launch=launch_for(action, n)) for n in names],
             Kind(prepare=runner.prepare, observe=runner.observe, note=NOTE),
             session_key=session_key, tool_call_id=tool_call_id,
             connection_callback=connection_callback, with_urls_in_result=False,

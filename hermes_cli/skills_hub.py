@@ -791,10 +791,11 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> Optional[bool]:
+               source_id: Optional[str] = None, reinstall_existing: bool = False) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere.
+    cannot resolve to a same-named skill elsewhere. ``reinstall_existing`` lets update flows replace
+    an installed copy without ``force``'s Skills Guard override.
 
     A first install is recorded once as an extension install; updates and ``--force`` reinstalls
     of an installed skill run through here too and are not installs, nor is a cancelled prompt.
@@ -810,7 +811,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     try:
         bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
                                                     skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt)
+                                                    attempt=attempt, reinstall_existing=reinstall_existing)
     except Exception as exc:
         if fresh:
             _record_skill_install(identifier, None, "failed", attempt, error=exc)
@@ -822,7 +823,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
                    invalidate_cache: bool, name_override: str, source_id: Optional[str],
-                   attempt: Optional[dict] = None) -> tuple:
+                   attempt: Optional[dict] = None, reinstall_existing: bool = False) -> tuple:
     """``do_install``'s body: ``(bundle, outcome, installed)``. ``outcome`` is the extension-install
     event (None when this was no new install); ``installed`` is ``do_install``'s return value.
     ``attempt`` collects the metric's ``registry`` (adapter id) and, on a failed exit, its
@@ -879,7 +880,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     existing = HubLockFile().get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not (force or reinstall_existing):
             c.print("Use --force to reinstall.\n")
             return bundle, None, None
     failed = None if existing else "failed"
@@ -1046,7 +1047,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     when any update failed (e.g. the new version is refused by the scan gate), else None.
 
     Skills whose on-disk content no longer matches the hash recorded at install time have been edited
-    locally; updating them would silently destroy the user's work (``do_install(force=True)``
+    locally; updating them would silently destroy the user's work (the reinstall
     rmtree-replaces the directory). Those are skipped by default and only overwritten when ``force=True``.
     Mirrors the user-modified protection bundled skills already get from ``hermes update`` (ported from
     paperclipai/paperclip#10978's explicit-merge-mode rule: destructive replacement must be an explicit
@@ -1078,7 +1079,11 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         # Pin to the lockfile's source registry: a bare identifier such as "reddit" would
         # otherwise fuzzy-resolve inside do_install to a same-named skill in a DIFFERENT
         # registry, overwriting the user's files and rewriting the lock's `source`.
-        if do_install(entry["identifier"], category=category, force=True, console=c,
+        # No force: the scan decision do_install prints is the one it must enforce (#38041); this
+        # ``force`` only means "overwrite local edits". The installed name keeps a nameless URL
+        # skill updatable without the prompt skip_confirm suppresses.
+        if do_install(entry["identifier"], category=category, console=c, skip_confirm=True,
+                      reinstall_existing=True, name_override=entry["name"],
                       source_id=entry.get("source", "") or None) is False:
             failed.append(entry["name"])
 

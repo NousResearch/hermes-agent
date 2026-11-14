@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -15,6 +16,9 @@ from pathlib import Path
 from typing import IO
 
 from pm.filesystem import is_junction, long_root, retry_held
+
+# Inert desktop metadata that must never decide a package's layout or digest.
+JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", ".localized"})
 
 
 
@@ -37,7 +41,7 @@ def _native_machine() -> str:
     try:
         from hermes_platform.host.facts import native_arch
     except ModuleNotFoundError as exc:
-        if exc.name != "hermes_platform":
+        if exc.name != "hermes_platform" and not "hermes_platform".startswith(f"{exc.name}."):
             raise
     else:
         return native_arch()
@@ -270,19 +274,39 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+def _is_os_metadata(path: Path) -> bool:
+    """Only inert regular metadata files are excluded, never links or directories.
+
+    A directory or executable that happens to carry one of these names is
+    payload, not metadata: skipping it would hide real package bytes and let a
+    tree digest change under a caller that only added a .DS_Store.
+    """
+    if path.name not in JUNK_NAMES and not path.name.startswith("._"):
+        return False
+    mode = path.lstat().st_mode
+    return stat.S_ISREG(mode) and not mode & 0o111
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
     (bin/, cmd/, lib/...). Refuses on name collisions. The tree was extracted
     seconds ago, when a Windows scanner still holds it (#131884)."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
-    entries = list(dest.iterdir())
+    entries = [entry for entry in dest.iterdir() if not _is_os_metadata(entry)]
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
-    for item in list(inner.iterdir()):
+    items = list(inner.iterdir())
+    # Check the whole move before modifying the layout. Duplicate desktop
+    # metadata is harmless; every other collision must preserve both trees.
+    for item in items:
         target = dest / item.name
-        if target.exists():
+        if os.path.lexists(target) and not (_is_os_metadata(item) and _is_os_metadata(target)):
             return
+    for item in items:
+        target = dest / item.name
+        if os.path.lexists(target):
+            retry_held(target.unlink)  # both entries were verified as regular metadata
         retry_held(lambda: item.rename(target))
     retry_held(inner.rmdir)
 
@@ -303,6 +327,16 @@ def merge_tree(src: Path, dst: Path) -> None:
 
 
 def tree_digest(root: Path) -> str:
+    return _tree_digest(root, skip_metadata=True)
+
+
+def digest_matches(root: Path, recorded: str | None) -> bool:
+    """Facts recorded before desktop metadata was skipped hashed it as payload."""
+    return recorded is not None and (
+        tree_digest(root) == recorded or _tree_digest(root, skip_metadata=False) == recorded)
+
+
+def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
@@ -327,6 +361,8 @@ def tree_digest(root: Path) -> str:
         dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
+            if skip_metadata and _is_os_metadata(path):
+                continue
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
 
@@ -341,6 +377,25 @@ def tree_digest(root: Path) -> str:
                 for block in iter(lambda: f.read(1024 * 1024), b""):
                     digest.update(block)
     return digest.hexdigest()
+
+
+def entry_component(name: str) -> str:
+    """A store entry name built from lock fields (package name, version,
+    target) that is removed or published must be exactly one component, or
+    the rmtree/rename aims outside the store root (#138359)."""
+    if (not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\\" in name
+            or Path(name).name != name):
+        raise ValueError(f"store entry name is not a single path component: {name!r}")
+    return name
+
+
+def fetch_entry_name(digest: str) -> str:
+    """Fetch-cache entries are keyed `fetch-<sha256>` and the digest becomes
+    a path component under the store root, so anything off the 64-hex shape
+    fails closed here instead of traversing out of the store (#138359)."""
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError(f"malformed artifact sha256: {digest!r}")
+    return f"fetch-{digest}"
 
 
 class Store:
@@ -376,7 +431,7 @@ class Store:
             if pause_event is not None and pause_event.is_set():
                 raise DownloadPaused("download paused")
             url, digest = artifact["url"], artifact["sha256"]
-            entry_name = f"fetch-{digest}"
+            entry_name = fetch_entry_name(digest)
             entry = self.entry(entry_name)
             files = list(entry.iterdir()) if entry.is_dir() else []
             if len(files) == 1 and files[0].is_file():
@@ -384,7 +439,10 @@ class Store:
             else:
                 if entry.exists():
                     shutil.rmtree(entry)
-                destination = scratch / entry_name / url.rsplit("/", 1)[-1]
+                filename = url.rsplit("/", 1)[-1]
+                if filename in ("", ".", "..") or "\\" in filename or Path(filename).name != filename:
+                    raise ValueError(f"artifact url does not end in a file name: {url}")
+                destination = scratch / entry_name / filename
             sources.append(pinned_source(url, destination, digest))
 
         # Progress keeps the lockfile URL even when the transport is a mirror (#123132).
@@ -400,8 +458,8 @@ class Store:
             # Only finalized, hash-verified files can exist at these paths.
             for source in sources:
                 if source.dest.is_relative_to(scratch) and source.dest.is_file():
-                    self.publish(source.dest.parent, f"fetch-{source.sha256}")
-        return [self.entry(f"fetch-{source.sha256}") / source.dest.name for source in sources]
+                    self.publish(source.dest.parent, fetch_entry_name(source.sha256))
+        return [self.entry(fetch_entry_name(source.sha256)) / source.dest.name for source in sources]
 
     @contextmanager
     def scratch(self):

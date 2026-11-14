@@ -48,6 +48,7 @@ async def test_standalone_entrypoints_relay_text_media_thread_and_profile(tmp_pa
     runner = SimpleNamespace(
         _gateway_loop=asyncio.get_running_loop(), session_runtime_descriptor={}, session_ticket_store=None,
         _served_profile_for_home=lambda requested: profiles.get(requested),
+        _shared_bot_target_allowed=lambda platform, profile, chat, thread: chat != "!unrouted:example.org",
         _authorization_adapter=lambda platform, profile: adapters.get(profile) if platform == Platform.MATRIX else None,
     )
     server = await _start_gateway_start_control_socket(runner)
@@ -76,6 +77,9 @@ async def test_standalone_entrypoints_relay_text_media_thread_and_profile(tmp_pa
         refused = await asyncio.to_thread(query_gateway_control, home, "matrix-send", params={
             "home": str(tmp_path / "profiles" / "unserved"), "chat_id": "!room:example.org", "message": "hello"})
         assert "not served" in refused["error"]
+        unrouted = await asyncio.to_thread(query_gateway_control, home, "matrix-send", params={
+            "home": str(home), "chat_id": "!unrouted:example.org", "message": "hello"})
+        assert "not routed" in unrouted["error"]
         assert len(calls) == 3
     finally:
         await server.stop()

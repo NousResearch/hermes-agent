@@ -1,0 +1,30 @@
+name: hermes-ego
+title: Hermes Ego
+repo: https://github.com/loop2zero/hermes-ego
+sha: eb78591c94db8d817f27a28ebca9453ef4028633
+subdir: plugins/hermes-ego
+version: "0.1.0"
+description: "Hermes Ego reads and saves pages in the user's ego(lite) browser through a loopback MCP relay (Streamable HTTP at http://127.0.0.1:8767/mcp). The Mac daemon and the relay are installed separately, the same split as local-mcp; this package does not start, embed, or update them. Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — Derived from hermes-tabs (relay code); talks only to a separately installed loopback MCP relay at http://127.0.0.1:8767/mcp with bearer EGO_RELAY_TOKEN from the Hermes profile (a remote Hermes host needs an SSH local forward); a long-running relay and a Mac daemon, installed separately, run the ego CLI against the user's logged-in ego(lite) browser, so pages that session can open are readable; ego_save_page_markdown writes markdown under the relay's configured save root (for example an Obsidian vault) and downloads third-party page images, some in a background pass after the tool returns; the server is marked untrusted, so Hermes asks before every relay tool, reads included, and refuses them in unattended runs. No telemetry, no self-update."
+maintainer: Shawn Yuan
+tier: community
+category: tools
+docs_url: https://github.com/loop2zero/hermes-ego/tree/main/plugins/hermes-ego
+# plugin.json has no requires_hermes field (catalog rule 14). This entry is
+# the only floor. Live installer that will run validate: Hermes Agent v0.23.0
+# (2026.9.24). Do not raise this above 0.23.0 until a newer Hermes is confirmed.
+requires_hermes: ">=0.23.0"
+readme: true
+# The plugin process runs wherever Hermes runs (Linux or macOS). The daemon
+# and ego(lite) need macOS. Empty would mean "all platforms".
+platforms: [linux, macos]
+known_issues:
+  - "The Mac daemon and ego(lite) are installed separately and are not part of this package. The daemon needs macOS. A remote Hermes host reaches the relay through an SSH local forward to 127.0.0.1:8767. The relay stays on loopback."
+  - "Page images may finish in a background pass after ego_save_page_markdown returns. images_pending counts what is left. There is no second MCP response for that pass."
+  - "Relay tools do not set readOnlyHint. trust untrusted asks before every tool on this server, including ego_status and ego_get_page_text, and those calls fail closed in cron and other unattended runs."
+  - "A hand-written mcp_servers.ego entry replaces this package's server, including trust, unless that entry sets trust: untrusted."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - EGO_RELAY_TOKEN

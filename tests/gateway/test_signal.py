@@ -34,7 +34,9 @@ def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
         "account": account,
         **extra,
     }
-    return SignalAdapter(config)
+    adapter = SignalAdapter(config)
+    adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
+    return adapter
 
 
 def _stub_rpc(return_value):
@@ -93,7 +95,7 @@ class TestSignalConnectCleanup:
 
         with patch("plugins.platforms.signal.adapter.httpx.AsyncClient", return_value=mock_client), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False

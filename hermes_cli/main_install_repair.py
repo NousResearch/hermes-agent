@@ -9,6 +9,7 @@ import time as _time
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli import _early_recovery as _early_recovery_mod
+from hermes_cli._startup_fast import project_root_str
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -53,7 +54,7 @@ def _pytest_owns_live_checkout(root: Path) -> bool:
     """True under pytest when ``root`` is this checkout: unsandboxed update/recovery tests must
     neither litter the live repo root with breadcrumbs (false-arming the developer's next launch)
     nor run a real reinstall against the executing venv (cf. ``managed_scope._under_pytest``)."""
-    return "PYTEST_CURRENT_TEST" in os.environ and root == Path(__file__).resolve().parent.parent
+    return "PYTEST_CURRENT_TEST" in os.environ and root == Path(project_root_str())
 
 
 def _clear_marker_file(path: Path, *, label: str) -> None:
@@ -285,22 +286,26 @@ def _install_configured_features_missing_deps(project_root: Path) -> None:
     selected would come up without its adapter after the gateway restart.
     """
     import pm
-    from pm.extras import extra_supported
+    from pm.extras import declined_extras, extra_supported
     from pm.features import declared_extras
 
     missing = _configured_features_missing_deps()
     if not missing:
         return
-    declared = set(declared_extras(project_root))
+    # `hermes pm install --without NAME` outranks a platform still left in config.
+    declared = set(declared_extras(project_root)) - declined_extras(project_root)
     extras = sorted({extra for *_, name in missing
                      if (extra := name.replace("_", "-")) in declared and extra_supported(extra)})
     if extras:
         try:
-            pm.sync_venv(extras, explicit=True, project_root=project_root, evict_incompatible_plugins=True)
+            # Config asked for these, not the user: a `--without` landing before the PM lock still wins.
+            pm.sync_venv(extras, explicit=True, project_root=project_root, evict_incompatible_plugins=True,
+                         automatic=extras)
         except Exception as exc:
             print(f"  ⚠ Could not install {', '.join(extras)} for configured features: {exc}")
         else:
-            missing = [row for row in missing if row[2].replace("_", "-") not in extras]
+            installed = set(extras) - declined_extras(project_root)
+            missing = [row for row in missing if row[2].replace("_", "-") not in installed]
     if missing:
         print("  ⚠ Configured features whose dependencies are still missing — the gateway will fail to load them on restart:")
         for feature, hint, _extra in missing:

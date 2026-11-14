@@ -148,9 +148,57 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     nothing in the files shadows them.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
+    from gateway.bridged_env import follow_bridged_env
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
+    # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
+    follow_bridged_env(scope)
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
+
+
+def follow_launch_bridged_env() -> None:
+    """After the launch profile's live allowlist reload re-bridged its lists, bring the INSTALLED launch
+    mapping (built at the body's entry, before the reload) up to date, so the rest of this body reads
+    the edited lists. The caller runs this only with the launch scope bound (``_owner_scope``) and its
+    bridge not skipped, so the mapping is never another profile's."""
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope
+    from gateway.bridged_env import follow_bridged_env
+    from hermes_constants import get_hermes_home
+
+    scope = current_secret_scope()
+    if isinstance(scope, dict):
+        follow_bridged_env(scope)
+        scope.update(build_profile_secret_scope(get_hermes_home()))  # .env / sources still win, as at build
+
+
+def owner_secret_scope(home: str | Path) -> dict[str, str]:
+    """THE secret mapping for a body owned by *home*: ``launch_secret_scope`` when *home* is this
+    process's own (its env-only keys from docker ``-e`` / systemd ``Environment=`` / ``op run`` have
+    no file to rebuild from), else the profile's own files (``build_profile_secret_scope``). Every
+    per-home binding point (routed gateway turns, cron fires, kanban ticks) builds through here, so
+    the launch profile keeps its env-only credentials when a single-profile gateway starts
+    multiplexing in place."""
+    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    if _is_process_home(Path(home)):
+        return launch_secret_scope(home)
+    return build_profile_secret_scope(Path(home))
+
+
+@contextlib.contextmanager
+def launch_body() -> Iterator[None]:
+    """Mark a standalone launch-profile body (a primary-adapter message) at ENTRY. Nothing is bound
+    while single-profile, so its reads keep the process-env semantics they always had; if a second
+    profile switches the gateway to fail-closed mid-body, an unscoped read resolves from
+    ``launch_secret_scope`` (frozen env + ``.env``) instead of raising ``UnscopedSecretError``."""
+    from agent.secret_scope import reset_launch_body_scope, set_launch_body_scope
+    from hermes_constants import get_process_hermes_home
+    home = get_process_hermes_home()
+    token = set_launch_body_scope(lambda: launch_secret_scope(home))
+    try:
+        yield
+    finally:
+        reset_launch_body_scope(token)
 
 
 @contextlib.contextmanager
@@ -166,24 +214,50 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     override), so a launch-profile turn without it was indistinguishable from no turn at all and
     every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
     (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from agent.runtime_scope import bind_state, scope_for_profile
 
     home = Path(launch_home)
-    home_token = secret_token = terminal_token = None
+    # Own home: secrets unstamped (no foreign-home stamp), terminal policy over the frozen overlay.
+    tokens = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
+                        env_overlay=launch_terminal_env())
     try:
-        home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
-        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
         yield
     finally:
-        if terminal_token is not None:
-            reset_terminal_scope(terminal_token)
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+        tokens.reset()
+
+
+@contextlib.contextmanager
+def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = None) -> Iterator[None]:
+    """Bind *home*'s home + secret + terminal scope for a body that reads and writes its config.
+
+    The launch home (``launch_home``, default ``get_process_hermes_home()``) gets its launch secret
+    scope with no home override or terminal scope (an enclosing secondary's are unbound for the
+    body), or the full :func:`launch_profile_runtime_scope` once the process multiplexes. Any other
+    home gets only its own files, stamped as foreign. No external-source hydration.
+    """
+    from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
+
+    home = Path(home)
+    launch = Path(launch_home if launch_home is not None else get_process_hermes_home())
+    with contextlib.ExitStack() as stack:
+        if home.resolve() == launch.resolve():
+            if is_multiplex_active():
+                stack.enter_context(launch_profile_runtime_scope(launch))
+            else:
+                # Unbind an enclosing secondary's home and terminal, or the launch secrets would
+                # pair with that profile's config. Unset resolves to the process home, which is the
+                # launch home for every caller (``launch_home`` defaults to it; the RPC passes it).
+                stack.callback(reset_hermes_home_override, set_hermes_home_override(None))
+                stack.callback(reset_secret_scope, set_secret_scope(launch_secret_scope(launch)))
+                stack.callback(reset_terminal_scope, set_terminal_scope(None))
+        else:
+            secrets = build_profile_secret_scope(home)
+            stack.callback(reset_hermes_home_override, set_hermes_home_override(str(home)))
+            stack.callback(reset_secret_scope, set_secret_scope(secrets, profile_home=str(home)))
+            stack.callback(reset_terminal_scope, install_profile_terminal_scope(home))
+        yield
 
 
 def launch_profile_scope_if_multiplexed():

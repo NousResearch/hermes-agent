@@ -140,6 +140,42 @@ def _status_model_route(
     return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}
 
 
+def _routes_for_default(default_route: tuple[str, str], persisted_route: dict, session_row: dict):
+    """``(persisted_route, session_row)`` with any recorded route that disagrees with the chat's
+    default ``(model, provider)`` replaced by that default (#130572). A recorded route agrees when
+    the model matches and so does the provider (when the default names one)."""
+    model, provider = default_route
+    if not model:
+        return persisted_route, session_row
+
+    def _agrees(row_model, row_provider) -> bool:
+        return _clean_str(row_model) == model and (not provider or _clean_str(row_provider) == provider)
+
+    if not _agrees(persisted_route.get("model"), persisted_route.get("billing_provider")):
+        persisted_route = {}
+    if not _agrees(session_row.get("model"), session_row.get("billing_provider")):
+        session_row = {**session_row, "model": model, "billing_provider": provider}
+    return persisted_route, session_row
+
+
+def _fallback_suffix(agent, shown_model: str) -> str:
+    """`` — fallback for `primary` `` when *agent* runs *shown_model* on a provider fallback (#133993).
+
+    ``/model`` reports the configured/session route, so without the label a turn-scoped fallback
+    makes /status and /usage name a model the user never picked. ``_provider_fallback_active``, not
+    ``_fallback_activated``: a planned route change (a voice-note turn) sets the latter too. A
+    same-model fallback on another provider names the primary's provider."""
+    if getattr(agent, "_provider_fallback_active", False) is not True:
+        return ""
+    if _clean_str(getattr(agent, "model", "")) != shown_model:
+        return ""
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    primary, primary_provider = _clean_str(rt.get("model")), _clean_str(rt.get("provider"))
+    if primary == shown_model and primary_provider:
+        primary = f"{primary} ({primary_provider})"
+    return t("gateway.shared.fallback_model_suffix", primary=primary) if primary else ""
+
+
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     """/context full view: auto-compression threshold/headroom, compression count + last savings,
     and cumulative throughput (labelled as throughput, NOT context size)."""
@@ -208,7 +244,7 @@ def _usage_agent_stats_lines(agent) -> list[str]:
         lines += [t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)), ""]
     lines += [
         t("gateway.usage.header_session"),
-        t("gateway.usage.label_model", model=agent.model),
+        t("gateway.usage.label_model", model=agent.model) + _fallback_suffix(agent, _clean_str(agent.model)),
         t("gateway.usage.label_input_tokens", count=_fmt(_n(agent, "session_input_tokens"))),
         t("gateway.usage.label_output_tokens", count=_fmt(_n(agent, "session_output_tokens"))),
         t("gateway.usage.label_total", count=_fmt(agent.session_total_tokens)),
@@ -218,9 +254,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     if ctx.last_prompt_tokens > 0:
         pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
         from agent.context_breakdown import context_display_source
+        from agent.context_pin import agent_context_suffix
         mark = "~" if context_display_source(ctx) != "provider_usage" else ""
         lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
-                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}"))
+                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}") + agent_context_suffix(agent))
     if ctx.compression_count:
         lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
     return lines
@@ -261,6 +298,11 @@ class GatewayStatusCommandsMixin:
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
+        if (status_agent is None or status_agent is _AGENT_PENDING_SENTINEL) and not active_override.get("model"):
+            # Nothing resident and no /model pin: the next turn runs the channel/config default, so a
+            # SessionDB route recorded under an older default is history, not the current model.
+            default_route = await asyncio.to_thread(self._status_next_turn_route, source, session_key)
+            persisted_route, session_row = _routes_for_default(default_route, persisted_route, session_row)
         model_name, provider_name, context_used, context_total, route = _status_model_route(
             status_agent, active_override, persisted_route, session_row, session_entry
         )
@@ -283,16 +325,20 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.title", title=fields["title"]))
         lines += [t("gateway.status.created", timestamp=fields["created"]),
                   t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        fallback = _fallback_suffix(status_agent, fields["model"])
         if fields["model"] and fields["provider"]:
-            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]) + fallback)
         elif fields["model"]:
-            lines.append(t("gateway.status.model", model=fields["model"]))
+            lines.append(t("gateway.status.model", model=fields["model"]) + fallback)
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
             pct = min(100, round((context_used / context_total) * 100))
+            from agent.context_pin import agent_context_suffix  # (pinned) / (fallback) for the agent's own window
+            compressor_total = _n(getattr(status_agent, "context_compressor", None), "context_length")
+            suffix = agent_context_suffix(status_agent) if compressor_total and compressor_total == context_total else ""
             lines.append(t("gateway.status.context", used=mark + _fmt(context_used), total=_fmt(context_total),
-                           pct=f"{mark}{pct}"))
+                           pct=f"{mark}{pct}") + suffix)
         elif context_used:
             lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
         state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
@@ -315,6 +361,23 @@ class GatewayStatusCommandsMixin:
             ]
         lines += ["", t("gateway.status.platforms", platforms=', '.join(p.value for p in self.adapters))]
         return "\n".join(lines)
+
+    def _status_next_turn_route(self, source, session_key) -> tuple[str, str]:
+        """``(model, provider)`` the next turn resolves for this session, from the turn's own resolver
+        (``_resolve_session_agent_runtime``: a LOCAL session's frozen launch policy, channel_overrides
+        incl. provider-only ones, then the profile's config) inside the owning profile's scope, which
+        slash dispatch does not bind on a multiplexed runner. ``("", "")`` when it cannot resolve: the
+        recorded route is then left as is rather than replaced by a guess."""
+        try:
+            with self._profile_scope_for_source(source):
+                # record_notice=False: the runner's fallback notice is another turn's one-shot slot.
+                model, runtime = self._resolve_session_agent_runtime(
+                    source=source, session_key=session_key, fallback=False, record_notice=False)
+        except Exception:  # health: allow BLE001 -- /status is fail-open; the turn reports the error
+            logger.debug("/status could not resolve the next turn's route", exc_info=True)
+            return "", ""
+        # The agent records its runtime provider as the usage row's billing_provider.
+        return _clean_str(model), _clean_str(runtime.get("provider"))
 
     async def _status_session_db_facts(self, session_id: str):
         """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.
@@ -354,7 +417,7 @@ class GatewayStatusCommandsMixin:
         # Running agent first (mid-turn), then cached agent (between turns).
         agent = self._resident_agent_for(self._session_key_for_source(source)) or None
         ctx = getattr(agent, "context_compressor", None) if agent else None
-        used, context_length, model_name = await self._resolve_context_figures(
+        used, context_length, model_name, window_suffix = await self._resolve_context_figures(
             agent, ctx, session_entry, source
         )
         from agent.context_breakdown import context_display_source
@@ -366,7 +429,7 @@ class GatewayStatusCommandsMixin:
             lines = [
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),
-                t("gateway.context.window", total=_fmt(context_length)),
+                t("gateway.context.window", total=_fmt(context_length)) + window_suffix,
                 t("gateway.context.in_use", used=mark + _fmt(used), total=_fmt(context_length), pct=f"{mark}{pct:.0f}"),
                 t("gateway.context.bar", bar="█" * max(0, filled) + "░" * max(0, 24 - filled)),
                 t("gateway.context.headroom", headroom=mark + _fmt(max(0, context_length - used))),
@@ -395,10 +458,13 @@ class GatewayStatusCommandsMixin:
         ])
 
     async def _resolve_context_figures(self, agent, ctx, session_entry, source):
-        """``(used, context_length, model_name)`` for /context: used = compressor -> SessionStore;
-        model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata."""
+        """``(used, context_length, model_name, window_suffix)`` for /context: used = compressor -> SessionStore;
+        model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata. The suffix
+        is `` (pinned)`` / `` (fallback)`` from whichever source supplied the window."""
+        from agent.context_pin import agent_context_suffix, context_window_suffix
         used = max(0, _n(ctx, "last_prompt_tokens")) or max(0, _int_value(getattr(session_entry, "last_prompt_tokens", 0)))
         context_length = _n(ctx, "context_length")
+        suffix = agent_context_suffix(agent) if context_length else ""
         model_name = _clean_str(getattr(agent, "model", "")) if agent is not None else ""
         if not model_name and self._session_db:
             row = await _quiet(lambda: self._session_db.get_session(session_entry.session_id))
@@ -408,12 +474,14 @@ class GatewayStatusCommandsMixin:
             if resolved is not None:
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
+                suffix = {"config": " (pinned)", "default": " (fallback)"}.get(resolved.context_source, "")
         if not context_length and model_name:
             from agent.model_metadata import get_model_context_length
             context_length = _int_value(
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
             )
-        return used, context_length, model_name
+            suffix = context_window_suffix(context_length, None, model=model_name)
+        return used, context_length, model_name, suffix
 
     async def _resolve_route_context(self, source, model_name: str, route: dict | None = None):
         """``_resolve_gateway_model_context`` for a non-resident session, run off the event loop inside
@@ -433,13 +501,13 @@ class GatewayStatusCommandsMixin:
         from tools.process_registry import format_uptime_short, process_registry
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
-        running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
         agent_rows: list[dict] = []
         for session_key, agent in (getattr(self, "_running_agents", {}) or {}).items():
             pending = agent is _AGENT_PENDING_SENTINEL
+            _started_state = self._peek_session_state(session_key)
             agent_rows.append({
                 "session_key": session_key,
-                "elapsed": max(0, int(now - float(running_started.get(session_key, now)))),
+                "elapsed": max(0, int(now - float((_started_state.turn.started_ts if _started_state else 0.0) or now))),
                 "state": t("gateway.agents.state_starting") if pending else t("gateway.agents.state_running"),
                 "session_id": "" if pending else str(getattr(agent, "session_id", "") or ""),
                 "model": "" if pending else str(getattr(agent, "model", "") or ""),
@@ -602,7 +670,14 @@ class GatewayStatusCommandsMixin:
         # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
         # a balance. Fail-open: never break /usage.
         from agent.account_usage import nous_credits_lines
-        credits_lines = await _quiet(lambda: asyncio.to_thread(nous_credits_lines, markdown=True), [])
+        credits_state = getattr(agent, "_credits_state", None) if agent else None
+        credits_lines = await _quiet(
+            lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
+            [],
+        )
+        # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
+        from agent.plan_limits import portal_wording
+        credits_lines = [portal_wording(line) for line in credits_lines]
 
         def _with_account_blocks(lines: list[str]) -> str:
             # Each block is preceded by a blank divider only when something precedes it.

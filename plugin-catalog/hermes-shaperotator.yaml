@@ -1,0 +1,63 @@
+name: hermes-shaperotator
+repo: https://github.com/RobertBarnettProjects/hermes-shaperotator
+sha: '2612639a1be8d93dfc9a3ab02d65609e0bff7749'
+version: "0.1.0"
+title: ShapeRotator — verified engineering design
+description: >-
+  Parametric mechanical CAD and linear-static FEA for Hermes, with a claims checker: stress,
+  deflection, safety factor or mass the agent quotes is checked against the analyses it actually ran,
+  and a verification footer is appended to the reply. One toolset drives FreeCAD (headless,
+  cross-platform) or Autodesk Inventor (Windows, COM); every feature reports a volume/topology delta;
+  FEA (FreeCAD FEM + Gmsh + CalculiX) reports equilibrium, mesh convergence and an AS/NZS-aware yield
+  safety factor, and a design sweep finds the lightest part meeting a target SF; drawings on both backends
+  to the standard the user picks once per chat (AS 1100, ISO, ASME, DIN, BS 8888, JIS, GB), with PDF export
+  gated on a QA check. Desktop pane: live 3D view, click a face
+  to reference it in chat, stress map, evidence log. On Inventor, cad_native exposes 100+ inventor-forge
+  tools (sheet metal + flat-pattern DXF, assemblies, interference, BOM, materials, mass properties,
+  stress/modal analysis in Inventor's own Stress Analysis feeding the same evidence log).
+  Disclosure — starts FreeCAD's Python as a worker process (which runs Gmsh and CalculiX) and, on
+  Windows, can drive Autodesk Inventor over COM; cad_python runs Python inside the CAD app only after
+  the user approves each call; reads files the user names; writes models, renders, FEA folders and exports
+  in the session's job folder, and any write outside it (or a save over a file opened from elsewhere) goes
+  through a Hermes approval prompt naming the path; child processes (FreeCAD worker, MCP servers, headless
+  browser for the PDF report) get a minimal environment without provider keys; appends a verification footer to assistant
+  replies that quote engineering figures; Inventor stress/modal analysis (no API exists) takes over the
+  mouse and keyboard for about half a minute, only after the user approves each call; no network,
+  telemetry or credentials. Inventor backend: inventor-forge (MIT, same author),
+  vendored.
+maintainer: RobertBarnettProjects
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/RobertBarnettProjects/hermes-shaperotator#readme
+platforms: [windows, linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/2612639a1be8d93dfc9a3ab02d65609e0bff7749/docs/cad-desktop-bracket-fea.jpg
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/2612639a1be8d93dfc9a3ab02d65609e0bff7749/docs/cad-sweep-desktop.jpg
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/2612639a1be8d93dfc9a3ab02d65609e0bff7749/docs/freecad-drawing-sample.png
+capabilities:
+  provides_tools:
+    - cad_standard
+    - cad_fea
+    - cad_status
+    - cad_backend
+    - cad_document
+    - cad_sketch
+    - cad_feature
+    - cad_inspect
+    - cad_parameters
+    - cad_drawing
+    - cad_transaction
+    - cad_python
+    - cad_native
+    - cad_plan
+    - cad_history
+    - cad_artifact
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - transform_llm_output
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

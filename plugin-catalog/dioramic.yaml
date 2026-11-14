@@ -1,0 +1,28 @@
+name: dioramic
+title: dioramic
+repo: https://github.com/faze39/dioramic
+sha: 7265dd14e9cac8ea03abc122e6215cc603c44853
+description: >-
+  A Blender scene director. The agent describes a scene as a structured JSON
+  spec (toy-style shapes and 3D text, finishes, colours, three lighting rigs,
+  camera moves, keyframed spin, bounce, float, pop-in, move and wobble) and
+  dioramic renders it in headless Blender (EEVEE) as a vertical 9:16 MP4 plus a
+  still preview, returned as MEDIA tags so the gateway delivers the clip.
+  dioramic_tweak merges only the changes into an earlier scene and renders a new
+  version. Disclosure: runs the Blender binary you configure as a subprocess with
+  a scrubbed environment (no API keys), a fixed build script that reads the spec
+  as data (no model-written code), capped duration, samples and resolution, and
+  a kill timeout; writes only to its profile-scoped plugin-data folder; no
+  network calls.
+maintainer: faze39
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/faze39/dioramic
+version: "0.1.0"
+
+capabilities:
+  provides_tools: [dioramic_render, dioramic_tweak]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

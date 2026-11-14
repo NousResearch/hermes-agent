@@ -17,9 +17,10 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
+    from agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
+            "primary_runtime": primary_runtime_for_restore(agent)}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
@@ -47,13 +48,18 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        # Endpoint-stamped, so this applies only when the switch landed on the primary's URL; the model
+        # check keeps a fallback that shares that URL from inheriting the primary's verdicts.
+        if isinstance(primary, dict) and primary.get("model") == model:
+            from agent.route_verdicts import restore_primary_route_verdicts
+            restore_primary_route_verdicts(agent, copy.deepcopy(primary))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
-    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
-    return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True):
+    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) as one
+    change and return its token (``hermes_scope.StateToken``). The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
     ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
     source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
@@ -66,68 +72,36 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
     from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
     TOTAL budget, and one slow source there costs the transcript the flush exists to save.
     """
+    from agent.runtime_scope import bind_state, scope_for_profile
     from agent.secret_scope import is_multiplex_active
-    scopes = _TurnScopes()
-    try:
-        if profile_home:
-            home = Path(profile_home)
-            # External sources first: the requested profile may never have been served in this process.
-            if hydrate_secrets:
-                from hermes_cli.env_loader import hydrate_profile_secret_sources
-                hydrate_profile_secret_sources(home)
-            secrets = build_profile_secret_scope(home)
-            overlay = None
-            scopes.home = set_hermes_home_override(str(home))
-        else:
-            # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
-            # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
-            # active the override is bound too: an unset override is the "unbound context" signal
-            # plugin runtime bindings and per-home slots fail closed on (#118538).
-            # Resolve at call time like the launch state.db handle: a harness that
-            # re-homes the process after import must not read the old home's .env.
-            from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-            home = _launch_home()
-            secrets = launch_secret_scope(home)
-            # No home stamp: this IS the process's own profile, and the stamp exists only to
-            # mark a FOREIGN home for serves_routed_profile().
-            scopes.secret = set_secret_scope(secrets)
-            if not is_multiplex_active():
-                return scopes
-            scopes.home = set_hermes_home_override(str(home))
-            overlay = launch_terminal_env()
-        if scopes.secret is None:
-            scopes.secret = set_secret_scope(secrets, profile_home=str(home) if profile_home else None)
-        # Same terminal policy the gateway binds per turn: a docker-configured profile
-        # must never resolve the launch process's pinned env. Failure → refusal scope.
-        from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
-        return scopes
-    except Exception:
-        # A raise mid-bind leaves no return value for the caller to release —
-        # undo whatever was bound before propagating.
-        _release_profile_runtime_scope_tokens(scopes)
-        raise
+    if profile_home:
+        # External sources first (unless skipped): the profile may never have been served here.
+        # The same terminal policy the gateway binds per turn: a docker-configured profile must
+        # never resolve the launch process's pinned env. Failure -> refusal scope.
+        bound = bind_state(scope_for_profile(profile_home), hydrate_secrets=hydrate_secrets)
+    else:
+        # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
+        # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
+        # active the override and terminal policy are bound too: an unset override is the
+        # "unbound context" signal plugin runtime bindings and per-home slots fail closed on
+        # (#118538). Resolved at call time like the launch state.db handle: a harness that
+        # re-homes the process after import must not read the old home's .env. Secrets are
+        # unstamped: this IS the process's own profile, and the stamp marks a FOREIGN home.
+        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+        home = _launch_home()
+        multiplex = is_multiplex_active()
+        bound = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
+                           env_overlay=launch_terminal_env() if multiplex else None,
+                           home_override=multiplex, terminal=multiplex)
+    # bind_state computes every piece before installing any, so a raise here leaves nothing bound.
+    return bound
 
 
-def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
-    """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
-    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
-    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
-    every scope has been released."""
-    if scopes is None:
-        return
-    from tools.terminal_scope import reset_terminal_scope
-    first_error: BaseException | None = None
-    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
-                         (scopes.home, reset_hermes_home_override)):
-        if token is None:
-            continue
-        try:
-            reset(token)
-        except Exception as exc:
-            first_error = first_error or exc
-    if first_error is not None:
-        raise first_error
+def _release_profile_runtime_scope_tokens(token) -> None:
+    """Undo ``_profile_runtime_scope_tokens``: home, secrets, terminal policy and runtime scope go
+    back together (one change), so no piece of the previous profile outlives the others."""
+    if token is not None:
+        token.reset()
 
 
 @contextlib.contextmanager
@@ -278,31 +252,37 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
 
 
 def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
-    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
-    try:
-        agent.switch_model(
-            new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
-            base_url=result.base_url, api_mode=result.api_mode,
-            capabilities=getattr(result, "runtime_capabilities", None))
-    except Exception as exc:
-        # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
-        # restart, persist, marker, override, config write) or the session pins a broken model.
-        # Abort the commit: do NOT restart the slash worker, persist runtime, append the switch marker, set
-        # a session model_override, or persist to config — all of which would otherwise leave the session
-        # pinned to a broken model and kill the conversation on the next turn (#50163). A failed switch is a
-        # no-op; surface a clean error to the client.
-        logger.warning("In-place model switch failed for TUI agent: %s", exc)
-        raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
-                         f"staying on {getattr(agent, 'model', current_model)}.") from exc
-    _restart_slash_worker(sid, session)
-    _persist_live_session_runtime(session)
-    _persist_live_session_system_prompt(session)
-    _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
-    _emit_session_info(sid, session)
-    if snapshot is not None:
-        session["one_turn_model_restore"] = snapshot
-    else:
-        session.pop("one_turn_model_restore", None)
+    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts. The transcript
+    claim is held for the whole commit (the marker writes the chat's transcript), so the idle reaper cannot
+    release the lease between the ownership check and the marker."""
+    with _transcript_claim(session):
+        try:
+            agent.switch_model(
+                new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
+                base_url=result.base_url, api_mode=result.api_mode,
+                capabilities=getattr(result, "runtime_capabilities", None))
+        except Exception as exc:
+            # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
+            # restart, persist, marker, override, config write) or the session pins a broken model.
+            # Abort the commit: do NOT restart the slash worker, persist runtime, append the switch marker, set
+            # a session model_override, or persist to config — all of which would otherwise leave the session
+            # pinned to a broken model and kill the conversation on the next turn (#50163). A failed switch is a
+            # no-op; surface a clean error to the client.
+            logger.warning("In-place model switch failed for TUI agent: %s", exc)
+            raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
+                             f"staying on {getattr(agent, 'model', current_model)}.") from exc
+        _restart_slash_worker(sid, session)
+        _persist_live_session_runtime(session)
+        _persist_live_session_system_prompt(session)
+        _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
+        _emit_session_info(sid, session)
+        if snapshot is not None:
+            session["one_turn_model_restore"] = snapshot
+        else:
+            session.pop("one_turn_model_restore", None)
+
+
+LARGE_MODEL_NOTICE_KEY = "model.large_notice"
 
 
 def _apply_model_switch(
@@ -311,9 +291,15 @@ def _apply_model_switch(
     persist_override: bool | None = None, count_switch: bool = True) -> dict:
     """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
     user's /model pick, so it stays out of the shared-metrics switch count."""
-    from hermes_cli.model_switch import switch_model
+    from hermes_cli.model_switch import parse_model_switch_args, switch_model
+    if parsed_flags is None:
+        parsed_flags = parse_model_switch_args(raw_input)
+    if getattr(parsed_flags, "is_reset", False):
+        return _reset_session_model_override(sid, session)
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
+    if persist_global:  # refused before switch_model() touches the live session
+        _refuse_managed_model_pick(reasoning_effort)
     agent = session.get("agent")
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")
@@ -334,6 +320,8 @@ def _apply_model_switch(
         custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+    if persist_global:  # the exact plan, incl. conditional clears: still before any confirm or commit
+        _refuse_managed_model_pick(reasoning_effort, result)
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
@@ -380,10 +368,46 @@ def _apply_model_switch(
             from_provider=_switch_away_provider(agent, explicit_provider, current_provider),
             to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
             session_id=getattr(agent, "session_id", None))
+    if (notice := getattr(result, "usage_notice", "")) and sid:
+        # Window plans, Large model: a warning, never a confirm. The existing notice event, so desktop
+        # (toast) and TUI (status line) show it for every switch path, live or applied at turn start.
+        _emit("notification.show", sid, {
+            "text": f"⚠ {notice}", "level": "warn", "kind": "ttl", "ttl_ms": 8000,
+            "key": LARGE_MODEL_NOTICE_KEY, "id": LARGE_MODEL_NOTICE_KEY})
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
+
+
+def _reset_session_model_override(sid: str, session: dict) -> dict:
+    """``/model reset`` (typed, ``config.set model``, Desktop's slash mirror, or a pick queued
+    mid-turn): drop this session's pin and any armed ``--once`` restore, adopt config.yaml's model
+    through the config-sync switch (no new pin, never written back), and persist the row so
+    ``session.resume`` cannot restore the old pin. History is kept."""
+    from agent.i18n import t
+    # Gate first: a chat another surface took refuses with its pin, --once restore and composer profile intact.
+    with _transcript_claim(session):
+        had_override = bool(session.get("model_override"))
+        session.pop("model_override", None)
+        session.pop("one_turn_model_restore", None)
+        session.pop("config_model_seen", None)  # the pinned sync recorded the target without adopting it
+        if "composer_override_profile" in session:
+            session["composer_override_profile"] = None  # persisted as a removal
+        model, provider = _config_model_target()
+        agent = session.get("agent")
+        if model and agent is not None and (
+                model != getattr(agent, "model", "") or (provider and provider != getattr(agent, "provider", ""))):
+            _apply_model_switch(
+                sid, session, f"{model} --provider {provider}" if provider else model,
+                confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+                count_switch=False)
+        _persist_live_session_runtime(session)
+    _emit_session_info(sid, session)
+    shown = model or getattr(agent, "model", "") or t("gateway.shared.unknown_value")
+    return {"value": shown, "warning": t("gateway.model.reset_done" if had_override else "gateway.model.reset_none",
+                                         model=shown),
+            "confirm_required": False, "scope": "session"}
 
 
 def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_global: bool, one_turn: bool) -> None:

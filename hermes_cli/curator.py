@@ -105,6 +105,9 @@ def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
     _print_curator_config(curator)
+    if locked := skill_usage.locked_skill_names():
+        print(f"\nlocked ({len(locked)}): {', '.join(locked)}  "
+              f"(the agent cannot change these; `hermes curator unlock <skill>` lifts it)")
     rows = skill_usage.curated_report()
     if not rows:
         print("\nno curator-managed skills")
@@ -235,6 +238,36 @@ def _set_pin(args, pinned: bool) -> int:
 
 def _cmd_pin(args) -> int: return _set_pin(args, True)
 def _cmd_unpin(args) -> int: return _set_pin(args, False)
+
+
+def _set_lock(args, locked: bool) -> int:
+    """``hermes curator lock|unlock``: a user declaration stored beside ``pinned`` in the active
+    profile's skills/.usage.json, enforced by tools/skill_lock on every agent write path. Any skill
+    can be locked, but the name must resolve in this profile, so a typo never forges a record."""
+    from tools import skill_usage
+    from tools.skill_manager_tool import _find_skill
+    verb = "lock" if locked else "unlock"
+    existing = _find_skill(args.skill)
+    if existing is None:
+        print(f"curator: no skill named '{args.skill}' in the active profile — nothing to {verb}. "
+              f"`hermes skills list` shows the names.")
+        return 1
+    key = existing["path"].name  # directory name: the key the skill_manage guard resolves to
+    if not skill_usage.set_locked(key, locked):
+        print(f"curator: could not record the {verb} for '{key}' (skills/.usage.json not writable).")
+        return 1
+    if locked:
+        print(f"curator: locked '{key}'. The agent can no longer change it: skill_manage, write_file, "
+              f"patch and terminal refuse, in normal turns and the background passes alike, and the "
+              f"curator won't archive it. It stays readable and auto-loadable, and you can still edit it "
+              f"yourself. Unlock with `hermes curator unlock {key}`.")
+    else:
+        print(f"curator: unlocked '{key}'. The agent may edit it again.")
+    return 0
+
+
+def _cmd_lock(args) -> int: return _set_lock(args, True)
+def _cmd_unlock(args) -> int: return _set_lock(args, False)
 
 
 def _cmd_list_unmanaged(args) -> int:
@@ -445,7 +478,7 @@ def _cmd_purge(args) -> int:
         # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
         # Key by the SKILL.md frontmatter name: older archives were flattened under the directory
         # name (`accelerate` for `huggingface-accelerate`), which is not the usage-record key.
-        rec = usage.get(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
+        rec = usage.get(skill_usage.read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
         archived = rec.get("state") == skill_usage.STATE_ARCHIVED
         at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if archived else None
         return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime
@@ -590,10 +623,11 @@ def _cmd_usage(args) -> int:
         print("curator: no skills found")
         return 0
     provenance = [r.get("provenance", "agent") for r in rows]
-    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub", "external")}
+    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub", "external", "plugin")}
     print(
         f"skills: {len(rows)} total  "
-        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']}  external={counts['external']})\n")
+        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']}  external={counts['external']}"
+        f"  plugin={counts['plugin']})\n")
     print(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity")
@@ -621,12 +655,12 @@ _STORE_TRUE = dict(action="store_true")
 _SUBCOMMANDS = (
     ("status", "Show curator status and skill stats", _cmd_status),
     (
-        "usage", "Show usage telemetry for ALL skills (built-in, hub, agent) with provenance",
+        "usage", "Show usage telemetry for ALL skills (built-in, hub, agent, plugin) with provenance",
         _cmd_usage,
         _arg("--sort", choices=("activity", "recent", "name"), default="activity",
              help="Sort order: activity (most-used first, default), recent "
                   "(most-recently-active first), or name (alphabetical)"),
-        _arg("--provenance", choices=("agent", "bundled", "hub", "external"), default=None,
+        _arg("--provenance", choices=("agent", "bundled", "hub", "external", "plugin"), default=None,
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (
@@ -646,6 +680,9 @@ _SUBCOMMANDS = (
     ("resume", "Resume a paused curator", _cmd_resume),
     ("pin", "Pin a skill so the curator never auto-transitions it", _cmd_pin, _SKILL),
     ("unpin", "Unpin a skill", _cmd_unpin, _SKILL),
+    ("lock", "Lock a skill so the agent cannot change it (skill_manage, write_file, patch and terminal "
+             "refuse; it stays readable and auto-loadable; your own edits are unaffected)", _cmd_lock, _SKILL),
+    ("unlock", "Lift a content lock", _cmd_unlock, _SKILL),
     ("list-unmanaged", "List curation-eligible skills with no provenance marker",
      _cmd_list_unmanaged),
     (

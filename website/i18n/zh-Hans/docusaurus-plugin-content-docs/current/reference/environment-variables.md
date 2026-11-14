@@ -22,13 +22,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `AI_GATEWAY_BASE_URL` | 覆盖 AI Gateway base URL（默认：`https://ai-gateway.vercel.sh/v1`） |
 | `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用）。设置 `OPENAI_BASE_URL` 后，它只会发送到该 URL 完全相同的源（scheme、主机和端口），绝不会发送到同一主机的其他端口或 `http://` |
 | `OPENAI_BASE_URL` | 自定义端点的 base URL（VLLM、SGLang 等） |
-| `COPILOT_GITHUB_TOKEN` | 用于 Copilot API 的 GitHub token——最高优先级（OAuth `gho_*` 或细粒度 PAT `github_pat_*`；经典 PAT `ghp_*` **不支持**） |
-| `GH_TOKEN` | GitHub token——Copilot 第二优先级（也供 `gh` CLI 使用） |
-| `GITHUB_TOKEN` | GitHub token——Copilot 第三优先级 |
-| `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot ACP CLI 二进制路径（默认：`copilot`） |
-| `COPILOT_CLI_PATH` | `HERMES_COPILOT_ACP_COMMAND` 的别名 |
-| `HERMES_COPILOT_ACP_ARGS` | 覆盖 Copilot ACP 参数（默认：`--acp --stdio`） |
-| `COPILOT_ACP_BASE_URL` | 覆盖 Copilot ACP base URL |
+| `GH_TOKEN` | GitHub token（也供 `gh` CLI 使用）；凡 Hermes 读取 `GITHUB_TOKEN` 之处均可作为其替代 |
+| `GITHUB_TOKEN` | 用于访问 GitHub API 的 GitHub token（Skills Hub、git 凭据、更新检查；另见下方 Skills Hub 一行） |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API 密钥（[z.ai](https://z.ai)） |
 | `ZAI_API_KEY` | `GLM_API_KEY` 的别名 |
 | `Z_AI_API_KEY` | `GLM_API_KEY` 的别名 |
@@ -132,13 +127,10 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `BROWSERBASE_PROJECT_ID` | Browserbase 项目 ID |
 | `BROWSER_USE_API_KEY` | Browser Use 云浏览器 API 密钥（[browser-use.com](https://browser-use.com/)） |
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl 浏览器会话 TTL（秒，默认：300） |
-| `BROWSER_CDP_URL` | 本地浏览器的 Chrome DevTools Protocol（CDP）URL（通过 `/browser connect` 设置，例如 `ws://localhost:9222`） |
-| `CAMOFOX_URL` | Camofox 本地反检测浏览器服务器地址（默认：`http://localhost:9377`）。仅为地址——不会选择后端；请在 `hermes tools` 中选择 Camofox（`browser.cloud_provider: camofox`） |
-| `CAMOFOX_USER_ID` | 可选的外部管理 Camofox 用户 ID，用于共享可见会话 |
-| `CAMOFOX_SESSION_KEY` | 为 `CAMOFOX_USER_ID` 创建标签页时使用的可选 Camofox 会话密钥 |
-| `CAMOFOX_ADOPT_EXISTING_TAB` | 设为 `true` 可在创建新标签页前复用现有 Camofox 标签页 |
+| `BROWSER_CDP_URL` | 浏览器工具附加的 Chrome DevTools Protocol（CDP）端点，设置后不再自行启动 Chromium（通过 `/browser connect` 设置，例如 `ws://localhost:9222`；等同于 `browser.cdp_url`） |
+| `CAMOFOX_*` | 仅由 Camofox 插件（`hermes plugins install camofox`）读取；核心 Hermes 忽略它们。 |
 | `BROWSER_INACTIVITY_TIMEOUT` | 浏览器会话不活动超时（秒） |
-| `AGENT_BROWSER_ARGS` | 额外的 Chromium 启动标志（逗号或换行分隔）。以 root 身份运行或在 AppArmor 限制的非特权用户命名空间（Ubuntu 23.10+、DGX Spark、许多容器镜像）中运行时，Hermes 自动注入 `--no-sandbox,--disable-dev-shm-usage`；仅在需要覆盖或添加其他标志时手动设置。 |
+| `AGENT_BROWSER_*` | 不再读取。更新时，若对应键未设置，profile 的 `.env` 中的值会被复制到配置中：`AGENT_BROWSER_EXECUTABLE_PATH` → `browser.executable_path`、`AGENT_BROWSER_PROFILE` → `browser.user_data_dir`、`AGENT_BROWSER_ARGS` → `browser.chromium_args`、`AGENT_BROWSER_HEADED` → `browser.headed`、`AGENT_BROWSER_ENGINE` → `browser.engine`。 |
 | `FAL_KEY` | 图像生成（[fal.ai](https://fal.ai/)） |
 | `GROQ_API_KEY` | Groq Whisper STT API 密钥（[groq.com](https://groq.com/)） |
 | `ELEVENLABS_API_KEY` | ElevenLabs 高级 TTS 语音（[elevenlabs.io](https://elevenlabs.io/)） |
@@ -508,10 +500,10 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 | 变量 | 描述 |
 |----------|-------------|
-| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | 刷新排队 Telegram 文本块前的宽限窗口（默认：`0.6`）。 |
+| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | 刷新超过 1,024 个字符的 Telegram 文本前的宽限窗口（默认：`1.5`）。较短的文本仍使用 0.18/0.24 秒的自适应快速路径。 |
 | `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | 单条 Telegram 消息超过长度限制时分块之间的延迟（默认：`2.0`）。 |
 | `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | 刷新排队 Telegram 媒体前的宽限窗口（默认：`0.6`）。 |
-| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | agent 完成后发送后续消息前的延迟，以避免与最后一个流块竞争。 |
+| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | 回合开始后的若干秒内，Telegram 纯文本后续消息会进入队列，而不会打断或重定向该回合（默认 `3`；`0` 关闭此宽限期）。命令和媒体不会被暂存。 |
 | `HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | 覆盖底层 `python-telegram-bot` HTTP 超时（秒）。 |
 | `HERMES_TELEGRAM_HTTP_POOL_SIZE` | 到 Telegram API 的最大并发 HTTP 连接数。 |
 | `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS` | 禁用 DNS 失败时使用的硬编码 Cloudflare 回退 IP（`true`/`false`）。 |
@@ -607,7 +599,7 @@ export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 | 变量 | 描述 |
 |----------|-------------|
 | `HERMES_TUI` | 设为 `1` 时启动 [TUI](../user-guide/tui.md) 而非经典 CLI。等同于传入 `--tui`。 |
-| `HERMES_TUI_DIR` | 预构建 `ui-tui/` 目录的路径（必须包含 `dist/entry.js` 和已填充的 `node_modules`）。供发行版和 Nix 使用以跳过首次启动时的 `npm install`。 |
+| `HERMES_TUI_DIR` | 预构建 `ui-tui/` 目录的路径（必须包含 `dist/entry.js` 和已填充的 `node_modules`）。供发行版和 Nix 使用以跳过首次启动时的 `pnpm install`。 |
 | `HERMES_TUI_RESUME` | 启动时按 ID 恢复特定 TUI 会话。设置后，`hermes --tui` 跳过创建新会话并接续指定会话——适用于断开连接或终端崩溃后重新连接。 |
 | `HERMES_TUI_THEME` | 强制 TUI 颜色主题：`light`、`dark` 或原始 6 字符背景十六进制（例如 `ffffff` 或 `1a1a2e`）。未设置时，Hermes 使用 `COLORFGBG` 和终端背景查询自动检测；此变量覆盖不设置 `COLORFGBG` 的终端（Ghostty、Warp、iTerm2 等）上的检测。 |
 | `HERMES_INFERENCE_MODEL` | 为 `hermes -z`/`hermes chat` 强制指定模型而不修改 `config.yaml`。与 `--provider` 标志配合使用。适用于需要每次运行覆盖默认模型的脚本调用者（sweeper、CI、批量运行器）。 |
@@ -644,10 +636,10 @@ compression:
 | `AUXILIARY_VISION_API_KEY` | 与 `AUXILIARY_VISION_BASE_URL` 配对的 API 密钥 |
 
 :::note
-`AUXILIARY_WEB_EXTRACT_*` 变量已废弃：`web_extract` 和浏览器快照不再使用辅助 LLM。长页面和快照会确定性截断，完整文本存储在磁盘上，可通过 `read_file` 分页读取。
+`AUXILIARY_WEB_EXTRACT_*` 变量已废弃：`web_extract` 不再使用辅助 LLM。长页面会确定性截断，完整文本存储在磁盘上，可通过 `read_file` 分页读取。
 :::
 
-对于特定任务的直接端点，Hermes 使用该任务配置的 API 密钥或 `OPENAI_API_KEY`。不会为这些自定义端点复用 `OPENROUTER_API_KEY`。
+对于特定任务的直接端点，Hermes 使用该任务配置的 API 密钥；未设置时，使用与主端点源完全相同的主模型密钥，然后 `OPENAI_API_KEY` 仅用于 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之配对的 `OPENAI_BASE_URL`。不会为这些自定义端点复用 `OPENROUTER_API_KEY`。
 
 ## 回退提供商（仅 config.yaml）
 

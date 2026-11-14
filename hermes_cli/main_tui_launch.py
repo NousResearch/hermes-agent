@@ -9,13 +9,11 @@ import contextlib
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import sys
 
 from pathlib import Path
 from typing import Optional
-from agent.i18n import t
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -39,41 +37,6 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
         return None
 
 
-# A canonical local session is keyed ``local-`` + 64 hex; main's epilogue printed 22-char stored ids.
-_SHORT_RESUME_LEN = 22
-
-
-def _short_resume_id(db, session_id: str) -> str:
-    """The 22-char prefix of a canonical ``local-…`` id when it names only that session (``--resume``
-    resolves a unique prefix back); every other id, or an ambiguous prefix, prints whole."""
-    if not session_id.startswith("local-") or len(session_id) <= _SHORT_RESUME_LEN:
-        return session_id
-    short = session_id[:_SHORT_RESUME_LEN]
-    try:
-        return short if db.resolve_session_id(short) == session_id else session_id
-    except sqlite3.Error:  # an unreadable store prints the whole id
-        return session_id
-
-
-def _branch_lineage(db, session: dict) -> list:
-    """*session* plus each ``/branch`` ancestor it was cut from. Main's epilogue after ``/branch`` still
-    named the parent and so reported the conversation's tokens; a canonical branch child is named
-    itself, and its copied history was billed on the ancestors."""
-    rows, seen = [session], {session.get("id")}
-    while True:
-        try:
-            config = json.loads(rows[-1].get("model_config") or "{}")
-        except (TypeError, ValueError):
-            break
-        parent_id = config.get("_branched_from") if isinstance(config, dict) else None
-        parent = db.get_session(parent_id) if parent_id and parent_id not in seen else None
-        if not parent:
-            break
-        seen.add(parent_id)
-        rows.append(parent)
-    return rows
-
-
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
     """Print a shell-visible epilogue after TUI exits."""
     from hermes_cli.main import _resolve_last_session
@@ -82,54 +45,18 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     )
     if not target:
         return
+    from hermes_cli.chat_launch import print_exit_summary
+    print_exit_summary(target, command="hermes --tui")
 
-    db = None
-    try:
-        from hermes_state import SessionDB
-        from hermes_cli.config import get_hermes_home
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-        session = db.get_session(target)
-        if not session:
-            return
 
-        title = db.get_session_title(target)
-        resume_id = _short_resume_id(db, target)
-        message_count = int(session.get("message_count") or 0)
-        if message_count == 0:
-            return  # No real conversation — don't show resume info
-        tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
-        for row in _branch_lineage(db, session):
-            for k in tokens:
-                tokens[k] += int(row.get(f"{k}_tokens") or 0)
-    except Exception:
-        return
-    finally:
-        if db is not None:
-            db.close()
-
-    # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
-    from hermes_cli.profiles import get_active_profile_name
-    active_profile = get_active_profile_name()
-    profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
-    print(f"\n{t('cli.session.exit_resume_hint')}\n  hermes --tui --resume {resume_id}{profile_flag}")
-    if title:
-        print(f'  hermes --tui -c "{title}"{profile_flag}')
-    print(f"\nSession:        {resume_id}")
-    if title:
-        print(f"Title:          {title}")
-    print(f"Messages:       {message_count}")
-    print(
-        "Tokens:         "
-        f"{sum(tokens.values())} (in {tokens['input']}, out {tokens['output']}, "
-        f"cache {tokens['cache_read'] + tokens['cache_write']}, reasoning {tokens['reasoning']})"
-    )
+def _tui_force_build() -> bool:
+    return (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _tui_need_rebuild(root: Path) -> bool:
     from hermes_cli.source_build import source_product_current
 
-    force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
-    return force in {"1", "true", "yes", "on"} or not source_product_current(root.parent, "tui", root / "dist")
+    return _tui_force_build() or not source_product_current(root.parent, "tui", root / "dist")
 
 
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
@@ -185,7 +112,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
         "Recovery:\n"
         "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  2. Run `pnpm install --frozen-lockfile`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
         file=sys.stderr)
@@ -210,8 +137,11 @@ def _tui_node_bin(bin: str) -> str:
     return path
 
 
-def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
+def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None) -> tuple[list[str], Path]:
+    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild).
+
+    *notices* collects warnings the caller must show again once the TUI exits: the TUI clears the
+    screen and scrollback on start, so a line printed before it is gone by the time anyone looks."""
 
     # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
     ext_dir = os.environ.get("HERMES_TUI_DIR")
@@ -226,7 +156,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     # Must run BEFORE _ensure_tui_workspace(): a prebuilt install ships
     # hermes_cli/tui_dist/entry.js but never ui-tui/ (git checkouts only).
-    # 1. A prebuilt install (Docker image, Nix build, or prior `npm run build`) ships
+    # 1. A prebuilt install (Docker image, Nix build, or prior `pnpm run build`) ships
     #   hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that directory only exists in a git
     #   checkout) — so requiring the workspace to exist first made every prebuilt dashboard Chat tab
     #   connection hard-exit before it ever got a chance to try the bundled entry.js it already has. See
@@ -241,7 +171,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             return [_tui_node_bin("node"), "--expose-gc", str(bundled)], bundled.parent
 
-    # About to npm install/build from source, so the workspace must exist.
+    # About to pnpm install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
@@ -251,15 +181,34 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     from hermes_cli.source_build import build_source_tui, prepare_launch_dependencies, source_build_env
 
     project_root = tui_dir.parent
-    env = source_build_env()
-    prepare_launch_dependencies(project_root, env=env)
+    try:
+        # Acquiring pnpm is part of preparation: offline, it fails like the install.
+        env = source_build_env()
+        prepare_launch_dependencies(project_root, env=env)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        previous = tui_dir / "dist/entry.js"
+        if tui_dev or _tui_force_build() or not previous.is_file():
+            raise
+        # An update whose install failed (an unreachable registry, #150031) keeps the previous
+        # trees and bundle. Nothing pins a TUI build to its backend: like a TUI left open across
+        # an update, it negotiates with the gateway (runtime.describe), so it usually still works.
+        notice = ("⚠ Could not prepare the TUI's Node dependencies, so the previous TUI build was started.\n"
+                  "  It predates the current code and may not support all of it. Run `hermes update` again\n"
+                  "  once the package registry is reachable, or use `hermes --cli`.")
+        # A failed command printed its own output; a refusal before it (PM acquiring pnpm) did not.
+        cause = "(The error is above.)" if isinstance(exc, subprocess.CalledProcessError) else f"({exc})"
+        print(f"{notice}\n  {cause}", file=sys.stderr)
+        logger.warning("TUI launch fell back to the previous build: its Node dependencies could not be prepared: %s", exc)
+        if notices is not None:
+            notices.append(notice)
+        return [_tui_node_bin("node"), "--expose-gc", str(previous)], tui_dir
     if tui_dev:
         # tsx imports @hermes/ink's built exports; the production bundle instead
         # compiles its source directly through scripts/build/tui.mjs.
-        npm = shutil.which("npm", path=env["PATH"])
-        subprocess.run([npm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True)
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        subprocess.run([pnpm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True, timeout=600)
         tsx = tui_dir / "node_modules/.bin/tsx"
-        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [npm, "start"]), tui_dir
+        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [pnpm, "start"]), tui_dir
 
     build_source_tui(project_root, env=env)
     node = shutil.which("node", path=env["PATH"])
@@ -350,51 +299,18 @@ def _safe_tui_cwd(env: Optional[dict] = None) -> str:
 
 
 def _apply_tui_python_env(env: dict) -> None:
-    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    """Pin the TUI's Python helpers to this process's tree and interpreter; repair its cwd.
+
+    Inherited values name whatever shell launched us (a checkout's dev shell exports both),
+    and the gateway child must run the code and interpreter of the Hermes that spawned it.
+    """
     from hermes_cli.main import PROJECT_ROOT
-    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
-    if not src_root or not Path(src_root).is_dir():
-        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+    env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+    env["HERMES_PYTHON"] = sys.executable
 
     cwd = str(env.get("HERMES_CWD") or "").strip()
     if not cwd or not Path(cwd).is_dir():
         env["HERMES_CWD"] = _safe_tui_cwd(env)
-
-    python = str(env.get("HERMES_PYTHON") or "").strip()
-    if os.path.dirname(python):
-        python_path = Path(python)
-        if not python_path.is_absolute():
-            python_path = Path(env["HERMES_CWD"]) / python_path
-        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
-    else:
-        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
-    if not python_is_executable:
-        env["HERMES_PYTHON"] = sys.executable
-
-
-def _setup_tui_worktree() -> dict:
-    """Create the ``--worktree`` checkout for a TUI launch (prune + async pack maintenance); exits on failure."""
-    wt_info = None
-    try:
-        from cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
-        repo = _git_repo_root()
-        if repo:
-            _prune_stale_worktrees(repo)
-            # Repack on pack sprawl so `worktree add` never crawls on a
-            # multi-agent box; on a thread so it can't block launch.
-            import threading as _threading
-
-            _threading.Thread(
-                target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        from hermes_cli.config import get_hermes_home
-        # The session's frozen cwd keeps this checkout; name the store from creation so a
-        # launcher killed with its terminal still leaves the tree to its sessions.
-        wt_info = _setup_worktree(retain_db=get_hermes_home() / "state.db")
-    except Exception as exc:
-        print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
-    if not wt_info:
-        sys.exit(1)
-    return wt_info
 
 
 def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Optional[str]) -> None:
@@ -425,6 +341,62 @@ def _refuse_unforwarded_tui_flags(args) -> None:
               "  Or set model.base_url / agent.reasoning_effort in config.yaml (/reasoning in the TUI).",
               file=sys.stderr)
         raise SystemExit(2)
+
+
+# How long a launch notice holds the TUI back; then it starts anyway, so a terminal nobody
+# watches (tmux or expect automation) is never stuck.
+_NOTICE_WAIT_S = 60
+
+
+def _someone_at_the_terminal() -> bool:
+    """stdin, stdout and stderr (where the prompt goes) are a terminal, and this process is its
+    foreground job: a launch in the background (`&`), with stderr redirected, or from a script with
+    a terminal attached is not waited on."""
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()):
+            return False
+        if os.name == "nt":
+            return True  # a console has no process groups to ask
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (OSError, ValueError):
+        return False
+
+
+def _wait_for_enter(prompt: str, timeout: float) -> None:
+    """Show *prompt* and return on Enter or after *timeout* seconds. EOF and Ctrl+C propagate."""
+    print(prompt, end="", file=sys.stderr, flush=True)
+    if os.name == "nt":
+        import msvcrt
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit() and msvcrt.getwch() in "\r\n":
+                break
+            time.sleep(0.05)
+    else:
+        import select
+
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if ready and not sys.stdin.readline():
+            raise EOFError
+    print(file=sys.stderr)
+
+
+def _run_tui(argv: list[str], cwd: Path, env: dict, notices: list[str]) -> int:
+    """Run the TUI. Its first write clears the screen and the scrollback, so when someone is at
+    the terminal a launch notice waits for Enter (at most a minute) first; every notice is printed
+    again once the TUI exits. A launch that carries its query (``-q``) does not wait."""
+    try:
+        if notices and not env.get("HERMES_TUI_QUERY") and _someone_at_the_terminal():
+            _wait_for_enter(f"  Press Enter to start it, or wait {_NOTICE_WAIT_S} s (Ctrl+C to cancel). ",
+                            _NOTICE_WAIT_S)
+        code = subprocess.call(argv, cwd=str(cwd), env=env)  # health: allow HX006 -- the interactive TUI runs until the user quits
+    except (KeyboardInterrupt, EOFError):
+        code = 130
+    for notice in notices:
+        print(notice, file=sys.stderr)
+    return code
 
 
 def _launch_tui(
@@ -477,7 +449,10 @@ def _launch_tui(
 
     wt_info = None
     if worktree:
-        wt_info = _setup_tui_worktree()
+        from hermes_cli.session_worktree import create
+        wt_info = create()
+        if not wt_info:
+            sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
 
@@ -530,13 +505,11 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    notices: list[str] = []
+    argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)
     code: Optional[int] = None
     try:
-        try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
-        except KeyboardInterrupt:
-            code = 130
+        code = _run_tui(argv, cwd, env, notices)
 
         if code in {0, 130}:
             _print_tui_exit_summary(resume_session_id, active_session_file)
@@ -545,16 +518,8 @@ def _launch_tui(
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
         if wt_info:
-            # Quitting detaches a viewer; the gateway may still be executing in
-            # this checkout and future resumes retain its frozen cwd.
-            if attached_session:
-                # The launch lock names this (exiting) pid; hand it to the session so a later
-                # launch's stale prune keeps the tree while the session is resumable.
-                from hermes_cli.config import get_hermes_home
-                from hermes_cli.worktree_ops import _retain_worktree_for_session
-                _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
-                                             get_hermes_home() / "state.db")
-            print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
+            from hermes_cli.session_worktree import finish
+            finish(wt_info, attached_session, ask=code in {0, 130})
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.

@@ -57,6 +57,8 @@ def matrix_send_verb(runner):
             adapter = runner._authorization_adapter(Platform.MATRIX, profile)
             if adapter is None:
                 return {"error": "Gateway Matrix adapter is not connected"}
+            if not runner._shared_bot_target_allowed(Platform.MATRIX, profile, chat, thread):
+                return {"error": "Target is not routed to this shared-bot profile"}
             metadata = {"thread_id": thread} if thread else None
             future = asyncio.run_coroutine_threadsafe(
                 _matrix_send_core(adapter, chat, message, media, metadata, force_document=force_document),

@@ -403,6 +403,24 @@ def test_relay_ack_is_queued_with_the_envelope_id(tmp_path, monkeypatch):
     assert result["delivery_id"] == envelope["id"]
 
 
+def test_named_bot_relays_a_qualified_target_through_its_own_folder(tmp_path, monkeypatch):
+    """A named bot messaging its same-named remote counterpart is offered 'researcher@box' (the bare
+    form is reserved locally); that DM must queue in the sender's own relay folder, never the default's."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    sender_home = home / "profiles" / "researcher"
+    row = {"profile": "researcher", "handle": "researcher", "connection_id": "box", "connection_label": "box"}
+    for folder in (home, sender_home):
+        bot_relay.write_remote_roster(folder, [row])
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher@box", message="ping", agent=_FakeAgent(sender_home)))
+
+    assert result["status"] == "queued", result
+    assert bot_relay.claim_pending_envelopes(home) == []
+    (envelope,) = bot_relay.claim_pending_envelopes(sender_home)
+    assert envelope["from_profile"] == "researcher" and envelope["target_connection"] == "box"
+
+
 def _rename(home: Path, folder: str, *, display_name: str = "", title: str = "") -> None:
     lines = ["description: teammate for tests", "ui_meta:", "  hermes-bots:", "    shape: cloud"]
     if title:
@@ -557,7 +575,7 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
     # An install without a published launcher keeps the sibling fallback; keep this
     # checkout's own published launcher out of the resolution (#124868).
-    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(tmp_path))
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))

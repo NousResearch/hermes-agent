@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
-    escape_like as _escape_like
+    escape_like as _escape_like, emit_session_deleted,
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -132,6 +132,7 @@ class SessionMaintenanceMixin:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
+        emit_session_deleted(self, removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids if sessions_dir else ():
@@ -224,7 +225,8 @@ class SessionMaintenanceMixin:
         (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
-        and hide its OPEN, recently active tip (#115489). ``include_open`` lifts the ended guard
+        and hide its OPEN, recently active tip (#115489) — and the canonical Bot Chat (the idle
+        sweep's exemption). ``include_open`` lifts the ended guard
         for reversible archive only — never for prune/delete (#139597: desktop sessions never set
         ``ended_at``)."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
@@ -234,6 +236,10 @@ class SessionMaintenanceMixin:
         clauses = [] if include_open else ["s.ended_at IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
+            # Bulk archive is housekeeping, like the idle sweep: it never retires the canonical
+            # Bot Chat (archiving releases its name, #139779). Only a per-chat Archive may. Matched by
+            # title alone: compression moves the title onto a VISIBLE continuation tip.
+            clauses.append("COALESCE(s.title, '') <> 'Bot Chat'")
         params: list = []
         for name, applies, build in _PRUNE_FILTERS:
             value = filters.get(name)
@@ -329,6 +335,37 @@ class SessionMaintenanceMixin:
             self._auto_archive_lineage(row[0])
         return len(rows)
 
+    def maybe_auto_archive(
+        self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
+    ) -> dict[str, Any]:
+        """Idempotent, non-destructive auto-archive of sessions idle for ``idle_days``; state_meta
+        ``last_auto_archive`` gates runs within ``min_interval_hours``. Never raises."""
+        result: dict[str, Any] = {"skipped": False, "archived": 0}
+        try:
+            now = time.time()
+            try:
+                last = float(self.get_meta("last_auto_archive") or 0.0)
+            except (TypeError, ValueError):
+                last = 0.0  # corrupt meta; treat as no prior run
+            if last and now - last < min_interval_hours * 3600:
+                result["skipped"] = True
+                return result
+            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock.
+            # No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_archive")
+            archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
+            # Record even a zero-archive run so we don't re-sweep every call.
+            self.set_meta("last_auto_archive", str(now))
+            if archived > 0:
+                logger.info(
+                    "state.db auto-archive: archived %d session(s) idle >= %s days", archived, idle_days,
+                )
+        except Exception as exc:
+            logger.warning("state.db auto-archive failed: %s", exc)
+            result["error"] = str(exc)
+        return result
+
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
                        deleted_ids: Optional[list] = None, **filters) -> int:
@@ -367,6 +404,8 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:

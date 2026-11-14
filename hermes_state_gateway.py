@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -38,6 +39,23 @@ _COMPRESSION_LINEAGE_CTE = f"""
                     )
                 """
 
+# Gateway routing recovery must never land on a delegate child. The create path already refuses to
+# inherit the routing columns into one (#92859/#116322), but a row that predates that guard, a
+# restored/imported DB, or any writer that set them explicitly keeps the poison live, and the
+# recovery query then hands the user's thread to the subagent (#138210). Anchored on the lineage
+# marker, not the ``source`` label: a delegate child built on a gateway turn is stamped with the
+# parent's source. A ``/branch`` child (``_branched_from``) is NOT excluded: it is a user-facing
+# conversation that owns its route, and its routing columns are written at create on purpose so a
+# crash before ``switch_session`` still recovers it.
+# A row that also carries ``_reset_from`` is a /new continuation of the chat whose config picked up a
+# delegate marker (#109073), and one carrying ``_chat_adopted`` is a delegate row the user explicitly
+# switched the chat onto: both ARE the conversation, so they keep their route.
+_DELEGATE_CHILD_EXCLUSION_SQL = (
+    f"AND (COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+    f" OR {_sql_json_extract('s.model_config', '$._reset_from')} IS NOT NULL"
+    f" OR {_sql_json_extract('s.model_config', '$._chat_adopted')} IS NOT NULL)"
+)
+
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
 _PEER_SELECT_HEAD = """
                 SELECT s.*,
@@ -48,6 +66,7 @@ _PEER_SELECT_HEAD = """
                        )) AS _has_messages
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
+                WHERE 1=1
 """
 # A row a *completed handoff* owns stays recoverable whatever end_reason it carries: the source
 # interface's teardown runs AFTER ownership moved to the destination and can stamp a terminal reason
@@ -57,8 +76,9 @@ _PEER_SELECT_HEAD = """
 # blocks recovery (the NOT EXISTS below). ``pending``/``failed``/NULL handoffs are untouched, so this
 # is strictly "ownership was transferred", never "a handoff was attempted".
 _HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
-_PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
+_PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.session_key = ?
                   AND s.source = ?
+                  {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
                   AND NOT EXISTS (
@@ -74,11 +94,12 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = 
                          COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """
-_PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
+_PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.source = ?
                   AND COALESCE(s.user_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
+                  {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
@@ -174,6 +195,63 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
 
 
+def _moved_key(key: object, old: str, new: str) -> Optional[str]:
+    """*key* moved from the ``agent:<old>:`` session-key namespace to ``agent:<new>:``, or None when
+    it is not a string in that namespace."""
+    old_ns = f"agent:{old}:"
+    if isinstance(key, str) and key.startswith(old_ns):
+        return f"agent:{new}:" + key[len(old_ns):]
+    return None
+
+
+def _rekey_entry(entry: dict, old: str, new: str) -> bool:
+    """Move one serialized ``SessionEntry`` (a routing row, a session receipt) from profile *old*
+    to *new*: its ``agent:<old>:`` session-key namespace and its ``origin.profile``. True when
+    either changed."""
+    changed = False
+    if (session_key := _moved_key(entry.get("session_key"), old, new)) is not None:
+        entry["session_key"] = session_key
+        changed = True
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("profile") == old:
+        origin["profile"] = new
+        changed = True
+    return changed
+
+
+def _rekey_session_receipts(conn, prefix: str, old: str, new: str) -> int:
+    """Rewrite the session receipts under *prefix* a profile rename would strand; returns how many
+    changed.
+
+    Every receipt stores the route it was minted on, as its top-level ``route`` and in its
+    ``entry``. Local resume compares both with the key it derives for the serving profile
+    (``_checked_entry``: ``route mismatch`` / ``entry mismatch`` otherwise); API resume checks ``entry.origin.profile``
+    against the served profile and ``entry.session_key`` against the key derived from it
+    (``restore_api_session``; the API receipt's top-level ``route`` has no reader and moves only to
+    stay equal to its entry). Only the ``agent:<old>:`` namespace and ``origin.profile`` move.
+    ``profile_id`` stays as stored: it is the home that minted the receipt, a local session id hashes
+    it (``local_identity``), and resume binds the profile by route and origin, not by that path
+    (#150633).
+    """
+    rewritten = 0
+    rows = conn.execute("SELECT key, value FROM state_meta WHERE key GLOB ?", (prefix + "*",)).fetchall()
+    for key, raw in rows:
+        if (payload := _receipt(raw)) is None:
+            continue
+        changed = False
+        if (route := _moved_key(payload.get("route"), old, new)) is not None:
+            payload["route"] = route
+            changed = True
+        entry = payload.get("entry")
+        if isinstance(entry, dict) and _rekey_entry(entry, old, new):
+            changed = True
+        if changed:
+            conn.execute("UPDATE state_meta SET value=? WHERE key=?",
+                         (json.dumps(payload, ensure_ascii=False), key))
+            rewritten += 1
+    return rewritten
+
+
 class SessionGatewayMixin:
     """Routing index, session peers/orphans, hygiene streaks, heartbeats, handoffs."""
 
@@ -267,6 +345,14 @@ class SessionGatewayMixin:
                 query_params,
             )
             if ancestors:
+                # An explicit repoint moved these rows to this lane: the local conversation whose receipt
+                # names one of them goes with it in the same write, or it would match neither lane (#143286).
+                from gateway.session_route_recovery import _messaging_platform
+                from hermes_state_local import hand_off_conversations, moved_receipts
+                moved = {row[0] for row in conn.execute(
+                    f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
+                hand_off_conversations(conn, {owner: found for owner, found in moved_receipts(conn, moved).items()
+                                              if _messaging_platform(found[1]) is not None})
                 return
             # The UPDATE silently no-ops on a missing row — insert it with full identity.
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
@@ -298,29 +384,33 @@ class SessionGatewayMixin:
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         self._write_sql(
-            """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               SELECT ?, ?, ?, ? WHERE NOT EXISTS (
-                   SELECT 1 FROM state_meta WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))
+            f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+               SELECT :scope, :key, :entry, :now WHERE NOT {ROUTE_RETIRED_SQL}
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            (scope, session_key, entry_json, time.time(), entry_json),
+            {'scope': scope, 'key': session_key, **route_retired_params(session_key, entry_json, time.time())},
         )
 
-    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
+    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
-        are removed); other scopes untouched."""
+        are removed); other scopes untouched. Returns the keys skipped as retired routes, which
+        the sessions.json mirror must leave out too."""
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
+        rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
+            if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
-                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
-                    [(scope, k, v, now, v) for k, v in entries.items() if k and v])
-        self._execute_write(_do)
+                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
+                    rows)
+            kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
+            return {row['key'] for row in rows} - kept
+        return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
@@ -403,25 +493,20 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed, many=True)
         return len(doomed)
 
-    def retire_gateway_routes(self, session_ids) -> None:
-        """Publish deletion fences for *session_ids* in THIS (routing) database and drop the
-        routes naming them, in one transaction. Routing saves skip any entry whose session id
-        carries a marker here, so a whole-index snapshot taken before a delete in another
-        profile's store cannot restore the route when it is saved after it."""
+    def retire_gateway_routes(self, session_ids, *, namespace, expiring=()) -> None:
+        """Publish routing fences for *session_ids*, retired in the profile whose routing keys use
+        *namespace*, in THIS (routing) database and drop that profile's routes naming them, in one
+        transaction (``fence_shared_routes``). Routing saves skip a fenced route, so a whole-index
+        snapshot taken before a delete in another profile's store cannot restore it when it is
+        saved after it. The fence is not this store's own deletion marker: this profile's creates,
+        binds and generation walks stay free. *expiring* ids (a sweep's) age out at the horizon."""
         ids = sorted({str(sid) for sid in session_ids if sid})
         if not ids:
             return
 
         def _do(conn):
-            from hermes_state_mutation_retirement import RETIRED_PREFIX, entry_session_id
-            retired = json.dumps({"retired_at": time.time()})
-            conn.executemany("INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)",
-                             [(RETIRED_PREFIX + sid, retired) for sid in ids])
-            targets = set(ids)
-            doomed = [(row[0], row[1]) for row in conn.execute(
-                "SELECT scope, session_key, entry_json FROM gateway_routing").fetchall()
-                if entry_session_id(row[2]) in targets]
-            conn.executemany("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed)
+            from hermes_state_mutation_retirement import fence_shared_routes
+            fence_shared_routes(conn, namespace, ids, expiring=expiring)
         self._execute_write(_do)
 
     def prune_never_active_keyed_sessions(
@@ -466,7 +551,7 @@ class SessionGatewayMixin:
         """List gateway sessions (rows with a session_key): newest row per key, one live
         mapping per routing key. ``platform`` filters on ``source``."""
         # Full rows carry token/cost totals — drain queued async accounting deltas first.
-        self.flush_token_counts()
+        self.flush_for_read()
         query = f"""
             SELECT sessions.*,
                    COALESCE(sp.prompt, sessions.system_prompt)
@@ -664,7 +749,8 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
     def rekey_profile_state(self, old_name: str, new_name: str) -> dict[str, int]:
-        """Atomically rewrite exact profile identity in this state database."""
+        """Atomically rewrite exact profile identity in this state database, the API-binding and
+        local-policy session receipts included (``_rekey_session_receipts``)."""
         old, new = (old_name or "").strip(), (new_name or "").strip()
         counts: dict[str, int] = {}
         if not old or not new or old == new:
@@ -758,16 +844,14 @@ class SessionGatewayMixin:
                     except (ValueError, TypeError):
                         payload = None
                     if isinstance(payload, dict):
-                        if isinstance(payload.get("session_key"), str) and payload["session_key"].startswith(old_ns):
-                            payload["session_key"] = new_ns + payload["session_key"][ns_len:]
-                        origin = payload.get("origin")
-                        if isinstance(origin, dict) and origin.get("profile") == old:
-                            origin["profile"] = new
+                        _rekey_entry(payload, old, new)
                         new_json = json.dumps(payload, ensure_ascii=False)
                 conn.execute(
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
+            counts["api_binding_receipts"] = _rekey_session_receipts(conn, API_BINDING_PREFIX, old, new)
+            counts["local_policy_receipts"] = _rekey_session_receipts(conn, POLICY_PREFIX, old, new)
 
         self._execute_write(_do)
         return counts
@@ -936,14 +1020,18 @@ class SessionGatewayMixin:
             " ORDER BY last_heartbeat DESC")
         return [dict(r) for r in rows]
 
-    def request_handoff(self, session_id: str, platform: str) -> bool:
-        """Mark a session pending handoff to *platform*; False if a handoff is already in flight."""
-        return self._write_rowcount(
-            "UPDATE sessions SET handoff_state = 'pending',     handoff_platform = ?, "
-            "    handoff_error = NULL WHERE id = ? AND (handoff_state IS NULL "
-            "                  OR handoff_state IN ('completed', 'failed'))",
-            (platform, session_id),
-        ) > 0
+    def request_handoff(self, session_id: str, platform: str, *, _guard=None) -> bool:
+        """Mark a session pending handoff to *platform*; False if a handoff is already in flight.
+        ``_guard(conn)`` raises to refuse inside the same write transaction (the owner's durable
+        execution fence, ``gateway.session_handoff.require_settled``)."""
+        def _do(conn):
+            if _guard is not None:
+                _guard(conn)
+            return conn.execute(
+                "UPDATE sessions SET handoff_state = 'pending', handoff_platform = ?, handoff_error = NULL "
+                "WHERE id = ? AND (handoff_state IS NULL OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id)).rowcount
+        return self._execute_write(_do) > 0
 
     def get_handoff_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """Return ``{"state", "platform", "error"}`` or None if the session has no handoff record."""

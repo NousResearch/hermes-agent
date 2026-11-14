@@ -1,0 +1,107 @@
+{
+  "fixtureVersion": 1,
+  "name": "lock-does-not-restrict-its-own-level",
+  "description": "Proves rule-3: A lock binds only the levels below the level that stores it; the locking level may still set, unset, unlock and add locks under it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "terminal": {
+          "timeout": 180
+        }
+      },
+      "locks": [
+        "terminal"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "timeout": 180
+      }
+    },
+    "provenance": {
+      "terminal.timeout": "tenant"
+    },
+    "locks": [
+      {
+        "path": "terminal",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "terminal.timeout",
+      "value": 240,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "unset",
+      "path": "terminal",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "unlock",
+      "path": "terminal",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "lock",
+      "path": "terminal.backend",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "terminal.timeout",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal",
+        "lockedBy": "tenant"
+      }
+    }
+  ]
+}

@@ -69,7 +69,8 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     import psutil
     from gateway.status import get_process_start_time
     try:
-        if psutil.Process(worker_pid).create_time() != worker_birth:
+        from hermes_cli import process_identity
+        if process_identity.worker_birth(psutil.Process(worker_pid)) != worker_birth:
             raise RuntimeStoreError('permission_denied')
         owner_started_at = get_process_start_time(worker_pid)
     except psutil.Error as exc:
@@ -86,9 +87,10 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
 
 
 def _complete(db, conn, session_id, payload, *, execution_id):
-    _shape(payload, {'event', 'result'})
-    event = payload['event']
-    if (not isinstance(event, dict) or set(event) - _EVENT_KEYS
+    # ``delivery`` 'delivered': every child waits on a promised automatic resume, so nothing is published.
+    _shape(payload, {'event', 'result'} | ({'delivery'} if 'delivery' in payload else set()))
+    event, delivery = payload['event'], payload.get('delivery', 'pending')
+    if (delivery not in ('pending', 'delivered') or not isinstance(event, dict) or set(event) - _EVENT_KEYS
             or not isinstance(payload['result'], dict) or event.get('type') != 'async_delegation'
             or event.get('status') not in ('completed', 'success', 'error', 'interrupted', 'stalled', 'unknown')):
         raise RuntimeStoreError('invalid_params')
@@ -98,9 +100,9 @@ def _complete(db, conn, session_id, payload, *, execution_id):
     _number(event.get('completed_at'))
     if row['state'] != 'running':
         raise RuntimeStoreError('admission_conflict')
-    conn.execute('''UPDATE async_delegations SET state=?,completed_at=?,updated_at=?,event_json=?,result_json=?
-        WHERE delegation_id=?''', (event['status'], event['completed_at'], time.time(),
-        json.dumps(event), json.dumps(payload['result']), event['delegation_id']))
+    conn.execute('''UPDATE async_delegations SET state=?,completed_at=?,updated_at=?,event_json=?,result_json=?,
+        delivery_state=? WHERE delegation_id=?''', (event['status'], event['completed_at'], time.time(),
+        json.dumps(event), json.dumps(payload['result']), delivery, event['delegation_id']))
     return {'value': None}
 
 

@@ -14,8 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
-from tools.ansi_strip import strip_unicode_tags
-from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
+from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
+from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
@@ -57,30 +57,154 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
     return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
-def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
-    """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
-    else a ``tool_error``. Fail-closed: approval-system errors block."""
+def _trust_approval_key(server_name: str, tool_name: str) -> str:
+    """Approval key a session/always answer to the trust gate is kept under: one (server, tool) pair,
+    so allowing one write tool never covers the server's others. Session entries are per chat;
+    always entries land in the active profile's ``command_allowlist``."""
+    return f"mcp:{server_name}/{tool_name}"
+
+
+def _trust_granted(server_name: str, tool_name: str) -> bool:
+    """A remembered Session/Always answer, or YOLO / ``approvals.mode: off`` for the calling session.
+    Covers only the trust prompt: the spend limit is a budget, not an approval, and still asks."""
+    from tools.approval import is_approval_bypass_active, is_approved
+    from tools.approval_context import get_current_session_key
+    return is_approval_bypass_active() or is_approved(get_current_session_key(),
+                                                      _trust_approval_key(server_name, tool_name))
+
+
+# Keeps the whole trust-gate card inside Discord's 2,000-character message cap (the tightest button
+# surface), so the truncation marker is never cut off by the adapter's own fit.
+_TRUST_GATE_ARGUMENTS_MAX_CHARS = 1_200
+_TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER = "\n... [arguments truncated]"
+
+
+def _is_secret_argument_name(key: Any) -> bool:
+    from agent.redact import is_secret_field_name
+    from agent.redact_headers import SECRET_HEADER_NAME_LIST
+    return is_secret_field_name(key) or (isinstance(key, str) and key.casefold() in SECRET_HEADER_NAME_LIST)
+
+
+def _mask_secret_fields(value: Any) -> Any:
+    """Mask every value under a credential-named field (``db_password``, ``client_secret``) or API-key
+    header name (``x-api-key``), whatever its type: the text redactor below only catches the
+    ``key: value`` and token shapes it knows."""
+    if isinstance(value, dict):
+        return {k: "***" if v not in (None, "") and _is_secret_argument_name(k) else _mask_secret_fields(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_secret_fields(v) for v in value]
+    return value
+
+
+def _format_trust_gate_arguments(args: dict) -> str:
+    """Redacted, bounded JSON of the call's arguments for the approval card. Plain text, no
+    fence: every surface already renders the prompt inside a code block."""
+    import unicodedata
+    from agent.redact import redact_sensitive_text
+
+    rendered = json.dumps(_mask_secret_fields(args), ensure_ascii=False, indent=2, default=str)
+    # Scan and redact only a window well past the cap: a multi-megabyte payload (a file write) would
+    # otherwise hold the prompt back for seconds.
+    window = 4 * _TRUST_GATE_ARGUMENTS_MAX_CHARS
+    cut, rendered = len(rendered) > window, rendered[:window]
+    # Bidi overrides, invisible format characters and the C1/DEL controls JSON leaves raw could make the
+    # card show something other than what the server receives; render them as escapes.
+    rendered = "".join(ch.encode("unicode_escape").decode()
+                       if ch != "\n" and unicodedata.category(ch) in ("Cc", "Cf") else ch for ch in rendered)
+    # force: the approval prompt is a display boundary even with security.redact_secrets off. The CLI
+    # prints it as-is. Redact before truncating so a cut cannot split a secret past its pattern.
+    rendered = redact_sensitive_text(rendered, force=True)
+    if cut or len(rendered) > _TRUST_GATE_ARGUMENTS_MAX_CHARS:
+        keep = _TRUST_GATE_ARGUMENTS_MAX_CHARS - len(_TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER)
+        rendered = rendered[:keep].rstrip() + _TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER
+    return rendered
+
+
+def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
+                      args: Optional[dict] = None) -> Optional[str]:
+    """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
+    limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
+    block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
+    caller can refund it when the call never reaches the server."""
     from tools.mcp_tool_scope import _server_key
-    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
-    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
-    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
+    from tools import mcp_tool_costs as _costs
+    # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
+    key = _server_key(server_name)
+    trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
+    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+             and not _trust_granted(server_name, tool_name))
+    charge = None
+    if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
+        from tools.approval_context import get_current_session_key
+        charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
+    if charge is None:
+        return _ask_for_call(server_name, tool_name, None, booked, args=args) if gated else None
+    if not gated and charge.reserve_within_limit()[0]:
+        if booked is not None:
+            booked.append(charge)
         return None
+    with charge.asking():  # re-read under the slot: a call that asked first may have booked meanwhile
+        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args)
+
+
+def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
+                  gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
+    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
+    spent, over = 0.0, False
+    if charge is not None:
+        if gated:
+            spent = charge.spent()
+            over = charge.over_limit(spent)
+        else:
+            reserved, spent = charge.reserve_within_limit()
+            if reserved:
+                if booked is not None:
+                    booked.append(charge)
+                return None
+            over = True
+    extra = charge.lines(spent) if charge is not None else []
+    if gated:
+        head = f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run."
+        tail = "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
+        # The limit notice leads, and the arguments trail: a prompt cut to a platform's cap keeps the notice.
+        message = " ".join([head, *(["This call goes past the chat's spend limit."] if over else []), *extra, tail])
+        if args:
+            message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
+        # Over the limit the answer covers this call only: a remembered trust grant must not
+        # pre-approve the next over-limit call.
+        remember_key = None if over else _trust_approval_key(server_name, tool_name)
+        scope = "once" if over else "once, for this session, or always"
+        description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
+                       f"Approve to run '{tool_name}' {scope}, or deny to block it.")
+        title = f"MCP server '{server_name}' is asking"
+    else:
+        message = " ".join([f"MCP tool '{tool_name}' on server '{server_name}' would take this chat past its "
+                            f"spend limit.", *extra])
+        description = (f"Server '{server_name}' declares a spend limit per chat. Approve to run '{tool_name}' "
+                       f"once (every further paid call in this chat asks again), or deny to block it.")
+        title = f"MCP server '{server_name}' spend limit"
+        remember_key = None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
-        answer = request_elicitation_consent(
-            f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is write-capable "
-            f"(no readOnlyHint=true annotation) and may modify external state.",
-            f"Server '{server_name}' is configured 'trust: untrusted'. "
-            f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
+        answer = request_elicitation_consent(message, description, surface=f"mcp-trust/{server_name}", title=title,
+                                            remember_key=remember_key)
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
+        if over and charge is not None:
+            return tool_error(charge.refusal(spent))
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
                           f"system was unavailable (fail-closed).")
     if answer == "accept":
+        if charge is not None:
+            charge.book()
+            if booked is not None:
+                booked.append(charge)
         return None
-    logger.info("MCP trust gate: user %s '%s' on untrusted server '%s'",
-                "cancelled" if answer == "cancel" else "denied", tool_name, server_name)
+    logger.info("MCP trust gate: user %s '%s' on %s server '%s'", "cancelled" if answer == "cancel" else "denied",
+                tool_name, "untrusted" if gated else "spend-limited", server_name)
+    if over and charge is not None:
+        return tool_error(charge.refusal(spent))
     return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
                       f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 
@@ -379,7 +503,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -393,7 +517,10 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
+    # ``notifications/progress``; without one the server must stay silent.
+    extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -436,7 +563,7 @@ def _error_result_text(result) -> str:
     """Concatenated text of an ``isError`` result's blocks (EmbeddedResource error payloads
     carry text under ``.resource.text``)."""
     texts = (getattr(b, "text", None) or getattr(getattr(b, "resource", None), "text", None) for b in (result.content or []))
-    return "".join(str(t) for t in texts if t)
+    return "".join(strip_unicode_tags(str(t)) for t in texts if t)
 
 
 def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
@@ -510,19 +637,56 @@ def _content_dual_emits_structured(result, structured) -> bool:
     copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
     richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
     ``structuredContent`` (#115430)."""
-    for block in (result.content or []):
-        text = getattr(block, "text", None)
-        if not text:
-            continue
-        try:
-            if json.loads(text) == structured:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return any(_text_is_value(text, structured) for text in _text_blocks(result))
 
 
-def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
+def _text_blocks(result) -> list[str]:
+    return [text for text in (getattr(block, "text", None) for block in (result.content or [])) if text]
+
+
+def _collapse_sdk_wrapped_copy(result, text_result: str, structured, usable_parts: int):
+    """Model view only: ``(text, structured)`` with the Python SDK's wrapper copy collapsed.
+
+    The SDK (``MCPServer``, FastMCP) must return an object, so a ``str``/``int``/``list`` result
+    travels as ``{"result": value}`` while ``content`` carries the bare value — one block, or one
+    block per list item. The model needs it once. Per-item blocks rejoin as ambiguous newline text
+    (``[1, "1"]`` -> ``"1\n1"``), so a list arrives as ONE JSON copy of the value instead. Plugins
+    (``ctx.call_mcp``) never come here: their ``structuredContent`` is the typed value they parse."""
+    if not (isinstance(structured, dict) and structured.keys() == {"result"}):
+        return text_result, structured
+    value, texts = structured["result"], _text_blocks(result)
+    if any(_text_is_value(text, value) for text in texts):
+        return text_result, None
+    if (isinstance(value, list) and len(texts) == len(value) == usable_parts
+            and all(map(_text_is_value, texts, value))):
+        return _truncate_mcp_text_result(json.dumps(value, ensure_ascii=False)), None
+    return text_result, structured
+
+
+def _text_is_value(text: str, value) -> bool:
+    """True when one text block is *value*: verbatim for a string, else its JSON. A string is also
+    tried as JSON because the SDK serializes non-``str`` returns such as ``bytes`` into ``content``
+    (``'"abc"'``) while ``structuredContent`` holds the bare ``"abc"``."""
+    if isinstance(value, str) and text == value:
+        return True
+    try:
+        return _json_type_stable_equal(json.loads(text), value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _json_type_stable_equal(left, right) -> bool:
+    """``==`` without Python's bool/int coercion (``1 == True``): a false match here drops
+    ``structuredContent`` the text does not carry, while a false miss only keeps a duplicate."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_type_stable_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(_json_type_stable_equal, left, right))
+    return type(left) is type(right) and left == right
+
+
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None, *,
+                             for_model: bool = False) -> str:
     """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
     call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
@@ -543,8 +707,11 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
     # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
-    if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
-        structured = None
+    if structured is not None and usable_parts > 0:
+        if isinstance(structured, str) or _content_dual_emits_structured(result, structured):
+            structured = None
+        elif for_model:
+            text_result, structured = _collapse_sdk_wrapped_copy(result, text_result, structured, usable_parts)
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
@@ -567,33 +734,47 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
     string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
     images then becomes the ``_multimodal`` envelope when the active route takes images in tool results.
-    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract and the ``MEDIA:`` paths."""
+    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract, the ``MEDIA:`` paths and the SDK's
+    ``structuredContent`` wrapper, which only the model view collapses."""
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
-        error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
+        booked: list = []  # a costed call's charge; refunded when the call never reaches the server
+        error = _trust_gate_check(server_name, tool_name, booked, args)
         if error is not None:
             return error
-        server, error = _acquire_call_server(server_name, tool_timeout)
+        server, error = None, _check_circuit_breaker(server_name)
+        if error is None:
+            server, error = _acquire_call_server(server_name, tool_timeout)
         if server is None:
+            for charge in booked:
+                charge.refund()
             return error
         # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
+        # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
+        from agent.tool_progress_relay import current_tool_progress
+        report = current_tool_progress()
+
+        async def _on_progress(progress, total, message):
+            if report is not None:
+                report(progress, total, message)
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(
+                        server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()
-            return _render_call_tool_result(result, server_name, image_paths)
+            return _render_call_tool_result(result, server_name, image_paths, for_model=native_images)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
@@ -652,7 +833,10 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
             entry["uri"] = str(entry["uri"])
         mime = mcp_field(r, "mime_type", "mimeType")
         if mime:
-            entry["mimeType"] = mime  # camelCase: this is the tool's own JSON output shape
+            entry["mimeType"] = str(mime)  # camelCase: this is the tool's own JSON output shape
+        entry = strip_unicode_tags_deep(entry)
+        if "uri" in entry:  # read_resource sends it back verbatim
+            entry["uri"] = exact_mcp_identifier(str(r.uri), "resource uri")
         resources.append(entry)
     return {"resources": resources}
 
@@ -671,9 +855,13 @@ def _render_read_resource(result, server_name: str) -> dict:
 def _render_prompt_list(all_prompts, server_name: str) -> dict:
     prompts = []
     for p in all_prompts:
-        entry = _pick(p, ("name", "name"), ("description", "description", True))
+        # get_prompt sends the prompt and argument names back verbatim: only the prose is stripped.
+        entry = {**_pick(p, ("name", "name")), **strip_unicode_tags_deep(_pick(p, ("description", "description", True)))}
+        if "name" in entry:
+            exact_mcp_identifier(entry["name"], "prompt name")
         if getattr(p, "arguments", None):
-            entry["arguments"] = [{"name": a.name, **_pick(a, ("description", "description", True), ("required", "required"))}
+            entry["arguments"] = [{"name": exact_mcp_identifier(a.name, f"prompt {p.name!r} argument name"),
+                                   **strip_unicode_tags_deep(_pick(a, ("description", "description", True), ("required", "required")))}
                                   for a in p.arguments]
         prompts.append(entry)
     return {"prompts": prompts}
@@ -685,8 +873,8 @@ def _render_get_prompt(result, server_name: str) -> dict:
         entry = _pick(msg, ("role", "role"))
         if hasattr(msg, "content"):
             entry["content"] = strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content))
-        messages.append(entry)
-    return {"messages": messages, **_pick(result, ("description", "description", True))}
+        messages.append(strip_unicode_tags_deep(entry))
+    return {"messages": messages, **strip_unicode_tags_deep(_pick(result, ("description", "description", True)))}
 
 
 _make_list_resources_handler = _make_utility_handler(

@@ -461,7 +461,14 @@ using the default listener's existing credentials.
   with `GH_TOKEN` / `GITHUB_TOKEN` from `profiles/coder/.env`. If coder has no
   adapter for that platform the delivery fails (502) rather than posting as
   another profile's bot; a default route likewise never borrows a platform that
-  is enabled only on a secondary profile.
+  is enabled only on a secondary profile. A shared-bot satellite (no bot of
+  its own, reached through `profile_routes`) delivers through the shared bot
+  only to a chat a route maps to it, the same rule as its cron jobs and its
+  `send_message` sends and reactions; any other target, including an unrouted
+  home channel, fails (502). On every platform except Telegram, Slack, Matrix
+  and Mattermost (whose thread ids are scoped to a chat), a `thread_id` target
+  needs a route that names that `thread_id`; a chat-only route does not cover
+  it.
 - `/p/coder/api/platforms/<platform>/events` callbacks are verified and
   dispatched by coder's adapter; when coder has none the callback is a 503.
 
@@ -614,8 +621,8 @@ per-bot behaviour written in a profile's `config.yaml` (`require_mention`,
 `ignored_channels`, Matrix `session_scope`, …): a secondary profile's YAML never
 lands in the shared process environment, so it cannot become the default
 profile's policy, and the default profile's YAML never governs a secondary
-bot. The `terminal.env_passthrough` allowlist, the Yuanbao auto-designated
-home channel, and the write guards protecting each profile's own `config.yaml`
+bot. The `terminal.env_passthrough` allowlist, auto-designated
+home channels, and the write guards protecting each profile's own `config.yaml`
 are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
 model routing all behave per-profile exactly as they do with separate gateways.
 
@@ -669,7 +676,7 @@ profile and never shares with the default or any sibling:
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
 | Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_ALLOW_BOTS`, `*_PROXY`, Discord `allow_mentions`, Matrix `allowed_users` / `ignore_user_patterns`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card / public URL, WhatsApp bridge policy, Yuanbao home channel) | The owning profile, in this order: explicit `.env` value → its `config.yaml` → the adapter's default | The adapter's documented default — never the default profile's setting. Single-profile installs keep env-over-YAML exactly as each platform page documents |
 | `MEDIA:` attachment denylist | Every home under `profiles/` plus the default home, enumerated at check time | A turn can never attach another profile's `.env`, `auth.json`, `state.db`, sessions or token stores |
-| stdio MCP child environment | Safe baseline + the profile's scoped values for secret-source names + the server's own `env:` | A name the profile lacks is absent from the child — no default-profile fallthrough |
+| stdio MCP child environment | Safe baseline + the profile's scoped values for secret-source names (Hermes-managed credentials excluded) + the server's own `env:` | A name the profile lacks is absent from the child — no default-profile fallthrough |
 | Outbound egress (`send_message`, shutdown/restart/`/update` notices, `/loop` wakeups, `profile:`-bound webhook delivery, `github_comment` tokens) | The profile's own connected adapter and `.env` | Clear failure; never posts through the default profile's bot |
 | Session namespace | `agent:<profile>:…` (default keeps `agent:main:…`) | Two profiles on the same chat never share history |
 | Logs | `agent.log` / `errors.log` / `gateway.log` under the profile's own home | — |
@@ -677,8 +684,8 @@ profile and never shares with the default or any sibling:
 | Working directory of a turn (unset `terminal.cwd`) | Same rule as a standalone gateway: `$HOME` for the local backend, sandbox default otherwise | Never the directory the multiplexer process was launched from |
 | Command approvals (`command_allowlist`, "always" choices) | The profile's own `config.yaml` | A default-profile "always" never pre-approves a secondary's command; a secondary's choice is saved to its own config |
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
-| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
-| Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
+| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, plugin-provider context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), computer-use aux-vision routing, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
+| Session-search knob (`sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
 | RoomLink capability catalog and the signed execution policy it advertises to a remote Bot (`approvals.mode`, `agent.max_turns`, `platform_toolsets.api_server`) | The served profile named by the request (`/p/<profile>/v1/room-members/...`, the RPC `profile` param); `target_profile` is **required** on every catalog — there is no `HERMES_PROFILE` fallback | Invitation/capabilities fail with the offending `target_profile` named; a profile that does not exist is refused, never resolved from the launch profile's config |
 | Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
 | MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
@@ -692,6 +699,7 @@ profile and never shares with the default or any sibling:
 | Cron `.env` tuning (`HERMES_CRON_TIMEOUT`, `HERMES_MODEL` fallback, `HERMES_CRON_MAX_PARALLEL`, prefill file), worker / Bot Chat child env | The profile's own `.env`; children never inherit the default profile's `.env` settings or bridged `TERMINAL_*` policy | Cron defaults / model refusal, exactly as a standalone `hermes -p <name> gateway run` |
 | Kanban workers and notifications for a profile's tasks | The assignee's `.env` + `config.yaml` (toolset pin, terminal backend, media policy, display language) | — |
 | `/loop` ticks, `background_process_notifications` gate, `notice_delivery`, background-process checkpoint recovery | The owning profile's `state.db` / `config.yaml` / `processes.json` | — |
+| Reply streaming (`streaming:` block: `enabled`, `transport`, edit pacing, cursor; also the `gateway.streaming` spelling) | The served profile's own `config.yaml`, loaded once at gateway start | The streaming default (off) — a profile with no `streaming:` block does not stream because the default profile does; enable it with `hermes -p <name> config set streaming.enabled true` |
 
 What is **shared** by design: the process, its PID/lock and `gateway_state.json`
 (default home), the one HTTP listener, and the `profile_routes` table (declared
@@ -861,13 +869,52 @@ default-profile behavior.
 Cron jobs owned by a routed profile deliver through the shared bot too, but
 only to targets an enabled route with a `chat_id`/`thread_id` maps to that
 profile (a `guild_id + chat_id` route qualifies its channel) — a routed
-profile's job targeting an unrouted chat (or a chat routed to another profile)
-is never sent through the shared bot. Guild-only routes do not qualify a cron
+profile's job targeting an unrouted chat (or a chat, topic or thread whose most
+specific route names another profile) is never sent through the shared bot. Guild-only routes do not qualify a cron
 target; add a `chat_id` route for the delivery channel. Routes declaring
 `user_id` do not qualify either: cron has no authenticated inbound sender, so
-they need a separate location-only route. The routed profile does not need its
+they need a separate location-only route. Telegram DMs are the exception: a
+Telegram DM's chat id is the user's id, so a `user_id` route qualifies cron
+delivery to that user's DM without an extra route. The routed profile does not need its
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
+
+A routed profile's `send_message` sends and reactions, and plugin
+`ctx.platform_actions`, follow the same target rule, with one addition: during a
+turn, the conversation that turn came from also qualifies whenever the inbound
+route matcher would hand it to that profile. That covers guild-only routes, a
+thread under a routed channel, and `user_id` routes. The target is matched on
+the thread the send actually reaches. A target without a thread is the chat's
+top level (Telegram's General topic, a Slack/Matrix/Mattermost channel, a Feishu
+or Google Chat group), so a route pinned to one topic or thread does not cover
+the rest of the chat. On Discord, where a thread is its own channel, the thread's
+channel id is that thread. A thread other than the turn's own qualifies only if
+the most specific route matching it names the profile, the same route inbound
+dispatch picks. A chat route therefore does not cover a topic or thread that a
+more specific route pins to another profile. This holds for cron delivery too.
+One known gap: a Discord thread addressed by its own channel id is matched as a
+plain channel, so no route that names it as a thread (`thread_id`) or through
+its parent channel or guild is consulted. A `chat_id` route on the thread's id
+can therefore qualify it even when dispatch hands the thread to another profile.
+Don't route a thread id to one profile while its parent channel, or a
+`thread_id` route on it, names another.
+If the primary's route table cannot be read, cron's own shared-bot view refuses
+every target until it can. A routed profile that enables the platform in its own
+config still falls back to the running gateway's check, which applies the same
+rule to the routes the gateway has loaded.
+A Google Chat send without a thread replies under the space's last inbound
+thread, so once a route pins any thread of a space to another profile, a
+routed profile's thread-less sends to that space are refused; name the thread
+explicitly.
+Webhook deliveries never qualify through the turn's conversation, because they
+have no inbound conversation.
+Reactions are checked against the chat and the thread named in the target, not
+against the topic the reacted-to message is in. A profile routed to a chat can
+therefore react to any message in it, including one in a topic routed to another
+profile, and a profile routed to one topic names that topic in a `send_message`
+reaction target (`telegram:<chat>:<topic>`). A plugin's
+`ctx.platform_actions.add_reaction` names no thread; when it targets the turn's
+own message, the turn's topic or thread is used.
 
 ## Start, stop, or restart all gateways at once
 
@@ -1120,7 +1167,7 @@ the host gateway with `gateway.standalone: true` (see
 ### Docker / Hermes Cloud (s6-supervised container)
 
 Inside the official image every profile has an s6 slot
-(`/run/service/gateway-<profile>`). The container's boot registers every *named*
+(`/run/hermes-service/gateway-<profile>`). The container's boot registers every *named*
 slot down and folds its autostart intent into the root slot, so a fresh boot
 already multiplexes. An **in-place** update no longer needs a container restart
 to converge either: `hermes gateway migrate --multiplex` (and the hook `hermes
@@ -1190,6 +1237,15 @@ wins over the profile's own file. It governs the **automatic** path only:
 `hermes gateway migrate --multiplex` is an explicit request and still migrates
 (and is the supported way to opt back in). Absent or `true` keeps the default
 behaviour described above.
+
+The same setting covers a gateway that booted with only the default profile.
+Normally, once you create a second profile (Desktop's New Agent or
+`hermes profile create`), that gateway starts serving every profile in place,
+with no restart. With `auto_multiplex_migration: false` it keeps serving only
+its own profile, and the new profile is refused with that reason until you run
+`hermes gateway migrate --multiplex` or set the key back to `true`. The key is
+re-read on every profile rescan, so setting it back takes effect within about
+30 seconds, with no restart.
 
 The explicit command is different: `hermes gateway migrate --multiplex` with
 two or more profiles and **no** standalone secondary gateway still applies the

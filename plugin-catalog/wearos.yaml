@@ -1,0 +1,24 @@
+name: wearos
+repo: https://github.com/borealBytes/hermes-wearos-plugin
+sha: a3a52805855ff4f7e7ef88e9318f5e49af89e44f
+subdir: ""
+description: "The whole Hermes gateway on a Wear OS watch: the watch enrolls its own tailnet node, pairs with a gateway-minted 6-digit code, and talks to a private tailnet lane from then on — every agent, streaming answers, mid-session tool-call approvals, cron-run notifications, and replies spoken out loud in a voice cloned from ~3 seconds of reference audio, synthesized on your gateway's CPU. A desktop pane runs the checklist (APK, pair, enable) with per-agent voice dropdowns and readiness lights. Parakeet STT and the TTS engine arrive as checksum-pinned source builds at first use — nothing pre-bundled, no telemetry, no calls home after setup. Disclosure — pairing mints single-use Tailscale enrollment keys and `hermes watch setup --fix serve` runs `tailscale funnel --bg --https=443` (mounting the claim door at the root of your node's :443); the plugin runs a loopback claim door (Funnel-fronted, answers only /pair/*) and a private HTTP lane on your tailnet IP for paired watches; checking an agent in the pane lets paired watches receive that profile's API_SERVER_KEY, and un-pairing rotates it (hot for named profiles; for the default profile a watch-initiated unpair restarts the gateway); the optional voice-in/voice-out installers build pinned source from github.com, install Python packages from pypi.org into private venvs, and download multi-GB model weights from huggingface.co (the gated neuphonic/neucodec codec needs a Hugging Face token and loads at its latest revision; the \"set agent voice\" pane button sets tts.provider to wearkit-gateway); once installed, one resident ~3.4 GB TTS worker stays loaded and the plugin kills any other idle `air_runner.py --serve` process on the machine; cloned-voice reference recordings are stored under the plugin's data dir."
+maintainer: borealBytes
+tier: community
+category: voice
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/borealBytes/hermes-wearos#readme
+version: "0.3.11"
+image: "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/screenshots/66-wearkit-pane.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/screenshots/33-approval-card.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/screenshots/48-media-cards.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/screenshots/42-gateways-multi.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [watch_send, watch_status, watch_pair]
+  provides_hooks: [on_session_end]
+  provides_middleware: []
+  requires_env: [API_SERVER_KEY]

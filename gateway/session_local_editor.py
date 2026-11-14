@@ -39,8 +39,7 @@ def request_editor_edit(proposal):
     from tools.approval_context import get_current_session_key
     from tools.approval_gateway_wait import _await_gateway_decision
     route = get_current_session_key()
-    with approval._lock:
-        notify = approval._gateway_notify_cbs.get(route)
+    notify = approval._gateway_notify_cb(route)
     if notify is None:
         return False
     # Each diff is a one-use consent, never a command-pattern or session grant.
@@ -52,10 +51,24 @@ def request_editor_edit(proposal):
     return decision.get('resolved') and decision.get('choice') == 'once'
 
 
+def _policy_requester(policy):
+    """The session's edit approval policy in front of the editor's consent (main's ACP modes): Accept
+    Edits / Don't Ask let an edit run unasked; sensitive paths and everything else still ask."""
+    from acp_adapter.edit_approval import should_auto_approve_edit
+    if policy.edit_approval_policy == 'ask':
+        return request_editor_edit
+
+    def request(proposal):
+        if should_auto_approve_edit(proposal, policy.edit_approval_policy, policy.cwd):
+            return True
+        return request_editor_edit(proposal)
+    return request
+
+
 @contextmanager
 def editor_scope(policy):
     from acp_adapter.edit_approval import set_edit_approval_requester, reset_edit_approval_requester
-    token = set_edit_approval_requester(request_editor_edit if policy.source == 'acp' else None)
+    token = set_edit_approval_requester(_policy_requester(policy) if policy.source == 'acp' else None)
     try:
         yield
     finally:

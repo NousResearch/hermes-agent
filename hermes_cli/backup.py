@@ -23,22 +23,29 @@ from hermes_constants import (
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
+from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, read_header_bytes_preopen
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
+from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
+    _count_cron_jobs,
     _count_session_rows,
     _default_new_file_mode,
     _detect_prefix,
     _extract_member_atomically,
+    _get_config_path_value,
     _import_db_member,
     _restore_auth_json,
     _restore_destination_epoch,
+    _restore_snapshot_entry,
     _safe_restore_db,
+    _set_config_path_value,
     _validate_backup_zip,
 )
 
@@ -94,10 +101,10 @@ _EXCLUDED_DIRS = {
 # a deeper directory of the same name (such as a skill's models/) is user data.
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"})
 
-# Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data
-# / Cookies. Root-scoped like models/ — a skill's own browser_profiles/ is user data. Backup-only:
-# do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
-_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
+# Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data / Cookies;
+# the secret caches and Photon sidecar token. Root-scoped like models/ — a skill's own browser_profiles/ is
+# user data. Backup-only: do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES})
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
@@ -215,28 +222,6 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
             with suppress(OSError):
                 _lock_op(unlock_flag)
         handle.close()
-
-
-@contextmanager
-def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Optional[Path]]] = None):
-    """Yield a hidden sibling path and publish it only after a clean close.
-
-    ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
-    can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
-    ``None`` discards the partial instead of publishing it.
-    """
-    partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
-    partial_path.unlink(missing_ok=True)
-    try:
-        yield partial_path
-        destination = publish_path() if publish_path else final_path
-        if destination is None:
-            partial_path.unlink(missing_ok=True)
-        else:
-            os.replace(partial_path, destination)
-    except BaseException:
-        partial_path.unlink(missing_ok=True)
-        raise
 
 
 def _collect_memory_provider_external_paths() -> list[Path]:
@@ -362,7 +347,7 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
+        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0, tracking_path=path)
         return fn(conn), None
     except Exception as exc:
         return None, exc
@@ -384,7 +369,6 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
             return False
     except OSError:
         return False
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     if not force and has_live_connection(path):
         return False
 
@@ -424,7 +408,6 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX locks
         # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
             return _done("cannot read header", size=size)
@@ -595,6 +578,7 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
+    require_file_tooling("`hermes backup`")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -731,6 +715,7 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    require_file_tooling("`hermes import`")
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -741,11 +726,8 @@ def run_import(args) -> Optional[int]:
         print(f"Error: Not a valid zip file: {zip_path}")
         sys.exit(1)
 
-    # The restore target must be the home the command operates under — the
-    # same path printed as "Target:" via display_hermes_home(). Resolving
-    # through get_default_hermes_root() instead maps a profile home
-    # (<root>/profiles/<name>) back to <root>, silently retargeting the
-    # restore at the live root while the profile directory stays empty.
+    # The home this command operates under (the "Target:" display_hermes_home() prints):
+    # get_default_hermes_root() would map a profile home back to <root> and restore the live root.
     hermes_root = get_hermes_home()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -761,12 +743,11 @@ def run_import(args) -> Optional[int]:
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
-
         if prefix:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
         # Check for existing installation
-        has_config = (hermes_root / "config.yaml").exists()
+        has_config = (hermes_root / "config.yaml").exists()  # config-reader: ok — profile marker for the backup scope (file tooling)
         has_env = (hermes_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
@@ -863,7 +844,7 @@ def run_import(args) -> Optional[int]:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():  # config-reader: ok — profile marker for the backup scope (file tooling)
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
@@ -1055,6 +1036,8 @@ def _import_members_exclusive(
                     db_shrunk.append((rel, before, after))
             else:
                 _extract_member_atomically(zf, member, target, new_file_mode)
+            if target.name == "config.yaml":  # extraction keeps the live file's mode
+                drop_other_access(target)
             if target.name in _SECRET_FILE_NAMES:
                 os.chmod(target, 0o600)
             restored += 1
@@ -1193,7 +1176,9 @@ def _create_prefixed_full_backup(
         return None
     backup_dir = hermes_root / _PRE_UPDATE_BACKUPS_DIR
     try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with suppress(OSError):
+            os.chmod(backup_dir, 0o700)
     except OSError as exc:
         logger.warning("Could not create %s backup dir %s: %s", what, backup_dir, exc)
         return None
@@ -1217,10 +1202,10 @@ def create_pre_update_backup(
 
 def create_pre_migration_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_MIGRATION_DEFAULT_KEEP) -> Optional[Path]:
-    """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before ``hermes claw migrate``
-    (same dir as update backups so listings/``hermes import`` find it); ``None`` if nothing was
-    found, the write failed, or it was incomplete (salvage kept as ``*.incomplete.zip``). Never
-    raises."""
+    """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before a plugin's agent import
+    (``hermes import-agent openclaw``), so its name and signature are API; same dir as update backups
+    so ``hermes import`` finds it. ``None`` if nothing was found, the write failed, or it was
+    incomplete (salvage kept as ``*.incomplete.zip``). Never raises."""
     return _create_prefixed_full_backup(
         hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
 
@@ -1541,6 +1526,7 @@ def restore_quick_snapshot(
     was not refused or skipped.
     """
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    require_file_tooling("Snapshot restore")
     home = hermes_home or get_hermes_home()
     try:
         with exclusive_maintenance([home]):
@@ -1563,63 +1549,33 @@ def _snapshot_epochs_restorable(files, entry_paths) -> bool:
     return True
 
 
-def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
-    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
-    try:
-        if dst.suffix == ".db":
-            # Restore through SQLite backup API so live connections
-            # (gateway, dashboard, another CLI session) see the
-            # restored data instead of continuing to serve stale
-            # cached pages from a replaced inode (issue #65942).
-            if not _safe_restore_db(src, dst):
-                # Refused, failed, or source failed its integrity check:
-                # dst left as it was. Count as a failure, not a restore.
-                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
-                return False
-        elif rel == "auth.json":
-            # Refresh tokens for these OAuth providers rotate on use. A historical
-            # snapshot can therefore contain a spent pair even though the current
-            # auth.json has the live successor. Restore the historical auth state
-            # while retaining that live single-use grant under the auth-store lock.
-            if not _restore_auth_json(src, dst):
-                logger.error("Failed to restore %s safely", rel)
-                return False
-        else:
-            shutil.copy2(src, dst)
-        return True
-    except (OSError, PermissionError) as exc:
-        logger.error("Failed to restore %s: %s", rel, exc)
-        return False
-
-
-def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
-    """Restore state from a quick snapshot while ``home`` is reserved."""
-    from gateway.runtime_ownership import exclusive_maintenance
-    root = _quick_snapshot_root(home)
-
+def quick_snapshot_dir(snapshot_id: str, hermes_home: Optional[Path] = None) -> Optional[Path]:
+    """The directory of a restorable quick snapshot, or None for an invalid or missing id."""
+    root = _quick_snapshot_root(hermes_home)
     # Security: reject snapshot_id values that contain path separators or
     # traversal sequences so that `root / snapshot_id` stays inside root.
     if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
         logger.error("Invalid snapshot_id: %s", snapshot_id)
-        return False
-
+        return None
     snap_dir = root / snapshot_id
-
     # Confirm the resolved path is still inside root (handles symlinks etc.)
     try:
         snap_dir.resolve().relative_to(root.resolve())
     except ValueError:
         logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
-        return False
+        return None
+    if not snap_dir.is_dir() or not (snap_dir / "manifest.json").exists():
+        return None
+    return snap_dir
 
-    if not snap_dir.is_dir():
-        return False
 
-    manifest_path = snap_dir / "manifest.json"
-    if not manifest_path.exists():
+def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
+    """Restore state from a quick snapshot while ``home`` is reserved."""
+    from gateway.runtime_ownership import exclusive_maintenance
+    snap_dir = quick_snapshot_dir(snapshot_id, home)
+    if snap_dir is None:
         return False
-
-    with open(manifest_path, encoding="utf-8-sig") as f:
+    with open(snap_dir / "manifest.json", encoding="utf-8-sig") as f:
         meta = json.load(f)
 
     snap_res, home_res = snap_dir.resolve(), home.resolve()
@@ -1672,37 +1628,6 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0 and not auth_restore_failed
-
-
-def _count_cron_jobs(path: Path) -> Optional[int]:
-    """Return the number of cron jobs stored in ``path``.
-
-    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
-    A legacy bare-list shape (``[...]``) is also honoured.
-
-    Returns:
-        The job count for any *valid, readable* JSON document, or ``None`` if
-        the file is missing or cannot be parsed. ``None`` means "unknown" —
-        callers must not treat it as "zero jobs", because acting on an
-        unreadable file could mask a real corruption the user needs to see.
-    """
-    if not path.is_file():
-        return None
-    try:
-        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
-        # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
-        # it a BOM'd jobs.json counts as "unreadable" (None) and the
-        # post-update cron-loss auto-restore safety net silently disables.
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if isinstance(data, dict):
-        jobs = data.get("jobs", [])
-        return len(jobs) if isinstance(jobs, list) else None
-    if isinstance(data, list):
-        return len(data)
-    return None
 
 
 def restore_cron_jobs_if_emptied(
@@ -1874,26 +1799,6 @@ def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
-    node: Any = data
-    for key in dotted:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
-    node = data
-    for key in dotted[:-1]:
-        child = node.get(key)
-        if not isinstance(child, dict):
-            child = {}
-            node[key] = child
-        node = child
-    node[dotted[-1]] = value
-
-
 def restore_config_model_settings_if_rewritten(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1925,6 +1830,8 @@ def restore_config_model_settings_if_rewritten(
         "snapshot_id": ...}`` so the caller can warn the user.
     """
     if not snapshot_id:
+        return None
+    if not supports_file_tooling():  # Remote Config: never write a LOCAL snapshot's values to the plane
         return None
 
     home = hermes_home or get_hermes_home()

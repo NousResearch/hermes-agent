@@ -1,0 +1,25 @@
+name: teach-back
+title: Teach-Back
+repo: https://github.com/salch-cred/teach-back
+sha: ef4c6510944cc374621d8f86cf238eab04ca5d55
+description: >-
+  Make sure you understand the code your agent writes. Teach-Back records every
+  file the agent writes or patches, and /teachback quizzes you on it: short
+  questions about what the new code does (behaviour, edge cases, failures),
+  written from the real change by your own model through ctx.llm and graded the
+  same way, with the right answer explained when you miss. /teachback score
+  shows how many agent-written lines you were quizzed on and understood.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/salch-cred/teach-back
+version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/teach-back/8cc5b16b3fc2ba6ac644a19d9ec08cc22e9fee93/docs/assets/catalog.jpg
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,27 @@
+name: tensorfold
+repo: https://github.com/atakann/hermes-tensorfold
+sha: 2d8bf58b5b7684092b86877271b8ffaba88d0326
+description: >-
+  TensorFold's native server (github.com/ashhart/TensorFold) as a Hermes model provider (`--provider
+  tensorfold`, or TensorFold in `hermes model`): the served models from its /v1/models and each model's
+  context window from the same list, on `tensorfold serve`'s loopback default (http://127.0.0.1:8080/v1,
+  TENSORFOLD_BASE_URL for another), plus a TensorFold dashboard tab with the server's model, speed, streams,
+  token totals, MTP acceptance and memory. Disclosure — registers one model provider and one dashboard tab
+  and nothing else (no tools, hooks, commands or threads); it connects only to the TensorFold server at
+  TENSORFOLD_BASE_URL: chat requests go through Hermes' own client with TENSORFOLD_API_KEY, the provider
+  reads /v1/models, and the tab's backend route reads /health, /stats and /v1/models, so the key never
+  reaches the browser; it reads and writes no files, starts no processes and reports nothing anywhere.
+maintainer: atakann
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/atakann/hermes-tensorfold
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - TENSORFOLD_API_KEY
+

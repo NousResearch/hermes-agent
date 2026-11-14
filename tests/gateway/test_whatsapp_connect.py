@@ -47,6 +47,7 @@ def _make_adapter():
     adapter._bridge_port = 19876
     adapter._bridge_script = "/tmp/test-bridge.js"
     adapter._session_path = Path("/tmp/test-wa-session")
+    adapter._profile_home = adapter._session_path.parent  # mirror __init__
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
@@ -76,8 +77,9 @@ def _connect_patches(mock_proc, mock_fh):
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "mkdir", return_value=None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
-        patch("subprocess.Popen", return_value=mock_proc),
+        patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
+        patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", return_value="t" * 43),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
     ]
@@ -150,12 +152,83 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8]:
             result = await adapter.connect()
 
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
+
+
+class TestBridgeTokenOffLoop:
+    @pytest.mark.asyncio
+    async def test_token_minting_never_blocks_the_event_loop(self):
+        """Minting reads, writes and fsyncs the token file; on the loop thread that disk wait would stall
+        every other platform on the gateway."""
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        on_loop = []
+
+        def mint(session_path, *, rotate=False):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return "t" * 43
+
+        patches = _connect_patches(mock_proc, MagicMock())
+        patches[6] = patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", side_effect=mint)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6], patches[7], patches[8]:
+            await adapter.connect()
+
+        assert len(on_loop) == 2 and not any(on_loop), on_loop  # first use, then the per-spawn rotation
+
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_rotation_retains_session_lock_until_worker_finishes(self):
+        """A cancelled rotation must not overwrite a successor bridge token after giving up ownership."""
+        from threading import Event
+
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        rotate_started = Event()
+        finish_rotate = Event()
+        rotate_finished = Event()
+
+        def mint(session_path, *, rotate=False):
+            if rotate:
+                rotate_started.set()
+                try:
+                    assert finish_rotate.wait(timeout=5), "blocked token rotation was never released"
+                finally:
+                    rotate_finished.set()
+            return "t" * 43
+
+        patches = _connect_patches(mock_proc, MagicMock())
+        patches[6] = patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", side_effect=mint)
+        with patch.object(adapter, "_acquire_platform_lock", return_value=True), \
+             patch.object(adapter, "_release_platform_lock") as release, \
+             patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6], patches[7], patches[8]:
+            task = asyncio.get_running_loop().create_task(adapter.connect())
+            try:
+                assert await asyncio.to_thread(rotate_started.wait, 3), "token rotation never started"
+                task.cancel()
+                await asyncio.wait({task}, timeout=0.1)
+                assert not release.called, "cancelled connect released session lock during token write"
+            finally:
+                finish_rotate.set()
+                if not task.done():
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                assert await asyncio.to_thread(rotate_finished.wait, 3)
+            release.assert_called_once()
 
 
 class TestConnectCleanup:
@@ -174,7 +247,7 @@ class TestConnectCleanup:
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
              patch("subprocess.run", return_value=install_result), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
@@ -588,3 +661,27 @@ class TestNamedConnectFailures:
 
         assert adapter.fatal_error_code == "whatsapp_bridge_timeout"
         assert adapter.fatal_error_retryable is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("passkey", [True, False])
+@pytest.mark.parametrize("startup", [True, False])
+async def test_passkey_required_stops_retries_at_startup_and_during_polling(passkey, startup):
+    from plugins.platforms.whatsapp.adapter import PASSKEY_REQUIRED_EXIT
+
+    # bridge.passkey.test.mjs asserts the bridge really exits 78 on a gateway-mode passkey challenge.
+    assert PASSKEY_REQUIRED_EXIT == 78
+    returncode, retryable = (PASSKEY_REQUIRED_EXIT, False) if passkey else (1, True)
+    adapter = _make_adapter()
+    adapter._bridge_process = MagicMock(returncode=returncode, **{"poll.return_value": returncode})
+    adapter._notify_fatal_error = AsyncMock()
+    if startup:
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            assert await adapter._wait_for_bridge() is False
+    else:
+        assert await adapter._check_managed_bridge_exit()
+        adapter._notify_fatal_error.assert_awaited_once()
+    assert adapter.fatal_error_retryable is retryable
+    assert adapter.fatal_error_code == ("whatsapp_bridge_exited" if retryable else "whatsapp_passkey_required")
+    if not retryable:
+        assert "hermes whatsapp --passkey-browser" in adapter.fatal_error_message

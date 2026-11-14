@@ -15,6 +15,7 @@ reserved character outside an entity must be backslash-escaped, else ``400 can't
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import re
 import time
@@ -27,22 +28,47 @@ from tests.fakes.platforms._standin import StandinServer, Visible, decode_value
 BOT_ID = 7000000001
 BOT_USERNAME = "hermes_standin_bot"
 MAX_TEXT = 4096
+RICH_MAX = 32_768  # sendRichMessage markdown cap
 # MarkdownV2 (https://core.telegram.org/bots/api#markdownv2-style): these must be escaped outside
 # entities; inside ``code``/```pre``` only ` and \ are special.
 _MDV2_RESERVED = set("_*[]()~`>#+-=|{}.!")
-_MDV2_LINK = re.compile(r"\[((?:\\.|[^\]\\])*)\]\(((?:\\.|[^)\\])*)\)")
+_QUOTE_MARKER = re.compile(r"(?:\*\*)?>+")
+_MDV2_LINK = re.compile(r"\[((?:\\.|`(?:\\.|[^`\\])*`|[^\]\\`])*)\]\(((?:\\.|[^)\\])*)\)")
+
+
+def _code_span_end(text: str, i: int) -> int | None:
+    """Index just past the inline code span opening at ``text[i]``, or None when it never closes."""
+    end = i + 1
+    while end < len(text) and text[end] != "`":
+        end += 2 if text[end] == "\\" else 1  # \` and \\ are escapes inside code too
+    return end + 1 if end < len(text) else None
+
+
+def _quote_marker_end(text: str, i: int) -> int:
+    """Index past a line-leading ``>`` run or ``**>`` expandable opener at ``i`` (0 if none there).
+    ``>>`` nests nothing: tdlib reads any run as one quote level."""
+    if i and text[i - 1] != "\n":
+        return 0
+    m = _QUOTE_MARKER.match(text, i)
+    return m.end() if m else 0
 
 
 def mdv2_error(text: str) -> str | None:
     """The Bot API's ``can't parse entities`` reason for ``text`` in MarkdownV2, or None if it parses.
 
     A faithful subset of the server's parser: escapes, code/pre spans, links, the paired style
-    markers (``*`` ``_`` ``__`` ``~`` ``||``) and line-leading ``>`` quotes. Any other reserved
-    character must carry a preceding backslash.
+    markers (``*`` ``_`` ``__`` ``~`` ``||``) and line-leading ``>`` and ``**>`` (expandable, closed by ``||`` ending its last line) quotes. Any other reserved
+    character must carry a preceding backslash. Mirrors tdlib's ``parse_markdown_v2``: ``>>`` is one
+    quote level, an open spoiler takes a line-final ``||`` before the quote closer, and a newline that
+    leaves a quote must find every entity in it closed.
     """
-    i, n, open_marks = 0, len(text), []
+    i, n, open_marks, expandable, in_quote = 0, len(text), [], False, False
     while i < n:
         ch = text[i]
+        if ch == "\n" and in_quote and text[i + 1 : i + 2] != ">":
+            in_quote = False  # a newline into non-quote text ends the quote and must close every entity in it
+            if open_marks:
+                return f"Can't find end of the entity starting with '{open_marks[-1]}'"
         if ch == "\\":
             i += 2
             continue
@@ -53,20 +79,27 @@ def mdv2_error(text: str) -> str | None:
             i = end + 3
             continue
         if ch == "`":
-            end = text.find("`", i + 1)
-            if end < 0:
+            end = _code_span_end(text, i)
+            if end is None:
                 return f"Can't find end of Code entity at byte offset {i:d}"
-            i = end + 1
+            i = end
             continue
         if ch == "[":
             m = _MDV2_LINK.match(text, i)
-            if not m:
+            if not m or (in_quote and re.search(r"\n(?!>)", m.group(0))):
                 return "Character '[' is reserved and must be escaped with the preceding '\\'"
             i = m.end()
             continue
-        if ch == ">" and (i == 0 or text[i - 1] == "\n"):
-            i += 1
+        quote_end = _quote_marker_end(text, i)
+        if quote_end:
+            expandable, in_quote, i = expandable or text[i] == "*", True, quote_end
             continue
+        if expandable and text.startswith("||", i) and text[i + 2 : i + 3] in ("", "\n") and open_marks[-1:] != ["||"]:
+            # The expandable quote's closer: valid only on the block's last line. An open spoiler
+            # takes the || first (tdlib checks the open entity's end before anything else).
+            if text[i + 3 : i + 4] != ">":
+                expandable, i = False, i + 2
+                continue
         mark = next((mk for mk in ("||", "__", "*", "_", "~") if text.startswith(mk, i)), None)
         if mark is not None:
             if open_marks and open_marks[-1] == mark:
@@ -103,6 +136,17 @@ def _check_text(p: dict[str, Any], field: str = "text") -> str:
     if len(text) > MAX_TEXT:
         raise BotApiError("Bad Request: message is too long")
     return str(p.get(field) or "")
+
+
+def _check_rich(p: dict[str, Any]) -> str:
+    """``rich_message`` (an ``InputRichMessage``): its markdown, refused empty or over ``RICH_MAX``."""
+    rich = p.get("rich_message")
+    markdown = str(rich.get("markdown") or "") if isinstance(rich, dict) else ""
+    if not markdown.strip():
+        raise BotApiError("Bad Request: rich message is empty")
+    if len(markdown) > RICH_MAX:
+        raise BotApiError("Bad Request: rich message is too long")
+    return markdown
 
 
 class TelegramStandin(StandinServer):
@@ -147,7 +191,9 @@ class TelegramStandin(StandinServer):
             reader = await request.multipart()
             async for part in reader:
                 if part.filename:
-                    params[part.name] = {"filename": part.filename, "size": len(await part.read())}
+                    data = await part.read()
+                    params[part.name] = {"filename": part.filename, "size": len(data),
+                                         "sha256": hashlib.sha256(data).hexdigest()}
                 else:
                     params[part.name] = decode_value(await part.text())
         elif request.can_read_body:
@@ -254,6 +300,10 @@ class TelegramStandin(StandinServer):
     def _m_sendMessage(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._bot_message(p, text=_check_text(p))
 
+    def _m_sendRichMessage(self, p: dict[str, Any]) -> dict[str, Any]:
+        """Bot API 10.1 rich send: the markdown is the message text (``RICH_MAX`` chars at most)."""
+        return self._bot_message(p, text=_check_rich(p), _kind="rich")
+
     def _m_sendMessageDraft(self, p: dict[str, Any]) -> bool:
         """Animate a private-chat draft preview; not a message (no message_id)."""
         if not int(p.get("draft_id") or 0):
@@ -286,15 +336,15 @@ class TelegramStandin(StandinServer):
                                  document={"file_id": "out-doc", "file_unique_id": "od"})
 
     def _m_editMessageText(self, p: dict[str, Any]) -> dict[str, Any]:
-        _check_text(p)
+        text = _check_rich(p) if p.get("rich_message") else _check_text(p)
         chat_id, mid = str(p["chat_id"]), str(p["message_id"])
         with self._lock:
             vis = self._visible.get((chat_id, mid))
             if vis is not None:
-                vis.text = p.get("text", "")
+                vis.text = text
                 vis.edits += 1
         return {"message_id": int(mid), "date": int(time.time()), "chat": self._chat(chat_id),
-                "from": self._bot_user(), "text": p.get("text", ""), "edit_date": int(time.time())}
+                "from": self._bot_user(), "text": text, "edit_date": int(time.time())}
 
     def _m_editMessageReplyMarkup(self, p: dict[str, Any]) -> Any:
         return {"message_id": int(p["message_id"]), "date": int(time.time()), "chat": self._chat(p["chat_id"]),

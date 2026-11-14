@@ -27,7 +27,12 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete",
 
 def _default_dispatch(task_id):
     from model_tools import handle_function_call
-    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+    from tools.file_tools_read_tracking import programmatic_file_read
+
+    def dispatch(tool_name, tool_args):
+        with programmatic_file_read():
+            return handle_function_call(tool_name, tool_args, task_id=task_id)
+    return dispatch
 
 
 def _private_dirs_cmd(root: str, *subdirs: str) -> str:
@@ -59,7 +64,7 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     (``check=True`` raises on failure via _execute_checked).
 
     The base64 payload always travels as ``stdin_data``: pipe-mode backends
-    (ssh, docker, local, singularity: the real shared-host ones) deliver it on
+    (ssh, docker, local: the real shared-host ones) deliver it on
     real stdin, so it never enters argv where a co-tenant can read it via
     ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
     for heredoc-mode backends (modal, daytona, vercel), and managed_modal

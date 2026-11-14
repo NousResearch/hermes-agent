@@ -7,7 +7,7 @@ job per event; the rendered prompt is transient per-run context; exclusive with 
 (opt-in: a delivered response is also written into the target chat's transcript so follow-ups there have
 context). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
-replay protection; body-only V1 is deprecated but accepted with a warning."""
+replay protection; body-only V1 is rejected because its signature never expires."""
 
 import asyncio
 import base64
@@ -41,6 +41,8 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from gateway.platforms.webhook_mcp_events import (
+    handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ _UNPARSEABLE = object()
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix", "mattermost",
     "email", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin",
-    "bluebubbles", "qqbot", "yuanbao"}
+    "bluebubbles", "qqbot"}
 
 # ``None`` → aiohttp binds BOTH address families. "0.0.0.0" is IPv4-only (unreachable on IPv6-only
 # networks such as Fly.io 6PN); "::" becomes IPv6-only where the kernel sets IPV6_V6ONLY=1, breaking
@@ -66,10 +68,24 @@ _RATE_WINDOW_SECONDS = 60.0
 # Hosts that only serve same-machine connections; anything else is a public bind.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "ip6-localhost", "ip6-loopback"})
 _V2_REPLAY_WINDOW_SECONDS = 300
+# Per-route ``signature`` pin -> the header families it accepts. Body-only V1 is in none: always rejected.
+_SIGNATURE_SCHEMES: dict[str, frozenset[str]] = {
+    "generic": frozenset({"v2", "standard"}),
+    "github": frozenset({"github"}),
+    "gitlab": frozenset({"gitlab", "standard"}),
+    "linear": frozenset({"linear"}),
+}
+_UNPINNED_SIGNATURE_FAMILIES = frozenset().union(*_SIGNATURE_SCHEMES.values())
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
 _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
+
+
+def _header_delivery_id(headers) -> str:
+    """The provider's delivery id (GitHub, Svix, Standard Webhooks, generic), else a fresh one."""
+    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
+        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
 
 
 @dataclass(frozen=True)
@@ -142,6 +158,15 @@ def _timestamp_fresh(raw: str, stale_msg: str, *args) -> bool:
         logger.warning(stale_msg, *args)
         return False
     return True
+
+
+def _signature_pin_error(name: str, route: dict) -> Optional[str]:
+    """Error text when the route's ``signature`` pin is set but not a known scheme (a typo must not unpin)."""
+    pin = route.get("signature")
+    if pin is None or (isinstance(pin, str) and pin in _SIGNATURE_SCHEMES):
+        return None
+    return (f"[webhook] Route '{name}' has signature {pin!r}; expected one of "
+            f"{', '.join(sorted(_SIGNATURE_SCHEMES))} (or omit it to accept every supported scheme).")
 
 
 def _is_known_platform(name: str) -> bool:
@@ -256,6 +281,8 @@ class WebhookAdapter(BasePlatformAdapter):
             raise ValueError(f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret but is bound to non-loopback "
                              f"host '{self._host}'. INSECURE_NO_AUTH is for local testing only. "
                              f"Refusing to start to prevent accidental exposure.")
+        if pin_error := _signature_pin_error(name, route):
+            raise ValueError(pin_error)
         if route.get("deliver_only"):
             deliver = route.get("deliver", "log")
             if not deliver or deliver == "log":
@@ -327,7 +354,8 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
         if deliver_type == "log":
-            logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
+            logger.info("[webhook] Response for %s (%d chars)", chat_id, len(content))
+            logger.debug("[webhook] Response text for %s: %s", chat_id, content)
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -398,7 +426,7 @@ class WebhookAdapter(BasePlatformAdapter):
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
         if not isinstance(toolsets, list):
             return None
-        return [str(t).strip() for t in toolsets if str(t).strip()] or None
+        return [str(t).strip() for t in toolsets if str(t).strip()]
 
     # --- HTTP handlers ---
 
@@ -419,6 +447,9 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH is only allowed on loopback "
                            "hosts. Current host: '%s'.", name, self._host)
             return False
+        if pin_error := _signature_pin_error(name, route):
+            logger.warning("%s Dynamic route skipped.", pin_error)
+            return False
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
             validate_coalesce_config(name, route)
@@ -431,19 +462,23 @@ class WebhookAdapter(BasePlatformAdapter):
         """Reload agent-created subscriptions when the file's stat identity changes.
 
         Runs on every POST before auth, so it never takes the CLI writer lock: writers publish via
-        atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change.
+        atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
+        ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
         """
         from hermes_constants import get_hermes_home
+        from utils import file_cache_version
         subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         try:
-            st = subs_path.stat()
+            stat_key = file_cache_version(subs_path)
         except FileNotFoundError:
             if self._dynamic_routes:
                 self._dynamic_routes, self._routes = {}, dict(self._static_routes)
                 logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
             self._dynamic_routes_stat = None
             return
-        stat_key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError as e:
+            logger.error("[webhook] Failed to read dynamic routes: %s", e)
+            return
         if stat_key == self._dynamic_routes_stat:
             return  # No change
         try:
@@ -540,7 +575,11 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Route %s HMAC secret is missing, blank, or not a string; refusing request",
                          route_name)
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
-        if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
+        if pin_error := _signature_pin_error(route_name, route_config):
+            logger.error("%s Refusing request.", pin_error)
+            return None, _json_error("Webhook route has an invalid signature pin", 403)
+        if secret != _INSECURE_NO_AUTH and not self._validate_signature(
+                request, raw_body, secret, route_config.get("signature")):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
             return None, _json_error("Invalid signature", 401)
         return raw_body, None
@@ -659,13 +698,26 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
             return error_response
+        headers = request.headers
+        delivery_id = _header_delivery_id(headers)
+        # A parked profile is retried, before any delivery id is recorded. The check resolves
+        # ``profile_routes`` against the very source admission builds for this delivery.
+        from gateway.platforms.webhook_ingress import parked_profile_refusal
+        error_response = parked_profile_refusal(
+            self.gateway_runner, profile, route_config,
+            lambda: self._admission_source(route_name, profile, delivery_id))
+        if error_response is not None:
+            return error_response
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
-        headers = request.headers
+        mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
+        if mcp_control is not None:
+            return mcp_control
+        delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -690,12 +742,11 @@ class WebhookAdapter(BasePlatformAdapter):
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
-            prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
+            prompt = (render_mcp_event_prompt(self, route_config, payload, event_type, route_name)
+                      or self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name))
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
@@ -735,19 +786,37 @@ class WebhookAdapter(BasePlatformAdapter):
                                   "delivery_id": delivery_id}, status=202)
 
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                         route_name: str, profile, event_type: str) -> asyncio.Task:
+                         route_name: str, profile, event_type: str, superseded=()) -> asyncio.Task:
         """Coalesced-path dispatch (settled timer / disconnect flush): admit the merged event as a task
         so ``WebhookCoalescer.flush`` can await the hand-off. The HTTP ack for these deliveries was
-        already ``coalesced``; an admission failure is logged, never retried by the producer."""
+        already ``coalesced``: an admission failure is logged and gives back the batch's delivery ids
+        (*superseded* too), so a resend of any of them is processed, not answered as a duplicate."""
         async def _admit_or_log():
             outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
                                                   route_name=route_name, profile=profile, event_type=event_type)
             if outcome is None:
                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
+                for released in (*superseded, delivery_id):
+                    self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
         task = asyncio.create_task(_admit_or_log())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def _admission_source(self, route_name: str, profile, delivery_id: str):
+        """The ``SessionSource`` admission builds for one delivery, ``profile_routes`` resolved on it.
+        The edge's coalesced-route check (``parked_profile_refusal``) asks this same source, so a
+        route rule matches there exactly when it matches at admission."""
+        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
+        source = self.build_source(chat_id=identity.session_chat_id, chat_name=f"webhook/{route_name}",
+                                   chat_type="webhook", user_id=f"webhook:{route_name}", user_name=route_name)
+        if profile and isinstance(profile, str):
+            # The ``/p/<profile>/`` prefix names the profile and wins over ``profile_routes``; the
+            # edge already refused it (retryable 503) when that profile is not served. Drop what
+            # ``build_source`` resolved from the routes, or a rejected route would refuse it here.
+            source.profile = profile
+            source.profile_route_rejected, source._rejected_route_profile = False, None
+        return source
 
     async def _admit_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
                                route_name: str, profile, event_type: str) -> Optional[str]:
@@ -766,10 +835,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
-        source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
-                                   user_id=f"webhook:{route_name}", user_name=route_name)
-        if profile and isinstance(profile, str):
-            source.profile = profile
+        source = self._admission_source(route_name, profile, delivery_id)
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         from gateway.platforms.webhook_ingress import admit_producer
@@ -820,8 +886,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
     # --- Signature validation ---
 
-    def _validate_signature(self, request: web.Request, body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
+    def _validate_signature(self, request: web.Request, body: bytes, secret: str,
+                            scheme: Optional[str] = None) -> bool:
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic V2).
+
+        ``scheme`` is the route's ``signature`` pin; ``None`` accepts every supported family."""
         headers = request.headers
 
         def _header(name: str) -> str:
@@ -835,42 +904,51 @@ class WebhookAdapter(BasePlatformAdapter):
         svix = [_header(name) for name in ("svix-id", "svix-timestamp", "svix-signature")]
         if not any(svix) and _header("webhook-signature"):
             svix = [_header(name) for name in ("webhook-id", "webhook-timestamp", "webhook-signature")]
-        if any(svix):
-            return _validate_svix_signature(body, secret, *svix)
-        # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
-        for provided, expected in (
-                (_header("linear-signature"), lambda: _hex_hmac(secret, body)),
-                (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
-                (headers.get("X-Gitlab-Token", ""), lambda: secret)):
-            if provided:
-                return _hmac_str_equal(provided, expected())
+        # The first family present commits the request to that scheme. V2 ranks above V1 so a
+        # captured mixed V1+V2 request with its timestamp stripped cannot downgrade to body-only V1.
+        present = {"standard": any(svix), "linear": _header("linear-signature"),
+                   "github": headers.get("X-Hub-Signature-256", ""), "gitlab": headers.get("X-Gitlab-Token", ""),
+                   "v2": headers.get("X-Webhook-Signature-V2", ""), "v1": headers.get("X-Webhook-Signature", "")}
+        family = next((name for name, value in present.items() if value), None)
         route_name = request.match_info.get("route_name", "")
-        # Generic V2: X-Webhook-Signature-V2 = hex HMAC-SHA256 of "<timestamp>.<body>", X-Webhook-Timestamp
-        # required. Presence of the V2 header COMMITS to V2 — it must not fall through to V1 on a
-        # missing/bad timestamp, or an attacker could strip the timestamp from a captured mixed V1+V2
-        # request and replay it against the still-present body-only V1 signature.
-        v2_sig = headers.get("X-Webhook-Signature-V2", "")
-        if v2_sig:
-            v2_timestamp = headers.get("X-Webhook-Timestamp", "")
-            if not v2_timestamp:
-                logger.warning("[webhook] Route '%s' sent X-Webhook-Signature-V2 with no X-Webhook-Timestamp — "
-                               "rejecting rather than falling back to legacy V1", route_name)
-                return False
-            if not _timestamp_fresh(
-                    v2_timestamp, "[webhook] Route '%s' generic HMAC V2 timestamp outside replay window", route_name):
-                return False
-            return _hmac_str_equal(v2_sig, _hex_hmac(secret, v2_timestamp.encode() + b"." + body))
-        # Generic V1 (legacy, deprecated): body-only HMAC → replays indefinitely.
-        generic_sig = headers.get("X-Webhook-Signature", "")
-        if generic_sig:
+        if family is None:
+            logger.debug("[webhook] Secret configured but no signature header found")
+            return False
+        if family == "v1":
+            # Body-only: rejecting it leaves no replayable migration exception after the in-memory
+            # delivery cache expires.
             if route_name not in self._v1_signature_warned:
                 self._v1_signature_warned.add(route_name)
-                logger.warning("[webhook] Route '%s' uses legacy body-only HMAC (no timestamp), which is vulnerable "
-                               "to replay attacks. Add an 'X-Webhook-Timestamp' header and switch to "
+                logger.warning("[webhook] Route '%s' sent legacy body-only HMAC, which is rejected because it is "
+                               "replayable. Add an 'X-Webhook-Timestamp' header and switch to "
                                "'X-Webhook-Signature-V2' (HMAC-SHA256 of '<timestamp>.<body>').", route_name)
-            return _hmac_str_equal(generic_sig, _hex_hmac(secret, body))
-        logger.debug("[webhook] Secret configured but no signature header found")
-        return False
+            return False
+        # V1, GitHub and Linear are the same body-only MAC under one secret, so an unpinned route
+        # accepts a captured V1 MAC relabelled as either; a pin is what closes that (#84265).
+        allowed = _UNPINNED_SIGNATURE_FAMILIES if scheme is None else _SIGNATURE_SCHEMES.get(scheme, frozenset())
+        if family not in allowed:
+            logger.warning("[webhook] Route '%s' is pinned to signature '%s'; rejecting a %s signature",
+                           route_name, scheme, family)
+            return False
+        if family == "standard":
+            return _validate_svix_signature(body, secret, *svix)
+        if family == "linear":
+            return _hmac_str_equal(present["linear"], _hex_hmac(secret, body))
+        if family == "github":
+            return _hmac_str_equal(present["github"], "sha256=" + _hex_hmac(secret, body))
+        if family == "gitlab":
+            return _hmac_str_equal(present["gitlab"], secret)
+        # Generic V2: hex HMAC-SHA256 of "<timestamp>.<body>", X-Webhook-Timestamp required. Presence of
+        # the V2 header COMMITS to V2 — no fallback to V1 on a missing/bad timestamp.
+        v2_timestamp = headers.get("X-Webhook-Timestamp", "")
+        if not v2_timestamp:
+            logger.warning("[webhook] Route '%s' sent X-Webhook-Signature-V2 with no X-Webhook-Timestamp — "
+                           "rejecting rather than falling back to legacy V1", route_name)
+            return False
+        if not _timestamp_fresh(
+                v2_timestamp, "[webhook] Route '%s' generic HMAC V2 timestamp outside replay window", route_name):
+            return False
+        return _hmac_str_equal(present["v2"], _hex_hmac(secret, v2_timestamp.encode() + b"." + body))
 
     # --- Prompt rendering ---
 
@@ -907,7 +985,8 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: dispatch *content* to the same delivery helpers agent-mode ``send()`` uses."""
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":  # startup validation rejects deliver_only + log; guard defensively
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
+            logger.info("[webhook] direct-deliver log-only (%d chars)", len(content))
+            logger.debug("[webhook] direct-deliver log-only text: %s", content)
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -996,6 +1075,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            # Runtime gate on the FINAL target (payload-rendered chat_id included): a shared-bot
+            # satellite rides the primary's bot only to chats routed to it (#147602).
+            if not self.gateway_runner._shared_bot_target_allowed(target_platform, profile, chat_id, thread_id):
+                return SendResult(success=False, error=f"{platform_name}:{chat_id} is not routed to profile {profile}")
             result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)

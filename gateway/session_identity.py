@@ -15,6 +15,7 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 from contextlib import suppress
@@ -98,7 +99,7 @@ def clear_identity(source: Any) -> None:
     guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
     per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
     short-circuits the route and the new speaker runs as the old one."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home", "_rejected_route_profile"):
         with suppress(AttributeError):
             delattr(source, attr)
     with suppress(AttributeError):
@@ -106,10 +107,18 @@ def clear_identity(source: Any) -> None:
 
 
 def transport_profile_of(source: Any) -> Optional[str]:
-    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``);
-    None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
+    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``,
+    ``sessions.transport_profile``): the bot a live adapter or a persisted record named. None outside
+    multiplexing, when nothing resolved the source, or when a messaging transport was only inferred:
+    a restored row is trusted as the receiving bot, so the primary-profile guess must never be saved.
+    A LOCAL chat has no bot; its inferred transport is the launch profile's authority (#139060), a fact."""
+    from gateway.config import Platform
     identity = identity_of(source)
-    return identity.transport_profile if identity is not None and identity.multiplexed else None
+    if identity is None or not identity.multiplexed:
+        return None
+    if identity.transport_inferred and getattr(source, "platform", None) != Platform.LOCAL:
+        return None
+    return identity.transport_profile
 
 
 def replace_source(source: SessionSource, **changes: Any) -> SessionSource:
@@ -257,6 +266,7 @@ def resolve_identity(
                 else runner._profile_name_for_source(source, adapter_profile=adapter_profile))
         except ProfileRouteRejected as exc:
             source.profile_route_rejected = True
+            source._rejected_route_profile = exc.profile  # a parked target is retried (producer_scope)
             raise IdentityUnresolved(f"{where}: {exc}") from exc
         source.profile = routed or adapter_profile
 
@@ -306,3 +316,22 @@ def authenticated_subject(identity):
     return AUTH_SUBJECT_PREFIX + json.dumps(
         [identity.get('provider') or '', identity.get('issuer') or '', subject],
         separators=(',', ':'), ensure_ascii=True)
+
+
+def is_authenticated_identity(identity: object) -> bool:
+    """True for a server-minted, non-internal ``{user_id, provider}`` WS-upgrade identity."""
+    from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+    if not isinstance(identity, dict):
+        return False
+    user_id, provider = identity.get("user_id"), identity.get("provider")
+    if not isinstance(user_id, str) or not user_id.strip():
+        return False
+    if not isinstance(provider, str) or not provider.strip():
+        return False
+    return not (user_id == INTERNAL_USER_ID and provider == INTERNAL_PROVIDER)
+
+
+def authenticated_principal_digest(identity: dict) -> str:
+    """Server-derived principal id: stable per login, unspoofable without the minted identity."""
+    raw = authenticated_subject(identity)
+    return f"principal:dashboard:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}"

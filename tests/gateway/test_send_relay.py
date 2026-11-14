@@ -36,6 +36,7 @@ async def test_cli_relay_keeps_profile_and_gateway_loop(tmp_path, monkeypatch):
         session_ticket_store=None,
         _served_profile_for_home=lambda requested: "alice" if requested == home else None,
         _authorization_adapter=lambda platform, profile: adapter if platform == Platform.MATRIX and profile == "alice" else None,
+        _shared_bot_target_allowed=lambda platform, profile, chat, thread: True,
     )
     monkeypatch.setattr(gateway, "_gateway_runner_ref", lambda: runner)
     server = await _start_gateway_start_control_socket(runner)

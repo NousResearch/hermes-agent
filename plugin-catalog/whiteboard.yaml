@@ -1,0 +1,47 @@
+name: whiteboard
+title: Hermes Whiteboard
+repo: https://github.com/Adolanium/hermes-whiteboard
+sha: 2d50c6124e993834b6c7d912082725a97ea4e814
+description: >-
+  An agentic whiteboard. Say what you're planning and Hermes lays it out as a
+  route, columns or a map, with hand-drawn stickers. Add rough notes and
+  Hermes proposes groups, owners and action items that you accept one by one
+  and can take back. Hand an action item to Hermes and an agent does it on the
+  board and delivers the result next to the note with its sources, or run the
+  whole route and get a brief at the end. Select anything and ask about it.
+  Once you allow it, any chat can read your boards and propose changes.
+  Disclosure — laying out a board, grouping notes, unpacking a result and the
+  brief each start a hidden Hermes session told to use no tools; Hand to
+  Hermes, Run the route and Ask start hidden sessions that use your Hermes
+  tools and read third-party web pages, at most three at once, each stopped
+  after 4 minutes or 24 tool calls; approval prompts inside these sessions
+  are denied; export writes the one Markdown or CSV file you name in the
+  system dialog, through the plugin's own backend; boards live in Desktop
+  plugin storage, with a copy under plugin-data/whiteboard/ only after you
+  turn on chat access, which starts off, and each Hermes profile that has the plugin keeps
+  its own copy; a Planning model and an Agent model in Settings name a model you are
+  signed in to in Hermes when a session is created, and a refused model stops
+  the run; with the Sheets or Data plugin
+  installed, a click on that page pins notes to the open board through a
+  window event, with no file, backend or model involved; no telemetry, no credentials, no
+  shell commands or background processes of its own. Independent community
+  project, not affiliated with Nous Research.
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Adolanium/hermes-whiteboard#readme
+version: "0.1.7"
+image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/route.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/delivered.jpg
+capabilities:
+  provides_tools:
+    - whiteboard_list
+    - whiteboard_read
+    - whiteboard_propose
+    - whiteboard_create
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

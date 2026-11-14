@@ -53,7 +53,13 @@ import {
   sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import {
+  $sessionStates,
+  $sessionTiles,
+  closeAllOpenSessionTiles,
+  requestForOwnedSession
+} from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -125,10 +131,14 @@ export async function renameSessionPreferringRpc(
 
   if (title && runtimeId && gateway) {
     try {
-      const result = await gateway.request<SessionTitleResponse>('session.title', {
-        session_id: runtimeId,
-        title
-      })
+      // The runtime lives on its owner's backend; the ambient socket would
+      // refuse a secondary profile's session and drop us to REST.
+      const result = await requestForOwnedSession<SessionTitleResponse>(
+        runtimeId,
+        ambientRequestFor(gateway),
+        'session.title',
+        { session_id: runtimeId, title }
+      )
 
       return { title: result?.title ?? title }
     } catch (err) {
@@ -665,11 +675,20 @@ function DeleteSessionDialog({ open, onOpenChange, onConfirm, sessionTitle }: De
 }
 
 interface SessionActionsMenuProps
-  extends SessionActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
+  extends
+    SessionActions,
+    Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'onOpenChange' | 'open' | 'sideOffset'> {
   children: React.ReactNode
 }
 
-export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
+export function SessionActionsMenu({
+  children,
+  align = 'end',
+  onOpenChange,
+  open,
+  sideOffset = 6,
+  ...actions
+}: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
@@ -681,6 +700,8 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         contentClassName="w-40"
         items={renderItems}
         onCloseAutoFocus={onCloseAutoFocus}
+        onOpenChange={onOpenChange}
+        open={open}
         sideOffset={sideOffset}
       >
         {children}

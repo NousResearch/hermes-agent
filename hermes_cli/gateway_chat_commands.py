@@ -40,12 +40,13 @@ def refusal(name):
 
 
 def _user_turns(snapshot):
-    """Human-authored user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
-    kind other than a typed /steer, never a compaction handoff carrier."""
+    """Human-authored live user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
+    kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
+    archived (shown in the snapshot's history, not a turn to rewind to)."""
     from agent.context_compressor import is_user_originated_turn
     return [row for row in snapshot.get("messages", [])
             if type(row.get("row_id")) is int and row.get("display_kind") in (None, "", "steer")
-            and is_user_originated_turn(row)]
+            and not row.get("archived") and is_user_originated_turn(row)]
 
 
 def _rewind_to(turns_back, *, retry=False):
@@ -131,8 +132,9 @@ async def _new(view, rest):
     from agent.i18n import t
     info = await view.client.rpc("session.info", session_id=view.session_id)
     accepted = set((await view.client.rpc("runtime.describe")).get("session_create", {}).get("parameters", []))
+    # ``client`` names the client that created that session, never this terminal.
     request = {key: value for key, value in (info.get("launch_request") or {}).items()
-               if key in accepted and key not in {"request_id", "title"}}
+               if key in accepted and key not in {"request_id", "title", "client"}}
     if info.get("cwd") and "cwd" in accepted:
         request["cwd"] = info["cwd"]
     # The frozen request never holds the launch key; the one this terminal supplied rides along.

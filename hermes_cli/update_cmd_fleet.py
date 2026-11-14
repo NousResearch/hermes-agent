@@ -141,9 +141,8 @@ def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
     try:
-        from hermes_cli.version_info import get_code_identity
-        sha = (get_code_identity(refresh=True) or {}).get("sha")
-        return str(sha) if sha else None
+        from hermes_cli.version_info import read_checkout_sha
+        return read_checkout_sha()
     except Exception:
         return _capture_head_sha(["git"], _m().PROJECT_ROOT)
 
@@ -215,9 +214,9 @@ _SUPERVISED_SERVE_BACKENDS = frozenset(
 )
 # Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
 # is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
-# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
-# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop, desktop-ssh or manual-serve
-# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
+# The inventory writer classifies a serve/dashboard row as launchd, desktop, desktop-ssh, systemd (a unit's
+# MainPID, #141021) or manual-serve (``update_inventory._collect_ledger_runtimes``); ``windows-service`` and
+# ``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only — they are set for gateway rows alone.
 _SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
@@ -701,10 +700,11 @@ def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: 
     auto-restart can wedge a plain ``restart`` against RestartSec backoff and stay dead."""
     # Property reads need no manage-units privileges: narrow sudoers may permit
     # restart/reset-failed but deny show. Keep the same user/system manager scope.
-    from hermes_cli.update_cmd_fleet_unit_budget import systemd_restart_timeout
-    timeout = systemd_restart_timeout(scope_cmd if scope_cmd is not None else manage_cmd, svc_name)
+    from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, systemd_restart_timeout
+    scope_cmd = scope_cmd if scope_cmd is not None else manage_cmd
+    timeout = systemd_restart_timeout(scope_cmd, svc_name)
     _systemctl(manage_cmd + ["reset-failed", svc_name], timeout=10)
-    return _systemctl(manage_cmd + ["restart", svc_name], timeout=timeout)
+    return run_unit_job(manage_cmd, scope_cmd, "restart", svc_name, timeout=timeout)
 
 
 def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
@@ -715,24 +715,46 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
     and leaves the unit alone; it is not a failed restart.
     """
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, home_in_update_scope, systemd_unit_foreign_checkout, systemd_unit_hermes_home,
+    )
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
-    if home is not None and home_in_update_scope(home):
+    checkout = systemd_unit_foreign_checkout(scope_cmd, svc_name) if home is not None else None
+    if home is not None and checkout is None and home_in_update_scope(home):
         return True
-    print(describe_skipped_runtime("systemd unit", svc_name, home))
+    announce_skipped_runtime("systemd unit", svc_name, home, checkout=checkout)
     return False
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
     """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
     install's profile PID files); every other gateway process is named and left running."""
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, partition_gateway_pids_by_scope
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, gateway_pid_foreign_checkout, partition_gateway_pids_by_scope,
+    )
     keep = set(keep)
     owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
+    # Same home is not same install: a gateway running another checkout is not this update's.
+    other_checkout = {pid: root for pid in [*keep, *owned] if (root := gateway_pid_foreign_checkout(pid))}
     if not quiet:
         for pid, home in foreign:
-            print(describe_skipped_runtime("gateway process", f"PID {pid}", home))
-    return [pid for pid in pids if pid in keep or pid in owned]
+            announce_skipped_runtime("gateway process", f"PID {pid}", home)
+        for pid, root in other_checkout.items():
+            announce_skipped_runtime("gateway process", f"PID {pid}", None, checkout=root)
+    return [pid for pid in pids if (pid in keep or pid in owned) and pid not in other_checkout]
+
+
+def _is_serve_or_dashboard_unit(unit: str) -> bool:
+    """``hermes-serve*``/``hermes-dashboard*`` (``.service``) by the same exact-or-hyphenated shape."""
+    return (
+        unit == "hermes-serve.service"
+        or unit.startswith("hermes-serve-")
+        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
+        # same fleet this pass restarts. Leaving them out meant a successful update reported
+        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
+    )
 
 
 def _is_hermes_gateway_unit(unit: str) -> bool:
@@ -743,13 +765,7 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         # cannot enter the restart path. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
-        or unit == "hermes-serve.service"
-        or unit.startswith("hermes-serve-")
-        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
-        # same fleet this pass restarts. Leaving them out meant a successful update reported
-        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
-        or unit == "hermes-dashboard.service"
-        or unit.startswith("hermes-dashboard-")
+        or _is_serve_or_dashboard_unit(unit)
     )
 
 
@@ -846,6 +862,14 @@ def _restart_launchd_gateway_after_update(
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        # The label is account-global and the plist path follows the REAL account home, so a
+        # scratch HERMES_HOME shaped like the native default derives the live install's label.
+        # Same ownership rule as the sibling loop (#93349): never refresh or restart another
+        # home's job.
+        from hermes_cli.update_fleet_scope import launchd_label_skip_notice
+        if (notice := launchd_label_skip_notice(current_label)) is not None:
+            print(notice)
+            return [], []
         # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
         # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
         # and verification-only — the restart itself is never gated on `launchctl list` (#74973).
@@ -939,14 +963,15 @@ def _restart_macos_launchd_gateways(
     legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
     if legacy_labels:
         print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
+    from hermes_cli.update_fleet_scope import launchd_label_skip_notice
     for label in derived_labels + legacy_labels:
         if label == current_label or label in resumed:
             continue
         # Labels are account-global: root B's default profile derives the same bare label root A
-        # installed. A plist pinning a foreign HERMES_HOME is another install's job (#93349).
-        if (foreign_home := launchd_label_foreign_home(label)) is not None:
-            print(describe_skipped_runtime("launchd job", label, foreign_home))
+        # installed. A plist pinning a foreign HERMES_HOME, or launching another checkout, is another
+        # install's job (#93349).
+        if (notice := launchd_label_skip_notice(label)) is not None:
+            print(notice)
             continue
         try:
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
@@ -1012,12 +1037,13 @@ _DESKTOP_SERVE_SKIP_REASON = (
     "desktop app owns and respawns this serve backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
-# NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
-# nor HERMES_PARENT_PID ("manual-serve"). Unit-backed serves are recovered by the fresh
-# child's systemd pass; survivors reported by _surviving_pre_update_serve_runtimes.
+# NOT a claim that no supervisor exists: a unit's MainPID row is classified "systemd" (#141021),
+# and "manual-serve" still covers a process inside some unit's cgroup it is not MainPID of, or
+# unreadable ownership. Unit-backed serves are recovered by the fresh child's systemd pass;
+# survivors reported by _surviving_pre_update_serve_runtimes.
 _SERVE_SKIP_REASON = (
     "no per-profile relaunch command reaches a serve/dashboard runtime; recovered by the fresh"
-    " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"
+    " systemd unit pass when a hermes-serve*/hermes-dashboard* unit owns it, else left running for explicit"
     " operator restart"
 )
 # A launchd-owned backend (#116503): the fresh child has no per-label kickstart for serve/dashboard
@@ -1120,6 +1146,12 @@ def _drain_or_signal_gateway_for_update(
         GATEWAY_LOOP_WEDGED, _escalate_wedged_gateway, _graceful_restart_via_sigusr1,
         _is_pid_ancestor_of_current_process, _request_gateway_self_restart, probe_gateway_loop_liveness,
     )
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, gateway_pid_foreign_checkout
+    if (checkout := gateway_pid_foreign_checkout(pid)) is not None:
+        # Every caller funnels here, the ancestor case included: an update from a worktree whose shell
+        # descends from the live gateway used to SIGUSR1 a gateway serving another checkout.
+        announce_skipped_runtime("gateway process", label, None, checkout=checkout)
+        return False
     if _is_pid_ancestor_of_current_process(pid):
         print(
             f"  → {label}: update is running inside this gateway's "
@@ -1207,7 +1239,9 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
         return
     if parked:
         return
-    if system and not _needs_sudo(scope) and svc_name == get_service_name():
+    from hermes_cli.update_cmd_commit import past_commit_point
+    # Past the move the generator would load the new tree's plugins into this process; the hint stays.
+    if system and not _needs_sudo(scope) and svc_name == get_service_name() and not past_commit_point():
         # The refresh adopts the unit's HERMES_HOME into os.environ (sudo strips it); the rest of the
         # update keeps running for the invoking profile.
         launch_home = os.environ.get("HERMES_HOME")
@@ -1260,17 +1294,15 @@ def _restart_one_systemd_gateway_unit(
         _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
 
     if _graceful_ok:
-        from hermes_cli.update_cmd_fleet_unit_budget import service_restart_sec, systemd_restart_timeout
+        from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, service_restart_sec, systemd_restart_timeout
         # ``Restart=always`` respawns only after RestartSec (60s in our unit; dead time for a
         # voluntary restart). ``reset-failed`` + ``start`` skips it (~1-3s); if RestartSec already
         # elapsed, ``start`` is a no-op and we fall through to the poll. Needs manage-units
         # privileges; without them auto-restart still fires after RestartSec.
         if _manage_cmd is not None:
             _systemctl(_manage_cmd + ["reset-failed", svc_name], timeout=10)
-            _systemctl(
-                _manage_cmd + ["start", svc_name],
-                timeout=systemd_restart_timeout(scope_cmd, svc_name, start_only=True),
-            )
+            run_unit_job(_manage_cmd, scope_cmd, "start", svc_name,
+                         timeout=systemd_restart_timeout(scope_cmd, svc_name, start_only=True))
             if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
                 restarted_services.append(svc_name)
                 return
@@ -1461,6 +1493,11 @@ class _GatewayRestartOutcome:
     #: (``_drain_or_signal_gateway_for_update`` branch 1): they restart only after this process
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
+    #: Units the restart phase itself could not restart. Verification warns about the ones its fleet
+    #: probe does not prove current: a timed-out ``systemctl`` call can still bring its unit up. Not
+    #: ``failed_or_stale_units``: the Windows resume merge and an aborted phase add to that list, and
+    #: neither gets this systemctl/launchctl advice.
+    unrestarted_units: list = field(default_factory=list)
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1505,6 +1542,8 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     # ``all_profiles`` is host-wide: a sibling install's gateway matches too. Only this update's
     # homes are stopped; the profile-mapped PIDs come from this install's own PID files (#93349).
     manual_pids = _scoped_manual_gateway_pids(manual_pids, keep=profile_processes)
+    # A profile-mapped PID running another checkout was dropped above: never arm or stop it.
+    profile_processes = {pid: proc for pid, proc in profile_processes.items() if pid in manual_pids}
     # Profile gateways we couldn't arm a relaunch for must NOT keep running stale:
     # the unmapped sweep below stops them and lists them under "Restart manually".
     # These must NOT be left running: their modules are the pre-update ones and every lazy import from here
@@ -1681,6 +1720,9 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     every planned gateway is verifiably covered.
     """
     from hermes_cli.update_cmd import _m
+    from hermes_cli.update_stage import publish_stage
+
+    publish_stage("Restarting Hermes services")  # also after a failed build: the code is committed
     # All bookkeeping is declared before the try so abort recovery and fleet reconciliation
     # can read it even if the phase raises early. ``pre_restart_gateway_pids`` stays empty
     # until we are about to stop/drain, so an early exception has nothing to fail closed on,
@@ -1742,7 +1784,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         if out.failed_or_stale_units:
             # Owed restart (C3): verification records the follow-up; the /update marker stays committed.
             out.incomplete = True
-        _warn_incomplete_gateway_fleet_restart(out.failed_or_stale_units)
+        out.unrestarted_units = list(out.failed_or_stale_units)
         out.record_receipt()
         _force_kill_stuck_gateways(out.killed_pids)
 

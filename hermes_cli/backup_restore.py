@@ -18,10 +18,11 @@ import tempfile
 import zipfile
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db
+from hermes_cli.config_backend import drop_other_access
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
     mkstemp_beside,
@@ -186,7 +187,10 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 def _restore_epoch(path: Path) -> int:
     if not path.exists():
         return 0
-    with closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    with closing(connect_tracked(read_only_db_uri(path), uri=True, tracking_path=path,
+                                 connect_fn=sqlite3.connect)) as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_epoch'").fetchone():
             return 0
         row = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()
@@ -226,7 +230,7 @@ def _restore_epoch_source(src: Path, dst: Path):
         prepared = Path(work) / 'state.db'
         if not _safe_copy_db(src, prepared):
             raise OSError('Unable to stage a restore with a safe runtime epoch')
-        with closing(sqlite3.connect(prepared)) as conn:
+        with closing(sqlite3.connect(prepared)) as conn:  # health: allow HX015 -- private staging copy in a temp dir
             conn.execute("""CREATE TABLE IF NOT EXISTS runtime_epoch (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 epoch INTEGER NOT NULL CHECK (epoch > 0), instance_id TEXT NOT NULL)""")
@@ -267,9 +271,11 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
     Callers go through ``_safe_restore_db``, which validates *src* and holds
     the maintenance reservation and epoch floor around this publication.
     """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        dst_conn = connect_tracked(str(dst), tracking_path=dst)
         try:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
@@ -277,7 +283,7 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         except sqlite3.Error as exc:
             # Optional: backup() still publishes over a deep WAL, just less tidily.
             logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
-        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)  # health: allow HX015 -- the backup being restored, not a live store
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -363,6 +369,39 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         except (OSError, ValueError) as exc2:  # ValueError: a path the OS cannot represent
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
+
+
+def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
+    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
+    try:
+        if dst.suffix == ".db":
+            # Restore through SQLite backup API so live connections
+            # (gateway, dashboard, another CLI session) see the
+            # restored data instead of continuing to serve stale
+            # cached pages from a replaced inode (issue #65942).
+            if not _safe_restore_db(src, dst):
+                # Refused, failed, or source failed its integrity check:
+                # dst left as it was. Count as a failure, not a restore.
+                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                return False
+        elif rel == "auth.json":
+            # Refresh tokens for these OAuth providers rotate on use. A historical
+            # snapshot can therefore contain a spent pair even though the current
+            # auth.json has the live successor. Restore the historical auth state
+            # while retaining that live single-use grant under the auth-store lock.
+            if not _restore_auth_json(src, dst):
+                logger.error("Failed to restore %s safely", rel)
+                return False
+        else:
+            shutil.copy2(src, dst)
+            if dst.name == "config.yaml":  # the snapshot copy carries the mode it was taken with
+                drop_other_access(dst)
+            elif dst.name == ".env":  # secrets file: owner-only, as `hermes import` leaves it
+                os.chmod(dst, 0o600)
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.error("Failed to restore %s: %s", rel, exc)
+        return False
 
 
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
@@ -550,7 +589,9 @@ def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        conn = connect_tracked(read_only_db_uri(path), uri=True, tracking_path=path, connect_fn=sqlite3.connect)
     except sqlite3.Error:
         return None
     try:
@@ -656,3 +697,54 @@ def _import_db_member_exclusive(
             os.unlink(tmp_name)
         except OSError:
             pass
+
+
+def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
+    node: Any = data
+    for key in dotted:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
+    node = data
+    for key in dotted[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[dotted[-1]] = value
+
+
+def _count_cron_jobs(path: Path) -> Optional[int]:
+    """Return the number of cron jobs stored in ``path``.
+
+    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
+    A legacy bare-list shape (``[...]``) is also honoured.
+
+    Returns:
+        The job count for any *valid, readable* JSON document, or ``None`` if
+        the file is missing or cannot be parsed. ``None`` means "unknown" —
+        callers must not treat it as "zero jobs", because acting on an
+        unreadable file could mask a real corruption the user needs to see.
+    """
+    if not path.is_file():
+        return None
+    try:
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+        # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
+        # it a BOM'd jobs.json counts as "unreadable" (None) and the
+        # post-update cron-loss auto-restore safety net silently disables.
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        return len(jobs) if isinstance(jobs, list) else None
+    if isinstance(data, list):
+        return len(data)
+    return None

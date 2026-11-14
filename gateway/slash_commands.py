@@ -32,6 +32,7 @@ from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("gateway.run")
 
@@ -139,6 +140,7 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         subprocess.Popen(
             [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
              sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
+            # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
@@ -154,6 +156,7 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")
     argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+    # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -343,7 +346,7 @@ class GatewaySlashCommandsMixin(
             return head + t("gateway.whoami.tier_admin")
         # Non-admin: floor first (mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS), then operator
         # additions, deduped in order.
-        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
+        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_runnable_commands)))
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.shared.none_marker")
         return head + t("gateway.whoami.tier_user", commands=runnable_str)
 
@@ -430,6 +433,7 @@ class GatewaySlashCommandsMixin(
         never checking _interrupt_requested) is caught by the early intercept in _handle_message();
         this handler runs via normal dispatch or as a fallback, and force-cleans the session lock in
         all cases.  The session is preserved so the user can continue."""
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
@@ -440,13 +444,16 @@ class GatewaySlashCommandsMixin(
             await self._interrupt_and_clear_session(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
-        agent = self._running_agents.get(session_key)
+        # A turn the app started while the chat was elsewhere still runs on its own key (/resume).
+        from gateway.session_detached import chat_running_key
+        run_key = chat_running_key(self, session_key, session_entry)
+        agent = self._running_agents.get(run_key)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
-            await _stop(session_key, "stop_command_pending")
-            logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
+            await _stop(run_key, "stop_command_pending")
+            logger.info("STOP (pending) for session %s — sentinel cleared", run_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:  # force-clean the session lock so a truly hung agent doesn't keep it forever
-            await _stop(session_key, "stop_command_handler")
+            await _stop(run_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
@@ -535,7 +542,7 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return t("gateway.platform.resumed", name=name)
 
-    async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply:
+    async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply | None:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
@@ -568,9 +575,15 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            from gateway.session_identity import transport_profile_of
+
+            # Scope the update counter to the bot that received /restart, even if its
+            # session executes in a different (or shared) runtime profile.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            transport_profile = transport_profile_of(event.source)
+            if transport_profile is not None:
+                data["transport_profile"] = transport_profile
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data
@@ -582,18 +595,18 @@ class GatewaySlashCommandsMixin(
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
         await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
         active_agents = self._running_agent_count()
+        # Idle: teardown is immediate and a RETURNED ack raced the adapter disconnect (lost on a real
+        # Bot API round trip, #65057), so deliver it first. Draining: the drain waits, the reply lands.
+        from gateway.restart_ack import send_restart_ack
+        ack = t("gateway.draining", count=active_agents) if active_agents else EphemeralReply(t("gateway.restart.restarting"))
+        sent = not active_agents and await send_restart_ack(self, self._delivery_adapter_for(event.source), event, ack)
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
         self.request_restart(detached=not via_service, via_service=via_service)
-        # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
-        # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
-        # restarts while active), the next startup auto-suspends it — breaking the loop.
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        return None if sent else ack
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
@@ -618,7 +631,7 @@ class GatewaySlashCommandsMixin(
         # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
+            return {"allowed_commands": {"help", "whoami", *policy.user_runnable_commands}}
         return {}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
@@ -689,6 +702,8 @@ class GatewaySlashCommandsMixin(
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
             self._save_voice_modes()
+            from gateway.session_config import local_voice_transition
+            local_voice_transition(event.source, mode)
             if not adapter:
                 return
             if mode == "off":
@@ -751,15 +766,12 @@ class GatewaySlashCommandsMixin(
         if not checkpoints:
             return t("gateway.rollback.none_found", cwd=cwd)
 
-        # Restore by number or hash
+        # Restore by number or hash (a short hash can be all digits)
+        from tools.checkpoint_refs import resolve_checkpoint_ref
         try:
-            idx = int(arg) - 1
+            target_hash = resolve_checkpoint_ref(checkpoints, arg)
         except ValueError:
-            target_hash = arg
-        else:
-            if not 0 <= idx < len(checkpoints):
-                return t("gateway.rollback.invalid_number", max=len(checkpoints))
-            target_hash = checkpoints[idx]["hash"]
+            return t("gateway.rollback.invalid_number", max=len(checkpoints))
         result = mgr.restore(cwd, target_hash, safe=not restore_all)
         if not result["success"]:
             return t("gateway.rollback.restore_failed", error=result["error"])
@@ -1055,15 +1067,26 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            _write_raw_config_leaf(config_path, ("display", "runtime_footer", "enabled"), new_state)
+            # A local session writes the ``cli`` key, as /reasoning show|hide saves: every local
+            # surface reads it (gateway.display_config.local_display_config), so the setting holds
+            # wherever it was set (T7). A chat's /footer keeps the global key it always wrote.
+            leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
+                    else ("display",)) + ("runtime_footer", "enabled")
+            _write_raw_config_leaf(config_path, leaf, new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
         example = ""
         if new_state:
-            # Show a preview using current agent state if available.
+            # Preview the model the next turn runs: the turn's own resolver (session /model >
+            # channel_overrides > config.yaml); an unresolvable route still previews the config model.
+            try:
+                preview_model, _ = self._resolve_session_agent_runtime(source=event.source, user_config=user_config)
+            except Exception:  # health: allow BLE001 -- a broken route must not break /footer on
+                logger.debug("Footer preview: session runtime unresolvable", exc_info=True)
+                preview_model = _resolve_gateway_model(user_config)
             preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
+                model=preview_model or None, context_tokens=0, context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"])
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
@@ -1179,31 +1202,43 @@ class GatewaySlashCommandsMixin(
             lines += [t("gateway.bundles.item", slug=info["slug"], desc=desc, count=len(skills))] + [f"    · {s}" for s in skills]
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
-    def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str):
-        """``(session_key, None)`` when an agent thread is blocked on approval, else the reply to send.
+    def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str,
+                                    resolve_all: bool = False, choice: str = "once"):
+        """``(session_key, None, request_ids)`` when an agent thread is blocked on approval and the
+        sender may answer the approvals this command selects (*choice* names its ``/approve`` or
+        ``/deny`` for the chat's slash policy: the bare-word "always" lands here without dispatch's
+        gate), else ``(session_key, reply, [])``.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            return session_key, None
-        if session_key in self._pending_approvals:
-            self._pending_approvals.pop(session_key)
-            return session_key, t(stale_key)
-        return session_key, t(none_key)
+            from gateway.relay.admitted_authors import answer_admitted
+            from gateway.approval_actor import answerable_request_ids, refusal_text
+            from gateway.slash_access import policy_for_runner_source
+            ids, requester = answerable_request_ids(
+                session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
+                admin_ids=policy_for_runner_source(self, event.source), admitted=answer_admitted(event))
+            return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
+        _approval_state = self._peek_session_state(session_key)
+        if _approval_state is not None and _approval_state.persistent.approvals is not None:
+            _approval_state.persistent.approvals = None
+            return session_key, t(stale_key), []
+        return session_key, t(none_key), []
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
         from tools.approval import resolve_gateway_approval
-        session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
-                                                              "gateway.approve.no_pending")
-        if stale:
-            return stale
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
+        session_key, stale, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.approval_expired", "gateway.approve.no_pending", resolve_all="all" in args)
+        if stale:
+            return stale
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
-        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
+        # Exactly the approvals the sender was checked against, never "the oldest" again.
+        count = sum(resolve_gateway_approval(session_key, choice, request_id=rid) for rid in request_ids)
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1218,17 +1253,18 @@ class GatewaySlashCommandsMixin(
         the agent so it can adapt instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
         from tools.approval import resolve_gateway_approval
-        session_key, stale = self._blocking_approval_or_stale(event, "gateway.deny.stale",
-                                                              "gateway.deny.no_pending")
-        if stale:
-            return stale
         # A leading "all" denies every pending command; the rest (or the whole arg string without
         # "all") is the optional deny reason relayed to the agent, capped to a sane one-liner.
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        session_key, stale, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all, choice="deny")
+        if stale:
+            return stale
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        count = sum(resolve_gateway_approval(session_key, "deny", reason=reason or None, request_id=rid)
+                    for rid in request_ids)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,
@@ -1260,16 +1296,44 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
-        protect privacy; ``hermes debug share`` from the CLI does full uploads."""
+        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the allowlisted public
+        summary (no log or message text); full logs go to private storage via
+        ``hermes debug share --nous`` from the CLI."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
-                                      collect_debug_report, upload_to_pastebin)
+                                      _is_dpaste_url, _schedule_auto_delete, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
+        from hermes_cli.debug_summary import collect_public_summary
+
+        words = {w.lower() for w in (event.get_command_args() or "").split()}
+        wants_local = "local" in words
+        is_local_session = getattr(event.source, "platform", None) == Platform.LOCAL
+        if not wants_local and ("upload" not in words or words - {"upload", "nous"}):
+            # Notice first, upload only on the explicit `/debug upload` (#94876): a bare /debug is
+            # not consent to publish this session's logs, nor is `/debug do not upload`.
+            hint = t("gateway.debug.upload_hint_local" if is_local_session else "gateway.debug.upload_hint")
+            return f"{_GATEWAY_PRIVACY_NOTICE}\n\n{hint}"
+        if wants_local and not is_local_session:
+            # From a chat the report can't stay on the machine; `/debug local` must never fall
+            # through to the public paste. `/debug upload` is the upload form.
+            return t("gateway.debug.local_refused")
+        if wants_local:
+            # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
+            # return the redacted report for the client to show, with no network call at all (not
+            # even the expired-paste sweep). Uploading stays on the explicit `/debug upload` form (T7).
+            from hermes_cli.debug import collect_share_bundle
+
+            def _collect_local():
+                return collect_share_bundle(log_lines=200)["report"]
+
+            return await self._run_in_executor_with_context(_collect_local)
+        if "nous" in words:
+            # `/debug nous upload` consents to private Nous storage; the gateway only has the public
+            # paste, so refuse rather than publish under a consent that named another destination.
+            return t("gateway.debug.nous_refused")
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
-            report = collect_debug_report(log_lines=200, dump_text=_capture_dump())
+            report = collect_public_summary(log_lines=200)
             try:
                 urls = {t("gateway.debug.report_label"): upload_to_pastebin(report)}
             except Exception as exc:
@@ -1294,6 +1358,7 @@ class GatewaySlashCommandsMixin(
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
+        from gateway.approval_actor import opener_authority
         from gateway.run import _hermes_home, _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
@@ -1310,7 +1375,7 @@ class GatewaySlashCommandsMixin(
         if is_managed():
             return f"✗ {format_managed_message(t('gateway.update.managed_action'))}"
 
-        project_root = Path(__file__).parent.parent.resolve()
+        project_root = Path(project_root_str())
 
         # Not a git-managed install (docker/nix/desktop-app/source): refuse
         # with the steward's own update mechanism instead of git-pulling a
@@ -1335,13 +1400,15 @@ class GatewaySlashCommandsMixin(
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
+        if self._update_in_flight():  # before any write: the marker names who answers its prompts
+            return t("gateway.update.already_running")
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         pending = {
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat()}
+            "timestamp": datetime.now().isoformat(), "authority": opener_authority(event)}  # who answers its prompts
         # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
         # requester's own profile bot, not the default profile's adapter for the same platform.
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),

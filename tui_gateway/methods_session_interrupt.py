@@ -115,7 +115,17 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
     and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
     try:
-        accepted = getattr(session["agent"], verb)(text)
+        if session.get("running"):
+            # A redirect between two model requests of the running turn has nothing to cancel: the
+            # words take its steer boundary and answer like session.steer, not a refusal queued
+            # behind it. Either verb landing there also reaches the subagents the turn waits on.
+            from agent.interrupt_control import correct_live_turn
+            taken = correct_live_turn(session["agent"], verb, text)
+            accepted = taken is not None
+            if taken == "steer":
+                accepted_status = "queued"
+        else:
+            accepted = getattr(session["agent"], verb)(text)
     except Exception as exc:
         return _err(rid, 5000, f"{verb} failed: {exc}")
     if accepted:
@@ -127,7 +137,12 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
             # restart the pre-correction prompt.
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
-    return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
+    result = {"status": accepted_status if accepted else "rejected", "text": text}
+    if accepted and accepted_status == "queued":
+        # Accepted by the steer entry (a redirect between model requests too), not proof the model
+        # has consumed the text.
+        result["disposition"] = "steer"
+    return _ok(rid, result)
 
 
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
@@ -154,15 +169,20 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # drains when compression finishes (the Discord-gateway contract; mirrors the
         # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
         if _session_compression_in_flight(session):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            queued = _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
-            return _ok(rid, {"status": "queued", "text": text})
+            result = {"status": "queued", "text": text}
+            if verb == "steer" and queued is not None:
+                result.update(disposition="queue", reason="compression")
+            return _ok(rid, result)
         if not supported(agent):
             return _err(rid, 4010, unsupported)
         # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool
         # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
         if verb == "steer" and not session.get("running"):
-            return _ok(rid, {"status": "rejected", "text": text})
+            # Unlike an agent's False/ACK timeout, this branch never delivered it.
+            return _ok(rid, {"status": "rejected", "text": text,
+                             "delivered": False, "reason": "turn_ended"})
         return _apply_correction(rid, session, verb, text, accepted_status)
 
 

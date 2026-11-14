@@ -3716,6 +3716,9 @@ export interface SessionCorrectionParams {
 export interface SessionCorrectionResult {
   status: CorrectionStatus
   text: string
+  disposition?: 'steer' | 'queue' | null
+  reason?: 'compression' | 'turn_ended' | null
+  delivered?: false | null
 }
 export type CorrectionStatus = 'queued' | 'redirected' | 'rejected'
 export interface SpawnTreeSaveParams {

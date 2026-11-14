@@ -3518,6 +3518,12 @@ export const en: Translations = {
       'Re-select the terminal lines (Ctrl/Cmd+L) before sending — this chip has no original text.',
     queuedTerminalSelectionExpiredBody:
       'This queued terminal selection is no longer available. Re-select the lines (Ctrl/Cmd+L) and queue the message again.',
+    queueSteerRefusedTitle: 'Steer not taken',
+    queueSteerRefusedBody:
+      'The live turn could not take the redirect. Your message stays queued and is now first in line.',
+    steerQueuedTitle: 'Queued for the next turn',
+    steerQueuedBody: 'The running turn could not take this message, so it was queued to run next.',
+    steerQueuedCompressionBody: 'Context is being compacted, so this message was queued to run next.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

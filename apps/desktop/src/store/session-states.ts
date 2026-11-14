@@ -422,7 +422,7 @@ export function liveTurnVerdict(
   return status === 'starting' || status === 'waiting' || status === 'working' ? 'running' : 'unknown'
 }
 
-async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
+export async function probeLiveTurn(runtimeId: string, timeout = LIVE_TURN_PROBE_TIMEOUT_MS): Promise<LiveTurnVerdict> {
   const backend = liveTurnBackend
 
   if (!backend) {
@@ -438,7 +438,7 @@ async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
       backend.request,
       'session.active_list',
       {},
-      LIVE_TURN_PROBE_TIMEOUT_MS
+      timeout
     )
 
     return liveTurnVerdict(response, runtimeId)
@@ -529,7 +529,7 @@ async function onEventSilence(runtimeId: string) {
 
   const check = {}
   silentTurnChecks.set(runtimeId, check)
-  const verdict = await checkLiveTurn(runtimeId)
+  const verdict = await probeLiveTurn(runtimeId)
 
   if (silentTurnChecks.get(runtimeId) !== check) {
     return

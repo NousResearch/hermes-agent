@@ -897,9 +897,10 @@ def launchd_restart() -> int | None:
     # bootout/bootstrap-retry path, which is bounded and reports its own
     # failure instead of stalling the update for 90s.
     refresh_ok = _gw().refresh_launchd_plist_if_needed()
-    from gateway.status import get_running_pid
+    from gateway.status import get_process_start_time, get_running_pid
     try:
         pid = get_running_pid()
+        born = get_process_start_time(pid) if pid is not None else None  # the identity signalled
         if pid is not None and _gw()._request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
             return
@@ -910,8 +911,8 @@ def launchd_restart() -> int | None:
             _gw()._escalate_wedged_gateway(pid)
             pid = None
         from hermes_cli.update_cmd_drain_report import leave_restart_pending
-        from hermes_cli.update_cmd_posix_pause import left_pending
-        if pid is not None and pid in left_pending() and leave_restart_pending(pid, f"Gateway PID {pid}"):
+        from hermes_cli.update_cmd_posix_pause import is_left_pending
+        if pid is not None and is_left_pending(pid) and leave_restart_pending(pid, f"Gateway PID {pid}", start_time=born):
             return pid  # the update's pause already waited it out
         if pid is not None:
             # Graceful in-band restart via SIGUSR1 (mirrors systemd); the budget covers both the idle wait
@@ -928,7 +929,7 @@ def launchd_restart() -> int | None:
                     return
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
-                if leave_restart_pending(pid, f"Gateway PID {pid}"):
+                if leave_restart_pending(pid, f"Gateway PID {pid}", start_time=born):
                     return pid  # the budget bounds the wait, never the work: KeepAlive relaunches it once idle
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
         if not refresh_ok and _gw().get_launchd_plist_path().exists() and not _gw().launchd_plist_is_current():

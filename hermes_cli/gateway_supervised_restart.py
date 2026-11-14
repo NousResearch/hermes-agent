@@ -81,7 +81,9 @@ def restart_externally_supervised_gateway(supervised_pid: int) -> None:
     """
     from hermes_cli.gateway import _get_restart_exit_wait_budget, _graceful_restart_via_sigusr1, _print_lines
 
+    from gateway.status import get_process_start_time
     wait_budget = _get_restart_exit_wait_budget()
+    born = get_process_start_time(supervised_pid)  # the identity signalled
     print(f"→ Restarting externally-supervised gateway (PID {supervised_pid}) — "
           f"draining in-flight runs (up to {wait_budget:.0f}s)...")
     if _graceful_restart_via_sigusr1(supervised_pid, wait_budget):
@@ -93,7 +95,7 @@ def restart_externally_supervised_gateway(supervised_pid: int) -> None:
         print("⚠ Supervisor did not relaunch the gateway after its graceful exit")
     else:
         from hermes_cli.update_cmd_drain_report import leave_restart_pending
-        if leave_restart_pending(supervised_pid, f"Gateway PID {supervised_pid}"):
+        if leave_restart_pending(supervised_pid, f"Gateway PID {supervised_pid}", start_time=born):
             return  # still working: its supervisor relaunches it once it is idle
         print(f"⚠ Gateway did not exit within {wait_budget:.0f}s of SIGUSR1 (or the signal could not be sent)")
     _print_lines(

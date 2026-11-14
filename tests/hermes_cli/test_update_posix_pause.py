@@ -256,3 +256,49 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
         assert pid() and pid() != first, "the restart did not bring the job back under launchd"
     finally:
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, check=False)
+
+
+@pytest.mark.platforms("posix")
+def test_a_gateway_left_pending_by_the_pause_stays_pending_in_the_completion_process(tmp_path, monkeypatch, capsys):
+    """The fleet restart runs in a fresh completion interpreter: the gateways the pause left running
+    must reach it through the request's token, or it waits the full drain on the same busy gateway
+    again. Restored by (pid, start time): a PID now held by another process is dropped."""
+    from gateway.status import get_process_start_time
+    from hermes_cli import update_cmd_posix_pause as m
+    busy, recycled = (subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+                      for _ in range(2))
+    try:
+        entries = [{"pid": p.pid, "ct": get_process_start_time(p.pid), "home": str(tmp_path)} for p in (busy, recycled)]
+        entries[1]["ct"] += 1  # the pause saw an earlier process under this PID
+        token = m._empty_token()
+        m._leave_running(token, entries)
+        request = json.dumps({"windows_resume": token})  # what the completion child reads
+        probe = _child("""
+            import json, sys
+            from hermes_cli import update_cmd_posix_pause as m
+            m.adopt_left_pending(json.loads(sys.argv[1])["windows_resume"])
+            print(json.dumps(sorted(pid for pid in m.left_pending() if m.is_left_pending(pid))))
+        """, request, env={"HERMES_HOME": str(tmp_path)})
+        out, _ = probe.communicate(timeout=60)
+        assert json.loads(out.strip().splitlines()[-1]) == [busy.pid], out
+    finally:
+        for p in (busy, recycled):
+            p.kill()
+            p.wait(timeout=10)
+
+
+@pytest.mark.platforms("posix")
+def test_a_pid_recycled_during_the_drain_wait_is_never_a_pending_restart():
+    """Liveness is (pid, start time): a PID that now belongs to another process held no restart, so
+    the caller's escalation stands instead of leaving it running as "restart pending"."""
+    from gateway.status import get_process_start_time
+    from hermes_cli.update_cmd_drain_report import restart_left_pending
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+    try:
+        born = get_process_start_time(child.pid)
+        assert restart_left_pending(child.pid, start_time=born) is True, "premise: the signalled gateway is pending"
+        assert restart_left_pending(child.pid, start_time=born + 1) is False
+        assert restart_left_pending(child.pid, start_time=None) is False
+    finally:
+        child.kill()
+        child.wait(timeout=10)

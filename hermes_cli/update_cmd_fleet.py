@@ -950,7 +950,7 @@ def _restart_macos_launchd_gateways(
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
-    from hermes_cli.update_cmd_posix_pause import already_restarted, left_pending
+    from hermes_cli.update_cmd_posix_pause import already_restarted, is_left_pending
     current_label = get_launchd_label()
     resumed = already_restarted()["labels"]  # paused for the update, restarted on the new code
     _restarted, _failed = ([], []) if current_label in resumed else _restart_launchd_gateway_after_update(
@@ -985,7 +985,8 @@ def _restart_macos_launchd_gateways(
                     failed_or_stale_units.append(label)
                 continue  # A profile without an installed job has no restart target.
             graceful_ok = False
-            if old_pid is not None and old_pid > 0 and old_pid not in left_pending():
+            born = _signalled_identity(old_pid) if old_pid else None
+            if old_pid is not None and old_pid > 0 and not is_left_pending(old_pid):
                 print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
@@ -995,7 +996,7 @@ def _restart_macos_launchd_gateways(
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)
                 continue
-            if not graceful_ok and old_pid and _restart_left_pending(old_pid, label, self_restart_pending):
+            if not graceful_ok and old_pid and _restart_left_pending(old_pid, label, self_restart_pending, born):
                 continue
             try:
                 _launchd_kickstart(label, domain)
@@ -1171,8 +1172,8 @@ def _drain_or_signal_gateway_for_update(
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         _escalate_wedged_gateway(pid)
         return True
-    from hermes_cli.update_cmd_posix_pause import left_pending
-    if pid in left_pending():
+    from hermes_cli.update_cmd_posix_pause import is_left_pending
+    if is_left_pending(pid):
         return False  # the pre-swap pause already waited it out; its restart is pending (caller reports it)
     print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
@@ -1181,12 +1182,20 @@ def _drain_or_signal_gateway_for_update(
         on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
 
 
-def _restart_left_pending(pid: int, label: str, pending: set | None, *, supervised: bool = True) -> bool:
-    """The drain wait ran out on a gateway still doing live work: leave it running (it holds the
-    restart and takes it at its first idle moment) and count it restart-pending for the fleet
-    matrix. False when it is gone, unsignalled or wedged: the caller's escalation stands."""
+def _signalled_identity(pid: int):
+    """Start time of the gateway about to be signalled: what :func:`_restart_left_pending` compares
+    after the wait (a PID recycled during it is not the gateway that holds the restart)."""
+    from gateway.status import get_process_start_time
+    return get_process_start_time(pid)
+
+
+def _restart_left_pending(pid: int, label: str, pending: set | None, born, *, supervised: bool = True) -> bool:
+    """The drain wait ran out on gateway ``(pid, born)`` still doing live work: leave it running (it
+    holds the restart and takes it at its first idle moment) and count it restart-pending for the
+    fleet matrix and the runtime reconciliation. False when it is gone, replaced, unsignalled or
+    wedged: the caller's escalation stands."""
     from hermes_cli.update_cmd_drain_report import leave_restart_pending
-    if not leave_restart_pending(pid, label, _gateway_home_for_pid(pid), supervised=supervised):
+    if not leave_restart_pending(pid, label, _gateway_home_for_pid(pid), start_time=born, supervised=supervised):
         return False
     if pending is not None:
         pending.add(pid)
@@ -1310,9 +1319,10 @@ def _restart_one_systemd_gateway_unit(
             _main_pid = 0
 
     # Three-way triage (ancestor / wedged / graceful drain).
+    _born = _signalled_identity(_main_pid) if _main_pid > 0 else None
     _graceful_ok = _main_pid > 0 and _drain_or_signal_gateway_for_update(
         _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
-    if not _graceful_ok and _main_pid > 0 and _restart_left_pending(_main_pid, svc_name, self_restart_pending):
+    if not _graceful_ok and _main_pid > 0 and _restart_left_pending(_main_pid, svc_name, self_restart_pending, _born):
         return
 
     if _graceful_ok:
@@ -1587,9 +1597,10 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         # SIGUSR1 drain first, SIGTERM fallback if unsupported/over budget — the watcher
         # relaunches either way. The helper announces its choice first because a silent
         # full-budget wait reads as a hung update.
+        born = _signalled_identity(pid)
         if not _drain_or_signal_gateway_for_update(
                 pid, _drain_budget, proc.profile, self_restart_pending=out.self_restart_pending_pids):
-            if _restart_left_pending(pid, proc.profile, out.self_restart_pending_pids,
+            if _restart_left_pending(pid, proc.profile, out.self_restart_pending_pids, born,
                                      supervised=restart_mode == "external-supervisor"):
                 continue
             with suppress(ProcessLookupError, PermissionError):

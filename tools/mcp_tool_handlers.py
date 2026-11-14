@@ -224,11 +224,16 @@ def _untrusted(server_name: str) -> bool:
     return _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL) == _core._TRUST_UNTRUSTED
 
 
+class _RefusedRetry(str):
+    """A retry Hermes refused itself: the server did nothing wrong, so it is no breaker strike."""
+
+
 async def _refuse_unconsented_write(server_name: str, tool_name: str) -> str:
     """A retry whose reconnect turned a tool cleared as read-only write-capable: refuse rather than prompt from a
     recovery path; the re-invoked call meets the gate with the new hint and asks."""
-    return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' is no longer annotated read-only "
-                      f"after a reconnect, so it was NOT run without approval. Re-invoke it to ask the user.")
+    return _RefusedRetry(tool_error(
+        f"MCP tool '{tool_name}' on untrusted server '{server_name}' is no longer annotated read-only after a "
+        f"reconnect, so it was NOT run without approval. Re-invoke it to ask the user."))
 
 
 def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
@@ -359,6 +364,8 @@ def _result_is_error(result) -> bool:
 def _record_call_outcome(server_name: str, result) -> Any:
     """Breaker bookkeeping: an error payload from the tool itself still counts as a strike (#10447),
     flagged as an application error so the open-breaker message stays truthful."""
+    if isinstance(result, _RefusedRetry):
+        return result
     if _result_is_error(result):
         _core._bump_server_error(server_name, application=True)
     else:
@@ -886,17 +893,30 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
 
+        failures: list = []  # each attempt's exception; the first tells whether the call ever reached the server
+
+        async def _tracked_call():
+            try:
+                return await _call()
+            except Exception as exc:
+                failures.append(exc)
+                raise
+
         def _attempt():
             if (cleared_as_read_only and not _tool_is_read_only(server_name, tool_name)
                     and not _trust_granted(server_name, tool_name)):
                 return _refuse_unconsented_write(server_name, tool_name)
-            return _call()
+            return _tracked_call()
 
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         text = _dispatch(
             server_name, server, op, _attempt, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
+        if (isinstance(text, _RefusedRetry) and failures and isinstance(failures[0], _StdioChildExited)
+                and not failures[0].in_flight):
+            for charge in booked:  # the only attempt died before dispatch: nothing ran
+                charge.refund()
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
     return _handler

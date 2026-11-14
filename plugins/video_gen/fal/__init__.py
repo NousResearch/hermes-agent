@@ -278,11 +278,11 @@ def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
     client = _load_fal_client()
     headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_video_gateway()
-    if managed_gateway is None:
-        return client.submit(endpoint, arguments=arguments, headers=headers)
     from tools.fal_common import (
-        _extract_http_status, _managed_fal_billing_error, submit_managed_fal_with_rate_limit_retry,
+        _extract_http_status, _managed_fal_billing_error, direct_fal_client, submit_managed_fal_with_rate_limit_retry,
     )
+    if managed_gateway is None:
+        return direct_fal_client(client).submit(endpoint, arguments=arguments, headers=headers)
     try:
         return submit_managed_fal_with_rate_limit_retry(
             lambda request_headers: _get_managed_fal_video_client(managed_gateway).submit(

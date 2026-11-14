@@ -7,7 +7,7 @@
 # SQLite ledger in the plugin's Hermes data directory.
 name: super-agent
 repo: https://github.com/JerryLiu369/hermes-super-agent
-sha: 3b20334039f86fd835445bd93d90eeb70281bf2a
+sha: 260b449bae6e9d994614e692adb7e9be0732e345
 subdir: super-agent
 title: Hermes Super Agent
 description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, brings open decisions back to the main agent, has it ask the user after repeated failed subagents, never takes a subagent that ended without its report as done, tracks background results until they reach the user, and records every delegated task in a SQLite ledger across gateway restarts (`hermes super-agent status` shows it). Governance is a positive allowlist: only the platforms named in governed_platforms (default weixin) and the subagents they spawn are affected, and every other surface runs untouched. Disclosure — registers hooks for pre_llm_call, pre_api_request, pre_auxiliary_call, post_auxiliary_call, pre_tool_call, post_tool_call, transform_tool_result, subagent_start, subagent_stop, on_session_end, on_session_reset and on_session_finalize, a system-prompt section and a tool_execution middleware, so for governed sessions it can block or amend tool calls and results, LLM request context and subagent handoffs, and asks a governed foreground terminal command still running after 30 s to move to Hermes's background process registry (through core's internal yield flag, which a Hermes release may change); it copies your Hermes USER.md and MEMORY.md memory files in full into every governed delegate_task brief, can start an internal agent turn via inject_message to re-report an unseen subagent result, writes a local ledger.db under the plugin's Hermes data directory, and at startup reads the effective Hermes config through Hermes' own resolver to tell the main agent once about settings that weaken it (inline delegation, a high delegation.max_iterations); it also registers a read-only `hermes super-agent status` CLI command that prints its settings and the ledger's recent tasks; no network calls, no agent tools, no credentials, no shell commands."
@@ -15,14 +15,14 @@ maintainer: JerryLiu369
 tier: community
 category: automation
 docs_url: https://github.com/JerryLiu369/hermes-super-agent
-image: https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/3b20334039f86fd835445bd93d90eeb70281bf2a/assets/cover.png
+image: https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/260b449bae6e9d994614e692adb7e9be0732e345/assets/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/3b20334039f86fd835445bd93d90eeb70281bf2a/assets/demo.gif
-  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/3b20334039f86fd835445bd93d90eeb70281bf2a/assets/promise-1.png
-  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/3b20334039f86fd835445bd93d90eeb70281bf2a/assets/promise-2.png
-  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/3b20334039f86fd835445bd93d90eeb70281bf2a/assets/promise-3.png
-  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/3b20334039f86fd835445bd93d90eeb70281bf2a/assets/promise-4.png
-version: "0.2.1"
+  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/260b449bae6e9d994614e692adb7e9be0732e345/assets/demo.gif
+  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/260b449bae6e9d994614e692adb7e9be0732e345/assets/promise-1.png
+  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/260b449bae6e9d994614e692adb7e9be0732e345/assets/promise-2.png
+  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/260b449bae6e9d994614e692adb7e9be0732e345/assets/promise-3.png
+  - https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/260b449bae6e9d994614e692adb7e9be0732e345/assets/promise-4.png
+version: "0.2.2"
 requires_hermes: ">=0.22"
 capabilities:
   provides_tools: []

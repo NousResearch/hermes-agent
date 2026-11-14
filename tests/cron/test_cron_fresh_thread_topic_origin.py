@@ -12,7 +12,7 @@ from cron.scheduler import _deliver_result
 from gateway.config import Platform
 
 
-def _deliver(extra):
+def _deliver(extra, *, origin_thread="100", deliver="origin"):
     adapter = AsyncMock()
     adapter.send.return_value = MagicMock(success=True, message_id="m1", raw_response=None)
     adapter.create_handoff_thread = AsyncMock(return_value="42")
@@ -28,9 +28,10 @@ def _deliver(extra):
         future.set_result(asyncio.run(coro))
         return future
 
-    job = {"id": "topic-job", "name": "Topic Brief", "deliver": "origin", "attach_to_session": True,
-           "origin": {"platform": "telegram", "chat_id": "123456789", "user_id": "987654321",
-                      "thread_id": "100", "chat_type": "dm"}}
+    origin = {"platform": "telegram", "chat_id": "123456789", "user_id": "987654321", "chat_type": "dm"}
+    if origin_thread is not None:
+        origin["thread_id"] = origin_thread
+    job = {"id": "topic-job", "name": "Topic Brief", "deliver": deliver, "attach_to_session": True, "origin": origin}
     with patch("gateway.config.load_gateway_config", return_value=cfg), \
             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
             patch("asyncio.run_coroutine_threadsafe", side_effect=run_coro), \
@@ -49,5 +50,13 @@ def test_opt_in_opens_a_fresh_thread_for_a_topic_born_job():
 @pytest.mark.parametrize("extra", [{}, {"cron_fresh_thread_per_run": False}, {"cron_fresh_thread_per_run": "yes"}])
 def test_default_keeps_delivering_to_the_origin_topic(extra):
     created, sent = _deliver(extra)
+    assert created == 0
+    assert sent and set(sent) == {"100"}
+
+
+def test_opt_in_never_replaces_an_explicitly_chosen_topic():
+    """A job created outside any topic, delivering to an explicit topic of its own chat: the origin's
+    missing thread matches any thread as a wildcard, but the named topic is the user's choice."""
+    created, sent = _deliver({"cron_fresh_thread_per_run": True}, origin_thread=None, deliver="telegram:123456789:100")
     assert created == 0
     assert sent and set(sent) == {"100"}

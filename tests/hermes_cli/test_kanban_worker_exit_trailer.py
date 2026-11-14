@@ -33,8 +33,13 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
-    """Claim ``tid`` for a worker that already exited ``rc`` and wrote its log — never reaped here."""
+def _dead_worker_with_log(conn, tid: str, pid: int, rc: int, *, heartbeat: bool = True) -> None:
+    """Claim ``tid`` for a worker that already exited ``rc`` and wrote its log — never reaped here.
+
+    A worker that got as far as the model has heartbeated: ``agent/activity_tracking.py``
+    stamps the claim on the first agent activity. ``heartbeat=False`` is the worker that
+    exited before the model ran, which the sweep books as a route failure instead.
+    """
     host = kb._claimer_id().split(":", 1)[0]
     kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
     conn.execute(
@@ -42,6 +47,8 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
         (pid, int(time.time()) - 120, tid),
     )
     conn.commit()
+    if heartbeat:
+        assert kbd.heartbeat_worker(conn, tid)
     log = kb.worker_log_path(tid)
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a", encoding="utf-8") as f:
@@ -83,6 +90,34 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert run["outcome"] == "rate_limited"
 
 
+def test_clean_exit_without_heartbeat_is_a_route_failure_not_a_violation(kanban_home):
+    """Negative control for the fixture above: rc=0 and a log, but no heartbeat ever reached
+    the claim, so the model never ran. That is a route failure (own streak, no unified-budget
+    hit), never a protocol violation."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_log(conn, tid, 70002, 0, heartbeat=False)
+
+        kbd.detect_crashed_workers(conn)
+
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        meta = kb._json_dict(run["metadata"])
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert ev["kind"] == "route_failure"
+        assert meta.get("route_failure") is True
+        assert meta.get("protocol_violation") is None
+        assert meta.get("exit_signal") == "heartbeat_null"
+        assert meta.get("reap_status") == "observed"
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert kbd._protocol_violation_streak(conn, tid) == 0
+        assert kbd._route_failure_streak(conn, tid) == 1
+
+
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
     """The third consecutive clean exit trips the violation budget and ``recompute_ready``
     must not promote the card back the same tick (``consecutive_failures`` is still below
@@ -96,6 +131,19 @@ def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
         assert task.consecutive_failures < 10
+
+        # Blocked by the violation budget, not the route-failure budget that a no-heartbeat
+        # exit would trip first (limit 2) — the hold must come from protocol violations.
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id", (tid,))]
+        assert kinds.count("protocol_violation") >= 1
+        assert "route_failure" not in kinds
+        gave_up = [kb._json_dict(r["payload"]) for r in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,))]
+        assert len(gave_up) == 1
+        assert gave_up[0]["protocol_violations"] == kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        assert gave_up[0]["protocol_violation_limit"] == kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        assert "route_failures" not in gave_up[0]
 
         kb.unblock_task(conn, tid)
         assert kb.get_task(conn, tid).status == "ready"

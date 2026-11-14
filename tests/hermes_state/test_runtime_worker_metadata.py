@@ -126,7 +126,7 @@ def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker)
         parts = [{'role': 'user', 'content': [{'type': 'text', 'text': 'look'},
                                                {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]}]
         sdb.append_messages_batch(sid, parts)
-        _append_multimodal_context(agent, parts[0], '', 'PLUGIN CONTEXT', preflight_compressed=False)
+        _append_multimodal_context(agent, parts[0], '', 'PLUGIN CONTEXT')
         durable[sid] = (sidecar, newest_user(sid)[0], owns_its_row(parts[0]))
     assert durable['owned'] == durable['direct'] == (('question', 'question\n\nPLUGIN CONTEXT'),
                                                      'look\n[screenshot]\nPLUGIN CONTEXT', True)

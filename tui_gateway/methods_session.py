@@ -236,7 +236,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
-    from agent.message_metadata import message_identity
+    from agent.session_persistence import durable_copy
     from agent.transcript_repair import sync_flushed_message_markers
 
     # The child sends the parent's exact system prompt: a row without one makes the branch's first
@@ -256,9 +256,9 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         # renderer fail-latches on a "transcript-less" session again). Roll back just this child so the seed
         # path can retry cleanly on first submit.
         # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
-        # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
+        # rows, and per-row transactions were the write-amplification pattern removed in #23254. The rows
+        # hold the flush's text (an image is a [screenshot] line); the live history keeps its parts.
+        rows = [durable_copy(msg, copy_fields) for msg in history]
         db.append_messages_batch(new_key, rows, chunk_rows=500)
         if title_source == "user":
             db.set_session_title(new_key, title)

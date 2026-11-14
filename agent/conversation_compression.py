@@ -3249,18 +3249,19 @@ def _publish_rotated_compaction(
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.session_persistence import durable_rows
     from tools.approval_yolo import with_session_yolo
-    agent._session_db.publish_compression_child(
-        parent_session_id=old_session_id, child_session_id=new_session_id,
-        source=_compression_child_source(agent, old_session_id), model=agent.model,
-        model_config=with_session_yolo(agent._session_init_model_config, old_session_id),
-        system_prompt=new_system_prompt, messages=compressed,
-        cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
-        compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
-        require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
-        watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
-        watermark_ceiling=_foreign_tail_ceiling,
-    )
+    with durable_rows(compressed) as rows:  # the flush's text rows; the live dicts keep their parts
+        agent._session_db.publish_compression_child(
+            parent_session_id=old_session_id, child_session_id=new_session_id,
+            source=_compression_child_source(agent, old_session_id), model=agent.model,
+            model_config=with_session_yolo(agent._session_init_model_config, old_session_id),
+            system_prompt=new_system_prompt, messages=rows,
+            cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
+            compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
+            require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
+            watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
+            watermark_ceiling=_foreign_tail_ceiling)
     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
     # this branch covers inserted/merged only; direct callers must use that wrapper.
     if compressed_user_turn_outcome in {"inserted", "merged"}:
@@ -3599,7 +3600,7 @@ def _commit_compaction(
                 # tool rows): counted once, the oldest carried original stays compacted=1 beside its live
                 # copy and is recalled twice. Only rows still active: a live list keeps the ids after an
                 # earlier compaction archived them.
-                from agent.conversation_compression_archive import ABSORBED_ROW_IDS, _positive_id
+                from agent.conversation_compression_archive import ABSORBED_ROW_IDS, _positive_id, coverage_for_commit
                 tail_count += len({
                     r for m in _tail_held if isinstance(m, dict)
                     for r in map(_positive_id, m.get(ABSORBED_ROW_IDS) or ())
@@ -3611,17 +3612,16 @@ def _commit_compaction(
                     # would build, and count their originals as carried duplicates like compress()'s tail.
                     persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
                     tail_count += len(verbatim_tail)
-                from agent.conversation_compression_archive import coverage_for_commit
+                from agent.session_persistence import durable_row, durable_rows
                 covered_ids, unresolved_held = coverage_for_commit(
-                    agent._session_db, agent.session_id,
-                    original_messages,
-                    verbatim_tail)
-                agent._session_db.archive_and_compact(
-                    agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
-                    watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
-                    lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
-                    covered_ids=covered_ids, unresolved_held=unresolved_held,
-                )
+                    agent._session_db, agent.session_id, original_messages, verbatim_tail)
+                with durable_rows(persisted) as rows:  # the flush's text rows; the live dicts keep their parts
+                    agent._session_db.archive_and_compact(
+                        agent.session_id, rows, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                        watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
+                        lock_holder=lease.holder, tail_count=tail_count,
+                        carried_messages=carried_messages and [durable_row(m) for m in carried_messages],
+                        covered_ids=covered_ids, unresolved_held=unresolved_held)
                 compressed = persisted
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next

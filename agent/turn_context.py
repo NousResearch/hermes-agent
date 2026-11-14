@@ -1139,7 +1139,6 @@ def _stamp_api_content_sidecar(
 
 def _append_multimodal_context(
     agent: Any, turn_user_msg: dict[str, Any], ext_prefetch_cache: str, plugin_user_context: str,
-    *, preflight_compressed: bool,
 ) -> None:
     """Multimodal (list) content takes no string sidecar: the turn's context becomes a durable
     text part on the current turn's live list (the gateway must-deliver-note channel, #71998),
@@ -1149,8 +1148,10 @@ def _append_multimodal_context(
     A user row another writer materialized BEFORE the prologue (in-place preflight compaction,
     a close/early flush that raced it) is updated in place: the crash persist marker-skips that
     message, so without this a resumed session replays a view the model never saw. Same
-    ``_row_id``-under-lock protocol as the string sidecar backfill; the row keeps its writer's
-    shape (compaction inserted the raw parts, a flush the text projection)."""
+    ``_row_id``-under-lock protocol as the string sidecar backfill; both writers store the text
+    projection, so the row takes it too. The live dict takes the rewritten row's digest: with the
+    digest of the row it replaced, its next flush would read the backfill as another writer's and
+    adopt the stored text over the live image parts."""
     _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
     if _mm_ctx:
         _stamp_typed_ask_once(agent, turn_user_msg)
@@ -1165,10 +1166,10 @@ def _append_multimodal_context(
         _db = getattr(agent, "_session_db", None)
         if _db is None or not isinstance(_row_id, int):
             return
-        _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
-        content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
+        content = _durable_content(turn_user_msg["content"])
         try:
-            _db.set_user_message_content(agent.session_id, _row_id, content, typed_ask_fields(turn_user_msg))
+            _db.set_user_message_content(agent.session_id, _row_id, content, typed_ask_fields(turn_user_msg),
+                                         live=turn_user_msg)
         except Exception:
             logger.warning("multimodal context backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 
@@ -1379,9 +1380,7 @@ def build_turn_context(
             _withhold_blocked_prompt(agent, messages[current_turn_user_idx], original_user_message)
         elif isinstance(messages[current_turn_user_idx].get("content"), list):
             _append_multimodal_context(
-                agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
-                preflight_compressed=compaction.compressed,
-            )
+                agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context)
         elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
             _stamp_api_content_sidecar(
                 agent, messages, current_turn_user_idx, ext_prefetch_cache,

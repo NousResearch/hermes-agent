@@ -18,7 +18,7 @@ import {
   SIDEBAR_FILTERED_PAGE_SIZE,
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
-import { messagingTotalsKey, normalizeProfileKey } from '@/store/profile'
+import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -326,13 +326,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   )
 
   /** Refresh cron jobs only while the profile that requested them remains active.
-   *  In Bot Mode with a selected bot, refresh THAT bot's jobs (fetch via its
-   *  logical route) so its schedules land instead of the ambient profile's. */
+   *  Jobs stay on the ambient profile in Bot Mode: the jobs overlay, Run now
+   *  and Manage all write `$cronJobs` for `$profileScope`, so a bot-scoped
+   *  list here would be replaced by their next refresh. */
   const refreshCronJobs = useCallback(async () => {
-    const sessionProfile = sidebarFetchProfile(profileScope)
+    const sessionProfile = sidebarProfileForScope(profileScope)
 
-    // A bot switch voids the page the same way a profile switch does.
-    if (sidebarFetchProfile(profileScopeRef.current) !== sessionProfile) {
+    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
@@ -544,8 +544,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }
 
       // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-      // In Bot Mode the scope is the selected bot: compare against its fetch
-      // profile, not the ambient sidebar scope.
       if (shouldPublish() && sidebarFetchProfile(profileScopeRef.current) === sessionProfile) {
         void refreshCronJobs()
       }

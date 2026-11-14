@@ -962,6 +962,11 @@ class TestLowercaseDottedConfigKeys:
         text = "I have password = foo and other things"
         assert redact_sensitive_text(text) == text
 
+    def test_spaced_equality_comparison_unchanged(self):
+        # ``==`` is a comparison, not an assignment; spacing tolerance must not mask it.
+        text = "password == expected\nassert cfg.password == other\n"
+        assert redact_sensitive_text(text) == text
+
     # --- carve-outs: must NOT redact ---
 
     def test_prose_mid_sentence_password_unchanged(self):

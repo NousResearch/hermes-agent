@@ -38,6 +38,7 @@ export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteCon
   log: (message: string) => void
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   resetConnection: () => void
+  confirmDead?: () => Promise<boolean>
   tracker: RemoteLivenessTracker
 }
 
@@ -86,6 +87,8 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
+  /** SSH retirement kills the owner; require an independent dead-PID verdict. */
+  confirmDead?: () => Promise<boolean>
 }
 
 /**
@@ -101,7 +104,8 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
   currentConnectionPromise,
   probe,
   reconnect,
-  retire
+  retire,
+  confirmDead
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
   let connection: TConnection
 
@@ -130,7 +134,15 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
-      await retire(error)
+      // An HTTP deadline says nothing about a live owner's in-flight work.
+      // Propagate this request's error while leaving its descriptor and SSH scope intact.
+      if (confirmDead && !(await confirmDead())) {
+        throw error
+      }
+
+      if (currentConnectionPromise() === connectionPromise) {
+        await retire(error)
+      }
     }
 
     return reconnect()
@@ -208,6 +220,8 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
   log: (message: string) => void
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   stopBackend: (profile: string) => void
+  confirmDead?: (poolKey: string) => Promise<boolean>
+  currentConnectionPromise?: (poolKey: string) => null | Promise<TConnection>
   tracker: RemoteLivenessTracker
 }
 
@@ -226,6 +240,8 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   log,
   probe,
   stopBackend,
+  confirmDead,
+  currentConnectionPromise,
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
@@ -254,6 +270,16 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
           return
         }
 
+        if (confirmDead && !(await confirmDead(profile))) {
+          log(`Pooled remote backend for profile "${profile}" is still alive; keeping its SSH scope after failed probes.`)
+
+          return
+        }
+
+        if (currentConnectionPromise && currentConnectionPromise(profile) !== entry.connectionPromise) {
+          return
+        }
+
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
         stopBackend(profile)
         dropped.push(profile)
@@ -272,6 +298,8 @@ export interface RevalidateSuspectPooledRemoteBackendsOptions<TConnection extend
   rebuild: (poolKey: string) => Promise<unknown>
   /** Tear down the dead descriptor (pool entry + SSH tunnel/master) for this key. */
   retire: (poolKey: string) => Promise<void> | void
+  confirmDead?: (poolKey: string) => Promise<boolean>
+  currentConnectionPromise?: (poolKey: string) => null | Promise<TConnection>
   tracker: RemoteLivenessTracker
 }
 
@@ -300,6 +328,8 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
   probe,
   rebuild,
   retire,
+  confirmDead,
+  currentConnectionPromise,
   tracker
 }: RevalidateSuspectPooledRemoteBackendsOptions<TConnection>): Promise<{ rebuilt: string[]; retired: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
@@ -327,6 +357,16 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
       }
 
       try {
+        if (confirmDead && !(await confirmDead(poolKey))) {
+          log(`Pooled remote backend "${poolKey}" is still alive; keeping its SSH scope after a failed probe.`)
+
+          return
+        }
+
+        if (currentConnectionPromise && currentConnectionPromise(poolKey) !== entry.connectionPromise) {
+          return
+        }
+
         await retire(poolKey)
       } catch (retireError) {
         // The dead entry may still be installed; rebuilding on top of it could
@@ -428,6 +468,7 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   log,
   probe,
   resetConnection,
+  confirmDead,
   tracker
 }: RevalidateRemoteConnectionOptions<TConnection>): Promise<RemoteRevalidationResult> {
   let connection: TConnection
@@ -471,6 +512,16 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
         `Cached remote Hermes backend failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping connection for retry.`
       )
 
+      return { ok: true, rebuilt: false }
+    }
+
+    if (confirmDead && !(await confirmDead())) {
+      log('Cached remote Hermes backend is still alive; keeping its SSH scope after failed probes.')
+
+      return { ok: true, rebuilt: false }
+    }
+
+    if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }
     }
 

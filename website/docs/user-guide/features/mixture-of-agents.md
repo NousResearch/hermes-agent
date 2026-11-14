@@ -180,6 +180,21 @@ deliberately conservative for code-review-style advice: bare digit runs, line
 numbers, timestamps, git SHAs, and IP addresses are never touched — only
 delimited phone formats like `(555) 123-4567` or `555-123-4567` match.
 
+### Tool-syntax guard for advisor outputs
+
+The advisory view shows each reference the acting agent's tool traffic as
+`[called tool: …]` / `[tool result: …]` blocks. Some models imitate that genre
+and fabricate well-formed blocks of their own — inventing tool calls, or
+"results" that contradict the real transcript. Because block-shaped output is
+what the aggregator reads as evidence, Hermes quarantines it on the way out:
+block-form tool syntax at the start of an advisor's own line is replaced with
+`[reference emitted tool syntax — unverified, not executed]` in both the
+reference blocks shown in the UI and the guidance injected into the aggregator
+prompt. This guard is always on. Mid-line quotes of the transcript (for
+example, "you already ran `[called tool: gh --version]`") are hedging prose,
+not fabricated blocks, and pass through untouched. Saved MoA traces keep the
+raw advisor text for post-hoc inspection.
+
 ### Per-slot reasoning effort
 
 Reference and aggregator slots may also set `reasoning_effort`. Use this when

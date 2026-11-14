@@ -985,6 +985,16 @@ platform:
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
   shared:
+    vault_code:
+      title: "🔐 Codice di verifica per {site}"
+      body: "{site} chiede un codice monouso (SMS o email). Premi il pulsante e inseriscilo nel modulo che si apre: va direttamente nella pagina e non viene mai pubblicato qui."
+      button: "Inserisci codice"
+      modal_title: "Codice per {site}"
+      input_label: "Codice monouso"
+      submitted: "Codice inviato; lo sto inserendo nella pagina."
+      ended: "Questa richiesta di codice è terminata; non è stato inserito nulla."
+      not_author: "Solo chi ha avviato questa richiesta può inserire il codice."
+      submitted_footer: "✓ Codice inviato"
     response_as_file: "📎 Risposta lunga: il testo completo è in allegato."
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"

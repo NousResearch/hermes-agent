@@ -1948,7 +1948,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
         "_orphaned_desktop_backend_pids", "_refresh_active_lazy_features",
         "_refresh_active_memory_provider_dependencies", "_relaunch_stopped_serves",
-        "_stop_process_trees",
+        "_stop_process_trees", "_write_update_incomplete_marker",
     ),
     "hermes_cli.update_cmd_maint": (
         "_purge_stale_hermes_modules", "_reload_updated_runtime_modules",
@@ -1964,15 +1964,12 @@ _FROZEN_ATTR_SOURCES: dict[str, str] = {
 
 def __getattr__(name):
     """Resolve the frozen updater surface on first read (see _FROZEN_UPDATER_SURFACE)."""
-    if name == "_write_update_incomplete_marker":
-        from hermes_cli._old_updater import stop_for_relaunch as value
-    else:
-        module = _FROZEN_ATTR_SOURCES.get(name)
-        if module is None:
-            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-        import importlib
+    module = _FROZEN_ATTR_SOURCES.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        value = getattr(importlib.import_module(module), name)
+    value = getattr(importlib.import_module(module), name)
     globals()[name] = value  # cache: later accesses skip __getattr__
     return value
 

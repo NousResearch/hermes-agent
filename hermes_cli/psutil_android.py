@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import NoReturn
 
-from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+from hermes_cli._old_updater import in_historical_update, stop_for_relaunch, stop_historical_updater
 
 # Frozen data for old imports, not a download performed by this module.
 PSUTIL_URL = (
@@ -15,7 +15,7 @@ PSUTIL_URL = (
 
 def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch. Extract nothing.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.psutil_android.prepare_patched_psutil_sdist")
 
 
 # Shim to stop the old updater doing work until relaunch. Historical callers

@@ -37,10 +37,13 @@ def release_unlocks(session_id) -> None:
 @contextlib.contextmanager
 def vault_prompt_scope(turn, agent):
     """Install the vault callbacks on this (agent) thread for a local viewer's turn; restore after.
-    Tool workers inherit them through ``tools.thread_context.propagate_context_to_thread``."""
+    Tool workers inherit them through ``tools.thread_context.propagate_context_to_thread``. A messaging
+    turn gets at most the one-time-code prompt (``gateway/session_vault_code_card.py``)."""
     from gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
-        yield
+        from gateway.session_vault_code_card import code_card_scope
+        with code_card_scope(turn, agent):
+            yield
         return
     from agent.vault_backends import unlock
     authority, session_id, _generation = turn._approval_owner

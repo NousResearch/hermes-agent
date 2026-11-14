@@ -50,14 +50,13 @@ def _hub_sources(profile: Optional[str]):
 
 
 def _resolve_hub_skill(ident: str, profile: Optional[str]):
-    """``(meta, bundle)`` for a hub identifier, resolved under ``profile``'s scope."""
+    """``(meta, bundle, source)`` for a hub identifier, resolved under ``profile``'s scope."""
     from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
     from tools.skills_hub_search import create_source_router
 
     with _config_profile_scope(profile):
         sources = create_source_router()
-        meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
-    return meta, bundle
+        return _resolve_source_meta_and_bundle(ident, sources)
 
 
 # Sources subsumed by an available hermes-index (progressive per-source fan-out
@@ -248,7 +247,7 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
     ident = require(identifier, "identifier is required")
 
     def _run():
-        meta, bundle = _resolve_hub_skill(ident, profile)
+        meta, bundle, _src = _resolve_hub_skill(ident, profile)
         if not bundle and not meta:
             return None
 
@@ -292,20 +291,18 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
         from tools.skills_hub_install import quarantine_bundle
         from tools.skills_guard import scan_skill, should_allow_install
 
-        meta, bundle = _resolve_hub_skill(ident, profile)
+        from hermes_cli.skills_hub import _scan_source_for_install
+
+        meta, bundle, matched_source = _resolve_hub_skill(ident, profile)
         if not bundle:
             return None
 
-        if bundle.source == "official":
-            scan_source = "official"
-        else:
-            scan_source = (
-                getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or ident)
+        scan_source, scan_trust = _scan_source_for_install(bundle, meta, ident, matched_source)
 
         tier1 = None
         q_path = quarantine_bundle(bundle)
         try:
-            result = scan_skill(q_path, source=scan_source)
+            result = scan_skill(q_path, source=scan_source, trust_level=scan_trust)
             # Advisory SkillEvaluator Tier 1 second opinion: optional binary,
             # never blocks, errors degrade to no data (same as the CLI installer).
             try:

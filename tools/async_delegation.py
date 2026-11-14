@@ -56,6 +56,9 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # Pending completions older than this are dropped on restart replay instead of
 # re-run as a full-context turn; 48h keeps weekend results deliverable.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
+# SET clause of a deferral, shared by the owner and worker ledger paths. Bind ``:replay_cutoff``.
+DEFER_ASSIGNMENTS = ("delivery_state=CASE WHEN COALESCE(completed_at,dispatched_at)<:replay_cutoff "
+                     "THEN 'dropped' ELSE delivery_state END,delivery_attempts=MAX(0,delivery_attempts-1)")
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
@@ -702,14 +705,25 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 
 def defer_completion_delivery(delegation_id: str, claim_id: str) -> bool:
-    """Return an unadmitted completion to pending without spending a delivery attempt."""
+    """Return an unadmitted completion to pending without spending a delivery attempt.
+
+    A refund never spends the budget, so a refusal that never clears would re-offer the row
+    forever; past ``_MAX_COMPLETION_REPLAY_AGE_S`` it converges to ``dropped`` like a replay does."""
     if remote := worker_ledger():
         return remote.defer(delegation_id, claim_id)
-    return _update_delivery("""UPDATE async_delegations SET delivery_claim=NULL,
-                  delivery_claimed_at=NULL, delivery_attempts=MAX(0, delivery_attempts-1),
-                  updated_at=?
-           WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?""",
-        (time.time(), delegation_id, claim_id))
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        changed = conn.execute(f"""UPDATE async_delegations SET {DEFER_ASSIGNMENTS},delivery_claim=NULL,
+                      delivery_claimed_at=NULL,updated_at=:now
+               WHERE delegation_id=:delegation_id AND delivery_state='pending' AND delivery_claim=:claim_id""",
+            {"replay_cutoff": now - _MAX_COMPLETION_REPLAY_AGE_S, "now": now,
+             "delegation_id": delegation_id, "claim_id": claim_id}).rowcount == 1
+        if changed and conn.execute("SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+                                    (delegation_id,)).fetchone()[0] == "dropped":
+            logger.warning("Async delegation %s: completion still unadmitted past the %.1fh replay cap; "
+                           "terminally dropping it (result remains queryable).",
+                           delegation_id, _MAX_COMPLETION_REPLAY_AGE_S / 3600.0)
+    return changed
 
 
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:

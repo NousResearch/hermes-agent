@@ -25,6 +25,12 @@ class GatewayLifecycleBlocked(ValueError):
     """Raised when a cron job spec contains a gateway-lifecycle command."""
 
 
+# The runtime also invokes the CLI as a module, with an interpreter path and optional flags.
+_HERMES_MODULE_COMMAND = (
+    r"(?<![\w.\-])python[\d.]*(?:\.exe)?\s+(?:-\S+\s+)*-m\s+hermes_cli\.main"
+)
+
+
 # Shell-level command shapes that target the gateway lifecycle; each branch is anchored on a
 # concrete command identifier so it fires only on command-shaped strings, never prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
@@ -37,7 +43,8 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # See #77173.
     # Windows spells the CLI with a launcher suffix (`hermes.exe`, npm-style `hermes.cmd`/`.ps1`);
     # same command, so the suffix is optional here.
-    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    r"(?:(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?|"
+    + _HERMES_MODULE_COMMAND + r")\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops anchored on a hermes-gateway label so unrelated hermes services stay
     # unblocked. `submit`/`bootstrap` register a NEW keepalive job wrapping an arbitrary helper (a
     # laundered restart); neutral-label submissions are caught by
@@ -244,7 +251,7 @@ _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
 # the self-targeting shape (named profile == the profile running the guard). See #78028.
 _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    r"hermes\s+"
+    r"(?:hermes|" + _HERMES_MODULE_COMMAND + r")\s+"
     # Each flag has one parse: '-' plus its remainder, never two ways to split
     # '--'. A following flag cannot also be an optional value (#129281).
     # Possessive token/space runs avoid repartitioning whitespace on failure;

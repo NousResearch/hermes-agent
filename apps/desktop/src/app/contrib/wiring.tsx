@@ -1016,6 +1016,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
     archiveSelectedSession,
+    isActiveRunBusy: () => busyRef.current,
     openNewSessionTab,
     requestGateway,
     startFreshSession: startFreshSessionDraft,

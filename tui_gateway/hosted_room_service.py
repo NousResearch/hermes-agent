@@ -323,8 +323,11 @@ class HostedRoomService:
         self.runtime.wakeup()
 
     def _list_tasks(self, room_id: str, statuses) -> Iterator[Mapping[str, Any]]:
+        # One read per scan, grouped by status in the caller's order: a read per status reopened
+        # state.db up to four times per room on every idle poll.
+        tasks = driver.list_tasks(self.db_path, room_id=room_id)
         for status in statuses:
-            yield from driver.list_tasks(self.db_path, room_id=room_id, status=status)
+            yield from (task for task in tasks if task["status"] == status)
 
     def _save_link(self, **link: Any) -> None:
         """Persist one stored link (``make_stored_link`` keyword fields)."""

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import shlex
-import shutil
 import sys
 from typing import Set
 
@@ -57,7 +55,9 @@ def _post_setup_chromium() -> None:
     """Local Browser row: browser_exec launches pm's Chromium. Termux (system Chromium) and the Hermes
     Docker image (its baked build) own their payloads, so a miss there is a hint, never a download."""
     import pm
-    from hermes_cli.browser_runtime import BAKED_EXECUTABLE_FILE, chromium_executable, chromium_missing_hint
+    from hermes_cli.browser_runtime import (
+        BAKED_EXECUTABLE_FILE, chromium_executable, chromium_missing_hint, install_dependency_lines,
+        missing_shared_libraries)
     from hermes_constants import is_termux
 
     _ensure_browser_use_cli()
@@ -72,17 +72,19 @@ def _post_setup_chromium() -> None:
     if found is None:
         _print_warning(f"    {chromium_missing_hint()}")
         return
+    # An installed binary is not a usable one: a standalone Chrome download carries none of the
+    # host-owned libraries, so "ready" for a binary the loader cannot start is the reported bug (#148660).
+    missing = [] if is_termux() else missing_shared_libraries(found)
+    if missing:
+        _print_warning(f"    Chromium cannot start: missing system libraries ({', '.join(missing)})")
+        _info_lines(*install_dependency_lines())
+        return
     _print_success(f"    Chromium ready: {found}")
 
     # OS libraries are host-owned. Never download another package manager to install them.
     if sys.platform == "linux" and not is_termux():
         _info_lines("Chromium also needs system libraries supplied by your distribution.")
-        if shutil.which("apt-get") and _module_installed("playwright"):
-            command = shlex.join([sys.executable, "-m", "playwright", "install-deps", "chromium"])
-            _info_lines(f"Install missing system libraries with: {command}")
-        else:
-            _info_lines("System dependency installation guide:",
-                        "  https://playwright.dev/python/docs/browsers#install-system-dependencies")
+        _info_lines(*install_dependency_lines())
 
 
 # The hook key is the UI provider identifier; extra names belong to pyproject.toml.

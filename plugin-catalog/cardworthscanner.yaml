@@ -1,0 +1,10 @@
+name: cardworthscanner
+repo: https://github.com/AbigailDavised/cardworthscanner-mcp
+sha: b45c23ed10e2f96b37c3029353bc72929fe6e91b
+title: CardWorthScanner
+description: PSA/BGS/CGC trading card grading ROI calculator, centering inspector and TCG market valuation (Pokemon, Yu-Gi-Oh!) via the hosted CardWorthScanner MCP server.
+maintainer: AbigailDavised
+tier: community
+category: tools
+docs_url: https://github.com/AbigailDavised/cardworthscanner-mcp#readme
+version: "1.0.2"

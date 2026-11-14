@@ -180,7 +180,7 @@ def test_a_value_an_external_secret_source_supplies_is_the_operators(tmp_path, m
 def _launch_home_key() -> str:
     from hermes_constants import get_routing_process_hermes_home
 
-    return str(get_routing_process_hermes_home().resolve())
+    return hermes_home_key(get_routing_process_hermes_home())
 
 
 @pytest.mark.parametrize("history", ["removed_mapping", "other_profile"])

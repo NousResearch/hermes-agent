@@ -138,7 +138,6 @@ services:
       - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
     ports:
       - "8642:8642"
-      - "8789:8789"
       - "8644:8644"
     depends_on:
       postgres:

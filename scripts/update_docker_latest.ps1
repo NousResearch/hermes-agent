@@ -3,7 +3,7 @@ param(
     [string]$ComposeFile = "docker-compose.yml",
     [string]$ApiServerKey,
     [string]$DashboardStatusUrl = "http://127.0.0.1:9119/api/status",
-    [string]$GatewayModelsUrl = "http://127.0.0.1:8789/v1/models"
+    [string]$GatewayModelsUrl = "http://127.0.0.1:8642/v1/models"
 )
 
 $ErrorActionPreference = "Stop"
@@ -111,7 +111,7 @@ if (-not $ApiServerKey) {
 
 if (-not $ApiServerKey) {
     Write-Warning "API_SERVER_KEY is not set in $EnvPath. API health probe will be skipped."
-    Write-Warning "Set API_SERVER_KEY in data/.env to enable the :8789 health probe."
+    Write-Warning "Set API_SERVER_KEY in data/.env to enable the :8642 health probe."
 }
 
 Push-Location $RepoRoot

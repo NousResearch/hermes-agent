@@ -178,9 +178,10 @@ logs `unable to connect ... tcp forward from 0.0.0.0:8642`. Stop it with
 `Get-NetTCPConnection -LocalPort 8642 -State Listen`) before recreating the stack.
 
 > `version` reading `unknown` is **not** "fine" — it means the image shipped a
-> commit-only install stamp, so `requires_hermes` plugin gates fail open. See
-> Plan 006 §4; the fix is in `fork-ghcr-publish.yml`, and it takes effect after
-> the next image rebuild.
+> commit-only install stamp, so `requires_hermes` plugin gates fail open. The
+> fix landed in `fork-ghcr-publish.yml` (PR #6), so a rebuilt image reports the
+> base release instead (`0.23.1+2030.g<sha>`). If you still see `unknown`, the
+> image predates that fix — rebuild it, don't accept it.
 
 > A gateway reporting `DEGRADED` with `weixin: WEIXIN_TOKEN is required` is not a
 > broken upgrade: weixin has no credentials. Either scan the QR code or set
@@ -209,7 +210,7 @@ and step 6 (QR login) may be needed manually.
 
 After pulling, verify that `docker-compose.yml` and
 `docker-compose.upstream.yml` expose the same gateway ports. The
-canonical set is `8642` (API server), `8789` (health), `8644` (webhook).
+canonical set is `8642` (API server, which also serves `/health`), and `8644` (webhook).
 If they diverge, sync `docker-compose.yml` to match
 `docker-compose.upstream.yml`. See
 [api-gateway-ports.instructions.md](api-gateway-ports.instructions.md)

@@ -33,7 +33,7 @@ Use this skill for local stack validation after install changes, deployment-wrap
 - On Windows, prefer WSL2-oriented workflows because the main README does not treat native Windows as the supported runtime path.
 - Confirm Docker Engine and Docker Compose are available before changing files or starting containers.
 - Treat `data/.env` and generated `data/config.yaml` as local runtime state, not committed source.
-- Preserve the host-port contract from the compose files: `9119`, `8789`, `8644`, and `5433` should stay unchanged unless the user explicitly asks for different ports.
+- Preserve the host-port contract from the compose files: `9119`, `8642`, `8644`, and `5433` should stay unchanged unless the user explicitly asks for different ports.
 
 ### 2. Seed the local env file if needed
 

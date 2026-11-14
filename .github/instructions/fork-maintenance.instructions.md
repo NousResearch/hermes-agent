@@ -42,5 +42,5 @@ applyTo:
 
 - After editing compose or deployment docs, validate with `docker compose config`.
 - For upstream-image stacks, use `docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans`.
-- Check `docker compose ps`, the dashboard health endpoint `http://127.0.0.1:9119/api/status`, and the agent API `http://127.0.0.1:8789/v1/models` when available.
+- Check `docker compose ps`, the dashboard health endpoint `http://127.0.0.1:9119/api/status`, and the agent API `http://127.0.0.1:8642/v1/models` when available.
 - Report any step that would change credentials, rebuild volumes, or replace mounted config before doing it.

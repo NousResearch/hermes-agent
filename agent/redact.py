@@ -716,8 +716,9 @@ _DB_CONNSTR_RE = re.compile(
 )
 # The same DB URLs (and their ``jdbc:`` forms) also take the password as a query parameter:
 # ``postgresql://db/app?user=app&password=…``. Unlike web-URL queries these are never round-trip tokens.
+# ``+driver`` covers SQLAlchemy URLs (``postgresql+psycopg2://``), which pass query params to the driver.
 _DB_URL_QUERY_RE = re.compile(
-    r"(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?)://(?:[^\s?#:]|:(?!//))*+\?[^\s#]+",
+    r"(?:postgres(?:ql)?|mysql|mariadb|mongodb|rediss?|amqps?)(?:\+[a-z0-9]++)?://(?:[^\s?#:]|:(?!//))*+\?[^\s#]+",
     re.IGNORECASE)  # the authority/path run stops at the next ``://``: linear on repeated schemes
 _QUERY_PW_PARAM_RE = re.compile(r"([?&;](?:password|pwd)=)([^&;#\s\"'<>]+)", re.IGNORECASE)
 

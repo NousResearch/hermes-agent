@@ -8,6 +8,7 @@ values and run at a fixed point inside that transaction; their bodies live in :m
 
 from __future__ import annotations
 
+import heapq
 import json
 import uuid
 
@@ -42,6 +43,7 @@ __all__ = [
     "claim_session_input",
     "find_session_admission",
     "get_session_admission",
+    "latest_session_admission",
     "list_session_admissions",
     "recover_session_inputs",
     "rehome_queued_inputs",
@@ -123,6 +125,25 @@ def list_session_admissions(holder, *, session_id: str, pending_only: bool = Tru
         sql = ("SELECT * FROM session_admissions WHERE target_session_id=? "
                + ("AND status IN ('queued','started','unknown') " if pending_only else "") + "ORDER BY seq")
         return [_row(row) for row in conn.execute(sql, (session_id,))]
+
+
+_ADMISSION_STATUSES = ('queued', 'started', 'unknown', 'terminal')  # the table's status CHECK
+
+
+def latest_session_admission(holder, *, session_id: str, payload_marker: str) -> dict | None:
+    """The newest admission whose decoded payload holds the top-level key ``payload_marker``, stopping at the first
+    match: a restored lane needs only its latest envelope, not the session's whole history. One newest-first stream
+    per status, merged by ``seq``, so each walks the (target, status, seq) index with no sort."""
+    sql = "SELECT * FROM session_admissions WHERE target_session_id=? AND status=? ORDER BY seq DESC"
+    with holder._read_ctx() as conn:
+        cursors = [conn.execute(sql, (session_id, status)) for status in _ADMISSION_STATUSES]
+        try:
+            rows = heapq.merge(*cursors, key=lambda row: row['seq'], reverse=True)
+            return next((row for row in map(_row, rows)
+                         if isinstance(row['payload'], dict) and payload_marker in row['payload']), None)
+        finally:
+            for cursor in cursors:  # before the connection goes back to the pool
+                cursor.close()
 
 
 _ANY_HEAD = object()

@@ -575,7 +575,19 @@ def _readonly_skill_mount_args() -> list[str]:
     return args
 
 
-def _host_user_args(run_as_host_user: bool) -> list[str]:
+def _needs_podman_keep_id(executable: str, extra_args: list) -> bool:
+    """Rootless local Podman maps container uid N>0 into the caller's subuid range, so ``--user
+    uid:gid`` alone writes bind-mount files as e.g. host uid 100999 (or gets EACCES); ``--userns
+    keep-id`` maps the caller 1:1. Rootful Podman rejects keep-id and maps like Docker. Matches a
+    ``docker -> podman`` shim too; a user-supplied ``--userns`` wins."""
+    names = {os.path.basename(executable).lower(), os.path.basename(os.path.realpath(executable)).lower()}
+    if not names & {"podman", "podman.exe"} or any(str(a).startswith("--userns") for a in extra_args or []):
+        return False
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() != 0  # windows-footgun: ok — getattr-guarded
+
+
+def _host_user_args(run_as_host_user: bool, executable: str = "docker", extra_args: list | None = None) -> list[str]:
     """``--user uid:gid`` so bind-mount writes are owned by the host user, not root. Without
     POSIX ids fall back to the full cap set — the image's init may still need to drop privileges."""
     if not run_as_host_user:
@@ -583,6 +595,8 @@ def _host_user_args(run_as_host_user: bool) -> list[str]:
     user_spec = _resolve_host_user_spec()
     if user_spec is not None:
         logger.info("Docker: running container as host user %s", user_spec)
+        if _needs_podman_keep_id(executable, extra_args or []):
+            return ["--userns", "keep-id", "--user", user_spec]
         return ["--user", user_spec]
     logger.warning(
         "docker_run_as_host_user is enabled but this platform does "
@@ -714,10 +728,9 @@ class DockerEnvironment(BaseEnvironment):
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
-        user_args = _host_user_args(run_as_host_user)
-
         # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
         self._docker_exe = find_docker() or "docker"
+        user_args = _host_user_args(run_as_host_user, self._docker_exe, validated_extra)
 
         # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1 and exec
         # /run/s6/basedir/bin/init during startup. For those images we must (a) skip Docker's --init (two

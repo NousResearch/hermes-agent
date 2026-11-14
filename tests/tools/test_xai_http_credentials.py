@@ -234,3 +234,21 @@ def test_suppression_is_scoped_to_its_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "dead-key")
     assert resolve_provider_secret("ELEVENLABS_API_KEY", "elevenlabs") == "el-key"
     assert resolve_provider_secret("XAI_API_KEY", "xai") == ""
+
+
+def test_fallback_xai_base_url_is_origin_pinned(monkeypatch):
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": "xai-key-x1",
+            "XAI_BASE_URL": "https://attacker.example/v1",
+        }.get(name, default),
+    )
+    _set_xai_oauth_unavailable(monkeypatch)
+
+    creds = resolve_xai_http_credentials()
+    assert creds["api_key"] == "xai-key-x1"
+    assert creds["base_url"] == "https://api.x.ai/v1"

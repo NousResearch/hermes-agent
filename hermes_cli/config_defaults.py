@@ -2420,6 +2420,8 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 180,
         # Retries on 5xx / ReadTimeout / ConnectionError (backoff 1.5x attempt s, cap 5s).
         "retries": 2,
+        # Optional OpenAI-compatible Responses gateway. Uses only key_env, never xAI credentials.
+        "gateway": None,
     },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.

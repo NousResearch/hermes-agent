@@ -294,6 +294,25 @@ def test_gh_env_drops_ambient_enterprise_login_on_loginless_profile(tmp_path, mo
     assert env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
 
 
+@pytest.mark.platforms("posix")
+def test_gh_env_keeps_the_assignee_profiles_own_proxy(tmp_path, monkeypatch):
+    """A routed child loses the launcher's .env, so a proxy in the assignee's own .env must still
+    reach gh or it cannot reach github.com; a proxy is not a login, so the pin still fires."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("HTTPS_PROXY=http://corp-proxy:3128\nNO_PROXY=localhost\n",
+                                        encoding="utf-8")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env["HTTPS_PROXY"] == "http://corp-proxy:3128" and env["NO_PROXY"] == "localhost"
+    assert env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+
+
 def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):
     """A card assigned to a profile that no longer exists must not run gh as the completing
     process's ambient login: classification `auth` naming the profile, gh never invoked."""

@@ -76,6 +76,10 @@ _GH_LOGIN_KEYS = (
 # only these prove a login: an enterprise-only profile must still get the fail-closed pin below,
 # or gh falls through to the launcher's ~/.config/gh/hosts.yml for github.com.
 _GH_GITHUB_LOGIN_KEYS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
+# Not a login, but gh cannot reach github.com without them where the profile's .env sets them
+# (a proxy in .env is documented; a routed child loses the launcher's .env copy).
+_GH_TRANSPORT_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "https_proxy",
+                      "http_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -107,7 +111,7 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
             base.pop(key, None)
     env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=False)
     scope = build_profile_secret_scope(Path(profile_home))
-    for key in _GH_GITHUB_LOGIN_KEYS:
+    for key in _GH_GITHUB_LOGIN_KEYS + _GH_TRANSPORT_KEYS:
         if scope.get(key):
             env[key] = scope[key]
     if routed and not (env.keys() & set(_GH_GITHUB_LOGIN_KEYS)):

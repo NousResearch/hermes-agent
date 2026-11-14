@@ -400,11 +400,20 @@ def _chat_image_dir(home: Path) -> Path:
     return get_hermes_dir("cache/images", "image_cache", home=home)
 
 
+def _generated_image_dir(home: Path) -> Path:
+    """Where ``image_generate`` writes its output on this host: ``cache/generated/images``
+    (``agent.provider_media.GENERATED_SUBDIR``). These files are the only copy of a
+    base64-returning provider's output, so they stay host files for a profile whose
+    workspace is an SSH machine, exactly like a browser paste in ``_chat_image_dir``."""
+    return home / "cache" / "generated" / "images"
+
+
 def _is_host_file(path: str, profile: Optional[str]) -> bool:
     """Whether *path* is a file the profile keeps on this host even when its workspace is an SSH
-    machine, read back to be previewed and sent: a browser paste in its image cache, or a file the
-    browser's picker staged in its uploads folder. Only a file directly in one of those two folders
-    counts, after resolving symlinks and ``..``, so an SSH profile reads no other host file here.
+    machine, read back to be previewed and sent: a browser paste in its image cache, an image
+    ``image_generate`` wrote to its generated-image cache, or a file the browser's picker staged
+    in its uploads folder. Only a file directly in one of those folders counts, after resolving
+    symlinks and ``..``, so an SSH profile reads no other host file here.
     A ``file:`` URL counts by the native path it names, decoded once as ``_fs_path`` decodes it."""
     if path.lower().startswith("file:"):
         try:
@@ -419,19 +428,21 @@ def _is_host_file(path: str, profile: Optional[str]) -> bool:
         return False  # not on this host: the workspace's to answer
     with _profile_scope(profile):
         home = get_hermes_home()
-        cache = _chat_image_dir(home)
-    try:
-        if target.parent == cache.resolve(strict=True):
-            return True
-    except (OSError, RuntimeError):
-        pass
+        host_dirs = (_chat_image_dir(home), _generated_image_dir(home))
+    for host_dir in host_dirs:
+        try:
+            if target.parent == host_dir.resolve(strict=True):
+                return True
+        except (OSError, RuntimeError):
+            continue
     return is_staged_upload(home, target)
 
 
 def _remote_fs_backend(path: str, profile: Optional[str]):
-    """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes and
-    staged uploads are checked before the SSH machine is dialed, so they read back while that
-    machine is down; every other path is the SSH machine's to answer (see ``_fs_backend``)."""
+    """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes,
+    generated images and staged uploads are checked before the SSH machine is dialed, so they
+    read back while that machine is down; every other path is the SSH machine's to answer
+    (see ``_fs_backend``)."""
     if _is_host_file(path, profile):
         return None
     return _fs_backend(profile)
@@ -1421,7 +1432,11 @@ async def _fs_download_authority(
     local = await _fs_download_path(path, profile, session_id, session=session)
 
     def capture():
-        _hosted_fs_read_guard(local, request)
+        # The same staged-file exception read-data-url makes under a locked files root: a host
+        # file (a browser paste, a generated image, a staged upload) sits outside the managed
+        # tree by design, and the workspace is never dialed for it.
+        if not _is_host_file(str(local), profile):
+            _hosted_fs_read_guard(local, request)
         target, _st = _fs_regular_file(local, _fs_profile_home(profile))
         homes = [owner]
         target_home = named_profile_home(target)
@@ -1445,7 +1460,9 @@ async def _ticketed_fs_download(
     from hermes_cli.web_server_file_response import OpenedFileResponse
 
     def checked():
-        _hosted_fs_read_guard(authority.target, request)
+        # A ticket captured for a host file must stay redeemable here for the same reason.
+        if not _is_host_file(str(authority.target), profile):
+            _hosted_fs_read_guard(authority.target, request)
         target, _st = _fs_regular_file(authority.target, _fs_profile_home(profile))
         return target, None
 
@@ -1474,7 +1491,9 @@ async def fs_download(
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id, session=session)
-    _hosted_fs_read_guard(target, request)
+    # A host file downloads on the same exception its preview gets under a locked files root.
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target, request)
     target, _st = _fs_regular_file(target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(

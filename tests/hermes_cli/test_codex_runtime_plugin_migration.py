@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-
+import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
@@ -47,12 +47,22 @@ class TestTranslateOneServer:
 # ---- TOML rendering ----
 
 class TestTomlValueFormatter:
+    @pytest.mark.parametrize("servers", [
+        pytest.param({"café": {"command": "npx"}, "文件": {"command": "npx"}}, id="non-ascii-name"),
+        pytest.param({"fs": {"command": "npx", "args": ["a\x7fb"], "env": {"PS1": "\x1b[0m$ "}}},
+                     id="control-char-value"),
+        pytest.param({"a\x01b": {"command": "npx"}}, id="control-char-name")])
+    def test_any_server_name_or_string_round_trips_through_codex_toml(self, tmp_path, servers):
+        """TOML bare keys are ASCII-only and every control char must be escaped in a string: a
+        Hermes server named ``café`` or an env value carrying ESC must not make migrate() refuse
+        to write config.toml for every server."""
+        import tomllib
 
-
-
-
-
-
+        report = migrate({"mcp_servers": servers}, codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False, default_permission_profile=None)
+        assert report.errors == [] and report.written
+        parsed = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+        assert parsed["mcp_servers"] == servers
 
     def test_atomic_write_no_temp_leak_on_success(self, tmp_path):
         """The atomic-write path uses tempfile.mkstemp + rename. On

@@ -15,6 +15,8 @@ import tempfile
 import unicodedata
 
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_fetch_exec import DownloadThenRunMatcher
+from tools.shell_heredoc import mask_heredoc_bodies_for_shell_scan
 
 logger = logging.getLogger("tools.approval")
 
@@ -227,7 +229,12 @@ _PIPE_WRAPPERS_RE = (
     + r")\s++)*+"
 )
 _PIPE_SHELL_TOKEN_RE = (
-    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
+    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)`]|$)"
+)
+# A stdin-reading interpreter with no script argument (or `-`) runs the piped text as code;
+# `python3 -m json.tool` / `node script.js` name their own program and stay out.
+_PIPE_INTERPRETER_TOKEN_RE = (
+    rf"{_PIPE_PATH_PREFIX_RE}(?:python[0-9.]*|node|perl|ruby|php)(?:\.exe)?(?:\s++-)?(?=\s*+(?:[;&|)`}}]|$))"
 )
 # Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
 # must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.
@@ -235,7 +242,11 @@ _PIPE_LOOKUP_ONLY_RE = re.compile(
     rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-(?-i:[^\W\dugUCDhpRrtT])*l|--list))\b",
     re.IGNORECASE,
 )
-_PIPE_SINK_RE = re.compile(rf"(?:\|&?\s*|>\(\s*){_PIPE_WRAPPERS_RE}{_PIPE_SHELL_TOKEN_RE}", re.IGNORECASE)
+# `| (bash)` / `| { bash; }`: a subshell or group opener in front of the sink still feeds it stdin.
+_PIPE_SINK_RE = re.compile(
+    rf"(?:\|&?\s*|>\(\s*)(?:[({{]\s*+)*+{_PIPE_WRAPPERS_RE}(?:{_PIPE_SHELL_TOKEN_RE}|{_PIPE_INTERPRETER_TOKEN_RE})",
+    re.IGNORECASE,
+)
 _PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
 _PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
 # The widened sink skips `||` (an or-list, not a pipe); main's raw sink keeps the old operator.
@@ -248,6 +259,7 @@ _PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$
 
 
 _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
+_DOWNLOAD_THEN_RUN_DESCRIPTION = "execute a just-downloaded file"
 _WMIC_DELETE_IN_SEGMENT_RE = re.compile(r"\sshadowcopy\b.*\sdelete\b", re.IGNORECASE | re.DOTALL)
 # Leading switches of a carrier before its script: cmd /s /q /c, start /b "title", pwsh -NoProfile
 # -ExecutionPolicy Bypass -Command, doas -u x, ssh -i k -p 22 host. Option values are taken only for
@@ -377,7 +389,8 @@ def detect_hardline_command(command: str) -> tuple:
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
     # benign grep). Only quoted newlines are masked: they are data, and masking keeps quoting intact.
-    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
+    scan_command = expand_ansi_c_quotes(mask_heredoc_bodies_for_shell_scan(command, code_consumers=False))
+    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(scan_command))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
@@ -532,7 +545,11 @@ DANGEROUS_PATTERNS = [
     (rf'(?<![\w.-])(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
-    (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    (r'(?:\beval\b|\bsource\b|\.)\s*["\']?(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in DownloadThenRunMatcher (linear two-step
+    # match, tools/approval_fetch_exec.py); the string only feeds the legacy approval-key alias.
+    (r'\b(?:curl|wget)\b.*(?:\s-[a-z]*o|--output|>).*(?:;|&&|\|\||\n)',
+     _DOWNLOAD_THEN_RUN_DESCRIPTION),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
@@ -706,6 +723,7 @@ _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+    _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),
 }
 DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
@@ -1397,9 +1415,17 @@ def _strip_shell_word_syntax(word: str) -> str:
     )
 
 
+# A brace word in COMMAND position expands to its comma-separated alternatives as separate words:
+# `{rm,-rf,/}` runs as `rm -rf /`. Argument-position braces (`find / -{delete,print}`) never reach
+# this deobfuscator, so the dynamic-word rules keyed on them still fire. No quotes/$/nesting.
+_BRACE_ALTERNATION_RE = re.compile(r"\{([A-Za-z0-9_./:%@+=^-]+(?:,[A-Za-z0-9_./:%@+=^-]+)+)\}")
+
+
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
+    if brace := _BRACE_ALTERNATION_RE.fullmatch(word):
+        return brace.group(1).replace(",", " ")
     for _ in range(2):
         previous = word
         word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))
@@ -1633,7 +1659,11 @@ def _deny_command_variants(command: str):
     executable basename (never arbitrary argument paths).
     """
     yield from _command_detection_variants(command)
-    pending, seen = [expand_ansi_c_quotes(command)], set()
+    # Heredoc bodies are masked first, then ANSI-C expanded: `$'...'` inside a body is literal data.
+    pending = list(dict.fromkeys(
+        expand_ansi_c_quotes(mask_heredoc_bodies_for_shell_scan(command, code_consumers=code))
+        for code in (False, True)))
+    seen = set()
     while pending:
         source = pending.pop()
         if source in seen:
@@ -1670,6 +1700,24 @@ def _deny_command_variants(command: str):
 
 
 def _command_detection_variants(command: str):
+    """Variants of the command with provably inert heredoc bodies dropped (#140704).
+
+    A quote in a body (`it's`) desynced every quote-aware pass and hid the command after the
+    heredoc; body lines projected as commands. `cat` bodies are data, so they are dropped outright.
+    python/osascript bodies are code: their dropped copy is scanned IN ADDITION, a union that can
+    only add detections. Bodies a shell runs (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`) and
+    unterminated or mis-parsed `<<` (`$((a<<b))`) are never dropped.
+    """
+    seen: set[str] = set()
+    sources = dict.fromkeys(mask_heredoc_bodies_for_shell_scan(command, code_consumers=code) for code in (False, True))
+    for source in sources:
+        for variant in _single_command_detection_variants(source):
+            if variant not in seen:
+                seen.add(variant)
+                yield variant
+
+
+def _single_command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state

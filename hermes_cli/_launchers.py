@@ -147,16 +147,28 @@ def resolve_store_python(repo_root: Path, *, publication: bool = False) -> Path 
     wins over an inherited ``HERMES_RUNTIME_DIR``. The override names a store
     for the running process (an e2e fixture, a desktop toolchain) that a later
     scratch cleanup may delete, leaving the launcher to exit 127 forever
-    (#131745). It still supplies the store when the tree records none.
+    (#131745). It still supplies the store when the tree records none. Both
+    legs resolve the store ROOT: publication must not bake a temp HERMES_HOME's
+    own deletable path, and the runtime leg must spell the store the resolved
+    way the launcher baked it, since ``prepare_launch`` compares it lexically
+    against ``sys.executable`` and an unresolved spelling republishes and
+    relaunches on every start under a symlinked HERMES_HOME or ``tools`` dir.
+    The interpreter binary is never resolved (see ``venv_sync.prepare_launch``,
+    #122513): ``_store_python(resolve_root=True)`` realpaths only the store
+    directory, then lexically appends the recorded entry and ``bin/python3`` /
+    ``python.exe``.
     """
     if publication:
-        own = _store_python(store_root(repo_root, honor_runtime_override=False))
+        own = _store_python(
+            store_root(repo_root, honor_runtime_override=False), resolve_root=True)
         if own is not None:
             return own
-    return _store_python(store_root(repo_root))
+    return _store_python(store_root(repo_root), resolve_root=True)
 
 
-def _store_python(runtime: Path) -> Path | None:
+def _store_python(runtime: Path, *, resolve_root: bool = False) -> Path | None:
+    if resolve_root:
+        runtime = Path(os.path.realpath(runtime))
     rel = "python.exe" if _is_windows() else "bin/python3"
 
     facts = runtime / "facts.json"

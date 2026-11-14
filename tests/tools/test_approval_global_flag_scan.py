@@ -1,4 +1,5 @@
-"""Global-flag rules must terminate on long flag runs without dropping long commands (#129281).
+"""Global-flag and command-position rules must terminate on long flag and whitespace runs without
+dropping long commands (#129281).
 
 Subprocess timeout bounds regressions without hanging pytest on the GIL.
 """
@@ -63,4 +64,30 @@ cases = {
 }
 for command, dangerous in cases.items():
     assert detect_dangerous_command(command)[0] is dangerous, command
+''')
+
+
+def test_whitespace_runs_at_a_command_position_finish():
+    # Every _CMDPOS rule re-split a blank-line run between its leading and trailing whitespace from
+    # each newline of the run: cubic in the run length, inside one GIL-holding re.search.
+    _run('''
+from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED, HARDLINE_PATTERNS_COMPILED, _CMDPOS
+rules = [entry[0] for entry in HARDLINE_PATTERNS_COMPILED + DANGEROUS_PATTERNS_COMPILED
+         if entry[0].pattern.startswith(_CMDPOS)]
+mkfs = [rx for rx in rules if "mkfs" in rx.pattern]
+assert len(rules) > 10 and mkfs
+for run in ("\\n" * 24000, " \\n" * 12000, "\\t\\n" * 12000, "sudo" + " " * 24000, "env" + " " * 24000,
+            "exec" + " " * 24000):
+    assert not any(rx.search(run + "x") for rx in rules), run[:6]
+    assert all(rx.search(run + "\\nmkfs.ext4 /dev/sda1") for rx in mkfs), run[:6]
+''')
+
+
+def test_blank_line_runs_are_skipped_once():
+    # Each newline of a blank-line run is a command start; skipping the rest of the run again from
+    # every one of them was quadratic Python work before any rule ran.
+    _run('''
+from tools.approval_detection import _iter_shell_command_starts
+command = "echo a" + "\\n" * 40000 + "rm -rf /tmp/x"
+assert list(_iter_shell_command_starts(command)) == [0, command.index("rm")]
 ''')

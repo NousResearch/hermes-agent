@@ -65,6 +65,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
+    from .adapter_teardown import disconnect_teardown
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_image_batch import collect_image_uploads
     from .adapter_forwarded import (
@@ -78,6 +79,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
+    from adapter_teardown import disconnect_teardown  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
 
@@ -1137,9 +1139,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 closer = getattr(client, method_name, None)
                 if not callable(closer):
                     continue
-                result = closer()
-                if inspect.isawaitable(result):
-                    await result
+                try:
+                    result = closer()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:  # one client's close must not strand the remaining sessions
+                    logger.warning("[Slack] Closing a workspace client failed; continuing",
+                                   exc_info=True)
                 break
 
     @staticmethod
@@ -1872,25 +1878,14 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         return None
 
     async def disconnect(self) -> None:
-        """Disconnect from Slack."""
+        """Disconnect from Slack.
+
+        Teardown is best-effort per step (``adapter_teardown``): a step that raises or is cancelled
+        by the gateway's bounded teardown must not skip the rest, and the scoped platform lock is
+        released in a finally even when this call is cancelled mid-teardown.
+        """
         self._running = False
-        # Seal dangling native streams so no live-typing indicator survives a restart.
-        for key, stream in list(self._active_streams.items()):
-            await self._seal_stream(key, stream)
-        self._active_streams.clear()
-        # A watchdog that lost the cancel race must not block cleanup/lock release.
-        await self._cancel_socket_watchdog("[Slack] Watchdog task raised during disconnect")
-        # Finalize native streams while workspace clients are still live —
-        # shutdown safety net for cancellation/reconnect races.
-        for key, stream in list(self._native_task_card_streams.items()):
-            await self._stop_native_task_card_stream(key, stream)
-        await self._stop_socket_mode_handler()
-        await self._close_workspace_clients()
-        self._app = self._app_token = self._proxy_url = self._bot_user_id = None
-        self._team_clients, self._team_bot_user_ids = {}, {}
-        self._channel_team, self._dm_conversation_cache = {}, {}
-        self._release_platform_lock()
-        logger.info("[Slack] Disconnected")
+        await disconnect_teardown(self)
 
     @staticmethod
     def _metadata_team_id(metadata: Optional[dict[str, Any]]) -> str:

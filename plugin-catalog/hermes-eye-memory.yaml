@@ -1,0 +1,45 @@
+# Catalog entry template.
+# Replace sha with the full 40-character commit SHA before opening the PR.
+name: hermes-eye-memory
+repo: https://github.com/isthatananya/hermes-eye-memory
+sha: "c26df0567195da0a6c8fe497d35e58bae1902b8e"
+subdir: ""
+description: "Local visual memory for Hermes: index a photo library, search by meaning, build albums, cull duplicates, extract receipts, and recall what the camera saw."
+maintainer: isthatananya
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: ""
+version: "0.1.0"
+image: ""
+screenshots: []
+readme: true
+platforms: [linux, macos, windows]
+title: Hermes Eye Memory
+onboarding: false
+known_issues:
+  - "CLIP semantic search downloads a model on first use; set embedding_backend to fallback for offline use."
+  - "Receipt parsing is heuristic and should be verified."
+  - "Camera tools are disabled by default; enable camera_enabled to allow webcam access."
+  - "eye_forget never deletes original files from the model-facing tool; query removals are capped."
+capabilities:
+  provides_tools:
+    - eye_index
+    - eye_index_status
+    - eye_search
+    - eye_album
+    - eye_duplicates
+    - eye_best
+    - eye_receipts
+    - eye_timeline
+    - eye_stats
+    - eye_forget
+    - eye_capture
+    - eye_look
+    - eye_read
+    - eye_find
+    - eye_remember
+    - eye_recall
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

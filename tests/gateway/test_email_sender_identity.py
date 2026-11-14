@@ -18,7 +18,8 @@ class TestSenderIdentityParsing(unittest.TestCase):
         # Each of these reached the single-bracket fallback and came back as a multi-recipient "address".
         for raw in ("Doe <victim@example.com,attacker@evil.test>",
                     "Doe <victim@example.com;attacker@evil.test>",
-                    "Doe <victim@example.com@evil.test>"):
+                    "Doe <victim@example.com@evil.test>",
+                    "Doe <victim:attacker@evil.test>"):
             self.assertEqual(_extract_email_address(raw), "", raw)
         # The fallback still serves the unquoted display names it exists for.
         self.assertEqual(_extract_email_address("Doe, John <John@Example.com>"), "john@example.com")

@@ -60,8 +60,9 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
 # ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
 _SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
-# Exactly one addr-spec: a bracketed ``a@x,b@y`` would become a multi-recipient chat_id and reply To:.
-_SINGLE_ADDR_SPEC_RE = re.compile(r"[^@,;]+@[^@,;]+")
+# Exactly one addr-spec: a bracketed ``a@x,b@y`` would become a multi-recipient chat_id and reply To:, and a ``:``
+# makes the reply To: a group whose recipient is not the chat_id.
+_SINGLE_ADDR_SPEC_RE = re.compile(r"[^@,;:]+@[^@,;:]+")
 # Sender addresses fold ASCII case only: str.lower() maps U+212A KELVIN SIGN to "k", so a non-ASCII local part could
 # fold onto an allowlisted address while authentication only proves the domain.
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
@@ -781,7 +782,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _sender_accepted(self, sender_addr: str, msg_data: dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, authorization, From: authentication."""
-        if sender_addr == self._address.lower():
+        if sender_addr == self._address.translate(_ASCII_LOWER):
             return False
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)

@@ -694,6 +694,12 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         if 'desktop_ui' in explicit and source != 'gui':
             _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
+        if not explicit:
+            # An explicit pick of NO toolsets is exactly that: a script's sandbox guard must not
+            # inherit the coding posture, the platform-native toolsets, the plugin toolsets or the
+            # globally enabled MCP servers. Falling through to the platform resolver would hand a
+            # text-only specialist every default tool (`mcp__newscore__add` included).
+            return set()
     posture = None
     if explicit is None and coding_posture:
         from agent.coding_context import focus_toolsets

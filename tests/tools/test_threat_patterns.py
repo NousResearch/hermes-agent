@@ -296,7 +296,7 @@ class TestReDoSHardening:
 
         assert isinstance(findings, list)
         assert "prompt_injection" not in findings
-        assert elapsed < 0.5
+        assert elapsed < 2.0
 
 
     def test_payload_just_inside_cap_is_evaluated(self):

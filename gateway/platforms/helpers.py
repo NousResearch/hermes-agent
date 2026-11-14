@@ -301,8 +301,12 @@ def sender_may_see_activity(adapter: Any, event: Any) -> bool:
     cached = getattr(event, "_activity_authorized", None)
     if cached is not None:
         return cached
+    # The handler's own gate runs under the scope its wrapper binds (``_standalone_scoped``: the launch
+    # profile's once multi-profile hosting is active); ambient ``os.environ`` can differ from it then.
+    launch_scope = getattr(runner, "_standalone_launch_scope", None)
     try:
-        verdict = bool(check(source))
+        with launch_scope() if callable(launch_scope) else contextlib.nullcontext():
+            verdict = bool(check(source))
     except Exception:
         logger.debug("Activity authorization probe failed; keeping typing/reactions", exc_info=True)
         verdict = True

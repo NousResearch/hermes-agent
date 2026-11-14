@@ -404,13 +404,15 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         registered = self._tui_message_injector
         return registered is not None and bool(registered[1](**kwargs))
 
-    def discover_and_load(self, force: bool = False) -> None:
-        """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
-        changes / new bundled backends become visible in long-lived sessions."""
+    def discover_and_load(self, force: bool = False, *, snapshot: Optional[Callable] = None) -> Any:
+        """Scan and load plugins; optionally capture a snapshot under the discovery lock."""
         from agent.safe_worker_policy import safe_worker_enabled
 
         if self._retired or safe_worker_enabled() or plugin_discovery_suppressed():
             # Safe workers, retired managers, and a config-only read must not load plugins.
+            if snapshot is not None:
+                with self._discovery_lock:
+                    return snapshot()
             return
         if self._discovered and not force and in_plugin_load_worker():
             # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
@@ -419,7 +421,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             return
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             if self._retired or (self._discovered and not force):
-                return
+                return snapshot() if snapshot is not None else None
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
             # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
             loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
@@ -428,7 +430,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             if env_var_enabled("HERMES_SAFE_MODE"):
                 logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
                 self._discovered = True
-                return
+                return snapshot() if snapshot is not None else None
             # Flag set up front as a re-entrancy guard (register() can trigger discovery again) but
             # reset on failure so a failed scan is NOT cached as "discovered with an empty registry"
             # — callers swallow the exception and would be stranded on the early return above.
@@ -457,8 +459,19 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException:
                 self._discovered = False
                 raise
+            result = None
+            snapshot_error = None
+            try:
+                result = snapshot() if snapshot is not None else None
+            except BaseException as exc:
+                snapshot_error = exc
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
-        self._notify_plugin_loaded(loaded_before)
+        try:
+            self._notify_plugin_loaded(loaded_before)
+        finally:
+            if snapshot_error is not None:
+                raise snapshot_error
+        return result
 
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded

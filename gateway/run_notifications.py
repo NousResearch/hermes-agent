@@ -1702,25 +1702,34 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # fan-out of background subagents finishing together). Events for different sessions never
                 # coalesce. See #70300.
                 groups: dict[tuple[str, ...], list[dict]] = {}
-                for evt in async_events:
-                    self._enrich_async_delegation_routing(evt)
-                    groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
-                for group in groups.values():
-                    if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
-                        for evt in group:
-                            _pr.completion_queue.put(evt)
-                        continue
-                    try:
-                        delivered = await self._deliver_async_delegation_group(group)
-                        if delivered is False:
-                            self._back_off_refused_completions(group)
-                            for evt in group:
-                                _pr.completion_queue.put(evt)
-                    except Exception as e:
-                        for evt in group:
-                            _pr.completion_queue.put(evt)
-                        logger.error("Async delegation injection error: %s", e)
+                # Dequeued but not yet admitted: a restart waiting for idle still counts these.
+                self._async_notices_in_delivery = list(async_events)
+                try:
+                    for evt in async_events:
+                        self._enrich_async_delegation_routing(evt)
+                        groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
+                    await self._deliver_async_delegation_groups(groups, _pr)
+                finally:
+                    self._async_notices_in_delivery = []
             await asyncio.sleep(interval)
+
+    async def _deliver_async_delegation_groups(self, groups: dict, _pr) -> None:
+        """Deliver each route group as one turn; a refused or failed group goes back on the queue."""
+        for group in groups.values():
+            if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
+                for evt in group:
+                    _pr.completion_queue.put(evt)
+                continue
+            try:
+                delivered = await self._deliver_async_delegation_group(group)
+                if delivered is False:
+                    self._back_off_refused_completions(group)
+                    for evt in group:
+                        _pr.completion_queue.put(evt)
+            except Exception as e:
+                for evt in group:
+                    _pr.completion_queue.put(evt)
+                logger.error("Async delegation injection error: %s", e, exc_info=True)
 
     @staticmethod
     def _back_off_refused_completions(group: list[dict]) -> None:

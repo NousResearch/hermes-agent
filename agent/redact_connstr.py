@@ -48,8 +48,9 @@ _FORMAT_SLOT_RE = re.compile(r"\{\s*+(?:[A-Za-z0-9_](?:[^;{}@$&#!]|![rsa](?=\s*+
 
 
 # A quote inside an unquoted value is literal (``Password=it's-secret``) unless it closes the
-# string that wraps the connection string: then end of line or a delimiter follows it.
-_WRAPPER_CLOSE_FOLLOWERS = frozenset(" \t\r\n,;)]}>/")
+# string that wraps the connection string: then end of line, a delimiter or an operator
+# (``'…'.format(a)``, ``"…"+suffix``, ``'…'&& echo``) follows it.
+_WRAPPER_CLOSE_FOLLOWERS = frozenset(" \t\r\n,;)]}>/.+&|")
 
 
 def _closes_wrapper(line: str, j: int) -> bool:
@@ -116,9 +117,11 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
     if not _KV_CONNSTR_GATE_RE.search(line) or not _KV_CONNSTR_COMPANION_RE.search(line):
         return line
     semicolon = _KV_SEMICOLON_FIELD_RE.search(line) is not None
-    out, pos = [], 0
+    # ``scanned`` also covers skipped template values: ``${'…}`` can run to end of line, and
+    # rescanning that tail from every later key is quadratic.
+    out, pos, scanned = [], 0, 0
     for m in _KV_CONNSTR_PW_RE.finditer(line):
-        if m.start() < pos:  # inside a value already masked
+        if m.start() < scanned:  # inside a value already scanned
             continue
         vstart = m.end()
         vend = _kv_value_end(line, vstart, semicolon)
@@ -128,6 +131,7 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         eq = line.rindex("=", m.start(), m.end())
         if not value or (not semicolon and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"):
             continue
+        scanned = vend  # after the prose check: ``the pwd= password=x`` still masks ``x``
         bare = value.strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``. ODBC braces a
         # literal value (``PWD={Zq7x;LmP2}``), so on a ``;`` line only a format slot or an identifier

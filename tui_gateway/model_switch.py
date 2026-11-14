@@ -386,21 +386,23 @@ def _reset_session_model_override(sid: str, session: dict) -> dict:
     through the config-sync switch (no new pin, never written back), and persist the row so
     ``session.resume`` cannot restore the old pin. History is kept."""
     from agent.i18n import t
-    had_override = bool(session.get("model_override"))
-    session.pop("model_override", None)
-    session.pop("one_turn_model_restore", None)
-    session.pop("config_model_seen", None)  # the pinned sync recorded the target without adopting it
-    if "composer_override_profile" in session:
-        session["composer_override_profile"] = None  # persisted as a removal
-    model, provider = _config_model_target()
-    agent = session.get("agent")
-    if model and agent is not None and (
-            model != getattr(agent, "model", "") or (provider and provider != getattr(agent, "provider", ""))):
-        _apply_model_switch(
-            sid, session, f"{model} --provider {provider}" if provider else model,
-            confirm_expensive_model=True, pin_session_override=False, persist_override=False,
-            count_switch=False)
-    _persist_live_session_runtime(session)
+    # Gate first: a chat another surface took refuses with its pin, --once restore and composer profile intact.
+    with _transcript_claim(session):
+        had_override = bool(session.get("model_override"))
+        session.pop("model_override", None)
+        session.pop("one_turn_model_restore", None)
+        session.pop("config_model_seen", None)  # the pinned sync recorded the target without adopting it
+        if "composer_override_profile" in session:
+            session["composer_override_profile"] = None  # persisted as a removal
+        model, provider = _config_model_target()
+        agent = session.get("agent")
+        if model and agent is not None and (
+                model != getattr(agent, "model", "") or (provider and provider != getattr(agent, "provider", ""))):
+            _apply_model_switch(
+                sid, session, f"{model} --provider {provider}" if provider else model,
+                confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+                count_switch=False)
+        _persist_live_session_runtime(session)
     _emit_session_info(sid, session)
     shown = model or getattr(agent, "model", "") or t("gateway.shared.unknown_value")
     return {"value": shown, "warning": t("gateway.model.reset_done" if had_override else "gateway.model.reset_none",

@@ -288,3 +288,18 @@ def test_r3_in_process_slash_writer_on_a_taken_chat_never_runs_the_worker(taken,
                                   "params": {"session_id": taken.sid, "command": command}})
     err = resp.get("error") or {}
     assert {"code": err.get("code"), "ran": ran} == {"code": 4090, "ran": []}, resp
+
+
+def test_r2_model_reset_on_a_taken_chat_keeps_the_pin_it_refuses_to_drop(taken, monkeypatch):
+    from hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
+        success=True, new_model="cfg/model", target_provider="prov"))
+    monkeypatch.setattr(server, "_expensive_model_confirm", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_merge_preflight_warning", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("cfg/model", "prov"))
+    pin = {"model": "old/model", "provider": "prov", "base_url": "", "api_key": "", "api_mode": ""}
+    taken.record["model_override"] = dict(pin)
+    resp = server.handle_request({"id": "r", "method": "config.set", "params": {
+        "session_id": taken.sid, "key": "model", "value": "reset"}})
+    err = resp.get("error") or {}
+    assert {"code": err.get("code"), "pin": taken.record.get("model_override")} == {"code": 4090, "pin": pin}, resp

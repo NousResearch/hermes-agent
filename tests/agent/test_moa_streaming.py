@@ -178,18 +178,23 @@ def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):
 # call_llm-level: stream branch returns the raw SDK stream
 # --------------------------------------------------------------------------
 
-def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
-    """call_llm(stream=True) returns the client's raw stream object directly,
-    attaches stream/stream_options to the request, and does NOT run response
-    validation (which assumes a complete response)."""
+def test_call_llm_stream_returns_gated_proxy_and_skips_validation(monkeypatch):
+    """call_llm(stream=True) returns a _PlanGatedStream delegating proxy that
+    wraps the client's raw stream and holds the host-wide plan slot until the
+    stream is exhausted/closed/abandoned (commit 1bad218f84, owner disposition
+    (a) of review pass 3, 10 Nov 2026). The proxy delegates iteration and
+    attribute access to the raw stream, attaches stream/stream_options to the
+    request, and does NOT run response validation (which assumes a complete
+    response)."""
     from agent import auxiliary_client as ac
+    from agent.auxiliary_client import _PlanGatedStream
 
     captured = {}
 
     class _Completions:
         def create(self, **kwargs):
             captured.update(kwargs)
-            return "RAW_STREAM"
+            return iter(["chunk-1", "chunk-2"])
 
     fake_client = SimpleNamespace(
         chat=SimpleNamespace(completions=_Completions()),
@@ -215,7 +220,9 @@ def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
         stream_options={"include_usage": True},
     )
 
-    assert out == "RAW_STREAM"
+    assert isinstance(out, _PlanGatedStream)
+    assert list(out) == ["chunk-1", "chunk-2"]          # iteration delegates to the raw stream
+    assert out._pgs_released is True                     # slot released after exhaustion
     assert captured.get("stream") is True
     assert captured.get("stream_options") == {"include_usage": True}
 

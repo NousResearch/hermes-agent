@@ -157,7 +157,7 @@ def test_live_endpoint_never_dials_a_hostile_endpoint_path(tmp_path, monkeypatch
     """E2E through the real transport seam: a registered declaration carrying an
     authority-rewriting endpoint_path must make _live_endpoint fail closed, so the
     bearer token is never handed to a socket."""
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from hermes_platform.host import facts
     from hermes_platform.declaration import AppSpec, Declaration, RequiresSpec
     from hermes_platform.resolver.app import AppDef

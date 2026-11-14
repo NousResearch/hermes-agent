@@ -435,7 +435,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
+from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
@@ -3308,8 +3308,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     async def _stop_typing_refresh(
         self, chat_id: str, typing_task: asyncio.Task | None = None, *, metadata=None,
-        timeout: float = 0.5, stop_attempts: int = 2) -> None:
-        """Stop the refresh task and platform typing state as one operation."""
+        timeout: float = 0.5, stop_attempts: int = 2, event: Optional[MessageEvent] = None) -> None:
+        """Stop the refresh task and platform typing state as one operation; a sender ``event`` may not
+        see activity got no typing, so no platform stop goes out to it either (#149024)."""
         self._typing_paused.add(chat_id)
         try:
             if typing_task is not None and not typing_task.done():
@@ -3317,7 +3318,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 # Slow adapter cleanup must not block delivery/shutdown.
                 with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                     await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
-            for attempt in range(max(1, stop_attempts)):
+            for attempt in range(max(1, stop_attempts) if sender_may_see_activity(self, event) else 0):
                 if attempt:
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
@@ -3423,7 +3424,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
-        if not callable(hook):
+        if not callable(hook) or (args and not sender_may_see_activity(self, args[0])):
             return
         try:
             await hook(*args, **kwargs)
@@ -4261,10 +4262,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     def _start_typing_refresh(self, event: MessageEvent, interrupt_event: asyncio.Event,
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
-        """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
+        """Spawn the typing-refresh task, or None when this turn should show no indicator.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
-        # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
-        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
+        if not typing_refresh_wanted(self, event):  # heartbeats, and senders admission will drop (#149024)
             return None
         kwargs: dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
@@ -4451,7 +4451,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4471,10 +4471,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
+            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1)
+            await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1, event=event)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)

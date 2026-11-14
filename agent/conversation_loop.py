@@ -1118,7 +1118,10 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                 try:
                     args = _canonicalize_tool_call_arguments(fn["arguments"])
                 except Exception:
-                    args = _repair_tool_call_arguments(fn["arguments"], fn.get("name", "?"))
+                    # Repair output always parses; canonicalizing it too decodes ``\\udXXX``
+                    # escapes so the surrogate pass after this one can see a lone half.
+                    args = _canonicalize_tool_call_arguments(
+                        _repair_tool_call_arguments(fn["arguments"], fn.get("name", "?")))
                 # Copy-on-write as defense in depth: callers may pass shallow copies, and
                 # writing into a shared tc["function"] rewrote the stored turn with "{}"
                 # on the unrepairable path (#80498).

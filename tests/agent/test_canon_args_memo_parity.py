@@ -337,3 +337,23 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
         assert (
             history[0]["tool_calls"][0]["function"]["arguments"] == truncated
         )
+
+
+@pytest.mark.parametrize("raw", [
+    '{"text": "hi \\ud83d there", "k\\udc00": 1}',  # escaped lone halves, valid JSON
+    '{"text": "hi \\ud83d there",}',               # same, malformed (repair path)
+], ids=["canonical", "repaired"])
+def test_escaped_lone_surrogate_never_reaches_the_wire(raw):
+    """A ``\\udXXX`` escape in stored arguments must be repaired like a literal lone surrogate:
+    re-escaping it hides it from the surrogate pass, and strict JSON parsers then reject the
+    request on every later turn of the session."""
+    from agent.message_sanitization import _sanitize_messages_surrogates
+
+    msgs = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": raw}}]}]
+    cl._canonicalize_api_tool_calls(msgs)
+    _sanitize_messages_surrogates(msgs)
+    sent = msgs[0]["tool_calls"][0]["function"]["arguments"]
+    decoded = json.loads(sent)
+    json.dumps(decoded, ensure_ascii=False).encode("utf-8")  # raises on a lone surrogate
+    assert decoded["text"] == "hi \ufffd there"

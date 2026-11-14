@@ -988,6 +988,70 @@ class TestBuildSkillsSystemPromptConditional:
 # =========================================================================
 
 
+class TestExecutionGuidanceModels:
+    """Behavior contracts for the default auto-match model list."""
+
+    def test_includes_historical_families(self):
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        for fam in ("gpt", "codex", "grok"):
+            assert fam in EXECUTION_GUIDANCE_MODELS
+
+    def test_includes_composio_eval_families(self):
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        for fam in ("deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral"):
+            assert fam in EXECUTION_GUIDANCE_MODELS
+
+    def test_muse_spark_gets_both_guidance_blocks(self):
+        # Muse Spark closes the turn after a chat-only response on defaults
+        # (#96550) — it needs tool-use enforcement AND execution guidance.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS, TOOL_USE_ENFORCEMENT_MODELS
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in TOOL_USE_ENFORCEMENT_MODELS)
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in EXECUTION_GUIDANCE_MODELS)
+
+    def test_k3_gets_both_guidance_blocks(self):
+        # Bare Kimi K3 model IDs like "k3" and "k3.1-pro" (#144306) need
+        # tool-use enforcement AND execution guidance.  The real decision
+        # function is _model_gate() in agent/system_prompt.py (called at
+        # lines 584 and 588) which has a _KIMI_FAMILY_EXACT_SLUGS fast path
+        # for the bare "k3" slug before falling through to substring matching.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS, TOOL_USE_ENFORCEMENT_MODELS
+        from agent.system_prompt import _model_gate
+
+        # Exact slug "k3" matches via _model_gate (_KIMI_FAMILY_EXACT_SLUGS fast path)
+        assert _model_gate("auto", "k3", TOOL_USE_ENFORCEMENT_MODELS)
+        assert _model_gate("auto", "k3", EXECUTION_GUIDANCE_MODELS)
+
+        # "k3.1-pro" matches via substring pattern "k3." in both tuples
+        assert any(p in "k3.1-pro" for p in TOOL_USE_ENFORCEMENT_MODELS)
+        assert any(p in "k3.1-pro" for p in EXECUTION_GUIDANCE_MODELS)
+        assert _model_gate("auto", "k3.1-pro", TOOL_USE_ENFORCEMENT_MODELS)
+        assert _model_gate("auto", "k3.1-pro", EXECUTION_GUIDANCE_MODELS)
+
+    def test_kimi_full_id_gets_both_guidance_blocks(self):
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS, TOOL_USE_ENFORCEMENT_MODELS
+        from agent.system_prompt import _model_gate
+        for model in ("moonshotai/kimi-k3", "kimi-for-coding"):
+            assert any(p in model for p in TOOL_USE_ENFORCEMENT_MODELS)
+            assert any(p in model for p in EXECUTION_GUIDANCE_MODELS)
+            assert _model_gate("auto", model, TOOL_USE_ENFORCEMENT_MODELS)
+            assert _model_gate("auto", model, EXECUTION_GUIDANCE_MODELS)
+
+    def test_k3_lookalikes_do_not_match(self):
+        # Prefix lookalikes without a separator must NOT match either tuple
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS, TOOL_USE_ENFORCEMENT_MODELS
+        from agent.system_prompt import _model_gate
+        for model in ("k30", "k3000-chat", "mk3000"):
+            assert not any(p in model for p in TOOL_USE_ENFORCEMENT_MODELS)
+            assert not any(p in model for p in EXECUTION_GUIDANCE_MODELS)
+            assert not _model_gate("auto", model, TOOL_USE_ENFORCEMENT_MODELS)
+            assert not _model_gate("auto", model, EXECUTION_GUIDANCE_MODELS)
+
+    def test_excludes_google_and_claude(self):
+        # Gemini/Gemma get GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead;
+        # Claude doesn't exhibit the targeted failure modes.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        for fam in ("gemini", "gemma", "claude"):
+            assert fam not in EXECUTION_GUIDANCE_MODELS
 
 
 

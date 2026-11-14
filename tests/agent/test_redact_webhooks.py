@@ -1,6 +1,7 @@
 """Incoming-webhook URLs (Slack, Discord, Teams): the URL itself is the credential (#118022)."""
 
 import logging
+import time
 
 import pytest
 
@@ -123,3 +124,39 @@ class TestIncomingWebhookUrls:
                     redact_sensitive_text(template.format(url=url), file_read=True)):
             assert url not in out
             assert leak not in out
+
+
+class TestWebhookUrlShapes:
+    """Round-2 shapes: Workflow Builder's four-segment Slack URL and equivalent host spellings."""
+
+    SECRET = "AbCdEfGhIjKlMnOpQrStUvWx"
+
+    def test_slack_workflow_builder_masks_the_last_segment(self):
+        """workflows/{T}/{A}/{numeric id}/{secret}: the numeric id is public, the last segment is
+        the secret. A three-segment rule masked the id and left the secret verbatim."""
+        url = "https://hooks.slack.com/workflows/" + "T01ABCDEF/A02BCDEFG/412345678901234567/" + self.SECRET
+        for out in (redact_sensitive_text(url), redact_sensitive_text(url, file_read=True)):
+            assert self.SECRET[6:-4] not in out
+            assert "/A02BCDEFG/412345678901234567/" in out
+
+    @pytest.mark.parametrize("prefix", [
+        "https://hooks.slack.com.:443/services/T0123ABCD/B0123ABCD/",
+        "https://hooks.slack-gov.com/services/T0123ABCD/B0123ABCD/",
+        "https://www.discord.com/api/webhooks/1234567890123456789/",
+    ])
+    def test_equivalent_hosts_mask_the_secret(self, prefix):
+        out = redact_sensitive_text(prefix + self.SECRET)
+        assert self.SECRET[6:-4] not in out
+        assert out.startswith(prefix)
+
+    @pytest.mark.parametrize("text", [
+        "https://a.logic.azure.com/workflows/" * 1400,
+        "https://a.logic.azure.com/" + "workflows/" * 8000,
+        ("https://a.logic.azure.com/" + "b/" * 8 + "workflows/" + "c" * 500 + "?" + "a&" * 300) * 60,
+    ], ids=["repeated-url", "repeated-path", "repeated-capped-url"])
+    def test_teams_workflows_rule_is_linear_on_repeated_urls(self, text):
+        """Attacker-shaped tool output must not stall redaction (the uncapped arm took ~48 s on
+        the first input). The bound is generous; the capped rule runs in tens of ms."""
+        t0 = time.perf_counter()
+        redact_sensitive_text(text)
+        assert time.perf_counter() - t0 < 2.0

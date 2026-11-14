@@ -2266,6 +2266,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
             )
     _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm)
     sync_credential_pool_entry_id(agent)
+    from agent.route_binding import _publish_consuming_model
+    _publish_consuming_model(agent)
 
 
 def _resolve_switch_context_length(agent, snapshot):

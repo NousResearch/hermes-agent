@@ -131,6 +131,58 @@ class TestSupportsMediaInToolResults:
         finally:
             clear_runtime_main()
 
+    def test_route_swap_publishes_the_model_that_reads_the_tool_result(self):
+        """Native pixels follow the consuming model, not the model active before the swap."""
+        from types import SimpleNamespace
+
+        from agent import image_routing
+        from agent.auxiliary_client import (
+            _read_main_model,
+            _read_main_provider,
+            clear_runtime_main,
+            set_runtime_main,
+        )
+        from agent.route_binding import _publish_consuming_model
+        from tools.vision_tools import _should_use_native_vision_fast_path
+
+        def _vision(provider, model, cfg=None, **_extra):
+            return model == "sees-pixels"
+
+        set_runtime_main("xai-oauth", "sees-pixels")
+        try:
+            blind = SimpleNamespace(
+                provider="freellmapi",
+                model="text-only",
+                requested_provider="freellmapi",
+                base_url="",
+                api_key="",
+                api_mode="chat_completions",
+                auth_mode="",
+                session_id="s",
+            )
+            _publish_consuming_model(blind)
+            assert _read_main_provider() == "freellmapi"
+            assert _read_main_model() == "text-only"
+            with patch.object(image_routing, "_lookup_supports_vision", side_effect=_vision):
+                assert _should_use_native_vision_fast_path() is False
+
+            seeing = SimpleNamespace(
+                provider="xai-oauth",
+                model="sees-pixels",
+                requested_provider="xai-oauth",
+                base_url="",
+                api_key="",
+                api_mode="codex_responses",
+                auth_mode="",
+                session_id="s",
+            )
+            _publish_consuming_model(seeing)
+            assert _read_main_model() == "sees-pixels"
+            with patch.object(image_routing, "_lookup_supports_vision", side_effect=_vision):
+                assert _should_use_native_vision_fast_path() is True
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

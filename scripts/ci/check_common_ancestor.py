@@ -59,8 +59,8 @@ FETCH_ATTEMPTS = 3
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(("git", *args), capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT, check=False)
+    return subprocess.run(("git", *args), capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT, check=False)
 
 
 def _has_commit(sha: str) -> bool:
@@ -77,11 +77,12 @@ def pr_head() -> str:
         return ""
     for attempt in range(FETCH_ATTEMPTS):
         if _has_commit(sha):
-            return _git("rev-parse", "--verify", f"{sha}^{{commit}}").stdout.strip()
+            break
         if attempt:
             time.sleep(2)
         _git("fetch", "--no-tags", "origin", sha)
-    return ""
+    result = _git("rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def merge_base(head: str) -> str:

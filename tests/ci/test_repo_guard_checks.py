@@ -27,7 +27,7 @@ def _git_env(name: str = "Main", email: str = "teknium@example.com") -> dict[str
 
 def git(repo: Path, *args: str, author: tuple[str, str] = ("Main", "teknium@example.com")) -> str:
     return subprocess.run(["git", *args], cwd=repo, env=_git_env(*author), capture_output=True,
-                          text=True, check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
+                          text=True, encoding="utf-8", check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
 
 
 def commit(repo: Path, files: dict[str, str | bytes], author=("Main", "teknium@example.com")) -> str:
@@ -333,3 +333,30 @@ def test_uv_lock_retries_only_registry_failures(tmp_path, monkeypatch, capsys, p
     assert out.count("::warning::") == len(sleeps)
     if verdict == "timed-out":
         assert "Resolving dependencies" in out  # the stopped attempt's log is still shown
+
+
+def test_pr_head_counts_a_head_that_only_the_last_fetch_brings_in(repo, tmp_path, monkeypatch):
+    sys.path.insert(0, str(SCRIPTS.parents[1]))
+    from scripts.ci import check_common_ancestor as guard
+
+    remote = tmp_path / "remote"
+    git(tmp_path, "clone", "-q", str(repo), str(remote))
+    head = commit(remote, {"pr": "1"})
+    git(repo, "remote", "add", "origin", str(remote))
+    real_git, fetches = guard._git, []
+
+    def flaky_git(*args: str) -> subprocess.CompletedProcess:
+        if args[0] == "fetch":
+            fetches.append(args)
+            if len(fetches) < guard.FETCH_ATTEMPTS:
+                return subprocess.CompletedProcess(("git", *args), 128, "", "transient")
+        return real_git(*args)
+
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(guard, "_git", flaky_git)
+    monkeypatch.setattr(guard.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("_HERMES_PR_HEAD_SHA", head)
+    assert guard.pr_head() == head
+    assert len(fetches) == guard.FETCH_ATTEMPTS

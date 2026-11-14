@@ -26,7 +26,6 @@ def observed(db, monkeypatch):
     rpc = FakeSessionRPC(auto_complete=False, required_lock=locks)
     runtime = _runtime(db, rpc, locks, lease_ttl_seconds=30, indeterminate_defer_seconds=5,
                        clock=lambda: now[0], publish_terminal=lambda _, task: published.append(task))
-    monkeypatch.setattr(runtime_module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
     attempt = state.TaskAttempt(identity, runtime._ensure_lease(BINDING), 1, 0)
     o = SimpleNamespace(db=db, identity=identity, now=now, rpc=rpc, runtime=runtime,
                         attempt=attempt, published=published,
@@ -327,7 +326,6 @@ def test_every_probe_timing_out_still_defers(db, monkeypatch):
     rpc = FakeSessionRPC(auto_complete=False)
     runtime = _runtime(db, None, lease_ttl_seconds=30, indeterminate_defer_seconds=60,
                        clock=lambda: now[0], transport_resolver=lambda *_: rpc)
-    monkeypatch.setattr(runtime_module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
     monkeypatch.setattr(runtime._wake, 'wait', lambda _: now.__setitem__(0, now[0] + .25))
 
     def timeout(**_):

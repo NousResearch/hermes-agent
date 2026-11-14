@@ -25,9 +25,10 @@ def test_deadline_stop_interrupts_a_stale_deferred_admission_and_finishes(db: Pa
     """A deferred task's queued admission keeps the session active under its own identity
     forever (#144729), so an exact stop for a newer task retried without end."""
     now = [time.time()]
+    started_monotonic = time.monotonic()
 
     def clock():
-        return now[0]
+        return now[0] + time.monotonic() - started_monotonic
 
     stale_identity = _identity("task-stale")
     _admit(db, stale_identity)

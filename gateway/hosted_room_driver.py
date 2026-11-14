@@ -61,7 +61,7 @@ _GENERATION_FENCE = "execution_generation=? AND cancel_generation=?"
 _RUN_FENCE = "run_gateway_id=? AND run_process_generation=? AND run_lease_generation=?"
 _SETTLE_SET = "status=?, settlement_id=?, settlement_status=?, result_json=?, terminal_at=?, updated_at=?"
 _REQUEUE_SET = "status='queued', run_gateway_id=NULL, run_process_generation=NULL, run_lease_generation=NULL"
-_CANCEL_SET = "status='cancelled', cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
+_CANCEL_SET = "status='cancelled', cancel_generation=?, cancel_id=?, result_json=NULL, terminal_at=?, updated_at=?"
 
 
 def _task_update(set_clause: str, fence: str) -> str:
@@ -116,6 +116,7 @@ class DriverValidationError(DriverStateError): """Raised when an identifier, clo
 class RoomUnavailableError(DriverStateError): """Raised when the hosted room does not exist or was disbanded."""
 class LeaseHeldError(DriverStateError): """Raised when another unexpired driver generation owns the room."""
 class StaleLeaseError(DriverStateError): """Raised when a lease generation can no longer mutate room state."""
+class AuthorityChangedError(StaleLeaseError): """Raised when another gateway or epoch now owns the room."""
 class TaskConflictError(DriverStateError): """Raised when an idempotency key is reused for different task state."""
 class StaleTaskError(DriverStateError): """Raised when an obsolete task attempt or cancellation tries to commit."""
 class InvalidTaskTransitionError(DriverStateError): """Raised when a requested task transition is not allowed."""
@@ -402,7 +403,7 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> sqlite3.Row:
 def _require_room_authority(conn: sqlite3.Connection, room_id: str, gateway_id: str, epoch: int) -> sqlite3.Row:
     room = _load_active_room(conn, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
-        raise StaleLeaseError("hosted room authority changed")
+        raise AuthorityChangedError("hosted room authority changed")
     return room
 
 
@@ -740,6 +741,20 @@ def resolve_indeterminate_task(
         replay=replay, set_params=set_params)
 
 
+def settle_recovered_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+) -> dict[str, Any]:
+    """Accept an exact attempt's late receipt under the current authority, never a replaced attempt."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now, replay, set_params = _settlement(settlement_id, status, result, clock)
+    return _transition(
+        db_path, identity, lease=lease, now=now, replay=replay,
+        sql=_task_update(_SETTLE_SET, f"status IN ('running', 'deferred') AND {_GENERATION_FENCE}"),
+        set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
+        stale="late receipt belongs to a replaced or cancelled attempt")
+
+
 def resolve_indeterminate_cancellation(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, cancel_id: Any, clock: Clock) -> dict[str, Any]:
@@ -848,6 +863,19 @@ def cancel_task(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_CANCEL_QUEUED_SQL,
         set_params=(expected_cancel_generation + 1, cancel_id, now, now), fence_params=(expected_cancel_generation,),
         stale="task changed during cancellation")
+
+
+def cancel_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: str, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock,
+) -> dict[str, Any]:
+    """Commit a confirmed Discard only while the selected attempt remains deferred."""
+    now = _timestamp(clock)
+    return _transition(
+        db_path, identity, now=now, sql=_task_update(_CANCEL_SET, f"status='deferred' AND {_GENERATION_FENCE}"),
+        set_params=(expected_cancel_generation + 1, _identifier(cancel_id, label="cancel_id"), now, now),
+        fence_params=(expected_execution_generation, expected_cancel_generation),
+        stale="deferred cancellation belongs to a replaced attempt")
 
 
 def begin_task_cancel(

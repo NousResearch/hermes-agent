@@ -223,9 +223,15 @@ class HostedRoomAuthorityRPC:
         if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
                                    or not all(isinstance(i, str) and i for i in wanted)):
             raise RuntimeStoreError('invalid_params')
+        attempt = params.get('task_id'), params.get('execution_generation')
+        if attempt != (None, None) and (not isinstance(attempt[0], str) or not attempt[0]
+                                        or type(attempt[1]) is not int or attempt[1] < 1):
+            raise RuntimeStoreError('invalid_params')
         from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
         receipts, used = [], 0
         for row, task, generation in reversed(self._rows()):
+            if attempt != (None, None) and (task.task_id, generation) != attempt:
+                continue
             if row['status'] != 'terminal' or (wanted is not None and row['admission_id'] not in wanted):
                 continue
             receipt = self._terminal(row, task, generation)
@@ -241,7 +247,7 @@ class HostedRoomAuthorityRPC:
     async def _info(self, params):
         rows = self._rows()
         for row, task, generation in rows:
-            if row['status'] == 'terminal':
+            if row['status'] == 'terminal' and row['admission_id'] in self.callbacks:
                 self._terminal(row, task, generation)
         current = next(((row, task, generation) for row, task, generation in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
         result = {'active': current is not None and current[0]['status'] != 'unknown',
@@ -332,9 +338,9 @@ class HostedRoomAuthorityRPC:
     def history(self, *, profile, session_id, source):
         return self._call('history', profile=profile, session_id=session_id, source=source)
 
-    def results(self, *, profile, session_id, source, admission_ids=None):
+    def results(self, *, profile, session_id, source, admission_ids=None, task_id=None, execution_generation=None):
         return self._call('results', profile=profile, session_id=session_id, source=source,
-                          admission_ids=admission_ids)
+                          admission_ids=admission_ids, task_id=task_id, execution_generation=execution_generation)
 
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)

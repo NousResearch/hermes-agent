@@ -19,6 +19,7 @@ export interface GroupReasonMessages {
   reasonSlotWait: string
   reasonTargetBusy: string
   reasonGatewayRestarted: string
+  reasonLeadAnswers: string
 }
 
 export const GROUP_REASON_LOCALES = {
@@ -43,6 +44,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "Too many bots are running",
     reasonTargetBusy: "The bot is busy",
     reasonGatewayRestarted: "The bot’s gateway restarted",
+    reasonLeadAnswers: "The lead couldn’t pick a bot, so it will answer itself",
   },
   'ja': {
     reasonMemberUnavailable: "ボットを利用できません",
@@ -65,6 +67,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "実行中のボットが多すぎます",
     reasonTargetBusy: "ボットは処理中です",
     reasonGatewayRestarted: "ボットのゲートウェイが再起動しました",
+    reasonLeadAnswers: "リーダーがボットを選べなかったため、自分で回答します",
   },
   'zh': {
     reasonMemberUnavailable: "机器人不可用",
@@ -87,6 +90,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "运行中的机器人过多",
     reasonTargetBusy: "机器人正忙",
     reasonGatewayRestarted: "机器人的网关已重启",
+    reasonLeadAnswers: "负责人未能选择机器人，将自己回答",
   },
   'zh-hant': {
     reasonMemberUnavailable: "機器人無法使用",
@@ -109,6 +113,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "執行中的機器人過多",
     reasonTargetBusy: "機器人正忙",
     reasonGatewayRestarted: "機器人的閘道已重新啟動",
+    reasonLeadAnswers: "負責人未能選擇機器人，將自己回答",
   },
   'ar': {
     reasonMemberUnavailable: "الروبوت غير متاح",
@@ -131,6 +136,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "هناك روبوتات كثيرة قيد التشغيل",
     reasonTargetBusy: "الروبوت مشغول",
     reasonGatewayRestarted: "أُعيد تشغيل بوابة الروبوت",
+    reasonLeadAnswers: "تعذّر على القائد اختيار روبوت، لذا سيجيب بنفسه",
   },
   'ru': {
     reasonMemberUnavailable: "Бот недоступен",
@@ -153,6 +159,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "Работает слишком много ботов",
     reasonTargetBusy: "Бот занят",
     reasonGatewayRestarted: "Шлюз бота перезапущен",
+    reasonLeadAnswers: "Ведущий не смог выбрать бота и ответит сам",
   },
   'fr': {
     reasonMemberUnavailable: "Le bot est indisponible",
@@ -175,6 +182,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "Trop de bots sont en cours d’exécution",
     reasonTargetBusy: "Le bot est occupé",
     reasonGatewayRestarted: "La passerelle du bot a redémarré",
+    reasonLeadAnswers: "Le responsable n’a pas pu choisir de bot : il répondra lui-même",
   },
   'de': {
     reasonMemberUnavailable: "Der Bot ist nicht verfügbar",
@@ -197,6 +205,7 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "Es laufen zu viele Bots",
     reasonTargetBusy: "Der Bot ist beschäftigt",
     reasonGatewayRestarted: "Das Gateway des Bots wurde neu gestartet",
+    reasonLeadAnswers: "Die Leitung konnte keinen Bot auswählen und antwortet deshalb selbst",
   },
   'es': {
     reasonMemberUnavailable: "El bot no está disponible",
@@ -219,5 +228,6 @@ export const GROUP_REASON_LOCALES = {
     reasonSlotWait: "Hay demasiados bots en ejecución",
     reasonTargetBusy: "El bot está ocupado",
     reasonGatewayRestarted: "La pasarela del bot se reinició",
+    reasonLeadAnswers: "El líder no pudo elegir un bot, así que responderá él mismo",
   },
 } satisfies Record<string, GroupReasonMessages>

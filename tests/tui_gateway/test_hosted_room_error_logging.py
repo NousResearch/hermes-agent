@@ -1,6 +1,5 @@
 """Hosted task diagnostics persist fixed reason codes, never exception bodies."""
 import logging
-from types import SimpleNamespace
 
 import pytest
 
@@ -38,11 +37,9 @@ def test_submit_error_log_contains_task_and_safe_reason_only(db, monkeypatch, ca
 
 @pytest.mark.parametrize('waiting_for_approval', [False, True])
 def test_legal_long_wait_can_complete_without_stop_or_resubmit(db, monkeypatch, waiting_for_approval):
-    """Simulated monotonic elapsed time, not a paid/real hour-long model run."""
+    """Simulated elapsed time, not a paid/real hour-long model run."""
     from gateway import hosted_room_driver as state
-    from tui_gateway import hosted_room_driver as driver
     elapsed = [0.0]
-    monkeypatch.setattr(driver, 'time', SimpleNamespace(monotonic=lambda: elapsed[0]))
     identity = _identity()
     _admit(db, identity)
     rpc = FakeSessionRPC(auto_complete=False)
@@ -51,7 +48,7 @@ def test_legal_long_wait_can_complete_without_stop_or_resubmit(db, monkeypatch, 
         rpc.states[sid]['pending_approval'] = {
             'request_id': 'approval-1', 'command': 'read-only fixture', 'choices': ['once', 'deny']}
     actions = []
-    runtime = _runtime(db, rpc, turn_timeout_seconds=7200,
+    runtime = _runtime(db, rpc, turn_timeout_seconds=7200, lease_ttl_seconds=7200, clock=lambda: 100 + elapsed[0],
                        pending_action=lambda room, member, action: actions.append(action))
     monkeypatch.setattr(runtime._wake, 'wait', lambda timeout: None)
 

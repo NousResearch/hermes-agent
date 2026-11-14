@@ -142,6 +142,11 @@ class HostedRoomServerRPC:
             task = record.get("_hosted_room_task")
             result = {"active": bool(record.get("running")),
                       "task_id": task.get("task_id") if isinstance(task, dict) else None}
+            if isinstance(task, dict) and "execution_generation" in task:
+                from tui_gateway.hosted_room_member_activity import task_progress
+
+                result.update(execution_generation=task["execution_generation"], **task_progress(
+                    task["room_id"], task["task_id"], task["execution_generation"]))
             pending_reader = getattr(self.server, "_pending_approval_request_payload", None)
             if callable(pending_reader) and (pending := pending_reader(str(record.get("session_key") or ""))):
                 result["status"] = "waiting_for_approval"

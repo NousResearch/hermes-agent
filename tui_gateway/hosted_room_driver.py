@@ -10,6 +10,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import uuid
@@ -21,6 +22,7 @@ from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
 from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
+from gateway.hosted_room_lead import LOST_ROUTING_CANCEL_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,8 @@ class _RecoveryInspection:
     terminal: _TerminalReceipt | None
     active: bool
     status: str | None
+    progress_at: float | None = None
+    receipts_error: Exception | None = None  # the store may hold a reply this probe could not read
 
 
 _NO_INSPECTION = _RecoveryInspection(terminal=None, active=False, status=None)
@@ -128,7 +132,7 @@ class HostedRoomRuntime:
         positive = dict(
             lease_ttl_seconds=lease_ttl_seconds, poll_interval_seconds=poll_interval_seconds,
             active_poll_interval_seconds=active_poll_interval_seconds,
-            turn_timeout_seconds=turn_timeout_seconds,
+            turn_timeout_seconds=turn_timeout_seconds if turn_timeout_seconds > 0 else math.inf,
             indeterminate_defer_seconds=indeterminate_defer_seconds)
         for name, value in positive.items():
             if value <= 0:
@@ -164,9 +168,13 @@ class HostedRoomRuntime:
         self._recovered_leases: set[tuple[str, int]] = set()
         self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._ambiguous_rooms: dict[str, float] = {}
+        self._deferred_cursor: dict[str, int] = {}
         self._unavailable_route_retries: dict[tuple[str, str], dict[str, float]] = {}
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
+        self._terminal_receipts: dict[state.TaskAttempt, _TerminalReceipt] = {}
+        # (room, task, generation) -> (progress time the bot last reported, home time it last changed)
+        self._attempt_progress: dict[tuple[str, str, int], tuple[float | None, float]] = {}
         self._room_schedule_cursor, self._cycles = 0, 0
 
     # ------------------------------------------------------------------ lifecycle
@@ -245,11 +253,15 @@ class HostedRoomRuntime:
             direct = before["status"] in {"queued", "deferred"}
             if before["status"] == "deferred" and self.confirm_deferred_stop is not None and (
                     not acknowledge or not self.confirm_deferred_stop(identity.room_id, before)):
-                return before
+                return state.get_task(self.db_path, identity)  # the check may have found its answer
             try:
-                result = (state.cancel_task if direct else state.begin_task_cancel)(
+                cancel = (state.cancel_deferred_task if before["status"] == "deferred"
+                          else state.cancel_task if direct else state.begin_task_cancel)
+                result = cancel(
                     self.db_path, identity, cancel_id=cancel_id,
-                    expected_cancel_generation=before["cancel_generation"], clock=self.clock)
+                    expected_cancel_generation=before["cancel_generation"], clock=self.clock,
+                    **({"expected_execution_generation": before["execution_generation"]}
+                       if before["status"] == "deferred" else {}))
             except (state.InvalidTaskTransitionError, state.StaleTaskError):
                 continue  # lost the race with the worker (settled or re-queued); re-route
             if not direct and acknowledge:
@@ -276,14 +288,17 @@ class HostedRoomRuntime:
     def retry_indeterminate(
         self, identity: state.TaskIdentity, *, execution_generation: int | None = None) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""
+        binding = self._binding_for_room(identity.room_id)
+        published = self._publish_retained_receipts(binding) if binding is not None else set()
         task = state.get_task(self.db_path, identity)
         # The write below fences on this re-read generation, so pinning it to the
         # caller's selected attempt keeps a stale Retry off a newer attempt.
         if execution_generation not in (None, task["execution_generation"]):
             raise state.StaleTaskError("task attempt changed before retry")
+        if identity in published and task["status"] in state.TERMINAL_STATUSES:
+            return task  # this Retry published the attempt's kept reply, as _requeue does
         if task["status"] not in {"indeterminate", "deferred"}:
             raise state.InvalidTaskTransitionError(f"cannot retry task in state '{task['status']}'")
-        binding = self._binding_for_room(identity.room_id)
         if binding is None:
             raise state.RoomUnavailableError("hosted room is unavailable")
         lease = self._ensure_lease(binding)
@@ -302,6 +317,8 @@ class HostedRoomRuntime:
             self._set_blocked(identity.room_id, True)
             raise state.InvalidTaskTransitionError(
                 "cannot retry while the original task attempt is still active")
+        if inspection.receipts_error is not None:
+            raise inspection.receipts_error  # running the turn again could answer it twice
         return self._requeue(state.requeue_indeterminate_task, task, lease, identity.room_id)
 
     def _retry_deferred(
@@ -356,19 +373,21 @@ class HostedRoomRuntime:
         return True
 
     def deferred_stop_confirmed(self, room_id: str, task: Mapping[str, Any]) -> bool:
-        """Whether a deferred turn of a member on this gateway may be cancelled: always when this
-        process serves it. A turn deferred behind another profile's daemon's unconfirmed Stop may
-        still be running there, so that daemon must confirm it is not; unreachable keeps the turn."""
+        """Confirm Stop on the serving process, or publish this attempt's completed reply."""
         binding = self._binding_for_room(room_id)
         if binding is None:
             return False
-        if not self._served_elsewhere(binding, task):
-            return True
         try:
-            transport, _profile, session_id = self._open_session(binding, task)
+            transport, profile, session_id = self._open_session(binding, task)
             if session_id is None:
                 return transport is not None  # that daemon answered: no room session runs anything
-            return self._interrupt_stopping_task(binding, task)
+            outcome = self._terminal_receipt(transport, profile, session_id, task)
+            if outcome is None:
+                outcome = self._stop_outcome(binding, task)
+            if isinstance(outcome, _TerminalReceipt):
+                self._commit_lost_attempt_receipt(binding, task, outcome)
+                return False
+            return outcome
         except Exception as exc:  # health: allow BLE001 -- an unreachable daemon keeps the turn deferred
             self._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
             return False
@@ -403,6 +422,11 @@ class HostedRoomRuntime:
     def _requeue(
         self, requeue: Callable[..., dict[str, Any]], task: Mapping[str, Any],
         lease: state.DriverLease, room_id: str) -> dict[str, Any]:
+        # Canonical local Retry calls this shared path directly, after its live-session probe.
+        self._publish_retained_receipts(HostedRoomBinding(room_id, lease.gateway_id, lease.authority_epoch))
+        current = state.get_task(self.db_path, task["identity"])
+        if current["status"] in state.TERMINAL_STATUSES:
+            return current
         retried = self._fenced(requeue, None, task, lease)
         # Only a successful requeue replaces the attempt. A refused Retry or peer recovery
         # still owns its original generation and must keep accepting that run's progress.
@@ -427,11 +451,12 @@ class HostedRoomRuntime:
             **asdict(terminal))
 
     def _finish_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, admission_id: str | None = None,
     ) -> bool:
         """Terminalize a stopping task from its receipt or an acknowledged interrupt."""
         try:
-            if self._settle_stopping_completion(binding, task, lease):
+            if self._settle_stopping_completion(binding, task, lease, admission_id=admission_id):
                 return True
         except state.DriverStateError:
             raise
@@ -475,12 +500,21 @@ class HostedRoomRuntime:
         return transport, profile, self._resume_exact(transport, binding.room_id, profile)
 
     @staticmethod
-    def _terminal_from_history(
-        transport: InternalSessionRPC, profile: str, session_id: str, task: Mapping[str, Any]
+    def _terminal_receipt(
+        transport: InternalSessionRPC, profile: str, session_id: str, task: Mapping[str, Any],
+        *, admission_id: str | None = None,
     ) -> _TerminalReceipt | None:
+        results = getattr(transport, "results", None)
+        if callable(results):
+            receipts = results(**_session_kw(profile, session_id),
+                **({"admission_ids": [admission_id]} if admission_id is not None else {
+                    "task_id": task["identity"].task_id, "execution_generation": task["execution_generation"]}))
+            history = [{**receipt, "role": "assistant", "content": receipt.get("text", "")}
+                       for receipt in receipts]
+        else:
+            history = transport.history(**_session_kw(profile, session_id))
         return _find_terminal_receipt(
-            transport.history(**_session_kw(profile, session_id)),
-            task["identity"], int(task["execution_generation"]))
+            history, task["identity"], int(task["execution_generation"]))
 
     def _peer_stop_acknowledged(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
         """Probe a peer's exact durable terminal Stop receipt before reading history."""
@@ -505,13 +539,11 @@ class HostedRoomRuntime:
             # absence is a safe Stop acknowledgement (errors raise); a peer stays uncertain.
             return transport is not None and transport is self.rpc
         info = transport.info(**_session_kw(profile, session_id))
-        if (info.get("status") == "unknown" and task["status"] == "stopping"
-                and callable(getattr(transport, "discard", None))):
+        if info.get("status") == "unknown" and callable(getattr(transport, "discard", None)):
             return self._discard_unknown_stop(transport, profile, session_id, task, info)
         if not _info_active(info):
-            # History was checked just before this probe: an inactive exact session cannot
-            # keep executing, and after a restart its process-local task marker is absent.
-            return True
+            # Completion can commit between the earlier receipt read and this idle report.
+            return self._terminal_receipt(transport, profile, session_id, task) or True
         if not _info_is_active_for(info, task["identity"], require_exact=True):
             return self._interrupt_stale_admission(transport, binding, profile, session_id, info)
         result = transport.interrupt(
@@ -522,8 +554,7 @@ class HostedRoomRuntime:
 
     @staticmethod
     def _discard_unknown_stop(transport, profile, session_id, task, info) -> bool | _TerminalReceipt:
-        """A persisted Stop resolves only its exact lost canonical attempt, not another head.
-        Resolution commits a retained captured answer as that attempt's own receipt."""
+        """Resolve only this lost attempt, preserving its captured answer."""
         generation = int(task["execution_generation"])
         discard = transport.discard
         if (_info_active(info) or info.get("task_id") != task["identity"].task_id
@@ -538,6 +569,23 @@ class HostedRoomRuntime:
                 and result["execution_generation"] == generation):
             return False
         return discarded_receipt(result, task) or result.get("status") == "cancelled"
+
+    @classmethod
+    def _settle_lost_attempt(
+        cls, transport: InternalSessionRPC, profile: str, session_id: str, task: Mapping[str, Any],
+        info: Mapping[str, Any]) -> bool | _TerminalReceipt | None:
+        """Resolve this unknown head: its answer, a stop confirmation, or None for another head."""
+        if (info.get("status") != "unknown" or info.get("task_id") not in (None, task["identity"].task_id)
+                or info.get("execution_generation") not in (None, task["execution_generation"])):
+            return None
+        return cls._discard_unknown_stop(transport, profile, session_id, task, info)
+
+    def _commit_lost_attempt_receipt(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], receipt: _TerminalReceipt) -> None:
+        self._retain_terminal_receipt(binding, state.TaskAttempt(
+            identity=task["identity"], lease=self._ensure_lease(binding),
+            execution_generation=int(task["execution_generation"]),
+            cancel_generation=int(task["cancel_generation"])), receipt)
 
     def _interrupt_stale_admission(
         self, transport: InternalSessionRPC, binding: HostedRoomBinding, profile: str,
@@ -569,13 +617,14 @@ class HostedRoomRuntime:
         return False
 
     def _settle_stopping_completion(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, admission_id: str | None = None,
     ) -> bool:
         """Publish a terminal receipt that arrived before Stop was acknowledged."""
         transport, profile, session_id = self._open_session(binding, task)
         if session_id is None:
             return False
-        receipt = self._terminal_from_history(transport, profile, session_id, task)
+        receipt = self._terminal_receipt(transport, profile, session_id, task, admission_id=admission_id)
         if receipt is None:
             return False
         self._fenced(state.settle_stopping_task, binding, task, lease, **asdict(receipt))
@@ -647,11 +696,13 @@ class HostedRoomRuntime:
         with self._status_lock:
             supervisor = self._thread
         if threading.current_thread() is not supervisor:
+            self._forget_unlisted_rooms()
             for binding in tuple(self._rooms_provider()):
                 if self._stop.is_set():
                     return
                 self._run_room_once(binding)
             return
+        self._forget_unlisted_rooms()
         with self._status_lock:
             self._room_threads = {
                 room_id: t for room_id, t in self._room_threads.items() if t.is_alive()}
@@ -698,6 +749,7 @@ class HostedRoomRuntime:
                 self.wakeup()
 
     def _process_room(self, binding: HostedRoomBinding) -> None:
+        self._publish_retained_receipts(binding)
         # A persisted Stop must recover before historical publication/checkpoint
         # work. Otherwise a slow preparation can indefinitely delay cancellation.
         if self._tasks(binding, "stopping"):
@@ -706,6 +758,8 @@ class HostedRoomRuntime:
                 self._set_blocked(binding.room_id, True)
                 return
             self._set_blocked(binding.room_id, False)
+        self._forget_ended_attempts(binding)
+        self._observe_deferred_receipt(binding)
         if self.prepare_room is not None:
             self.prepare_room(binding)
         self._inspect_abandoned_attempts(binding)
@@ -807,7 +861,7 @@ class HostedRoomRuntime:
     def _execute_attempt(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], attempt: state.TaskAttempt
     ) -> None:
-        profile, submit_attempted = task["payload"]["target_profile"], False
+        profile, submit_attempted, submitted = task["payload"]["target_profile"], False, False
         attachments = task["payload"].get("attachments")
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
@@ -832,34 +886,40 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted, session_id = True, _session_id(session)
-                deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
-                transport.submit(
+                submission = transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
                     attachments=attachments,
                     member_id=_member_id(task),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
+                submitted = True
                 self._unavailable_route_retries.pop(
                     (task["identity"].room_id, _member_id(task)), None)
                 receipt = self._wait_for_terminal(
                     binding, profile=profile, session_id=session_id, attempt=attempt,
-                    transport=transport, deadline_monotonic=deadline_monotonic)
+                    transport=transport, admission_id=submission.get("admission_id"))
                 if receipt is None:
                     return
-                state.settle_task(self.db_path, attempt, **asdict(receipt), clock=self.clock)
+                self._retain_terminal_receipt(binding, attempt, receipt)
         except (state.StaleLeaseError, state.StaleTaskError) as exc:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
             # Exceptions may contain prompt text or credentials. Persist only a fixed
             # reason, not the free-form messages retained in the in-memory status.
-            reason = 'request_too_large' if getattr(exc, 'reason', None) == 'request_too_large' else 'attempt_failed'
+            reason_code = getattr(exc, 'reason', None)
+            reason = ('request_too_large' if reason_code == 'request_too_large'
+                      else f'attempt_failed ({type(exc).__name__})')
             logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
+            refusal = reason_code if submit_attempted and not submitted else None
             if getattr(exc, "refused_before_submit", False):
                 # File preparation refused work that never started; no retry can change it.
                 self._settle_failure_if_current(attempt, exc)
-            elif (submit_attempted and not bool(getattr(exc, "ambiguous", False))
+            elif refusal == "unknown_execution" or (
+                    submit_attempted and not bool(getattr(exc, "ambiguous", False))
                     and bool(getattr(exc, "not_admitted", False))):
+                if refusal == "unknown_execution":
+                    self._clear_refusing_head(binding, task, attempt)
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
@@ -883,6 +943,25 @@ class HostedRoomRuntime:
                 # (idle room scans never set this marker).
                 self._rooms_needing_reschedule.add(binding.room_id)
 
+    def _clear_refusing_head(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], attempt: state.TaskAttempt) -> None:
+        """Clear an older unknown head blocking admission, preserving its answer."""
+        try:
+            transport, profile, session_id = self._open_session(binding, task)
+            info = transport.info(**_session_kw(profile, session_id))
+            if info.get("status") != "unknown":
+                return
+            head_id, generation = info["task_id"], info["execution_generation"]
+            result = transport.discard(**_session_kw(profile, session_id), expected_task_id=head_id,
+                                       execution_generation=generation)
+            head = next((t for t in self._tasks(binding, None) if t["identity"].task_id == head_id
+                         and t["execution_generation"] == generation), None)
+            receipt = None if head is None else discarded_receipt(result or {}, head)
+            if receipt is not None:
+                self._commit_lost_attempt_receipt(binding, head, receipt)
+        except Exception as exc:  # health: allow BLE001 -- retried with the submit
+            self._record_task_error(attempt, f"could not clear what holds its bot's queue: {exc}")
+
     def _mark_ambiguous(self, binding: HostedRoomBinding, attempt: state.TaskAttempt) -> None:
         # Wait out the lease as last renewed (a LeaseKeeper may have extended it), so the room is
         # reclaimed under a new generation and recovery inspects the ambiguous attempt.
@@ -902,48 +981,97 @@ class HostedRoomRuntime:
             self.wakeup()
             return
         terminal = _receipt_from(receipt, attempt.identity, attempt.execution_generation)
+        self._retain_terminal_receipt(binding, attempt, terminal)
+
+    def _retain_terminal_receipt(
+        self, binding: HostedRoomBinding, attempt: state.TaskAttempt, terminal: _TerminalReceipt
+    ) -> None:
+        # Dashboard history cannot identify an attempt. Keep its callback receipt until a
+        # current lease can commit it, or a newer attempt / completed control makes it obsolete.
+        with self._status_lock:
+            self._terminal_receipts[attempt] = terminal
+        self._commit_retained_receipt(binding, attempt, terminal)
+        self.wakeup()
+
+    def _publish_retained_receipts(self, binding: HostedRoomBinding) -> set[state.TaskIdentity]:
+        """Commit the room's kept receipts; return the tasks whose receipt is no longer kept."""
+        with self._status_lock:
+            receipts = [(attempt, receipt) for attempt, receipt in self._terminal_receipts.items()
+                        if attempt.identity.room_id == binding.room_id]
+        return {attempt.identity for attempt, receipt in receipts
+                if self._commit_retained_receipt(binding, attempt, receipt)}
+
+    def _forget_unlisted_rooms(self) -> None:
+
+        listed = {binding.room_id for binding in self._rooms_provider()}
+        with self._status_lock:  # this gateway no longer runs those group chats
+            for attempt in [a for a in self._terminal_receipts if a.identity.room_id not in listed]:
+                self._terminal_receipts.pop(attempt)
+            for key in [k for k in self._attempt_progress if k[0] not in listed]:
+                self._attempt_progress.pop(key)
+            for room_id in [r for r in self._deferred_cursor if r not in listed]:
+                self._deferred_cursor.pop(room_id)
+
+    def _commit_retained_receipt(
+        self, binding: HostedRoomBinding, attempt: state.TaskAttempt, terminal: _TerminalReceipt
+    ) -> bool:
+        """Whether the receipt is done with: committed, obsolete, or no longer this gateway's."""
         try:
-            self._publish(
-                binding,
-                state.settle_task(
-                    self.db_path, attempt, **asdict(terminal), clock=self.clock, allow_expired_lease=True))
-        except (state.StaleLeaseError, state.StaleTaskError):
-            # Cancellation, disband, or authority transfer can win the durable race, and then the
-            # model result is discarded; an exact attempt in recovery still takes its reply.
-            try:
-                current = state.get_task(self.db_path, attempt.identity)
-                if current["status"] == "stopping":
-                    self._fenced(
-                        state.settle_stopping_task, binding, current, attempt.lease,
-                        **asdict(terminal),
-                        expected_execution_generation=attempt.execution_generation)
-                elif (current["status"] == "indeterminate"
-                      and current["execution_generation"] == attempt.execution_generation
-                      and current["cancel_generation"] == attempt.cancel_generation):
-                    self._resolve_indeterminate(
-                        binding, current, self._ensure_lease(binding), terminal)
-                    self._inspected_indeterminate_attempts.discard((
-                        binding.room_id, attempt.identity.task_id, attempt.execution_generation))
-            except (state.StaleLeaseError, state.StaleTaskError, state.RoomUnavailableError):
-                pass
-            except Exception:
-                logger.exception("task %s terminal reconciliation failed", attempt.identity.task_id)
+            self._commit_terminal_receipt(binding, attempt, terminal)
+        except state.AuthorityChangedError as exc:
+            self._record_task_error(attempt, f"terminal receipt dropped: {exc}")
+        except (state.StaleLeaseError, state.StaleTaskError, state.LeaseHeldError) as exc:
+            self._record_task_error(attempt, f"terminal receipt is waiting for reconciliation: {exc}")
+            return False  # Retry with the receipt intact after the current lease/control race.
+        except state.RoomUnavailableError:
+            pass  # A disbanded group can no longer publish.
         except state.DriverStateError as exc:
-            # A malformed receipt must not escape the callback and hold the profile lock.
             self._settle_failure_if_current(
                 attempt, RuntimeError(f"terminal result could not be committed: {exc}"))
-        finally:
-            self.wakeup()
+        except Exception:
+            logger.exception("task %s terminal reconciliation failed", attempt.identity.task_id)
+            return False
+        with self._status_lock:
+            self._terminal_receipts.pop(attempt, None)
+        return True
+
+    def _commit_terminal_receipt(
+        self, binding: HostedRoomBinding, attempt: state.TaskAttempt, terminal: _TerminalReceipt
+    ) -> None:
+        try:
+            self._publish(binding, state.settle_task(
+                self.db_path, attempt, **asdict(terminal), clock=self.clock, allow_expired_lease=True))
+            return
+        except (state.StaleLeaseError, state.StaleTaskError):
+            pass  # Recovery can still accept this exact attempt under the current lease.
+        current = state.get_task(self.db_path, attempt.identity)
+        # Only a Stop raises the cancel generation, and this row is not cancelled: that Stop was
+        # never confirmed (stopping, or deferred after it), so this run's answer still wins it.
+        if (current["execution_generation"] != attempt.execution_generation
+                or current["cancel_generation"] < attempt.cancel_generation
+                or current["status"] not in {"running", "indeterminate", "deferred", "stopping"}):
+            return
+        lease = self._ensure_lease(binding)
+        if current["status"] == "indeterminate":
+            self._resolve_indeterminate(binding, current, lease, terminal)
+        else:
+            self._fenced(
+                state.settle_stopping_task if current["status"] == "stopping" else state.settle_recovered_task,
+                binding, current, lease, **asdict(terminal))
+        self._inspected_indeterminate_attempts.discard((
+            binding.room_id, attempt.identity.task_id, attempt.execution_generation))
 
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
-        attempt: state.TaskAttempt, transport: InternalSessionRPC, deadline_monotonic: float,
+        attempt: state.TaskAttempt, transport: InternalSessionRPC, admission_id: str | None = None,
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
-        observation_failed_at = None
-        # Sleep at most a quarter lease ttl: `_renew_lease_if_needed` must get a chance to act
-        # inside its ttl/2 renewal window however the configured cadence compares to the ttl.
+        unobserved_since = None
         wait_cap = min(self.active_poll_interval_seconds, self.lease_ttl_seconds / 4)
+        with self._status_lock:  # the wait for the profile lock and the session spends none of the limit
+            self._attempt_progress[
+                attempt.identity.room_id, attempt.identity.task_id, attempt.execution_generation
+            ] = (None, self.clock())
         while not self._stop.is_set():
             task = state.get_task(self.db_path, attempt.identity)
             if task["status"] in state.TERMINAL_STATUSES:
@@ -951,46 +1079,51 @@ class HostedRoomRuntime:
             if task["status"] == "stopping":
                 try:
                     lease = self._renew_lease_if_needed(lease)
-                    if self._finish_stop(binding, task, lease):
+                    if self._finish_stop(binding, task, lease, admission_id=admission_id):
                         return None
                 except state.StaleLeaseError:
                     raise  # the room's scan keeps this Stop going under a new lease
                 except Exception as exc:
                     self._record_error(_STOP_PENDING.format(exc=exc))
-                    if observation_failed_at is None:
-                        observation_failed_at = self.clock()
-                    if self.clock() - observation_failed_at >= self.lease_ttl_seconds:
+                    if unobserved_since is None:
+                        unobserved_since = self.clock()
+                    if self.clock() - unobserved_since >= self.lease_ttl_seconds:
                         return None  # the room's scan keeps this Stop going, without the profile lock
                 if self._defer_unconfirmed_stop(binding, task, lease):
                     return None
                 self._wake.wait(wait_cap)
                 self._wake.clear()
                 continue
-            if time.monotonic() >= deadline_monotonic:
-                self._expire_attempt_deadline(binding, task, lease)
-                return None
             lease = self._renew_lease_if_needed(lease)
+            progress_at, alive = None, False
             try:
-                receipt = self._terminal_from_history(transport, profile, session_id, task)
+                receipt = self._terminal_receipt(
+                    transport, profile, session_id, task, admission_id=admission_id)
                 if receipt is not None:
                     return receipt
                 info = transport.info(**_session_kw(profile, session_id))
+                progress_at = _attempt_progress_at(info, task)
                 self._report_pending_action(task, session_id=session_id, info=info)
+                alive = _info_active(info)
             except state.DriverStateError:
                 raise
             except Exception as exc:
                 if getattr(exc, "not_admitted", False) or getattr(exc, "refused_before_submit", False):
                     raise
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
-                if observation_failed_at is None:
-                    observation_failed_at = self.clock()
-                if self.clock() - observation_failed_at >= self.lease_ttl_seconds:
-                    state.mark_attempt_indeterminate(self.db_path, attempt, lease, clock=self.clock)
-                    return None
-            else:
-                observation_failed_at = None
-            remaining = max(0.0, deadline_monotonic - time.monotonic())
-            self._wake.wait(min(wait_cap, remaining))
+            # A turn queued behind another admission or waiting for an approval reports active. For
+            # one its bot lost, as for reads that keep failing, no limit may be set to end this watch.
+            if alive:
+                unobserved_since = None
+            elif unobserved_since is None:
+                unobserved_since = self.clock()
+            elif self.clock() - unobserved_since >= self.lease_ttl_seconds:
+                state.mark_attempt_indeterminate(self.db_path, attempt, lease, clock=self.clock)
+                return None
+            if self._past_execution_deadline(task, progress_at):
+                self._expire_attempt_deadline(binding, task, lease, admission_id=admission_id)
+                return None
+            self._wake.wait(wait_cap)
             self._wake.clear()
         return None
 
@@ -1004,12 +1137,15 @@ class HostedRoomRuntime:
             state.settle_stopping_task, binding, task, lease,
             settlement_id=f"deadline:{int(task['execution_generation'])}", status="failed",
             result={
-                "error": "This Group Chat turn exceeded its configured time limit and was stopped.",
+                "error": "This group chat turn exceeded its time limit and was stopped.",
                 "reason_code": "turn_deadline_exceeded",
-                "timeout_seconds": self.turn_timeout_seconds})
+                # A Stop begun under a finite limit may finish after a restart turned it off.
+                **({"timeout_seconds": self.turn_timeout_seconds}
+                   if math.isfinite(self.turn_timeout_seconds) else {})})
 
     def _expire_attempt_deadline(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, admission_id: str | None = None,
     ) -> None:
         """Fence, stop, and terminalize one exact attempt at its deadline."""
         if task["status"] in {"running", "indeterminate"}:
@@ -1023,11 +1159,37 @@ class HostedRoomRuntime:
         if not str(task.get("cancel_id") or "").startswith("deadline:"):
             return
         lease = self._renew_lease_if_needed(lease, force=True)
-        if not self._finish_stop(binding, task, lease):
+        if not self._finish_stop(binding, task, lease, admission_id=admission_id):
             self._record_error(
                 f"task {task['identity'].task_id} exceeded its deadline; stop remains pending")
 
     # ------------------------------------------------------------------ recovery
+    def _observe_deferred_receipt(self, binding: HostedRoomBinding) -> None:
+        # One old local attempt per pass: receipts may become readable long after deferral.
+        # Resolving a peer transport replays its admission, so only explicit Retry may do that.
+        deferred = [t for t in self._tasks(binding, "deferred") if not self._remote(t)]
+        with self._status_lock:
+            if not deferred:
+                self._deferred_cursor.pop(binding.room_id, None)
+                return
+            index = self._deferred_cursor.get(binding.room_id, 0) % len(deferred)
+            self._deferred_cursor[binding.room_id] = index + 1
+        task = deferred[index]
+        try:
+            transport, profile, session_id = self._open_session(binding, task)
+            receipt = (self._terminal_receipt(transport, profile, session_id, task)
+                       if session_id and callable(getattr(transport, "results", None)) else None)
+            if receipt is not None:
+                self._fenced(state.settle_recovered_task, binding, task,
+                             self._ensure_lease(binding), **asdict(receipt))
+            elif session_id and callable(getattr(transport, "discard", None)):
+                inspection = self._inspect_session(transport, task, session_id, read_history=False)
+                if inspection.status == "unknown" and not inspection.active:
+                    task = self._fenced(state.reopen_deferred_task, None, task, self._ensure_lease(binding))
+                    self._give_up_on_attempt(binding, task, inspection, probe_failed=False)
+        except Exception as exc:  # health: allow BLE001 -- a failed old receipt must not block later work
+            logger.debug("deferred receipt read failed: %s", type(exc).__name__)
+
     def _inspect_abandoned_attempts(self, binding: HostedRoomBinding) -> None:
         for task in self._tasks(binding, "running"):
             if task["run_process_generation"] == self.process_generation:
@@ -1040,21 +1202,31 @@ class HostedRoomRuntime:
                 self._harvest_previous_attempt(binding, task, inspection.terminal)
             elif inspection.active:
                 # The prior session still owns the turn: no lease contention, no duplicate prompt.
-                raise state.LeaseHeldError("recovered session turn is still active")
+                # Its limit still applies. While the old process holds the lease this raises instead.
+                if not self._past_execution_deadline(task, inspection.progress_at):
+                    raise state.LeaseHeldError("recovered session turn is still active")
+                self._expire_attempt_deadline(binding, task, self._ensure_lease(binding))
 
     def _inspect_session(
         self, transport: InternalSessionRPC, task: Mapping[str, Any], session_id: str,
         *, read_history: bool) -> _RecoveryInspection:
         """Probe one resolved session: optional terminal receipt from history, then live info."""
         profile = task["payload"]["target_profile"]
-        receipt = (
-            self._terminal_from_history(transport, profile, session_id, task)
-            if read_history else None)
+        receipt = receipts_error = None
+        if read_history:
+            try:
+                receipt = self._terminal_receipt(transport, profile, session_id, task)
+            except Exception as exc:  # health: allow BLE001 -- receipt availability says nothing about the live turn
+                # By type only: exceptions may contain prompt text. A peer repeats this every cycle.
+                logger.debug("task %s recovery receipt read failed: %s",
+                             task["identity"].task_id, type(exc).__name__)
+                receipts_error = exc
         info = transport.info(**_session_kw(profile, session_id))
         self._report_pending_action(task, session_id=session_id, info=info)
         return _RecoveryInspection(
             terminal=receipt, active=_info_is_active_for(info, task["identity"]),
-            status=str(info.get("status") or "") or None)
+            status=str(info.get("status") or "") or None, progress_at=_attempt_progress_at(info, task),
+            receipts_error=receipts_error)
 
     def _inspect_recovery_session(
         self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> _RecoveryInspection:
@@ -1123,13 +1295,13 @@ class HostedRoomRuntime:
                     continue
                 if inspection.active:
                     # Deferring a running turn would lose its reply and its Stop.
-                    if self.clock() >= float(task.get("started_at") or self.clock()) + self.turn_timeout_seconds:
+                    if self._past_execution_deadline(task, inspection.progress_at):
                         self._expire_attempt_deadline(binding, task, lease)
                         inspected.discard(attempt_key)
                         continue
                     self._set_blocked(binding.room_id, True)
                     return True
-            inspection = _NO_INSPECTION
+            inspection, probe_failed = _NO_INSPECTION, False
             # A remote run may finish between probes, so it is observed every cycle (its client
             # owns the HTTP backoff); an in-process session is probed once, then at the deadline.
             if remote or attempt_key not in inspected or self.clock() >= deadline:
@@ -1137,6 +1309,7 @@ class HostedRoomRuntime:
                     if remote or self._transport_for(binding, task) is not self.rpc:
                         inspection = self._inspect_recovery_session(binding, task)
                 except Exception as exc:
+                    probe_failed = True
                     self._record_error(
                         f"task {task['identity'].task_id} recovery probe failed: {exc}")
                 inspected.add(attempt_key)
@@ -1154,29 +1327,91 @@ class HostedRoomRuntime:
                     binding, task, lease, inspection.terminal, publish=False)
                 inspected.discard(attempt_key)
                 continue
-            if inspection.active and self._past_execution_deadline(task):
-                # Recovery never outlives the turn's own time limit, counted from its start: stop
-                # that exact attempt through the Stop protocol, as a live turn is stopped.
+            if inspection.active and self._past_execution_deadline(task, inspection.progress_at):
+                # Recovery applies the same inactivity limit and exact Stop as a watched turn.
                 self._expire_attempt_deadline(binding, task, lease)
                 inspected.discard(attempt_key)
                 continue
             if self.clock() < deadline or inspection.active:
                 # A peer run that is still going keeps the room waiting, as a local one does:
-                # deferring it would drop its reply.
+                # deferring it would release the room while the bot is still working.
                 self._set_blocked(binding.room_id, True)
                 return True
-            deferred = self._fenced(
-                state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
+            self._give_up_on_attempt(binding, task, inspection, probe_failed=probe_failed)
             inspected.discard(attempt_key)
-            self._publish(binding, deferred)
         self._set_blocked(binding.room_id, False)
         return False
 
-    def _past_execution_deadline(self, task: Mapping[str, Any]) -> bool:
-        """Whether the attempt has run past ``turn_timeout_seconds`` since it started. A retried
-        deferred attempt counts from the retry (``reopen_deferred_task`` restarts its clock)."""
+    def _give_up_on_attempt(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], inspection: _RecoveryInspection,
+        *, probe_failed: bool) -> None:
+        """Resolve a lost head before deferring its turn or handing its message to the lead."""
+        lost = None
+        if inspection.status == "unknown":
+            try:
+                transport, profile, session_id = self._open_session(binding, task)
+                if session_id is not None and callable(getattr(transport, "discard", None)):
+                    lost = self._settle_lost_attempt(
+                        transport, profile, session_id, task, transport.info(**_session_kw(profile, session_id)))
+            except Exception as exc:  # health: allow BLE001 -- unresolved: its Retry or the next turn tries again
+                self._record_error(f"task {task['identity'].task_id} recovery could not resolve its lost run: {exc}")
+        if isinstance(lost, _TerminalReceipt):
+            self._resolve_indeterminate(binding, task, self._ensure_lease(binding), lost)
+            return
+        # A failed probe or unread receipts say nothing about whether the turn is lost.
+        lost_routing = (not probe_failed and inspection.receipts_error is None
+                        and self._lead_takes_lost_routing(binding, task))
+        lease = self._ensure_lease(binding)  # the confirmation can outlast the lease
+        if lost_routing:
+            given_up = self._fenced(
+                state.resolve_indeterminate_cancellation, None, task, lease,
+                cancel_id=f"{LOST_ROUTING_CANCEL_PREFIX}{task['execution_generation']}")
+        else:
+            given_up = self._fenced(
+                state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
+        self._publish(binding, given_up)
+
+    def _lead_takes_lost_routing(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+        """Whether a lead's lost routing turn is given up rather than deferred: only once nothing
+        can still run it, as for Stop of a deferred turn. Its message then goes to the lead alone
+        (``first_round_members``), and no Retry or late answer can route it a second time. While the
+        lead's computer cannot confirm, the turn is deferred and the message waits for its answer."""
+        if task["payload"].get("lead_routing") is not True:
+            return False
+        try:
+            return self.confirm_deferred_stop is None or self.confirm_deferred_stop(binding.room_id, task)
+        except Exception as exc:  # health: allow BLE001 -- unconfirmed: the turn is deferred instead
+            self._record_error(f"task {task['identity'].task_id} routing stop is unconfirmed: {exc}")
+            return False
+
+    def _past_execution_deadline(
+        self, task: Mapping[str, Any], progress_at: float | None = None) -> bool:
+        """Whether the attempt shows no activity for ``turn_timeout_seconds``. Activity is a change
+        in the progress time its bot reports, the first one seen included, timed by this home's
+        clock: the bot's own clock may be far off. Until then the limit counts from the later of the
+        start, which a reopened attempt resets, and the submit."""
         started = task.get("started_at")
-        return started is not None and self.clock() >= float(started) + self.turn_timeout_seconds
+        if started is None:
+            return False
+        key = _attempt_key(task)
+        with self._status_lock:
+            reported, changed_at = self._attempt_progress.get(key, (None, 0.0))
+            if self._remote(task) and progress_at is None and reported is None:
+                return False  # older peers cannot distinguish activity from silence; they enforce their own limit
+            if progress_at is not None and progress_at != reported:
+                changed_at = self.clock()
+                self._attempt_progress[key] = (progress_at, changed_at)
+        return self.clock() >= max(float(started), changed_at) + self.turn_timeout_seconds
+
+    def _forget_ended_attempts(self, binding: HostedRoomBinding) -> None:
+        with self._status_lock:
+            remembered = {key for key in self._attempt_progress if key[0] == binding.room_id}
+        if remembered:
+            live = {_attempt_key(task) for status in ("running", "indeterminate", "stopping")
+                    for task in self._tasks(binding, status)}
+            with self._status_lock:
+                for key in remembered - live:
+                    self._attempt_progress.pop(key, None)
 
     def _harvest_previous_attempt(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], receipt: _TerminalReceipt
@@ -1312,6 +1547,20 @@ def _find_terminal_receipt(
 
 def _info_active(info: Mapping[str, Any]) -> bool:
     return bool(info.get("active", info.get("running", False)))
+
+
+def _attempt_key(task: Mapping[str, Any]) -> tuple[str, str, int]:
+    return task["identity"].room_id, task["identity"].task_id, int(task["execution_generation"])
+
+
+def _attempt_progress_at(info: Mapping[str, Any], task: Mapping[str, Any]) -> float | None:
+    """Use only a finite frame timestamp belonging to this attempt, never the polling time."""
+    value = info.get("progress_at")
+    if (info.get("task_id") in (None, task["identity"].task_id)
+            and info.get("execution_generation") in (None, task["execution_generation"])
+            and type(value) in (int, float) and math.isfinite(value)):
+        return float(value)
+    return None
 
 
 def _info_is_active_for(

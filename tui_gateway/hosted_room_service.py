@@ -20,6 +20,7 @@ from gateway import hosted_room_links
 from gateway import hosted_rooms
 from gateway import hosted_room_router as router
 from gateway.hosted_room_context import ROUTING_MODES, room_context
+from gateway.hosted_room_lead import LOST_ROUTING_CANCEL_PREFIX, LOST_ROUTING_REASON
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_hard_expiry,
@@ -120,8 +121,9 @@ def _hosted_room_turn_timeout_seconds() -> float:
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
     except (TypeError, ValueError):
-        agent_timeout = 0.0
-    return (agent_timeout if agent_timeout > 0 else 1800.0) + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS
+        agent_timeout = 1800.0
+    # As in the messaging gateway, a limit that is not positive (0, or nan) means no limit.
+    return agent_timeout + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS if agent_timeout > 0 else float("inf")
 
 
 def _grant_revoke_is_terminal(exc: PeerRunsHTTPError) -> bool:
@@ -726,8 +728,10 @@ class HostedRoomService:
                 # Finish an already visible immutable reply even if a later request arrived.
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
+            lost_routing = str(task.get("cancel_id") or "").startswith(LOST_ROUTING_CANCEL_PREFIX)
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status,
+                result={"reason": LOST_ROUTING_REASON} if lost_routing else task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:

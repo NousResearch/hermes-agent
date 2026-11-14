@@ -20,8 +20,16 @@ from tools.arg_validation import call_with_arg_checks
 from tools.registry import registry
 
 
-def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
-    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
+def detached_hook_kwargs(agent) -> dict[str, bool]:
+    """``{"detached": True}`` for a detached fork (``_persist_disabled``: background review, ``/btw``,
+    plugin session fork), which shares its parent's ``session_id``; ``{}`` otherwise, so live-turn
+    hooks see no new kwarg. ``is True``: only the real flag counts, not any truthy attribute."""
+    return {"detached": True} if getattr(agent, "_persist_disabled", False) is True else {}
+
+
+def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, Any]:
+    """Identity kwargs every tool hook/middleware call carries (ids coerced to ``""``), plus
+    ``detached=True`` when *agent* is a detached fork."""
     return {
         "task_id": effective_task_id or "",
         "session_id": getattr(agent, "session_id", "") or "",
@@ -29,6 +37,7 @@ def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) ->
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
         "conversation_id": conversation_id(agent),
+        **detached_hook_kwargs(agent),
     }
 
 

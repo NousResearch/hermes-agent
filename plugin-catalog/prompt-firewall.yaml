@@ -6,7 +6,9 @@
 # the published repository: manifest, loadable, capability probe, no core
 # override. The security scan reports one caution on this commit - the
 # approval-card explanation lists the filesystem-formatting command `mkfs` in
-# its verb table - and the validation passes. No self-updating code: the
+# its verb table - and the validation passes. The tree carries no critical
+# finding, so the upstream installer accepts it: a community plugin with a
+# caution verdict installs after the operator's confirmation. No self-updating code: the
 # plugin is plain Python that registers three Hermes plugin hooks and never
 # fetches, downloads or replaces its own files.
 #
@@ -15,7 +17,7 @@ name: prompt-firewall
 title: Prompt Firewall
 description: "Community security-preview plugin that detects and quarantines selected prompt-injection patterns in tool results and evaluates risky tool actions; limited to hook/Core enforcement semantics. Disclosure — Rewrites tool results the agent sees: spans that match its injection heuristics are replaced with `[QUARANTINED:<category>]` markers, and output past its scan budget (or output it fails to scan) is withheld with a notice; may block or escalate to the Hermes approval prompt writes to protected config/instruction/credential paths, endpoint changes and commands that disable prompt-firewall; adds a fixed trust-boundary notice to every turn; appends metadata-only audit records (tool name, target path, reason) to `<HERMES_HOME>/logs/prompt-firewall.jsonl`. No network."
 repo: https://github.com/Gaijin-01/prompt-firewall
-sha: c29c3e93a77eff28106f6a3f3ee1881fbd1d4840
+sha: 0f74f9c0fae3e7f3f8eb210faaacdc81c4f23767
 maintainer: Gaijin-01
 tier: community
 category: tools

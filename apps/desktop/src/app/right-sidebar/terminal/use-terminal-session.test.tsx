@@ -16,6 +16,7 @@ const emulator = vi.hoisted(() => ({
   input: (_data: string) => {},
   output: '',
   latestFontFamilyRef: { current: 'monospace' },
+  latestFontSizeRef: { current: 11 },
   mountedRef: { current: false }
 }))
 

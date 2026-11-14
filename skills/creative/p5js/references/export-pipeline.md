@@ -280,10 +280,9 @@ See `scripts/export-frames.js` for the full implementation. Basic pattern:
 const puppeteer = require('puppeteer');
 
 async function captureFrames(htmlPath, outputDir, options) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  // Keep Chrome's sandbox and web security on; the script adds --no-sandbox only on hosts that
+  // cannot run it (root, containers, AppArmor userns restriction) and serves local assets itself.
+  const browser = await puppeteer.launch({ headless: true });
   const page = await browser.newPage();
 
   await page.setViewport({
@@ -292,7 +291,10 @@ async function captureFrames(htmlPath, outputDir, options) {
     deviceScaleFactor: 1
   });
 
-  await page.goto(`file://${path.resolve(htmlPath)}`, {
+  // The real script serves the sketch from http://p5-sketch.localhost via request
+  // interception confined to the sketch folder; never load it over file://.
+  const sketchUrl = `http://p5-sketch.localhost/${path.basename(htmlPath)}`;
+  await page.goto(sketchUrl, {
     waitUntil: 'networkidle0'
   });
 

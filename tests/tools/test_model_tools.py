@@ -9,6 +9,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     _AGENT_LOOP_TOOLS,
+    _select_tool_names,
 )
 
 
@@ -418,6 +419,35 @@ class TestDisabledToolsetsPlatformBundle:
         assert "browser_exec" in browser_tools
         assert "web_search" in set(resolve_toolset("web"))
         assert "web_search" in set(resolve_toolset("search"))
+
+    def test_browser_vault_is_selected_independently_of_the_browser_toolset(self):
+        """Regression for #152409: `browser_vault` lives in its own `browser-vault`
+        toolset, so disabling `browser` (headless/Docker deployments, or the Camofox
+        left-core migration which disables it on migrated profiles) keeps vault
+        available for filling saved logins through plugin page backends, while
+        disabling `browser-vault` removes it on its own.
+
+        Asserted at the toolset-resolution and selection layers, not
+        get_tool_definitions: browser tools' check_fns filter them from the final
+        schema in CI, so membership is the correct layer to pin the fix."""
+        from toolsets import resolve_toolset
+
+        browser_tools = set(resolve_toolset("browser"))
+        assert "browser_vault" not in browser_tools, (
+            "browser_vault must not be a member of the `browser` toolset — that "
+            "is what let `disabled_toolsets: [browser]` strip it, including the "
+            "Camofox left-core migration (#152409)"
+        )
+        assert {"browser_exec", "browser_cdp", "browser_dialog"} <= browser_tools
+        assert "browser_vault" in set(resolve_toolset("browser-vault"))
+
+        names = _select_tool_names(["hermes-cli"], ["browser"], quiet_mode=True)
+        assert "browser_vault" in names
+        assert not names & {"browser_exec", "browser_cdp", "browser_dialog"}
+
+        names = _select_tool_names(["hermes-cli"], ["browser", "browser-vault"], quiet_mode=True)
+        assert "browser_vault" not in names
+        assert not names & {"browser_exec", "browser_cdp", "browser_dialog"}
 
 
 

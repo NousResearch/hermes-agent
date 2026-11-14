@@ -1003,10 +1003,15 @@ def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
         selection = parse_platform_toolsets_value(value)
         if selection is not None and replaced & set(map(str, selection)):
             kept = [item for item in selection if str(item) not in replaced]
-            saved[platform] = kept + [ts for ts in feature.toolsets if ts not in map(str, kept)]
+            migrated = kept + [ts for ts in feature.toolsets if ts not in map(str, kept)]
+            if feature.plugin == "camofox" and "browser-vault" not in migrated:
+                migrated.append("browser-vault")
+            saved[platform] = migrated
     agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
     disabled = parse_config_string_list(agent.get("disabled_toolsets")) if agent.get("disabled_toolsets") else []
     turned_off = replaced if replaced.isdisjoint(disabled) else replaced | set(feature.toolsets)
+    if feature.plugin == "camofox" and not replaced.isdisjoint(disabled):
+        turned_off |= {"browser-vault"}
     agent["disabled_toolsets"] = [*disabled, *sorted(turned_off - set(disabled))]
     config["agent"] = agent
 

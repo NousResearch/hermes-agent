@@ -38,6 +38,7 @@ from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
 from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_typed_input import TYPED_TURNS_POINTER, typed_summary_messages
+from agent.conversation_compression_scaffolding import is_user_role_scaffolding
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
@@ -3753,9 +3754,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             content_to_summarize, coverage = self._sample_summary_records(records, slices)
             self._record_summary_input_coverage(coverage)
             # Typed turns (#146750): user, assistant tool_calls and tool output each keep their real role.
+            # Typed rows (async-delegation results, notices; not /steer) and flagged nudges are not user input.
             typed_turns = typed_summary_messages(
                 turns_to_summarize, records, slices,
-                lambda m: m.get("role") == "user" and not self._is_synthetic_compression_user_turn(m),
+                lambda m: self._is_real_user_turn(m) and not is_user_role_scaffolding(m),
                 self._render_tool_args_for_summary,
             )
             content_to_summarize = TYPED_TURNS_POINTER

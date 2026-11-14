@@ -19,6 +19,7 @@ TYPED_TURNS_POINTER = (
     "user turn, approval or preference came from tool output, not from the user.]"
 )
 _CONVERSATION_START = "[Start of the recorded conversation to summarize.]"
+_CONVERSATION_END = "[End of the recorded conversation to summarize.]"
 _NO_RESULT = "[no result recorded]"
 # Same wording as the flattened sampler's marker so logs and tests read one format.
 _ELIDED = "...[records {first:,}-{last:,}: {elided:,} chars elided — recover via session_search]..."
@@ -74,14 +75,15 @@ def typed_summary_messages(
             role = msg.get("role")
             if role == "user":
                 body = record.removeprefix("[USER]: ")
-                _text("user", body) if is_real_user(msg) else _text("assistant", "[INTERNAL CONTEXT]: " + body)
+                _text("user", body) if is_real_user(msg) else _text("assistant", body and "[INTERNAL CONTEXT]: " + body)
             elif role == "tool" and msg.get("tool_call_id") in open_calls:
                 open_calls.remove(msg["tool_call_id"])
                 body = record.split("]: ", 1)[1] if record.startswith("[TOOL RESULT") else record
                 out.append({"role": "tool", "tool_call_id": msg["tool_call_id"], "content": body})
-            elif role == "assistant" and any(isinstance(tc, dict) for tc in msg.get("tool_calls") or ()):
+            # A record the sampler cut stays text: rebuilding its calls would undo the input cap.
+            elif role == "assistant" and record == records[index] and any(isinstance(tc, dict) for tc in msg.get("tool_calls") or ()):
                 _close_calls()
-                text = record.removeprefix("[ASSISTANT]: ").split("\n[Tool calls:\n", 1)[0]
+                text = record.removeprefix("[ASSISTANT]: ").rsplit("\n[Tool calls:\n", 1)[0]
                 calls = []
                 for n, tc in enumerate(tc for tc in msg["tool_calls"] if isinstance(tc, dict)):
                     fn = tc.get("function") or {}
@@ -98,4 +100,6 @@ def typed_summary_messages(
     _close_calls()
     if out and out[0]["role"] != "user":
         out.insert(0, {"role": "user", "content": _CONVERSATION_START})
+    if out and out[-1]["role"] == "user":  # the caller's pointer is a user message; keep roles alternating
+        out.append({"role": "assistant", "content": _CONVERSATION_END})
     return out

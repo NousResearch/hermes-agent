@@ -357,6 +357,25 @@ def _is_stale_tool_call_marker_message(msg: dict[str, Any]) -> bool:
     return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
 
 
+def _strip_iteration_limit_summary_nudges(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop flagged max-iteration summary scaffolding from an in-memory transcript.
+
+    Recognition is flag-only (``_max_iterations_summary_synthetic``). Matching on
+    content would also drop a real user turn whose text happens to equal the
+    stable nudge copy after SessionDB projection strips underscore keys.
+    """
+    if not messages:
+        return messages
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("_max_iterations_summary_synthetic"):
+            continue
+        out.append(msg)
+    return out
+
+
 def _strip_stale_tool_call_markers(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Blank stale ``[marker]`` assistant content (replaying it teaches the model
     to keep emitting it); tool_call/result pairing stays intact."""

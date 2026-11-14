@@ -7,7 +7,7 @@ samples next to it stay byte-identical.
 
 import pytest
 
-from agent.redact import redact_sensitive_text, redact_terminal_output
+from agent.redact import redact_for_egress, redact_sensitive_text, redact_terminal_output
 
 V = "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6J"
 SK = "sk-" + "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6Jt1Pa0Sg7Ye4Uo2"
@@ -228,3 +228,19 @@ class TestGoogleOAuthCredentials:
     @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
     def test_short_or_embedded_lookalikes_kept(self, text):
         _assert_unchanged(text)
+
+
+@pytest.mark.parametrize("name", ["accessToken", "refreshToken", "apiToken", "x-api-key", "auth_token",
+                                  "private_token", "access_key", "secret_key", "credential", "passwd"])
+def test_egress_url_query_mask_covers_the_json_field_secret_names(name):
+    # #119852: the archival URL pass masks the same credential names the JSON-field rule does.
+    value = "Zo4" + "q8vN3kPw2xR7tL"
+    out = redact_for_egress(f"https://x.example/y?{name}={value}&page=2", urls=True)
+    assert value not in out and "page=2" in out
+
+
+@pytest.mark.parametrize("name", ["page", "public_key", "key_id", "token_count", "max_tokens", "tokenUrl",
+                                  "redirect_uri", "state"])
+def test_egress_url_query_mask_keeps_metadata_names(name):
+    url = "https://x.example/y?" + name + "=Zo4q8vN3kPw2xR7tL&page=2"
+    assert redact_for_egress(url, urls=True) == url

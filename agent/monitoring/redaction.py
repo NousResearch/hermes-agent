@@ -26,7 +26,7 @@ def redact_for_export(text: Optional[str]) -> Optional[str]:
     """Scrub a string for egress: secrets, then PII. Unconditional."""
     if text is None:
         return None
-    out = redact_for_egress(str(text))
+    out = redact_for_egress(str(text), urls=True)  # telemetry never navigates a URL
     out = _EMAIL_RE.sub("[email]", out)
     out = _UUID_RE.sub("[id]", out)
     out = _PHONE_RE.sub("[phone]", out)

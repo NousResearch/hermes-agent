@@ -18,12 +18,14 @@ def _refusal(message: str, **extra: Any) -> dict[str, Any]:
 
 
 def _is_background_review() -> bool:
-    """True inside the autonomous curator review fork; False on any lookup failure."""
+    """True inside the autonomous curator review fork, and on any lookup failure: every guard keyed
+    on this is stricter for the fork, so an unknown origin gets the fork's guards."""
     try:
         from tools.skill_provenance import is_background_review
         return bool(is_background_review())
     except Exception:
-        return False
+        logger.warning("write-origin lookup failed; applying background-review guards", exc_info=True)
+        return True
 
 
 def _resolved_str(path: Path) -> str:

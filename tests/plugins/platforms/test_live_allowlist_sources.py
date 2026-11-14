@@ -94,3 +94,22 @@ def test_a_non_strict_load_that_fails_mid_bridge_restores_the_last_good_env(home
     _write(home, {"discord": {"allow_from": ["222"]}, "require_mention": True, "telegram": True})
     load_gateway_config()
     assert {name: (os.environ.get(name), os.environ.get(bridged_env_marker(name))) for name in good} == good
+
+
+@pytest.mark.parametrize("platform,var", [(Platform.TELEGRAM, "TELEGRAM_REPLY_TO_MODE"),
+                                          (Platform.DISCORD, "DISCORD_REPLY_TO_MODE")])
+def test_a_removed_setting_leftover_never_shapes_the_load_that_retracts_it(home, monkeypatch, platform, var):
+    """A restart child inherits a bridged value whose YAML key was since removed: the env-override pass
+    of the same load must not read it, and a load that then fails restores it with the last good env."""
+    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker
+
+    monkeypatch.setenv(var, "all")
+    monkeypatch.setenv(bridged_env_marker(var), bridged_env_digest("all"))
+    broken = {"enabled": True, "home_channel": {"name": "x"}}  # fails typed construction after the YAML layer
+    _write(home, {"platforms": {platform.value: broken}})
+    with pytest.raises(Exception):
+        load_gateway_config()
+    assert (os.environ.get(var), os.environ.get(bridged_env_marker(var))) == ("all", bridged_env_digest("all"))
+    _write(home, {"platforms": {platform.value: {"enabled": True}}})
+    assert load_gateway_config().platforms[platform].reply_to_mode != "all"
+    assert var not in os.environ and bridged_env_marker(var) not in os.environ

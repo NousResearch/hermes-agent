@@ -26,7 +26,8 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     return text or None
 
 
-def _cron_string_list(value: Any) -> Optional[list[str]]:
+def _cron_string_list(value: Any, *, keep_empty: bool = False) -> Optional[list[str]]:
+    """Trim a list-shaped form field. Empty collapses to None ("clear") unless ``keep_empty``."""
     if isinstance(value, str):
         raw_items = re.split(r"[\n,]", value)
     elif isinstance(value, (list, tuple)):
@@ -34,7 +35,21 @@ def _cron_string_list(value: Any) -> Optional[list[str]]:
     else:
         return None
     items = [str(item).strip() for item in raw_items if str(item).strip()]
-    return items or None
+    return items if items or keep_empty else None
+
+
+def _keep_zero_tool_allowlist(updates: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Drop an ``enabled_toolsets: None`` that would widen a stored zero-tool allowlist.
+
+    The dashboard's toolset picker cannot render an explicit empty allowlist: it shows the same
+    empty selection for "no restriction" and for "nothing allowed", and always saves the former
+    as None. Merging that onto a stored ``[]`` hands the job every tool — exactly what a
+    zero-tool allowlist exists to prevent (#148886). A non-empty stored allowlist stays
+    clearable from the same picker, because the user can see and uncheck it.
+    """
+    if "enabled_toolsets" in updates and updates["enabled_toolsets"] is None \
+            and existing.get("enabled_toolsets") == []:
+        updates.pop("enabled_toolsets")
 
 
 def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
@@ -329,11 +344,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
             script=script,
             context_from=context_from,
-            enabled_toolsets=_cron_string_list(body.enabled_toolsets),
+            # [] is an explicit zero-tool allowlist, not "unrestricted" (#82010/#148886).
+            enabled_toolsets=_cron_string_list(body.enabled_toolsets, keep_empty=True),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
             timezone=_cron_optional_text(body.timezone),
             grace_minutes=body.grace_minutes,
+            wrap_response=body.wrap_response,
             **{key: getattr(body, key) for key in ("paused", "paused_reason", "catch_up")
                if key in body.model_fields_set})
     except HTTPException:

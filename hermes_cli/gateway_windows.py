@@ -61,6 +61,20 @@ _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
 
+# Gateway exits the logon-task launcher reports as 0, so RestartOnFailure does not relaunch them every
+# minute. 78 = fatal config (EX_CONFIG; systemd parks it with RestartPreventExitStatus). 1 is also an
+# uncaught crash, so it counts as a stop only while ``gateway.pid`` is still there: another gateway owns
+# the profile ("already running" never touches its record), or a CLI stop force-killed this one after
+# its drain window. A gateway that fails on its own removes its own record first (atexit/exit backstop).
+_LAUNCHER_FATAL_CONFIG_EXIT = "If code = 78 Then code = 0"
+
+
+def _launcher_owned_exit_line(hermes_home: str) -> str:
+    from hermes_cli.gateway_runtime_service_identity import launcher_pid_file
+    return (f'If code = 1 And CreateObject("Scripting.FileSystemObject").FileExists('
+            f'{_quote_vbs_string(launcher_pid_file(hermes_home))}) Then code = 0')
+
+
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
@@ -430,7 +444,7 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -444,8 +458,13 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn True: wscript lives as long as the gateway and exits
+        # with its code, so the task's RestartOnFailure sees a gateway that died (#146976). A launcher
+        # that returned at once ended the task "successfully" before the gateway could ever fail.
+        f"code = sh.Run({q(command_line)}, 0, True)",
+        _LAUNCHER_FATAL_CONFIG_EXIT,
+        _launcher_owned_exit_line(hermes_home),
+        "WScript.Quit code",
     ]
     return "\r\n".join(lines) + "\r\n"
 

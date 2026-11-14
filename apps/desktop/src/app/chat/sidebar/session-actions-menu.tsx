@@ -51,6 +51,7 @@ import {
   $unreadFinishedSessionIds,
   applySessionTitle,
   markSessionRead,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -122,9 +123,13 @@ export async function renameSessionPreferringRpc(
   profile?: string,
   ownerRoute?: SessionOwnerRoute
 ): Promise<{ title?: string }> {
+  // Messaging-platform rows (telegram, discord, …) live in the messaging
+  // slice, not recents — a recents-only lookup misses them and the rename
+  // falls through to the active gateway profile instead of the owning bot
+  // profile (#126732). Resolve across every sidebar slice.
   const resolvedProfile =
     (profile ?? '').trim() ||
-    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
     undefined
 
   const scope = $apiRequestScope.get()
@@ -839,8 +844,10 @@ function RenameSessionDialog({
     setSubmitting(true)
 
     try {
+      // Same all-slices resolution as above: a messaging row's rename must
+      // carry its owning bot profile, not the ambient gateway profile.
       const targetProfile =
-        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+        (profile ?? '').trim() || ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
 
       const result = await renameSessionPreferringRpc(sessionId, next, targetProfile, ownerRoute)
       const finalTitle = result.title || next || ''

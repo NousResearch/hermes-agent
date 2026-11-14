@@ -160,6 +160,10 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         # owner's fresh scope so a ref left literal before its secret source answered resolves
         # now, and refuse to send one that still does not.
         config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
+        # A ref that resolves only now (unscoped portable load, late secret source) was validated
+        # as its literal placeholder: check the command actually about to be spawned.
+        if issues := _config._suspicious_mcp_issues(name, config):
+            raise ValueError(f"Refusing suspicious MCP server '{name}': {'; '.join(issues)}")
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel

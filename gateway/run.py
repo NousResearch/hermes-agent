@@ -562,10 +562,10 @@ def _gateway_loop_exception_handler(
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
-    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
-    from agent.redact import redact_for_egress
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911)."""
+    from agent.redact_phone_policy import redact_for_chat_egress
 
-    return redact_for_egress(text)
+    return redact_for_chat_egress(text)
 
 
 def _redact_approval_command(cmd: str | None) -> str:
@@ -657,7 +657,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
     r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
-    r"incorrect\s+api\s+key", r"invalid\s+api\s+key")
+    r"incorrect\s+api\s+key", r"invalid\s+api\s+key", r"unexpected\s+status\s+\d{3}\s+(?:[A-Za-z][\w' -]{0,40}|<unknown status code>):")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     + "|".join(_PROVIDER_ERROR_MARKERS + _CONNECTION_ERROR_MARKERS[:8] + (r"all\s+connection\s+attempts\s+failed",))
@@ -3601,10 +3601,10 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
-        return build_session_key(
-            source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile)
+        from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
+        return build_session_key(dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db),
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False), profile=_profile)
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

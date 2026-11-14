@@ -511,6 +511,55 @@ describe('useComposerActions generated paste title metadata', () => {
   })
 })
 
+describe('useComposerActions oversized paste rejection', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  const renderWithSave = (savePastedText: () => Promise<string>) => {
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    return { add, result }
+  }
+
+  it('consumes a paste the main process rejects for size instead of inlining it', async () => {
+    const { add, result } = renderWithSave(async () => {
+      throw new Error(
+        "Error invoking remote method 'hermes:savePastedText': Error: savePastedText: text is too large (70000000 bytes; limit 67108864)."
+      )
+    })
+
+    await expect(result.current.attachPastedText('x'.repeat(2_000))).resolves.toBe(true)
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('still falls back to inline insertion on an ordinary write failure', async () => {
+    const { add, result } = renderWithSave(async () => {
+      throw new Error("Error invoking remote method 'hermes:savePastedText': Error: EACCES: permission denied")
+    })
+
+    await expect(result.current.attachPastedText('x'.repeat(2_000))).resolves.toBe(false)
+    expect(add).not.toHaveBeenCalled()
+  })
+})
+
 describe('attachImagePath thumbnail separation', () => {
   // Full-resolution data URL the local bridge returns for a pasted screenshot.
   // Content is irrelevant — the mock bitmap below reports 4000×3000 so the

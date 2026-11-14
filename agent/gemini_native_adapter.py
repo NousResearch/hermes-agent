@@ -713,7 +713,8 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
             text_signature = _text_part_signature(part) or text_signature
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    mapped_finish = _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    finish_reason = "tool_calls" if tool_calls and mapped_finish == "stop" else mapped_finish
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
@@ -834,7 +835,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
                      "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
-        finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        mapped_finish = _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        finish_reason = "tool_calls" if tool_call_indices and mapped_finish == "stop" else mapped_finish
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
         if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
             finish_chunk.usage = _usage_from_metadata(usage_meta)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import logging
 import weakref
 from pathlib import Path
@@ -23,12 +24,124 @@ from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")
 
+# First element of the identity a plugin's FIFO admission carries (``_admit_plugin_injection``).
+_PLUGIN_PRODUCER = "plugin"
+
+
+def _plugin_admission(row) -> bool:
+    import json
+    request_id, identity = row.get("request_id"), None
+    if (isinstance(request_id, str) and request_id.startswith("[")
+            and str(row.get("principal_id")).startswith("automation:")):
+        with contextlib.suppress(ValueError):
+            identity = json.loads(request_id)
+    return isinstance(identity, list) and identity[:1] == [_PLUGIN_PRODUCER]
+
+
+def admission_turn_scope(authority, ref, live, row):
+    """The scope one claimed FIFO admission executes in. A plugin's message waits for the session's
+    running background review and plugin forks instead of superseding them
+    (:func:`agent.background_review.turn_waits_for_background_work`); every other admission, a
+    person's above all, runs unscoped and supersedes them at once. A person's input queued behind
+    the plugin's message (already, or arriving while it waits) or steered or redirected into it
+    (:func:`wake_background_wait`) and a gateway drain or profile retirement end that wait at once,
+    so neither inherits it."""
+    if not _plugin_admission(row):
+        return contextlib.nullcontext()
+    return _waiting_turn(authority, ref, live)
+
+
+@contextlib.contextmanager
+def _waiting_turn(authority, ref, live):
+    import threading
+    from agent.background_review import turn_waits_for_background_work
+    live.background_wait = person_queued = threading.Event()
+    wake_background_wait(authority, ref)  # input committed before the claim stamped this wait
+
+    def ends_wait():
+        return person_queued.is_set() or authority.runner._draining or authority.retiring
+    try:
+        with turn_waits_for_background_work(ends_wait):
+            yield
+    finally:
+        if live.background_wait is person_queued:
+            live.background_wait = None
+
+
+def wake_background_wait(authority, ref, *, person_input=False):
+    """A plugin turn of *ref* waiting for background work stops waiting once a person's input is
+    queued behind it (from ``SessionAuthority._schedule``, every admission's arrival signal) or,
+    with ``person_input``, has landed inside the running turn (:func:`person_input_joined_turn`)."""
+    live = authority.sessions.get(ref.session_id)
+    wait = getattr(live, "background_wait", None)
+    if wait is None or wait.is_set():
+        return
+    if person_input:
+        wait.set()
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _wake_if_person_queued(authority, ref, wait)
+        return
+    # On the gateway loop (``_schedule``, the drain stamping the wait): the ledger read runs in a
+    # worker, never on the loop; the waiting turn polls the event, so a late set still ends it.
+    loop.run_in_executor(None, contextvars.copy_context().run, _wake_if_person_queued, authority, ref,
+                         wait).add_done_callback(_log_wake_failure)
+
+
+def _wake_if_person_queued(authority, ref, wait):
+    from gateway.session_unattended_unknown import is_unattended
+    from hermes_state_runtime import list_session_admissions
+    if any(row["status"] == "queued" and not is_unattended(row)
+           for row in list_session_admissions(authority.db, session_id=ref.session_id)):
+        wait.set()
+
+
+def _log_wake_failure(future):
+    if not future.cancelled() and future.exception() is not None:
+        logger.warning("Plugin turn background-wait check failed", exc_info=future.exception())
+
+
+def person_input_joined_turn(runner, session_key):
+    """From ``_fold_into_running_turn`` (every accepted steer and active-turn redirect, whichever
+    path accepted it): the person's text went into the running turn and is never queued, so no
+    arrival signal reports it."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    # Every steer, /stop and /new lands here on the loop: with no plugin turn waiting (the common
+    # case) nothing touches SessionDB; the owner lookup otherwise runs in a worker, never on the loop.
+    if authority is None or not any(_wait_pending(live) for live in list(authority.sessions.values())):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _wake_joined_turn(runner, authority, session_key)
+        return
+    loop.run_in_executor(None, contextvars.copy_context().run, _wake_joined_turn, runner, authority,
+                         session_key).add_done_callback(_log_wake_failure)
+
+
+def _wait_pending(live):
+    wait = getattr(live, "background_wait", None)
+    return wait is not None and not wait.is_set()
+
+
+def _wake_joined_turn(runner, authority, session_key):
+    from gateway.session_contract import SessionRef
+    session_id = runner.session_store.peek_session_id(session_key)
+    if session_id:
+        wake_background_wait(authority, SessionRef(authority.profile_id, authority.logical_owner(session_id)),
+                             person_input=True)
+
 
 class GatewayPluginInjectionMixin:
     def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler process-wide."""
+        """Publish this live gateway's plugin message scheduler process-wide. Runs on the gateway
+        loop at startup: its context is the one every plugin-triggered turn starts from."""
         from hermes_cli.plugins import publish_gateway_message_host
 
+        self._plugin_injection_context = contextvars.copy_context()
         publish_gateway_message_host(self, self._schedule_plugin_message_injection)
 
     def _clear_plugin_message_injector(self) -> None:
@@ -79,9 +192,15 @@ class GatewayPluginInjectionMixin:
         except RuntimeError:
             current_loop = None
 
+        # The dispatch, the FIFO drain it may start and every turn that drain runs begin from the
+        # gateway's own context, never the caller's: called from a plugin's session fork (its tool
+        # handler) or from inside a turn, the caller's context carries the fork's turn origin and
+        # that turn's scopes, which the injected turn would otherwise inherit.
+        context = getattr(self, "_plugin_injection_context", None)
+        context = contextvars.Context() if context is None else context.copy()
         if current_loop is loop:
             try:
-                future = loop.create_task(coro)
+                future = loop.create_task(coro, context=context)
             except Exception:
                 coro.close()
                 logger.warning("Plugin message injection scheduling failed", exc_info=True)
@@ -89,9 +208,11 @@ class GatewayPluginInjectionMixin:
             self._background_tasks.add(future)
             future.add_done_callback(self._background_tasks.discard)
         else:
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="Plugin message injection scheduling failed",
-                log_level=logging.WARNING,
+            # The loop runs the scheduling callback, and so the task, in the context it was
+            # submitted from.
+            future = context.run(
+                safe_schedule_threadsafe, coro, loop, logger=logger,
+                log_message="Plugin message injection scheduling failed", log_level=logging.WARNING,
             )
             if future is None:
                 return False
@@ -379,7 +500,7 @@ class GatewayPluginInjectionMixin:
         import json
         import uuid
         from hermes_state_runtime import RuntimeStoreError
-        identity = json.dumps(["plugin", plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
+        identity = json.dumps([_PLUGIN_PRODUCER, plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
         event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
             allow_gateway_control=False, message_id=identity,

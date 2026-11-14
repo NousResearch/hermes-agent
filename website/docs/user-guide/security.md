@@ -239,6 +239,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 | `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker`/`podman` `rm`, `container rm/remove`, `volume rm/remove/prune`, `container/system prune`; `podman system reset`; `docker compose rm` / `docker-compose rm` | Container and volume destruction (`image rm`/`rmi`/`network rm` stay ungated: a pull or recreate restores them) |
 | `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
 | `docker context use` | Switches the default daemon for all future docker commands |
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
@@ -808,7 +809,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_exec`, and all URL-capable tools.
+When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced on `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it, so the page is withheld from the agent but the host still saw the request. `web_search` takes a query, not a URL, so it is not gated, and its result list is not filtered. Kanban URL attachments, cron URL monitors and gateway media downloads apply only the private-address SSRF check.
 
 See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 

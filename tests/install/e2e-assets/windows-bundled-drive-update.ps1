@@ -148,19 +148,14 @@ Write-Host "[uia] watching for an App Installer confirmation (up to ${ConfirmTim
 $cDeadline = (Get-Date).AddSeconds($ConfirmTimeoutSec)
 $confirmed = $false
 while ((Get-Date) -lt $cDeadline -and -not $confirmed) {
-    $installer = Get-Process -Name "AppInstaller" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($installer) {
-        $root = [System.Windows.Automation.AutomationElement]::RootElement
-        $cond = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $installer.Id)
-        $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
-        if ($win) {
-            $hit = Find-InvokableButton -Root $win -Patterns @('^Update$', '^Install$', '^(Reinstall|Update) .*')
-            if ($hit) {
-                Save-Shot "02-appinstaller-confirm"
-                Write-Host "  [uia] App Installer dialog: clicking '$($hit.Name)'"
-                if (Invoke-Button $hit.Element) { $confirmed = $true }
-            }
+    $installers = @(Get-Process -Name "AppInstaller" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    if ($installers.Count) {
+        $hit = Find-WindowButton -Root ([System.Windows.Automation.AutomationElement]::RootElement) `
+            -ProcessIds $installers -Patterns @('^Update$', '^Install$', '^(Reinstall|Update) .*')
+        if ($hit) {
+            Save-Shot "02-appinstaller-confirm"
+            Write-Host "  [uia] App Installer dialog: clicking '$($hit.Name)'"
+            if (Invoke-Button $hit.Element) { $confirmed = $true }
         }
     }
     # The app quits before App Installer opens; keep watching its confirmation.

@@ -973,51 +973,7 @@ def _auth_json_path():
     from hermes_cli.auth import _auth_file_path
     return _AUTH_JSON_PATH if _AUTH_JSON_PATH != _AUTH_JSON_PATH_AT_IMPORT else _auth_file_path()
 
-# Hosts exposing BOTH ``…/anthropic`` and a sibling OpenAI ``…/v1``. Matched on the URL *host*
-# only: unconditional rewrites break Anthropic-only gateways.
-_DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = ("minimax.io", "minimax.chat", "minimaxi.com")
-_DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES = ("api.minimax.",)
-
-
-def _is_dual_surface_anthropic_host(url: str) -> bool:
-    """True when the URL's host is a known dual-surface (MiniMax-family) host."""
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except ValueError:
-        return False
-    return any(
-        host == suffix or host.endswith("." + suffix) for suffix in _DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES
-    ) or any(host.startswith(prefix) for prefix in _DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES)
-
-
-def _to_openai_base_url(base_url: str) -> str:
-    """Normalize dual-surface Anthropic URLs to their OpenAI-compatible sibling.
-
-    MiniMax-family: ``/anthropic`` → ``/v1``; ZAI Coding Plan → ``/coding/paas/v4`` (the general
-    endpoint bills separately); Kimi Code ``/coding`` → ``/coding/v1`` (the OpenAI SDK path 404s
-    without it). Anthropic-only gateways keep their path.
-    """
-    url = str(base_url or "").strip().rstrip("/")
-    if base_url_hostname(url) == "api.actual.inc":
-        from hermes_cli.auth import normalize_actual_base_url
-        return normalize_actual_base_url(url)
-    if url.endswith("/anthropic"):
-        if base_url_host_matches(url, "open.bigmodel.cn") or base_url_host_matches(url, "api.z.ai"):
-            rewritten = url[: -len("/anthropic")] + "/coding/paas/v4"
-            logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
-            return rewritten
-        if _is_dual_surface_anthropic_host(url):
-            rewritten = url[: -len("/anthropic")] + "/v1"
-            logger.debug("Auxiliary client: rewrote dual-surface base URL %s → %s", url, rewritten)
-            return rewritten
-        logger.debug(
-            "Auxiliary client: keeping Anthropic-only base URL %s (no dual-surface host match)", url)
-        return url
-    if base_url_host_matches(url, "api.kimi.com") and url.endswith("/coding"):
-        rewritten = url + "/v1"
-        logger.debug("Auxiliary client: rewrote Kimi base URL %s → %s", url, rewritten)
-        return rewritten
-    return url
+from agent.auxiliary_openai_url import _is_dual_surface_anthropic_host, _to_openai_base_url
 
 
 def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
@@ -4731,6 +4687,7 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    pool_choice: Optional[Any] = None  # hermes_cli.runtime_provider.PoolChoice
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
@@ -5128,6 +5085,9 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
+    if req.pool_choice is not None and not req.explicit_api_key:
+        picked = req.pool_choice.choose(req.original_provider, provider, req.model, raw_base_url)
+        api_key = picked.api_key if picked is not None else api_key
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (
@@ -5259,14 +5219,16 @@ def resolve_provider_client(
     provider: str, model: str | None = None, async_mode: bool = False, raw_codex: bool = False,
     explicit_base_url: str | None = None, explicit_api_key: Optional[str | Callable[[], str]] = None,
     api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
-    task: Optional[str] = None,
+    task: Optional[str] = None, pool_choice: Optional[Any] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
     The client always exposes ``.chat.completions.create()``; Codex/Responses providers get an adapter.
     ``provider``: built-in name, ``custom:<name>``, "custom" (OPENAI_BASE_URL + OPENAI_API_KEY) or "auto"
     (full auto-detection chain). ``model=None`` → provider's default aux model. ``raw_codex`` → bare OpenAI
     client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
-    "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
+    "anthropic_messages" instead of auto-detect. ``pool_choice`` (a ``PoolChoice``): a registry API-key
+    provider takes its key from its credential pool the way a direct pick does, and the pick is left
+    on it. Returns (client, resolved_model) or (None, None)."""
     _validate_proxy_env_urls()
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
@@ -5323,7 +5285,7 @@ def resolve_provider_client(
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
-        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
+        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task, pool_choice,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     alias_identity = original_provider.removeprefix("custom:")
@@ -5889,9 +5851,11 @@ def _get_cached_client(
     # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
     effective_api_key = api_key
     if not effective_api_key:
+        from hermes_cli.runtime_provider import choose_pool_key
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
-        if _pool is not None and (_pe := _peek_pool_entry(provider, _pool, model)) is not None:
-            effective_api_key = _pool_runtime_api_key(_pe) or api_key
+        with contextlib.suppress(Exception):  # an unreadable pool leaves the resolver's own key, as before
+            if (_pk := choose_pool_key(_pool, provider, model=_normalize_resolved_model(model, provider) if model else None, mode="peek")):
+                effective_api_key = _pk.api_key.strip() or api_key
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,

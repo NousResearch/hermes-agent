@@ -14,6 +14,7 @@ from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +34,8 @@ from tools.skill_manager_guards import (
     _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
+from tools.skill_manager_scan import (
+    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -47,19 +50,28 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Post-write scan (opt-in); error string if blocked, else None. An "ask" verdict
-    (dangerous findings) is surfaced as an error so the agent can retry without them."""
-    if not _guard_agent_created_enabled():
+def _scan_required() -> bool:
+    """Opt-in for foreground writes, always on for the background-review fork: the fork's whitelist
+    is memory+skills, so the terminal() rationale for the opt-in does not apply to it."""
+    return _guard_agent_created_enabled() or _background_origin()
+
+
+def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) -> Optional[str]:
+    """Post-write scan; error string if blocked, else None. An "ask" verdict
+    (dangerous findings) is surfaced as an error so the agent can retry without them.
+    With a *baseline*, only findings absent from it count."""
+    if not _scan_required():
         return None
     try:
         result = scan_skill(skill_dir, source="agent-created")
+        if baseline is not None:
+            result = _introduced_findings(skill_dir, result, baseline)
         allowed, reason = should_allow_install(result)
         if allowed is None:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
         if allowed is not True:
             return f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}"
-    except Exception as e:  # the guard is on: a scan that cannot finish must not allow the write
+    except Exception as e:  # a required scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
@@ -417,10 +429,13 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
+    baseline, scan_error = _scan_baseline(skill_dir)
+    if scan_error:
+        return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = _security_scan_skill(skill_dir, baseline)
     if not scan_error:
         return None
     if original is not None:
@@ -714,12 +729,17 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
-def apply_skill_pending(payload: dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+def apply_skill_pending(payload: dict[str, Any], origin: str = "foreground") -> str:
+    """Replay a staged skill write, bypassing the gate (the /skills approve handler). A write the
+    background-review fork staged keeps its mandatory scan; only the scan, not the fork's other
+    guards, follows it, since the approving user has not skill_view'd the target."""
+    from tools.skill_provenance import BACKGROUND_REVIEW
     token = _skill_gate_bypass.set(True)
+    bg_token = _replaying_background_write.set(origin == BACKGROUND_REVIEW)
     try:
         return _skill_manage_from(payload)
     finally:
+        _replaying_background_write.reset(bg_token)
         _skill_gate_bypass.reset(token)
 
 

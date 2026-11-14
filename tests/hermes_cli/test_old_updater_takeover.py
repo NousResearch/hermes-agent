@@ -241,9 +241,14 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
     env.update(HOME=str(home), HERMES_HOME=str(home))
     result = subprocess.run([sys.executable, "-B", *argv], env=env,
                             capture_output=True, text=True, timeout=30, check=False)
+    if module_name == "unrelated":
+        # Not a historical updater entrypoint: the shim refuses, no takeover runs.
+        assert "RetiredUpdaterHook" in result.stderr, result.stdout + result.stderr
+        assert not (home / "request.json").exists()
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     request = json.loads((home / "request.json").read_text())
-    assert request.get("restart_update", False) is (not post_pull and module_name == "update_cmd")
+    assert request.get("restart_update", False) is not post_pull
     assert request["argv"] == argv
 
 

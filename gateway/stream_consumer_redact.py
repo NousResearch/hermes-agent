@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import re
 
-from agent.redact import _PREFIX_SUBSTRINGS, redact_for_egress
+from agent.redact import _PREFIX_SUBSTRINGS
+from agent.redact_phone_policy import redact_for_chat_egress as redact_for_egress
 
 _TAIL_SCAN = 512        # how far back from the end (or from an open value's start) a label can start
 _LABEL_MAX = 256        # longest label (plus separators) an open value can follow

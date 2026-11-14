@@ -24,10 +24,11 @@ BOT_CHAT_TITLE = "Bot Chat"
 _PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
-# The @handle Bot Mode shows for a host's default profile, and the body of the 404 a peer returns for
-# a /p/<profile>/ prefix naming no profile it has (UNKNOWN_PROFILE_ERROR in
+# The @handle Bot Mode shows for a host's default profile, and the 404 a peer returns for a
+# /p/<profile>/ prefix naming no profile it has (UNKNOWN_PROFILE_CODE / UNKNOWN_PROFILE_ERROR in
 # gateway/platforms/api_server_profile_prefix.py; a 'hermes' profile it has but does not serve differs).
 DEFAULT_PROFILE_HANDLE = "hermes"
+_UNKNOWN_PROFILE_CODE = "profile_unknown"
 _UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
 
 # One synchronous agent turn can legitimately take minutes.
@@ -105,14 +106,19 @@ def _base_url(peer: dict, profile: str | None) -> str:
 def _peer_lacks_profile(exc: Exception) -> bool:
     """True only for the peer's own "no such profile" verdict: the 404 its /p/<profile>/ prefix
     middleware returns before any handler runs. A handler's 404 (unknown run or session) carries
-    ``{"error": {"message": ...}}`` and a transport failure is no verdict at all."""
+    ``{"error": {"message": ...}}`` and a transport failure is no verdict at all. The verdict is its
+    ``code``; only a body with no ``code`` (a peer older than it) is read by its fixed sentence."""
     if not isinstance(exc, urllib.error.HTTPError) or exc.code != 404:
         return False
     try:
         body = json.loads(exc.read().decode("utf-8", "replace"))
     except (OSError, ValueError):
         return False
-    return isinstance(body, dict) and body.get("error") == _UNKNOWN_PROFILE_ERROR
+    if not isinstance(body, dict):
+        return False
+    if "code" in body:
+        return body["code"] == _UNKNOWN_PROFILE_CODE
+    return body.get("error") == _UNKNOWN_PROFILE_ERROR
 
 
 def _resolve_base(peer: dict, profile: str | None, key: str, peer_name: str = "") -> str:

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from agent.proxy_bypass import is_loopback_host
+from agent.bedrock_service_tiers import BEDROCK_ULTRAFAST_ROUTES, bedrock_fast_mode_overrides
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import hermes_user_agent
@@ -1227,10 +1228,11 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw.split("/", 1)[1] if "/" in raw else raw
 
 
-def model_supports_fast_mode(model_id: Optional[str]) -> bool:
-    """Return whether Hermes should expose the /fast toggle for this model."""
+def model_supports_fast_mode(model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None) -> bool:
+    """Whether to expose /fast for this model; a Bedrock-only one only on the route its request builder tiers."""
     from agent.model_metadata import is_grok_46_family
-
+    if model_id in BEDROCK_ULTRAFAST_ROUTES:
+        return normalize_provider(provider) == "bedrock" and bedrock_fast_mode_overrides(model_id, base_url, "ultrafast") is not None
     return (
         _is_anthropic_fast_model(model_id)
         or _is_openai_fast_model(model_id)
@@ -1279,12 +1281,10 @@ def resolve_fast_mode_overrides(
     model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
     tier: Optional[str] = None,
 ) -> dict[str, Any] | None:
-    """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
-    ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
-    ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
-    Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
-    With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
-    never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
+    """Route/model-gated fast overrides for /fast and bounded windows; None if unsupported.
+    Ultrafast never silently downgrades to Priority. Bedrock has its own capability matrix."""
+    if normalize_provider(provider) == "bedrock":
+        return bedrock_fast_mode_overrides(model_id, base_url, tier)
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):

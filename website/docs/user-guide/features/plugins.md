@@ -937,6 +937,10 @@ What changes in `host` mode:
   model-provider profiles that build their own SDK client (`create_client`), terminal backends (the
   backend's commands fail with this reason; the `singularity` plugin is one), streaming and websocket
   dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
+- **No cookies.** A hosted plugin's API answers are served from the gateway's own address, so Hermes
+  drops any `Set-Cookie` header they carry (logging it once per plugin) rather than let a plugin set or
+  overwrite the dashboard's cookies. This also applies to another profile's plugins, which always run in
+  a host.
 
 **Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
 edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from

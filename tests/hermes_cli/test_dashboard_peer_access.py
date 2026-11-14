@@ -424,7 +424,8 @@ def test_the_default_profiles_handle_reaches_the_default_profile(peer):
 def test_an_unknown_profile_gets_the_api_servers_unknown_profile_answer(peer):
     """``hermes peer`` reads this exact body as the peer's own "no such profile" verdict."""
     resp = peer.client.get("/api/peer/p/nosuch/health", headers=_bearer("pass-message"))
-    assert resp.status_code == 404 and resp.json() == {"error": "Unknown or unconfigured profile"}
+    assert resp.status_code == 404 and resp.json() == {"error": "Unknown or unconfigured profile",
+                                                       "code": "profile_unknown"}
     assert peer.seen == []
 
 

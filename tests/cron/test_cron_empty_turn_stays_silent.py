@@ -29,3 +29,12 @@ def test_a_failed_turn_still_raises_so_the_job_is_marked_failed():
               "turn_exit_reason": "repeated_outer_errors(x)", "messages": [], "api_calls": 3}
     with pytest.raises(RuntimeError):
         _final_response_from_result(result, "job1", "Morning brief", _AIAgent)
+
+
+def test_a_tool_guardrail_halt_is_a_failed_run_not_a_report():
+    result = {"final_response": "I stopped retrying because I kept running web_search 10 times without making progress.",
+              "failed": False, "completed": True, "messages": [], "api_calls": 12,
+              "guardrail": {"action": "block", "code": "loop_web_search_cap", "message": "Blocked web_search",
+                            "tool_name": "web_search", "count": 10}}
+    with pytest.raises(RuntimeError, match="loop_web_search_cap"):
+        _final_response_from_result(result, "job1", "Monthly feed", _AIAgent)

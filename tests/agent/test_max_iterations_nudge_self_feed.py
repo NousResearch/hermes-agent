@@ -58,26 +58,26 @@ def test_flush_skips_flagged_max_iterations_nudge():
     ]
 
 
-def test_flush_keeps_real_user_when_text_matches_nudge_copy(tmp_path):
-    """A-3: content alone must never classify a human turn as ephemeral."""
+def test_real_user_matching_nudge_copy_is_not_stripped(tmp_path):
+    """Reverse #1: content alone must never classify a human turn as scaffolding."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-real-user-nudge-text"
     db.create_session(sid, source="cli")
     human = {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST}
     assert not _is_ephemeral_scaffolding(human)
     db.append_messages_batch(sid, [human])
-    row = db._read_one(
-        "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND active = 1",
-        (sid,),
-    )
-    assert row is not None
-    assert db._decode_content(row[0]) == MAX_ITERATIONS_SUMMARY_REQUEST
+    loaded = db.get_messages_as_conversation(sid)
+    assert len(loaded) == 1
+    assert loaded[0].get("role") == "user"
+    assert loaded[0].get("content") == MAX_ITERATIONS_SUMMARY_REQUEST
+    assert _strip_iteration_limit_summary_nudges([human]) == [human]
 
 
-def test_replay_strip_removes_persisted_legacy_nudges():
+def test_strip_drops_only_flagged_nudge_not_matching_content():
     polluted = [
         {"role": "user", "content": "human task"},
         {"role": "assistant", "content": "partial"},
+        _synthetic_nudge_message(flagged=True),
         {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST},
         {"role": "assistant", "content": "summary"},
     ]
@@ -85,21 +85,9 @@ def test_replay_strip_removes_persisted_legacy_nudges():
     assert cleaned == [
         {"role": "user", "content": "human task"},
         {"role": "assistant", "content": "partial"},
+        {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST},
         {"role": "assistant", "content": "summary"},
     ]
-
-
-def test_replay_falsification_polluted_db_row_is_stripped(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    sid = "legacy-polluted"
-    db.create_session(sid, source="cli")
-    db.append_message(sid, "user", "human task")
-    db.append_message(sid, "user", MAX_ITERATIONS_SUMMARY_REQUEST)
-    db.append_message(sid, "assistant", "summary")
-    loaded = db.get_messages_as_conversation(sid)
-    assert all(
-        m.get("content") != MAX_ITERATIONS_SUMMARY_REQUEST for m in loaded
-    )
 
 
 def test_finalize_turn_strips_nudge_before_persist():
@@ -159,7 +147,11 @@ def test_finalize_turn_strips_nudge_before_persist():
         _turn_exit_reason="max_iterations_reached(60/60)",
     )
     assert agent.flushed is not None
-    assert all(m.get("content") != MAX_ITERATIONS_SUMMARY_REQUEST for m in agent.flushed)
+    assert all(not m.get("_max_iterations_summary_synthetic") for m in agent.flushed)
+    assert all(
+        not (m.get("role") == "user" and m.get("content") == MAX_ITERATIONS_SUMMARY_REQUEST)
+        for m in agent.flushed
+    )
 
 
 def test_multi_round_flush_does_not_accumulate_nudges():

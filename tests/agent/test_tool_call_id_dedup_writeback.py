@@ -1,12 +1,17 @@
 """Regression: duplicate tool results must not multiply durable transcript rows."""
 
 import sqlite3
+from unittest.mock import patch
 
 from hermes_state import SessionDB
 
 
 def _tool_rows(db: SessionDB, session_id: str) -> list[dict]:
-    return [m for m in db.get_messages_as_conversation(session_id, include_inactive=True) if m.get("role") == "tool"]
+    return [
+        m
+        for m in db.get_messages_as_conversation(session_id, include_inactive=True)
+        if m.get("role") == "tool"
+    ]
 
 
 def _count_tool_id(db: SessionDB, session_id: str, call_id: str) -> int:
@@ -93,8 +98,75 @@ def test_batch_with_duplicates_collapses(tmp_path):
     assert _count_tool_id(db, sid, "call-2") == 1
 
 
+def test_legal_tool_call_pair_survives_dedup_writeback(tmp_path):
+    """Compression-style rewrite must keep a valid tool_call ↔ tool result pair."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "dedup-pair"
+    db.create_session(sid, source="cli")
+    pair = [
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [
+                {
+                    "id": "call-pair",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-pair", "content": "ok-v1"},
+    ]
+    db.append_messages_batch(sid, pair)
+    # Simulate compression writeback re-emitting the same pairing once more.
+    db.append_messages_batch(
+        sid,
+        [
+            pair[0],
+            {"role": "tool", "tool_call_id": "call-pair", "content": "ok-v1"},
+        ],
+    )
+    loaded = db.get_messages_as_conversation(sid)
+    tool_rows = [m for m in loaded if m.get("role") == "tool"]
+    assistant_rows = [m for m in loaded if m.get("role") == "assistant"]
+    assert len(tool_rows) == 1
+    assert tool_rows[0]["tool_call_id"] == "call-pair"
+    assert tool_rows[0]["content"] == "ok-v1"
+    assert any(
+        isinstance(m.get("tool_calls"), list)
+        and any(tc.get("id") == "call-pair" for tc in m["tool_calls"])
+        for m in assistant_rows
+    )
+
+
+def test_falsification_without_dedup_accumulates_duplicates(tmp_path):
+    """Reverse #3: disabling suppress_duplicate_tool_call_writes must fail the invariant."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "dedup-falsify"
+    db.create_session(sid, source="cli")
+
+    def _identity_suppress(conn, session_id, inserted_rows, **kwargs):
+        return inserted_rows
+
+    with patch(
+        "agent.transcript_repair.suppress_duplicate_tool_call_writes",
+        side_effect=_identity_suppress,
+    ):
+        # Fresh dicts each write: reusing the post-flush object carries
+        # ``_db_persisted`` and would skip the second INSERT for a different reason.
+        db.append_messages_batch(
+            sid,
+            [{"role": "tool", "tool_call_id": "call-dup", "content": "legacy"}],
+        )
+        db.append_messages_batch(
+            sid,
+            [{"role": "tool", "tool_call_id": "call-dup", "content": "legacy"}],
+        )
+    assert _count_tool_id(db, sid, "call-dup") == 2
+
+
 def test_falsification_manual_duplicate_still_readable(tmp_path):
-    """A7: pre-existing duplicate rows remain visible (read path not hiding history)."""
+    """Pre-existing duplicate rows remain visible (read path not hiding history)."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "dedup-a7"
     db.create_session(sid, source="cli")

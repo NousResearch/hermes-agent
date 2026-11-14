@@ -141,6 +141,48 @@ class TestGetDefinitions:
         names = {d["function"]["name"] for d in defs}
         assert names == {"t1", "t2"}
 
+    def test_openai_envelope_schema_is_unwrapped(self):
+        """A plugin passing the full ``{"type": "function", "function": {...}}`` envelope
+        (#154345) must be served with its real description and parameters, not wrapped a
+        second time so the model sees an empty schema."""
+        reg = ToolRegistry()
+        inner = {
+            "name": "probe_ping",
+            "description": "Ping with a message.",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+                "required": ["message"],
+            },
+        }
+        reg.register(
+            name="probe_ping", toolset="probe",
+            schema={"type": "function", "function": inner}, handler=_dummy_handler,
+        )
+
+        (served,) = reg.get_definitions({"probe_ping"})
+        assert served == {"type": "function", "function": inner}
+        assert reg.get_entry("probe_ping").description == "Ping with a message."
+
+    def test_openai_envelope_with_non_dict_parameters_is_rejected(self):
+        reg = ToolRegistry()
+        with pytest.raises(ValueError, match="parameters"):
+            reg.register(
+                name="bad", toolset="probe", handler=_dummy_handler,
+                schema={"type": "function",
+                        "function": {"name": "bad", "parameters": ["x"]}},
+            )
+
+    def test_openai_envelope_with_non_dict_function_is_rejected(self):
+        """A malformed envelope must fail at registration, not advertise an empty tool."""
+        reg = ToolRegistry()
+        with pytest.raises(ValueError, match=r"schema\['function'\] must be an object"):
+            reg.register(
+                name="broken", toolset="probe", handler=_dummy_handler,
+                schema={"type": "function", "function": ["not", "an", "object"]},
+            )
+        assert reg.get_entry("broken") is None
+
 
 
 

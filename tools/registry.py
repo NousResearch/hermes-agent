@@ -858,6 +858,16 @@ class ToolRegistry:
         if not isinstance(schema, dict):
             raise ValueError(
                 f"Tool {name!r}: schema must be a dict, got {type(schema).__name__}")
+        # Accept the full OpenAI tool envelope ({"type": "function", "function": {...}}) that
+        # plugin authors often copy from provider docs. get_definitions() adds that envelope
+        # itself, so storing it verbatim nests it twice and the model is served an empty
+        # description and parameters (#154345).
+        if (schema.get("type") == "function" and "function" in schema
+                and "parameters" not in schema):
+            if not isinstance(schema["function"], dict):
+                raise ValueError(
+                    f"Tool {name!r}: schema['function'] must be an object (dict)")
+            schema = schema["function"]
         params = schema.get("parameters")
         if params is not None and not isinstance(params, dict):
             raise ValueError(

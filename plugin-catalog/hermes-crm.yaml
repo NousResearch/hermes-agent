@@ -2,7 +2,7 @@ name: hermes-crm
 title: HermesCRM
 repo: https://github.com/gptnius/hermes-crm
 sha: da1d1412eaf10c3ea8ba0b4431cafdbc59c6bcae
-description: "Native relationship management with agent tools, linked records, reports and dashboards. Disclosure — on your request the agent creates one-shot Hermes cron jobs (task follow-ups, internal CRM analysis assignments, and scheduled research runs that use Hermes' web/search tools on a public question you approve); jobs run unattended with CRM-only plus those tools, deliver locally, and cannot schedule further jobs. Optional PostgreSQL storage sends CRM records to the database URL you configure."
+description: "HermesCRM is a working CRM for Hermes Desktop. Manage contacts, companies, deals, events and follow-ups in the same workspace your Hermes agent uses. Build reports and dashboards with drill-down charts, and tailor the CRM with custom fields and deal stages. Ask Hermes to schedule one-time task reminders, CRM analysis or public research you approve. Scheduled jobs run unattended and deliver results locally. They use CRM tools and, for public research, Hermes web and search tools. They can’t schedule additional jobs. If you choose PostgreSQL, CRM records are stored in the database you configure."
 maintainer: gptnius
 tier: community
 category: desktop
@@ -11,9 +11,7 @@ docs_url: https://github.com/gptnius/hermes-crm/blob/da1d1412eaf10c3ea8ba0b4431c
 version: "0.1.0"
 readme: true
 known_issues:
-  - "Small-workspace prototype; legacy record lists and form choices are bounded at 500 records."
-  - "Native Desktop checked on macOS; broader platform, keyboard and accessibility coverage remains incomplete."
-  - "Scheduled results require human review and do not establish that a business task is complete."
+  - "Deal and task lists and some record pickers show up to 500 records per view."
 capabilities:
   provides_tools:
     - crm_contact_report

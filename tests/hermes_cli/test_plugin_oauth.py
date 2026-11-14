@@ -76,13 +76,13 @@ def _entry(idp: FakeIdP, **overrides) -> dict:
     return {**entry, **overrides}
 
 
-def _plugin(name: str = "voice", oauth: list | None = None, display: str | None = None):
+def _plugin(name: str = "voice", oauth: list | None = None, display: str | None = None, **fields):
     """Write ``plugins/<name>`` (manifest plus a module that calls the helper) and import it like a plugin.
-    *display* is a manifest ``name`` other than the directory."""
+    *display* is a manifest ``name`` other than the directory; *fields* are further manifest keys."""
     root = _home() / "plugins" / name
     root.mkdir(parents=True, exist_ok=True)
     manifest = {"name": display or name, "version": "1.0.0", "description": "test plugin",
-                "requires_env": [{"name": "VOICE_CLIENT_ID"}, {"name": "VOICE_CLIENT_SECRET"}]}
+                "requires_env": [{"name": "VOICE_CLIENT_ID"}, {"name": "VOICE_CLIENT_SECRET"}], **fields}
     if oauth is not None:
         manifest["oauth"] = oauth
     (root / "plugin.yaml").write_text(json.dumps(manifest), encoding="utf-8")  # JSON is valid YAML
@@ -569,3 +569,108 @@ def test_sign_in_is_refused_where_nobody_can_answer_the_browser(idp, monkeypatch
     with pytest.raises(SystemExit, match="your own terminal"):
         _auth("add")
     assert idp.token_requests == [] and idp.opened == []
+
+
+def _registered_like_a_fresh_process(monkeypatch) -> None:
+    """``hermes_cli.config`` feeds every platform manifest's requires_env/optional_env into OPTIONAL_ENV_VARS at
+    import; this process imported it before the test wrote its plugins, so run that pass again, and read the
+    bundled platform names afresh as well."""
+    from hermes_cli import config
+
+    monkeypatch.setattr(config, "OPTIONAL_ENV_VARS", dict(config.OPTIONAL_ENV_VARS))
+    config._inject_platform_plugin_env_vars()
+    plugin_oauth._bundled_platform_env_names.cache_clear()
+
+
+@pytest.mark.parametrize("secret_field", ["requires_env", "optional_env"])
+def test_a_platform_plugin_signs_in_with_the_client_variables_it_declares(idp, monkeypatch, secret_field):
+    """A ``kind: platform`` plugin lists its client variables in requires_env or optional_env, as catalog admission
+    demands, and both lists also feed the config form: they stay its own, not variables Hermes uses itself."""
+    from hermes_cli.config_env_routing import is_registered_env_name
+
+    declared = {"requires_env": [{"name": "VOICE_CLIENT_ID"}], "optional_env": []}
+    declared[secret_field].append({"name": "VOICE_CLIENT_SECRET"})
+    _plugin(oauth=[_entry(idp)], kind="platform", **declared)
+    _registered_like_a_fresh_process(monkeypatch)
+    assert is_registered_env_name("VOICE_CLIENT_ID") and is_registered_env_name("VOICE_CLIENT_SECRET")
+
+    assert _auth("add") is True and _grant()["refresh_token"] in idp.refresh_tokens
+
+
+def test_an_update_that_moves_a_platform_plugins_token_host_asks_first(idp, monkeypatch, tmp_path):
+    """The installed copy and its next version both list the client in the re-pin consent surface, so a moved
+    token host shows up as added."""
+    from hermes_cli.config_env_routing import is_registered_env_name
+    from hermes_cli.plugins_cmd_catalog import plugin_surface, surface_delta, surface_delta_lines
+
+    _plugin(oauth=[_entry(idp)], kind="platform")
+    _registered_like_a_fresh_process(monkeypatch)
+    assert is_registered_env_name("VOICE_CLIENT_ID")  # what kept the client out of the surface before the fix
+    installed = json.loads((_home() / "plugins" / "voice" / "plugin.yaml").read_text(encoding="utf-8"))
+    moved = {**installed, "version": "1.1.0", "oauth": [_entry(idp, token_url="https://tokens.example.net/token")]}
+
+    lines = surface_delta_lines(surface_delta(plugin_surface(installed, tmp_path), plugin_surface(moved, tmp_path)))
+    assert len(lines) == 1 and lines[0].startswith("your OAuth sign-in for") and "tokens.example.net" in lines[0]
+
+
+@pytest.mark.parametrize("name", [
+    "API_SERVER_KEY", "FEISHU_ENCRYPT_KEY", "VOICE_HOME_CHANNEL", "NTFY_TOKEN", "CHAT_BOT_TOKEN",
+], ids=["core", "extra", "hidden-setup-suffix", "bundled-platform", "another-plugins-undeclared"])
+def test_a_platform_plugin_still_cannot_take_a_variable_hermes_uses_itself(idp, monkeypatch, name):
+    """Hermes would POST the value to the token URL the plugin names. Listing a Hermes variable in the plugin's
+    own requires_env does not make it the plugin's, and another plugin's variable needs at least that."""
+    _plugin("chat", requires_env=[{"name": "CHAT_BOT_TOKEN"}], kind="platform")
+    declared = [] if name == "CHAT_BOT_TOKEN" else [{"name": name}]
+    _plugin(oauth=[_entry(idp, client_secret_env=name)], kind="platform",
+            requires_env=[{"name": "VOICE_CLIENT_ID"}, *declared])
+    _registered_like_a_fresh_process(monkeypatch)
+
+    with pytest.raises(SystemExit, match=f"{name} is a variable Hermes uses itself"):
+        _auth("add")
+    assert idp.token_requests == [] and idp.opened == []
+
+
+@pytest.mark.parametrize("requires_env", [1, True, {"VOICE_CLIENT_ID": {}, "VOICE_CLIENT_SECRET": {}}],
+                         ids=["number", "bool", "mapping"])
+def test_a_requires_env_that_is_not_a_list_declares_nothing(idp, monkeypatch, requires_env):
+    """The install notice, the consent surface, admission and sign-in all parse the manifest: a requires_env of
+    another shape leaves the registered client variables undeclared, a reported problem rather than a crash."""
+    _plugin(oauth=[_entry(idp)], kind="platform")
+    _registered_like_a_fresh_process(monkeypatch)
+    manifest = {"name": "voice", "kind": "platform", "requires_env": requires_env, "oauth": [_entry(idp)]}
+
+    clients, problems = plugin_oauth.parse_oauth_clients(manifest)
+    assert clients == [] and any("VOICE_CLIENT_ID is a variable Hermes uses itself" in p for p in problems)
+
+
+def test_a_provider_key_hermes_does_not_register_stays_refused(idp):
+    """GH_TOKEN is the Copilot provider's key and in no config list: the provider keys are checked before the
+    registration, so a manifest that names one gets no sign-in."""
+    from hermes_cli.config_env_routing import is_registered_env_name
+
+    assert not is_registered_env_name("GH_TOKEN")
+    _plugin(oauth=[_entry(idp, client_secret_env="GH_TOKEN")])
+    with pytest.raises(SystemExit, match="GH_TOKEN is a variable Hermes uses itself"):
+        _auth("add")
+    assert idp.token_requests == [] and idp.opened == []
+
+
+def test_a_bundled_platform_manifest_that_cannot_be_read_refuses_the_name(idp, monkeypatch):
+    """Without every bundled platform's names Hermes cannot tell the plugin's variable from one of theirs; the
+    failure is not remembered, so the next read that succeeds signs in."""
+    from hermes_cli import config
+
+    _plugin(oauth=[_entry(idp)], kind="platform")
+    _registered_like_a_fresh_process(monkeypatch)
+    read = config._platform_plugin_manifests
+
+    def one_unreadable(*args, **kwargs):
+        if kwargs.get("source") == "bundled" and kwargs.get("skipped") is not None:
+            kwargs["skipped"].append(Path("plugins/platforms/broken/plugin.yaml"))
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(config, "_platform_plugin_manifests", one_unreadable)
+    with pytest.raises(SystemExit, match="VOICE_CLIENT_ID is a variable Hermes uses itself"):
+        _auth("add")
+    monkeypatch.setattr(config, "_platform_plugin_manifests", read)
+    assert _auth("add") is True

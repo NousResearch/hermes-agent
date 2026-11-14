@@ -4,19 +4,18 @@
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
 import type { SessionAccountUsage, SessionStats } from '@hermes/shared/gateway-events'
-import type { BillingStateResponse, RollbackListResponse } from '@hermes/shared/gateway-types'
-import { jsonRpcErrorReason, JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import type { RollbackListResponse } from '@hermes/shared/gateway-types'
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
 
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
-import { RPC_UNKNOWN_METHOD } from '../userMessages.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
-import { planUsageLines, usageTotalsSections } from './usagePanel.js'
+import { usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
@@ -237,11 +236,6 @@ interface CommittedResult {
 
 const NO_ROUTE: SessionAccountUsage = { lines: [], nous_lines: [], nous_route: false }
 
-const isUnknownMethod = (error: unknown): boolean =>
-  (error as { code?: number })?.code === RPC_UNKNOWN_METHOD ||
-  jsonRpcErrorReason(error) === 'unknown_method' ||
-  /unknown_method/.test(error instanceof Error ? error.message : '')
-
 /** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
  * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
  * and rendered as the classic CLI's `/usage` is (Usage panel, or "no API calls yet", then the provider
@@ -249,11 +243,10 @@ const isUnknownMethod = (error: unknown): boolean =>
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
-  // An older owner without the read answers unknown_method: its /usage keeps main's lines. Any other
-  // failure says nothing about the route, so it shows no Nous CTA or plan bars.
+  // A failed read says nothing about the route, so it shows no plan bars and no Nous CTA.
   const limits = ctx.gateway.gw
     .request<SessionAccountUsage>('session.account_usage', { session_id: sid })
-    .catch((error: unknown): null | SessionAccountUsage => (isUnknownMethod(error) ? null : NO_ROUTE))
+    .catch((): SessionAccountUsage => NO_ROUTE)
 
   void ctx.gateway.gw
     .request('session.stats', { session_id: sid })
@@ -278,31 +271,13 @@ export function canonicalUsage(ctx: SlashRunCtx) {
       }
 
       // The route's provider limits, then the Nous section (signed in only; its own heading off a Nous route).
-      for (const line of [...(account?.lines ?? []), ...(account?.nous_lines ?? [])]) {
+      for (const line of [...(account.lines ?? []), ...(account.nous_lines ?? [])]) {
         ctx.transcript.sys(line)
       }
 
-      // The /topup CTA applies to a Nous route only (an older owner sends no flag).
-      if (account?.nous_route === false) {
-        return
+      if (account.nous_route) {
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
-
-      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
-
-      // The account read's nous_lines already carry a window plan's name and bars. Only an older owner,
-      // without the read, still needs them from billing.state (every other account: nothing).
-      if (account) {
-        return
-      }
-
-      void ctx.gateway
-        .rpc<BillingStateResponse>('billing.state', {})
-        .then(r => {
-          if (!ctx.stale()) {
-            planUsageLines(r?.plan_usage).forEach(line => ctx.transcript.sys(line))
-          }
-        })
-        .catch(() => undefined)
     })
     .catch(ctx.guardedErr)
 }

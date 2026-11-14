@@ -630,22 +630,18 @@ class CLIInfoMixin:
         """``(plan-limit lines, Nous section lines, nous_route, Nous dollar model or None)`` for `/usage`, from
         one Nous account read. On a gateway session the owner answers for the route the session runs
         (``session.account_usage``): this process's provider/base_url pair is not that route once /model or a
-        fallback moved the provider (the launch base_url stays). Off the gateway, or on an owner older than
-        the read, the CLI's own route."""
+        fallback moved the provider (the launch base_url stays). Off the gateway, the CLI's own route."""
         from agent.billing_links import is_nous_inference_route
-        from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+        from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             try:
                 view = connection.call("session.account_usage", session_id=self.session_id, timeout=25) or {}
-                from agent.billing_usage import usage_model_from_wire
-                return (list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True,
-                        usage_model_from_wire(view.get("nous_usage")))
-            except GatewayRPCError as exc:
-                if exc.code != -32601 and str(exc) != "unknown_method":
-                    return [], [], False, None  # a refusal says nothing about the route: no Nous CTA
             except GatewayClientError:
-                return [], [], False, None
+                return [], [], False, None  # a failed read says nothing about the route: no Nous CTA
+            from agent.billing_usage import usage_model_from_wire
+            return (list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True,
+                    usage_model_from_wire(view.get("nous_usage")))
         from agent.account_usage_nous import nous_usage_view
         provider, base_url = self._agent_or_self("provider") or "", self._agent_or_self("base_url") or ""
         nous_route = is_nous_inference_route(provider, base_url)

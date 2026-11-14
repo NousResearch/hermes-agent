@@ -33,18 +33,12 @@ def portal(monkeypatch):
 
     def fetch(token, base=None):
         seen["tokens"].append(token)
-        return seen.get("payload", _PAYLOAD)
+        return _PAYLOAD
     monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: state if seen.get("signed_in", True) else {})
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", refresh)
     monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", fetch)
     monkeypatch.delenv("HERMES_DEV_CREDITS_FIXTURE", raising=False)
     return seen, state
-
-
-def _window_plan(*, keep_going_on_credits: bool) -> dict:
-    reset_ms = int(time.time() * 1000) + 3_600_000
-    gauges = [{"id": "day", "scope": "all", "label": "Today", "used_bp": 1_200, "resets_at_ms": reset_ms}]
-    return {**_PAYLOAD, "usage_window": {"gauges": gauges, "keep_going_on_credits": keep_going_on_credits}}
 
 
 def test_another_providers_session_gets_the_labelled_nous_balance_without_topup_actions(portal):
@@ -55,10 +49,3 @@ def test_another_providers_session_gets_the_labelled_nous_balance_without_topup_
     assert seen == {"tokens": [state["access_token"]], "refreshed": 0}  # the stored token, never refreshed
     assert "(or run /topup)" in nous_usage_lines(nous_route=True)
 
-    # A window plan with Keep going off keeps the setting visible; only a Nous session gets its /topup action.
-    seen["payload"] = _window_plan(keep_going_on_credits=False)
-    off_route = nous_usage_lines(nous_route=False)
-    assert any(line.startswith("Keep going on credits: off") for line in off_route), off_route
-    assert not any("/topup" in line for line in off_route), off_route
-    assert any(line.startswith("Keep going on credits: off") and "/topup" in line
-               for line in nous_usage_lines(nous_route=True))

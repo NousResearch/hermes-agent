@@ -48,7 +48,7 @@ def local_gateway(monkeypatch):
 
     # CI omits the firecrawl extra; stand in for the SDK, still over real HTTP.
     class FirecrawlSDK:
-        def __init__(self, api_key, api_url):
+        def __init__(self, api_key, api_url, timeout=None):
             self.api_key, self.api_url = api_key, api_url
 
         def search(self, query, limit):

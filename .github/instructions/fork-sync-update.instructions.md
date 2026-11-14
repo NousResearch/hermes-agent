@@ -188,6 +188,38 @@ logs `unable to connect ... tcp forward from 0.0.0.0:8642`. Stop it with
 > `platforms.weixin.enabled: false`; the dashboard QR apply handler re-enables it
 > on its own.
 
+## Step 9 — Check `data/` sub-directory ownership matches the runtime uid
+
+`data/` is bind-mounted and persists across image swaps, so a directory created
+while `HERMES_UID` was one value keeps that owner forever. The hermes processes
+run as the runtime uid (10000 in the published image); a stale 1000-owned cache
+directory then fails every write with `[Errno 13] Permission denied` — visible
+as an opaque `500` from TTS/STT rather than an obvious permission error:
+
+```
+{"error": {"message": "TTS chunk 1 failed (edge): ... Permission denied:
+ '/opt/data/audio_cache/tts_20261114_120535_292790.mp3'", "code": "tts_failed"}}
+```
+
+Compare the owners against the uid the processes actually run as, then fix:
+
+```bash
+docker exec hermes-gateway sh -lc 'ps -eo uid:6 --no-headers | sort -u'   # e.g. 0 and 10000
+docker exec hermes-gateway sh -lc 'ls -ldn /opt/data /opt/data/audio_cache /opt/data/cache'
+docker exec -u 0 hermes-gateway sh -lc 'chown -R 10000:10000 /opt/data/audio_cache /opt/data/cache'
+```
+
+Verify by exercising the endpoint, not by `touch` — both containers carry a root
+shell and root can write to any directory, so a root `touch` proves nothing:
+
+```bash
+curl -s -o /tmp/t.mp3 -w '%{http_code} %{size_download} %{content_type}\n' \
+  -X POST http://127.0.0.1:8642/v1/audio/speech \
+  -H "Authorization: Bearer $API_SERVER_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"tts-1","input":"hello","voice":"alloy"}'
+# 200 11232 audio/mpeg
+```
+
 ## What the fixes cover
 
 | Fix | Layer | How it propagates |

@@ -96,6 +96,12 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
     "kling-v3-4k": _family("Kling v3 4K", "~120-300s", "premium", "4K output, native audio (Chinese/English), 3-15s.", "fal-ai/kling-video/v3/4k/text-to-video",
                            "fal-ai/kling-video/v3/4k/image-to-video", image_param_key="start_image_url", aspect_ratios=("16:9", "9:16", "1:1"),
                            durations=(3, 15), audio=True, negative=True, seed=True),
+    # Kling 4.0: integer duration 3-30 (single pass), 720p/1080p, aspect_ratio t2v-only (i2v follows `start_image_url`);
+    # no seed, negative_prompt or audio keys in either schema. multi_prompt / end_image_url are left off the tool surface.
+    "kling-v4": _family("Kling 4.0", "~90-240s", "premium", "Kuaishou flagship. Native 30s single-pass clips, multi-shot cinematic motion, 720p/1080p.",
+                        "kling/v4/text-to-video", "kling/v4/image-to-video", image_param_key="start_image_url", duration_int=True,
+                        image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1", "21:9"), resolutions=("720p", "1080p"),
+                        durations=(3, 30)),
     # Kling O3: t2v declares aspect_ratio, i2v derives it from the image; string duration 3-15; generate_audio is a real toggle
     # (default off, audio-on costs more); no resolution or seed keys in the O3 schema.
     "kling-o3": _family("Kling O3 (Standard)", "~60-180s", "premium", "Kuaishou frontier. Multi-shot native storytelling, optional audio, 3-15s.",

@@ -1493,6 +1493,10 @@ platform:
       expired: "Термін дії цього запиту минув — надішліть повідомлення ще раз."
     standalone:
       attachments_not_deliverable: "[Згенеровано вкладень: {count}; не можна доставити з cron]"
+    document:
+      attachment_alt: "Вкладення: {display_name}"
+      download_hint: "Натисніть кнопку нижче, щоб завантажити {display_name}"
+
   wecom:
     media:
       kind_image: "Зображення"

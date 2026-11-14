@@ -1510,6 +1510,10 @@ platform:
       expired: "Ez a kérés lejárt — küldd el újra az üzenetedet."
     standalone:
       attachments_not_deliverable: "[{count} melléklet készült; cronból nem kézbesíthető]"
+    document:
+      attachment_alt: "Melléklet: {display_name}"
+      download_hint: "Koppints a gomb alább a {display_name} letöltéséhez"
+
   wecom:
     media:
       kind_image: "Kép"

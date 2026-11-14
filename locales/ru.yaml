@@ -1493,6 +1493,10 @@ platform:
       expired: "Этот запрос истёк — отправьте сообщение ещё раз."
     standalone:
       attachments_not_deliverable: "[Создано вложений: {count}; из cron доставить нельзя]"
+    document:
+      attachment_alt: "Вложение: {display_name}"
+      download_hint: "Нажмите кнопку ниже, чтобы скачать {display_name}"
+
   wecom:
     media:
       kind_image: "Изображение"

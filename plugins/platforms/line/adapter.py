@@ -32,7 +32,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
 from agent.i18n import t
@@ -76,9 +76,17 @@ DEFAULT_BUTTON_LABEL_KEY = "platform.line.pending.button_label"  # LINE caps pos
 DEFAULT_DELIVERED_TEXT_KEY = "platform.line.pending.delivered"
 DEFAULT_INTERRUPTED_TEXT_KEY = "platform.line.pending.interrupted"
 DEFAULT_EXPIRED_TEXT_KEY = "platform.line.pending.expired"
-MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
+# Media token lifetime.
+#
+# Tokens are permanent: a token points at a path, and the link keeps working for
+# as long as the file is still there. A 30-minute TTL made a *daily* briefing
+# unreadable — the user would open the link hours later and get a 404, with no
+# way to tell "expired" from "never existed". The only natural invalidation is
+# the file being replaced or removed, which is the honest signal.
+MEDIA_TOKEN_TTL_SECONDS = float("inf")
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
+LINE_FILE_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for documents (download links)
 # LINE message type → normalized MessageType. LINE audio is recorded voice clips →
 # VOICE (STT path), like Telegram/WhatsApp. Unknown types fall back to TEXT.
 _LINE_MESSAGE_TYPES = {
@@ -366,6 +374,8 @@ _OUTBOUND_MEDIA = {
         "LINE_PUBLIC_URL must be set to send images (LINE only accepts publicly reachable HTTPS URLs)"),
     "audio": (LINE_AV_MAX_BYTES, "audio exceeds 200 MB LINE limit", "LINE_PUBLIC_URL must be set to send audio"),
     "video": (LINE_AV_MAX_BYTES, "video exceeds 200 MB LINE limit", "LINE_PUBLIC_URL must be set to send video"),
+    "file": (LINE_FILE_MAX_BYTES, "file exceeds 200 MB LINE limit",
+             "LINE_PUBLIC_URL must be set to send files (LINE only accepts publicly reachable HTTPS URLs)"),
 }
 
 # Inbound media kinds → cached file extension.
@@ -423,6 +433,10 @@ class LineAdapter(BasePlatformAdapter):
         self._media_tokens: dict[str, tuple[str, float]] = {}  # token → (path, expiry)
         self._media_temp_paths: set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
+        # The token registry is persisted: a gateway restart used to clear it and
+        # invalidate every download link the user was still holding.
+        self._media_tokens_path = self._resolve_media_tokens_path()
+        self._load_media_tokens()
         self._pending_buttons: dict[str, str] = {}  # one outstanding button per chat: chat_id → request_id
 
     def _fail(self, code: str, detail: str, *, retryable: bool = False) -> bool:  # fatal connect error → False
@@ -450,6 +464,10 @@ class LineAdapter(BasePlatformAdapter):
         self._app.router.add_post(self.webhook_path, self._handle_webhook)
         self._app.router.add_get(f"{self.webhook_path}/health", self._handle_health)  # tunnel/proxy probe
         self._app.router.add_get(f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}", self._handle_media)
+        # Loopback-only: an out-of-process cron run cannot mint a media token
+        # itself (the gateway owns the registry), so it asks the gateway to
+        # publish the file and receives the public URL.
+        self._app.router.add_post(f"{DEFAULT_MEDIA_PATH_PREFIX}/publish", self._handle_media_publish)
         # Plugin-registered routes must be wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(self._app)
         from gateway.platforms.shared_ingress import bind_listener
@@ -488,6 +506,9 @@ class LineAdapter(BasePlatformAdapter):
         for path in list(self._media_temp_paths):
             _unlink_quietly(path)
         self._media_temp_paths.clear()
+        # Persist before clearing: the on-disk registry is reloaded on the next
+        # connect, so a restart does not invalidate links the user already holds.
+        self._save_media_tokens()
         self._media_tokens.clear()
         with contextlib.suppress(Exception):
             self._release_platform_lock()
@@ -736,11 +757,92 @@ class LineAdapter(BasePlatformAdapter):
         if rid:
             self._cache.set_error(rid, self.interrupted_text)
 
+    @staticmethod
+    def _resolve_media_tokens_path() -> str:
+        """Where the persisted media-token registry lives.
+
+        Under HERMES_HOME so it survives a gateway restart but stays inside the
+        profile's own data directory.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            base = Path(get_hermes_home())
+        except Exception:
+            base = Path.home().joinpath(".hermes")
+        return str(base / "data" / "line" / "media_tokens.json")
+
+    def _load_media_tokens(self) -> None:
+        """Restore the persisted token registry.
+
+        Tokens are permanent (see MEDIA_TOKEN_TTL_SECONDS): a token survives as
+        long as the file it points at still exists. Entries whose file is gone
+        are dropped — that is the only natural invalidation.
+        """
+        path = getattr(self, "_media_tokens_path", None)
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception:
+            logger.debug("LINE: could not read media token registry", exc_info=True)
+            return
+        entries = raw.get("tokens") if isinstance(raw, dict) else None
+        if not isinstance(entries, dict):
+            return
+        restored = 0
+        for token, meta in entries.items():
+            try:
+                file_path = str(meta["path"])
+            except Exception:
+                continue
+            if not Path(file_path).is_file():
+                continue
+            # expires_at is kept for backward compat with older registry files
+            # (which had a TTL); permanent tokens record null.
+            try:
+                expires_at = float(meta.get("expires_at") or float("inf"))
+            except (TypeError, ValueError):
+                expires_at = float("inf")
+            self._media_tokens[str(token)] = (file_path, expires_at)
+            restored += 1
+        if restored:
+            logger.info("LINE: restored %d media token(s) from disk", restored)
+
+    def _save_media_tokens(self) -> None:
+        """Persist the token registry so a restart doesn't kill live links.
+
+        ``expires_at`` may be infinite (permanent tokens). ``json`` writes that as
+        the non-standard literal ``Infinity``, which strict parsers reject — so
+        store ``null`` instead and let the loader treat a missing value as
+        permanent.
+        """
+        path = getattr(self, "_media_tokens_path", None)
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tokens = {}
+            for token, (p, exp) in self._media_tokens.items():
+                tokens[token] = {
+                    "path": p,
+                    "expires_at": None if exp == float("inf") else exp,
+                }
+            payload = {"tokens": tokens}
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, allow_nan=False)
+            os.replace(tmp, path)
+        except Exception:
+            logger.debug("LINE: could not persist media token registry", exc_info=True)
+
     def _register_media(self, file_path: str, *, cleanup: bool = False) -> str:
         """Register a local file for HTTPS serving (evicting expired tokens); return the URL token."""
         now = time.time()
         for token, (path, exp) in list(self._media_tokens.items()):
-            if now > exp:
+            if exp != float("inf") and now > exp:
                 self._media_tokens.pop(token, None)
                 if path in self._media_temp_paths:
                     self._media_temp_paths.discard(path)
@@ -750,6 +852,7 @@ class LineAdapter(BasePlatformAdapter):
         self._media_tokens[token] = (resolved, now + self._media_ttl)
         if cleanup:
             self._media_temp_paths.add(resolved)
+        self._save_media_tokens()
         return token
 
     def _media_url(self, token: str, filename: str) -> str:
@@ -801,12 +904,19 @@ class LineAdapter(BasePlatformAdapter):
         file_path, expires_at = self._media_tokens.get(token) or ("", 0.0)
         if not file_path:
             return web.Response(status=404, text="not found")
-        if time.time() > expires_at:
+        # Legacy entries from an older registry may still carry a finite expiry;
+        # permanent tokens carry inf and never land here.
+        if expires_at != float("inf") and time.time() > expires_at:
             self._media_tokens.pop(token, None)
             return web.Response(status=410, text="gone")
         path = Path(file_path)
         if not path.is_file():
-            return web.Response(status=404, text="not found")
+            # Permanent tokens live until the file is gone. The only natural
+            # invalidation is the file being replaced or removed — say so
+            # instead of returning a bare 404 the user cannot act on.
+            self._media_tokens.pop(token, None)
+            self._save_media_tokens()
+            return web.Response(status=410, text="file is gone")
         try:
             from hermes_constants import get_hermes_home
             hermes_home = Path(get_hermes_home()).resolve()
@@ -818,6 +928,130 @@ class LineAdapter(BasePlatformAdapter):
             return web.Response(status=403, text="forbidden")
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         return web.FileResponse(path, headers={"Content-Type": content_type})
+
+    async def _handle_media_publish(self, request) -> Any:
+        """Publish a local file for an out-of-process sender (standalone cron lane).
+
+        The gateway owns the ``/line/media`` token registry, so a detached cron
+        process cannot mint a token by itself. It POSTs the absolute path here and
+        gets back the public URL, which it then puts in a LINE download button.
+
+        **Loopback only** — this endpoint mints publicly reachable URLs, so it must
+        not be reachable from outside the host. The request must come from
+        loopback and carry the channel secret, so a local process without the
+        secret cannot publish arbitrary files.
+        """
+        from aiohttp import web
+
+        peer = request.remote or ""
+        if peer not in ("127.0.0.1", "::1", "localhost"):
+            return web.Response(status=403, text="loopback only")
+
+        expected = self.channel_secret or ""
+        auth = request.headers.get("Authorization", "")
+        presented = auth[7:] if auth.startswith("Bearer ") else request.headers.get("X-Line-Secret", "")
+        if not expected or presented != expected:
+            return web.Response(status=401, text="unauthorized")
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.Response(status=400, text="bad request")
+        path = (body or {}).get("path") or ""
+        if not path:
+            return web.Response(status=400, text="missing path")
+        target = Path(path)
+        if not target.is_file():
+            return web.Response(status=404, text="not found")
+        # Same allow-roots rule as _handle_media (defence in depth).
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = Path(get_hermes_home()).resolve()
+        except Exception:
+            hermes_home = Path.home().joinpath(".hermes").resolve()
+        resolved = target.resolve()
+        if not any(resolved.is_relative_to(r) for r in (
+                Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):
+            return web.Response(status=403, text="forbidden")
+
+        url = self._serve_file(target)
+        if not url.lower().startswith("https://"):
+            return web.Response(status=503, text="LINE_PUBLIC_URL not configured")
+        return web.json_response({"url": url, "path": str(target)})
+
+    async def send_document(
+        self, chat_id: str, file_path: str, caption: Optional[str] = None,
+        file_name: Optional[str] = None, reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None, **kwargs
+    ) -> SendResult:
+        """Send a document (e.g. an .xlsx report) to the user over LINE.
+
+        **LINE has no ``document`` push message type.** The API only accepts
+        text, textV2, image, video, audio, location, sticker, template,
+        imagemap and flex — a ``document`` payload is rejected with HTTP 400.
+        The ``file`` type exists only in the *inbound* direction (files the user
+        sends the bot).
+
+        So the supported way to hand a file to a LINE user is a **flex message
+        with a download button**: the bubble carries a ``uri`` action pointing at
+        the gateway's ``/line/media/<token>/<name>`` route, which serves the
+        local file over the same public host the webhook uses. Tapping the
+        button opens the file in the user's browser.
+
+        ``LINE_PUBLIC_URL`` must be set (tunnelled deployments) — without it
+        there is no fetchable URL and we fail loudly instead of sending a
+        broken link.
+        """
+        path, err = self._check_media_file("file", file_path)
+        if err:
+            return err
+        assert path is not None  # _check_media_file returned no error
+        display_name = file_name or path.name
+        url = self._serve_file(path)
+        if not url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE document URL must be HTTPS: {url}")
+
+        # A button action label is capped at 20 characters by LINE; a longer one
+        # makes the API reject the whole flex payload.
+        label = display_name
+        if len(label) > 20:
+            stem, ext = os.path.splitext(display_name)[0], os.path.splitext(display_name)[1] or ""
+            budget = 20 - len(ext)
+            label = (stem[:max(1, budget)] + ext) if budget > 0 else ext[:20]
+        title = caption or display_name
+
+        flex: dict[str, Any] = {
+            "type": "flex",
+            "altText": title[:100],
+            "contents": {
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "text", "text": title[:200], "weight": "bold",
+                         "size": "md", "wrap": True},
+                        {"type": "text",
+                         "text": t("platform.line.document.download_hint", display_name=display_name),
+                         "size": "xs", "color": "#888888", "wrap": True},
+                    ],
+                },
+                "footer": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "button", "style": "primary", "height": "sm",
+                         "action": {"type": "uri", "label": label, "uri": url}},
+                    ],
+                },
+            },
+        }
+        msgs: list[dict[str, Any]] = [flex]
+        if caption:
+            # The caption also rides as plain text so it shows up in the chat
+            # bubble body (flex bubbles can be collapsed in some clients).
+            msgs.append(_text_message(caption))
+        return await self._send_messages(chat_id, msgs)
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
@@ -938,20 +1172,85 @@ async def _standalone_send(
     thread_id: Optional[str] = None, media_files: Optional[list[str]] = None, force_document: bool = False,
 ) -> dict[str, Any]:
     """Out-of-process Push delivery for cron jobs detached from the gateway (no inbound event → no
-    reply token). ``thread_id`` is ignored (no threads); ``media_files`` need the webhook server."""
+    reply token). ``thread_id`` is ignored (no threads).
+
+    ``media_files``: LINE has no ``document`` push type, so a file is handed over
+    as a flex message with a download button. The gateway owns the media-token
+    registry, so this out-of-process path asks the running gateway to publish
+    the file (loopback ``POST /line/media/publish``) and sends the flex pointing
+    at the returned URL. If the gateway is unreachable we fall back to a plain
+    notice instead of silently dropping the attachment.
+    """
     token = _credentials(pconfig)[0]
     if not token or not chat_id:
         return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]
-    if media_files:  # tell the recipient media was generated but not delivered
-        messages.append(_text_message(
-            t("platform.line.standalone.attachments_not_deliverable", count=str(len(media_files)))))
-        messages = messages[:LINE_MAX_MESSAGES_PER_CALL]
+    # media_files arrives as [(path, is_voice)] tuples from the cron delivery
+    # layer; some callers pass plain paths. Normalise to a list of paths.
+    paths: list[str] = []
+    for entry in (media_files or []):
+        if isinstance(entry, (list, tuple)):
+            paths.append(str(entry[0]))
+        elif isinstance(entry, str):
+            paths.append(entry)
+    if paths:
+        flex_msg = await _standalone_publish_media(paths)
+        if flex_msg:
+            messages.append(flex_msg)
+        else:
+            # Tell the recipient media was generated but not delivered.
+            messages.append(_text_message(
+                t("platform.line.standalone.attachments_not_deliverable", count=str(len(paths)))))
+    messages = messages[:LINE_MAX_MESSAGES_PER_CALL]
     try:
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
     except Exception as exc:  # the text may echo the proxy URL: it reaches the model
         return send_error(describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc))
+
+
+async def _standalone_publish_media(media_files: list[str]) -> Optional[dict[str, Any]]:
+    """Ask the running gateway to publish a local file; return a flex download bubble.
+
+    Returns None when the gateway cannot be reached — the caller then falls back
+    to a plain-text notice rather than dropping the attachment silently.
+    """
+    paths = [p for p in (media_files or []) if p and os.path.isfile(p)]
+    if not paths:
+        return None
+    try:
+        from gateway.media_publish import publish_media_file
+    except Exception:
+        return None
+    try:
+        published = publish_media_file(paths[0])
+    except Exception:
+        logger.warning("LINE: standalone media publish failed", exc_info=True)
+        return None
+    if not isinstance(published, dict):
+        return None
+    url = published.get("url")
+    if not url:
+        return None
+    name = os.path.basename(published.get("path") or paths[0])
+    label = name if len(name) <= 20 else name[:17] + "..."
+    return {
+        "type": "flex",
+        "altText": t("platform.line.document.attachment_alt", display_name=name)[:100],
+        "contents": {
+            "type": "bubble",
+            "body": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": name[:200], "weight": "bold", "size": "md", "wrap": True},
+                {"type": "text",
+                 "text": t("platform.line.document.download_hint", display_name=name),
+                 "size": "xs", "color": "#888888", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "height": "sm",
+                 "action": {"type": "uri", "label": label, "uri": url}},
+            ]},
+        },
+    }
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)

@@ -1493,6 +1493,10 @@ platform:
       expired: "Tá an t-iarratas sin imithe in éag — seol do theachtaireacht arís."
     standalone:
       attachments_not_deliverable: "[{count} ceangaltán ginte; ní féidir iad a sheachadadh ó cron]"
+    document:
+      attachment_alt: "Ceangalt: {display_name}"
+      download_hint: "Cliceáil an cnaipe thíos chun {display_name} a íoslódáil"
+
   wecom:
     media:
       kind_image: "Íomhá"

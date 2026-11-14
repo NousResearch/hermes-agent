@@ -666,9 +666,14 @@ _CHUNKED_ROUTES = {
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
         pc, cid, chunk, media_files=media, thread_id=tid)),
     "slack": (False, [], _via_adapter_route),
-    "wecom": (True, None, _via_adapter_route)}
+    "wecom": (True, None, _via_adapter_route),
+    # LINE: the adapter implements send_document (a flex message with a download
+    # button), so media rides the same live-adapter path as Slack/WeCom. Without
+    # this entry LINE fell through to the generic text-only path and cron MEDIA:
+    # attachments were silently dropped with a warning.
+    "line": (False, [], _via_adapter_route)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, whatsapp, slack and qqbot"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, whatsapp, slack, qqbot and line"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,

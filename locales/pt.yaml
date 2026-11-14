@@ -1493,6 +1493,10 @@ platform:
       expired: "Essa solicitação expirou — envie sua mensagem novamente."
     standalone:
       attachments_not_deliverable: "[{count} anexo(s) gerado(s); não é possível entregar a partir do cron]"
+    document:
+      attachment_alt: "Anexo: {display_name}"
+      download_hint: "Toque no botão abaixo para baixar {display_name}"
+
   wecom:
     media:
       kind_image: "Imagem"

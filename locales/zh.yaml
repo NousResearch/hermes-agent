@@ -1493,6 +1493,10 @@ platform:
       expired: "该请求已过期——请重新发送你的消息。"
     standalone:
       attachments_not_deliverable: "[已生成 {count} 个附件；无法从定时任务中发送]"
+    document:
+      attachment_alt: "附件：{display_name}"
+      download_hint: "点击下方按钮下载 {display_name}"
+
   wecom:
     media:
       kind_image: "图片"

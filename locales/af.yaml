@@ -1493,6 +1493,10 @@ platform:
       expired: "Daardie versoek het verval — stuur jou boodskap weer."
     standalone:
       attachments_not_deliverable: "[{count} aanhegsel(s) gegenereer; nie afleverbaar vanaf cron nie]"
+    document:
+      attachment_alt: "Aanhangsel: {display_name}"
+      download_hint: "Tik die knoppie hieronder om {display_name} te laai"
+
   wecom:
     media:
       kind_image: "Beeld"

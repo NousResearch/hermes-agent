@@ -1493,6 +1493,10 @@ platform:
       expired: "そのリクエストは有効期限が切れました — メッセージをもう一度送信してください。"
     standalone:
       attachments_not_deliverable: "[{count} 件の添付ファイルを生成しました。cron からは配信できません]"
+    document:
+      attachment_alt: "添付ファイル: {display_name}"
+      download_hint: "下のボタンを押して {display_name} をダウンロード"
+
   wecom:
     media:
       kind_image: "画像"

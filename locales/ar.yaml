@@ -1493,6 +1493,10 @@ platform:
       expired: "انتهت صلاحية هذا الطلب — أرسل رسالتك من جديد."
     standalone:
       attachments_not_deliverable: "[تم إنشاء {count} مرفق(ات)؛ لا يمكن تسليمها من مهمة مجدولة]"
+    document:
+      attachment_alt: "مرفق: {display_name}"
+      download_hint: "اضغط على الزر أدناه لتنزيل {display_name}"
+
   wecom:
     media:
       kind_image: "صورة"

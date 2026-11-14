@@ -497,6 +497,9 @@ def _looks_like_opaque_credential(value: str) -> bool:
     return sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]")) >= 2
 
 
+_CONFIG_LITERAL_VALUES = frozenset({"true", "false", "yes", "no", "on", "off", "null", "none"})
+
+
 def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> bool:
     """Shared gate for the ENV / JSON / YAML assignment passes: skip programmatic env
     lookups used as values, optionally require a word-bounded keyword in the key,
@@ -513,6 +516,10 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # again only erases what the sentinel deliberately kept — the vendor label (``Digest ***`` →
     # ``***``, ``«redacted:ghp_…»`` → ``«redacted-secret»``). Same guard _redact_python_repr_fields uses.
     if value == "***" or value.startswith("«redacted"):
+        return False
+    # ``redact_secrets: true`` is configuration state, not a credential: masking a boolean/null
+    # literal under a secret-named key corrupts the config view the agent copies back (#142574).
+    if value.lower() in _CONFIG_LITERAL_VALUES:
         return False
     if check_keyword and not _key_has_secret_keyword(key):
         return False
@@ -633,8 +640,12 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # Authorization / Proxy-Authorization, any scheme or bare credential; header
 # name and scheme word preserved. The credential class excludes quotes: pulling
 # a closing quote into the mask turns value corruption into SYNTAX corruption
-# (unterminated quote → shell EOF / SyntaxError).
-_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
+# (unterminated quote → shell EOF / SyntaxError). A scheme word with no token after it
+# (``"authorization: bearer "``) is not a credential: the optional scheme group backs off
+# and would otherwise mask the scheme word itself (#142574).
+_AUTH_SCHEME_WORD = r"(?:bearer|basic|bot|token|digest|negotiate|ntlm|oauth)(?![^\s\"'])"
+_AUTH_HEADER_RE = re.compile(
+    rf"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(?!{_AUTH_SCHEME_WORD})([^\s\"']+)", re.IGNORECASE)
 
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. Start at an
@@ -744,8 +755,9 @@ _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 _WEBAPP_LINK_CREDENTIAL_RE = re.compile(
     r"((?<![A-Za-z0-9_-])hermes-session=|/webapp/launch#(?:[^\s#]*?&)?ticket=)[A-Za-z0-9_-]{20,}")
 
-# E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+# E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers. A ``+`` glued
+# to a word or dot is a version suffix, not a phone: ``python-3.14.7+20260901-linux-x64`` (#142574).
+_SIGNAL_PHONE_RE = re.compile(r"(?<![0-9A-Za-z_.])(\+[1-9]\d{6,14})(?![A-Za-z0-9])")  # ASCII: CJK-glued numbers still mask
 
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).

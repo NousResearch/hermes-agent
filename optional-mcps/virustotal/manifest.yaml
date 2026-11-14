@@ -1,0 +1,62 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: virustotal
+description: VirusTotal threat intel — file, URL, domain, and IP reports.
+source: https://github.com/VirusTotal/virustotal-mcp
+
+# Official VirusTotal remote MCP (VTAI, Apache-2.0 server source), hosted —
+# Hermes never spawns a local process for this entry. Native OAuth 2.1 +
+# Dynamic Client Registration (verified live: 401 -> RFC 9728 protected-
+# resource metadata -> AS metadata with registration_endpoint; DCR accepts
+# client_name "Hermes Agent" with a loopback redirect and auth method none,
+# PKCE S256; sign-in is a Google account). Free VTAI quota per signed-in
+# account; no VirusTotal API key is needed.
+transport:
+  type: http
+  url: https://ai.virustotal.com/mcp
+
+auth:
+  type: oauth
+
+# Tool selection at install time:
+# The hosted server lists 11 tools. Report lookups (get_file_report,
+# get_url_report, get_domain_report, get_ip_report) and receipt recovery
+# (get_submission, get_analysis) stay enabled. The five submission tools
+# are excluded by default: a standard VirusTotal submission shares the
+# file or URL with the security community and partners (not confidential),
+# and VirusTotal's own guidance is to submit only when the user explicitly
+# asks. Exclude mode keeps any read tool VirusTotal adds later enabled.
+tools:
+  default_excluded:
+    - submit_file
+    - submit_attachment
+    - submit_url
+    - reanalyze_domain
+    - reanalyze_ip
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - virustotal
+  hosts:
+    - virustotal.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  VirusTotal (or run `hermes mcp login virustotal`). Sign in with
+  Google and approve the permissions, then restart the session so
+  tools load. Try: "get the VirusTotal domain report for
+  virustotal.com".
+
+  Every report lookup counts against the account's free VTAI query
+  quota, repeats included. A missing report means unknown, and zero
+  detections do not prove a file or URL is safe.
+
+  Submission tools (submit_file, submit_attachment, submit_url,
+  reanalyze_domain, reanalyze_ip) are off by default because a
+  VirusTotal submission is shared with the security community. To
+  enable them, remove names from mcp_servers.virustotal.tools.exclude
+  in config.yaml or run `hermes mcp configure virustotal`. Revoke
+  access at https://ai.virustotal.com/oauth/connections.

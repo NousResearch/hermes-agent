@@ -455,14 +455,8 @@ def _(rid, params: dict, db_path) -> dict:
     room = room_state(
         db_path, room_id=params.get("room_id"),
         include_disbanded=params.get("include_disbanded") is True)
-    service = get_hosted_room_service()
-    result = {"room": room}
-    if room.get("disbanded_at") is None:
-        from gateway.hosted_room_context import room_context
-        result["context"] = room_context(db_path, room_id=room["room_id"])
-        if service is not None:
-            result["driver_status"] = service.status(str(room["room_id"]))
-    return _ok(rid, result)
+    from gateway.hosted_room_context import groups_state_result
+    return _ok(rid, groups_state_result(db_path, room, get_hosted_room_service()))
 
 
 @_room_method(

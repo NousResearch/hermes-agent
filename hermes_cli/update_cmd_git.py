@@ -526,6 +526,20 @@ def _checkout_rejected_by_git(stderr: str, git_cmd, root: Path) -> bool:
         os.path.realpath(root))
 
 
+def _enclosing_repo_of_checkout(git_cmd, root: Path) -> Optional[str]:
+    """The other repository git resolves *root* to, or None when git sees *root* itself (or cannot run).
+
+    With a damaged ``.git`` git walks up to the nearest enclosing repository (a git-managed home
+    directory), and every stash, reset and clean would then run on the user's files there (#146032).
+    """
+    top = _git_run(git_cmd, ["rev-parse", "--show-toplevel"], cwd=root)
+    found = top.stdout.strip()
+    if top.returncode != 0 or not found:
+        return None
+    same = os.path.normcase(os.path.realpath(found)) == os.path.normcase(os.path.realpath(root))
+    return None if same else found
+
+
 # Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
 # so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private

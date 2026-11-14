@@ -161,3 +161,52 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     assert runner._booted_from_restart is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_runtime", [False, True])
+async def test_restart_update_ids_are_scoped_to_receiving_bot(tmp_path, monkeypatch, shared_runtime):
+    """Independent bot counters cannot suppress one another, even with one routed runtime."""
+    from pathlib import Path
+
+    from gateway.config import Platform
+    from gateway.session_identity import resolve_identity
+    from tests.gateway.restart_test_helpers import RestartTestAdapter
+
+    home = tmp_path / ".hermes"
+    for name in ("alpha", "beta", "shared"):
+        (home / "profiles" / name).mkdir(parents=True)
+        (home / "profiles" / name / "config.yaml").write_text("{}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(gateway_run, "_hermes_home", home)
+    runner, _ = make_restart_runner()
+    runner.config.multiplex_profiles = True
+    runner._primary_profile_name = "default"
+    runner.request_restart = MagicMock(return_value=True)
+    runner._profile_adapters = {}
+    events = {}
+    for name, update_id in (("alpha", 900), ("beta", 100)):
+        adapter = RestartTestAdapter()
+        adapter.set_owner_profile(name)
+        runner._profile_adapters[name] = {Platform.TELEGRAM: adapter}
+        source = adapter.build_source(chat_id="123456", chat_type="dm", user_id="123456")
+        source.profile = "shared" if shared_runtime else name
+        identity = resolve_identity(source, runner=runner, adapter=adapter, transport_profile=name)
+        assert identity.runtime_home == home / "profiles" / source.profile
+        events[name] = MessageEvent(text="/restart", message_type=MessageType.TEXT,
+                                   source=source, message_id="m1", platform_update_id=update_id)
+
+    # Write the real marker, then emulate B's fresh command arriving before A's replay.
+    await runner._handle_restart_command(events["alpha"])
+    runner.request_restart.assert_called_once()
+    runner.request_restart.reset_mock()
+    runner._booted_from_restart = True
+    assert runner._is_stale_restart_redelivery(events["beta"]) is False
+    assert runner._booted_from_restart is True  # B must not consume A's boot signal.
+    assert runner._is_stale_restart_redelivery(events["alpha"]) is True
+    await runner._handle_restart_command(events["beta"])
+    runner.request_restart.assert_called_once()
+    runner.request_restart.reset_mock()
+    # A -> B -> A: A's next id is independent of B's new marker too.
+    events["alpha"].platform_update_id = 901
+    await runner._handle_restart_command(events["alpha"])
+    runner.request_restart.assert_called_once()

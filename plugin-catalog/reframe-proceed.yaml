@@ -1,0 +1,22 @@
+name: reframe-proceed
+repo: https://github.com/bernardo9999/reframe-proceed
+sha: 42a869a5ed7072a046dcbb32d33e8aa4b24448a2
+description: "Personal planning tools and an opt-in skill for vision, plans, check-ins, and reviews. Disclosure: stores user text in Hermes profile-scoped storage that persists after updates/removal; same-period saves replace records. No third-party network calls, shell commands, credentials, or telemetry."
+maintainer: bernardo9999
+tier: community
+category: tools
+docs_url: https://github.com/bernardo9999/reframe-proceed/blob/42a869a5ed7072a046dcbb32d33e8aa4b24448a2/README.md
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - reframe_save_vision
+    - reframe_update_plan
+    - reframe_daily_checkin
+    - reframe_weekly_review
+    - reframe_get_context
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.20.4"

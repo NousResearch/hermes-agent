@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def _runner(tmp_path):
     from gateway.config import GatewayConfig

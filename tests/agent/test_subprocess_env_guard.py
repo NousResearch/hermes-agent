@@ -21,6 +21,8 @@ hit is in the explicit allowlist below.  If you are adding a new spawn site:
 import re
 from pathlib import Path
 
+from hermes_agent.compat.paths import current_path, original_path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Directories that make up the shipped source tree.
@@ -74,11 +76,11 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
 
 def _iter_source_files():
     for d in SCAN_DIRS:
-        root = REPO_ROOT / d
+        root = REPO_ROOT / current_path(d)
         assert root.is_dir(), f"{d}/ is gone: update SCAN_DIRS, or this guard scans nothing there"
         yield from root.rglob("*.py")
     for f in SCAN_ROOT_FILES:
-        p = REPO_ROOT / f
+        p = REPO_ROOT / current_path(f)
         assert p.is_file(), f"{f} is gone: update SCAN_ROOT_FILES, or this guard scans nothing there"
         yield p
 
@@ -87,7 +89,7 @@ def _raw_spawn_env_sites():
     """Return [(relpath, lineno)] of os.environ.copy() near a spawn call."""
     sites = []
     for path in _iter_source_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = original_path(path.relative_to(REPO_ROOT).as_posix())
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -126,7 +128,7 @@ def test_no_new_raw_environ_copy_spawn_sites():
 def test_allowlist_entries_still_exist():
     """Prune the allowlist when files are removed/renamed."""
     for rel in ALLOWED_RAW_SPAWN_ENV_FILES:
-        assert (REPO_ROOT / rel).is_file(), (
+        assert (REPO_ROOT / current_path(rel)).is_file(), (
             f"Allowlist entry {rel} no longer exists — remove it from "
             "ALLOWED_RAW_SPAWN_ENV_FILES."
         )

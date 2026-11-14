@@ -1,0 +1,22 @@
+name: svault
+title: Secrets Vault
+description: "Field-level secrets protection: encrypt sensitive fields in a database at rest, redact them automatically when the agent reads the data, and reveal a single value only with human approval. Disclosure — encrypts files and JSON fields you point it at inside the session working directory (deleting a plaintext original only when you ask for it and approve), stores its agent private keys locally under the profile's plugin-data directory, and reveals values only through the human-approved `/svault` slash command on a local CLI/TUI/Desktop session, writing revealed values to a file under plugin-data instead of the chat; its key-directory guard is a best-effort string match on other tools' arguments, not a sandbox; no network calls."
+repo: https://github.com/Nifemi0/svault
+sha: e3db66c40e1f0a8bc1182d841338e4a3667ecbcd
+tier: community
+category: tools
+maintainer: Sky
+capabilities:
+  tools:
+    - svault_agent_new
+    - svault_agent_list
+    - svault_encrypt
+    - svault_protect_db
+    - svault_read_db
+    - svault_decrypt
+    - svault_reveal
+    - svault_list
+  hooks:
+    - pre_tool_call
+requires_hermes: ">=0.22.5"
+version: "1.1.0"

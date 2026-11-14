@@ -8,17 +8,21 @@ agent-config files surface only the low *_ref finding — static regexes cannot 
 destination; future coverage belongs as a fourth "mechanical" tier next to agent_config_mod_shell."""
 
 import re
-import fnmatch
+import codecs
 import hashlib
+import io
 import json
+import tokenize
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
-SCANNER_VERSION = "skills-guard-v10"
+
+SCANNER_VERSION = "skills-guard-v14"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -32,7 +36,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # "ask" = error to the agent (retry without the flagged content); only when skills.guard_agent_created is on.
+    # "ask" = error to the agent (retry without the flagged content); when guard_agent_created is on or for background review.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 
@@ -150,6 +154,19 @@ _CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|creden
 # `os.path.expanduser(...)` (Python only).
 _CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+# Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
+# System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
+# `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
+# case-sensitively as the WHOLE quoted value: this can only turn a hardcoded_secret flag into clean
+# for these exact ids; any other value, or one of these with a character changed, still matches.
+_PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    '11111111111111111111111111111111',
+    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+)) + r')'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -240,7 +257,9 @@ THREAT_PATTERNS = [
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
-    (r'\[.*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
+    # `[^\[]*`, not `.*`: a match exists iff the LAST `[` before `](` matches, so this is the same
+    # set of lines in one pass. `.*` retried every `]` from every `[` (quadratic on minified JSON).
+    (r'\[[^\[]*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
     # ── Prompt injection ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),
@@ -488,6 +507,7 @@ THREAT_PATTERNS = [
     # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
      r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'(?!' + _PUBLIC_SOLANA_PROGRAM_IDS + r'["\'])'
      r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',
@@ -615,18 +635,37 @@ def _unicode_char_name(char: str) -> str:
     return _INVISIBLE_CHAR_NAMES.get(char, f"U+{ord(char):04X}")
 
 
+# A STRING token opens a triple-quoted block after at most a two-char prefix (r/b/f combos).
+_TRIPLE_QUOTE_OPEN_RE = re.compile(r'^[A-Za-z]{0,2}(?:"""|\'\'\')')
+# 3.12+ splits f-strings into FSTRING_START/MIDDLE/END tokens; only the quote delimiters are prose.
+_FSTRING_START, _FSTRING_MIDDLE, _FSTRING_END = (
+    getattr(tokenize, name, None) for name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"))
+_FSTRING_BOUNDARY_TYPES = {t for t in (_FSTRING_START, _FSTRING_END) if t is not None}
+
+
 def _compute_docstring_lines(lines: list) -> set:
     """1-indexed lines inside or on the boundary of triple-quoted strings (opening, interior, closing, and
-    one-line docstrings), so ``os.environ`` in prose is not scored. Heuristic: a triple quote inside a string
-    literal is miscounted, but the common false-positive shapes are covered."""
+    one-line docstrings), so ``os.environ`` in prose is not scored. Computed structurally from Python-lexer
+    tokens rather than quote counting: one unbalanced triple quote used to toggle the counter and let a
+    bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
+    exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``."""
     doc_lines: set = set()
-    inside = False
-    for i, line in enumerate(lines, start=1):
-        was_in, counts = inside, [line.count(marker) for marker in ('"""', "'''")]
-        inside ^= sum(counts) % 2 == 1  # each odd marker count toggles; two odd counts cancel
-        if was_in or inside or any(counts):
-            doc_lines.add(i)
-    return doc_lines
+    fstrings: list = []  # open f-strings (3.12+), True when triple-quoted
+    expr_lines: set = set()  # lines holding a ``{...}`` expression: code, never prose
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
+            if tok.type == _FSTRING_START:
+                fstrings.append(bool(_TRIPLE_QUOTE_OPEN_RE.match(tok.string)))
+            elif tok.type == _FSTRING_END and fstrings:
+                fstrings.pop()
+            if ((tok.type == tokenize.STRING or tok.type in _FSTRING_BOUNDARY_TYPES)
+                    and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)) or tok.type == _FSTRING_MIDDLE and fstrings and fstrings[-1]:
+                doc_lines.update(range(tok.start[0], tok.end[0] + 1))
+            elif fstrings and tok.type not in _FSTRING_BOUNDARY_TYPES and tok.type != _FSTRING_MIDDLE:
+                expr_lines.update(range(tok.start[0], tok.end[0] + 1))
+    except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
+        return set()
+    return doc_lines - expr_lines
 
 
 def _mask_markdown_link_destinations(line: str) -> str:
@@ -695,36 +734,155 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     return out
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
-    """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
-    name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
-    rel_path = rel_path or file_path.name
-    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
-        return []
+# Only python_os_environ was tuned for docstring prose; every other pattern must still fire inside a
+# triple-quoted string, since wrapping a payload in one is an evasion, not a false positive.
+_DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _line_at(prefix: str) -> int:
+    """1-indexed line a finding at the end of *prefix* sits on, breaking on CRLF, LF and lone CR as _scan_text does."""
+    return prefix.replace('\r\n', '\n').replace('\r', '\n').count('\n') + 1
+
+
+def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], list[Finding]]:
+    """Every text the file can execute as, plus findings for the decoding tricks seen. The scanner must
+    read what the interpreter runs: a ``.py`` PEP 263 cookie (e.g. utf-7) re-decodes an ASCII-clean file,
+    and bash drops NUL bytes, so ``c\\0url ... | ba\\0sh`` runs while beating every regex."""
     try:
-        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
-    except (UnicodeDecodeError, OSError):
-        return []
-    findings = []
+        texts, findings = [raw.decode('utf-8-sig')], []
+    except UnicodeDecodeError as exc:
+        # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
+        # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
+        texts = [raw.decode('utf-8-sig', errors='replace')]
+        bad_line = _line_at(exc.object[:exc.start].decode('latin-1'))  # offsets index the BOM-stripped bytes
+        findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
+                            "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
+    if suffix == ".py":
+        # An unusable cookie (incl. 'undefined', whose codec raises UnicodeError) makes CPython refuse the file.
+        with suppress(SyntaxError, LookupError, UnicodeError):
+            # CPython also breaks lines on a lone CR; detect_encoding splits on LF only.
+            lf_raw = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            codec = tokenize.detect_encoding(io.BytesIO(lf_raw).readline)[0]
+            if codecs.lookup(codec).name not in ("utf-8", "utf-8-sig"):  # detect_encoding leaves 'utf8' as is
+                try:
+                    alt = raw.decode(codec, errors='replace')
+                except UnicodeError:  # e.g. idna refuses 'replace' yet CPython runs it; flag it on a latin-1 view
+                    alt = None
+                # ascii/latin-1 over ASCII-only bytes runs exactly the text already scanned: nothing is hidden.
+                if alt != texts[0]:
+                    texts.append(raw.decode('latin-1') if alt is None else alt)
+                    findings.append(Finding("non_utf8_source_encoding", "high", "obfuscation", rel_path, 1,
+                                            f"coding: {codec}", f"Python source declares the {codec} encoding "
+                                            "(possible encoding-obfuscated payload)"))
+    if '\x00' in texts[0]:
+        texts.append(texts[0].replace('\x00', ''))
+        findings.append(Finding("nul_byte", "high", "obfuscation", rel_path, _line_at(texts[0][:texts[0].index('\x00')]),
+                                "NUL byte", "NUL byte in a text file (possible pattern-splitting obfuscation)"))
+    return texts, findings
+
+
+def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Finding]:
+    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')  # read_bytes skips newline translation
+    findings: list[Finding] = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
-    traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
-    suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
-    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
+    traversal_lines = _mask_prose_link_destinations(lines) if suffix == ".md" else lines
+    owners = _statement_owners(lines)  # per-file context for the demotion
+    patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
+    views = code_views(lines) if suffix == ".py" and (skill or docstring_lines) else None
+    for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
-            scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
-            if i not in docstring_lines and pattern.search(scan_line):
+            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+                if suffix != ".py":
+                    continue
+                # A triple-quoted token exempts its own columns, not executable code on the same line.
+                # Fall back to raw text on a lexer failure (fail closed).
+                scan_line = ("".join(" " if masked else char for char, masked in zip(line, views[1][i - 1]))
+                             if views else line)
+            else:
+                scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
+                             else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
+            if pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
+    if skill:
+        raise_provider_key_reads(findings, lines, views[1] if views else None)
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)
             findings.append(Finding("invisible_unicode", "high", "injection", rel_path, i,
                                     f"U+{ord(char):04X} ({name})",
                                     f"invisible unicode character {name} (possible text hiding/injection)"))
+    if suffix not in _PADDED_CODE_EXEMPT_SUFFIXES:
+        findings.extend(_padded_code_findings(lines, rel_path))
     return findings
+
+
+# Code pushed off-screen: a run of 200+ spaces/tabs, then 40+ characters on the same line. An editor or
+# GitHub's diff shows the line ending at the padding, so a loader appended there (a known campaign
+# infecting developers' machines and appending to their `vite.config.js` / `init`) is invisible to a
+# reviewer. Prose formats (Markdown tables pad cells) are exempt; across every catalog pin no other code
+# file has such a line.
+_PADDED_CODE = re.compile(r"(?<![ \t])[ \t]{200,}+(?=\S[^\n]{39})")
+_PADDED_CODE_EXEMPT_SUFFIXES = {".md", ".txt", ".html", ".xml", ".tex", ".css"}
+# The hidden tail must hold a word; a saved traceback's `~~~^^^` underline after its indent is not code.
+_CODE_WORD = re.compile(r"[A-Za-z_$][\w$]{2,}")
+
+
+def _padded_code_findings(lines: list[str], rel_path: str) -> list[Finding]:
+    out = []
+    for i, line in enumerate(lines, start=1):
+        if (m := _PADDED_CODE.search(line)) is not None and _CODE_WORD.search(hidden := line[m.end():]):
+            out.append(Finding("hidden_padded_code", "critical", "obfuscation", rel_path, i,
+                               f"{m.end() - m.start()} blank chars then: {hidden[:80]}",
+                               "code hidden after a long run of whitespace (off-screen in editors and diffs)"))
+    return out
+
+
+def _unscanned_text_padded_code(file_path: Path, rel_path: str) -> list[Finding]:
+    """Files outside SCANNABLE_EXTENSIONS (extensionless ``init``, ``.mjs``/``.cjs``/``.tsx``) get only the
+    padded-code check: the other rules were never tuned for them, so turning those on would move verdicts."""
+    if file_path.suffix.lower() in _PADDED_CODE_EXEMPT_SUFFIXES or file_path.stat().st_size > 2_000_000:
+        return []
+    try:
+        data = file_path.read_bytes()
+        if b"\0" in data[:8192]:
+            return []  # binary
+        return _padded_code_findings(data.decode("utf-8-sig", errors="replace").split("\n"), rel_path)
+    except OSError:
+        return []
+
+
+def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
+    """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
+    name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
+    skill-only credential rules (``tools.skills_guard_credentials``)."""
+    rel_path = rel_path or file_path.name
+    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
+        return _unscanned_text_padded_code(file_path, rel_path)
+    try:
+        raw = file_path.read_bytes()
+    except OSError:
+        return []
+    suffix = file_path.suffix.lower()
+    texts, findings = _decoded_views(raw, rel_path, suffix)
+    merged = _scan_text(texts[0], rel_path, suffix, skill)
+    at: dict = {}
+    for n, f in enumerate(merged):
+        at.setdefault((f.pattern_id, f.line), n)
+    # The extra views add hits the primary decode missed, and upgrade one another view scored higher:
+    # NUL-stripping can restore the token that lifts a finding to critical.
+    for f in (f for text in texts[1:] for f in _scan_text(text, rel_path, suffix, skill)):
+        key = (f.pattern_id, f.line)
+        if key not in at:
+            at[key] = len(merged)
+            merged.append(f)
+        elif _SEVERITY_ORDER.get(f.severity, 4) < _SEVERITY_ORDER.get(merged[at[key]].severity, 4):
+            merged[at[key]] = f
+    return findings + merged
 
 
 # Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:
@@ -743,20 +901,20 @@ def _community_note(f: Finding) -> Finding:
     return f
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
-    """Structural checks + pattern scan of every text file in a skill dir (or a single file). A gitignore-style
-    `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
-    always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
-    name, trust = skill_path.name, _resolve_trust_level(source)
+def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str | None = None) -> ScanResult:
+    """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
+    files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level unless the caller
+    passes the serving adapter's own *trust_level*."""
+    name, trust = skill_path.name, trust_level or _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
-        ignore = _load_skill_ignore(skill_path)
-        findings.extend(_check_structure(skill_path, ignore=ignore))
+        findings.extend(_check_structure(skill_path))
         for f in skill_path.rglob("*"):
-            if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+            if f.is_file():
+                findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():
-        findings.extend(scan_file(skill_path, skill_path.name))
+        findings.extend(scan_file(skill_path, skill_path.name, skill=True))
     if trust == "community":
         findings = [_community_note(f) for f in findings]
     verdict = _determine_verdict(findings)
@@ -789,7 +947,7 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None, trust_level: str | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
@@ -797,7 +955,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url, "trust_level": _resolve_trust_level(source)}
+                "source_url": source_url, "trust_level": trust_level or _resolve_trust_level(source)}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
@@ -807,7 +965,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                             cached.get("summary", ""))
         provenance = {**cached, "fresh": False}
     else:
-        result = scan_skill(skill_path, source=source)
+        result = scan_skill(skill_path, source=source, trust_level=trust_level)
         findings = [asdict(item) for item in result.findings]
         provenance = {**expected, "verdict": result.verdict, "trust_level": result.trust_level, "findings": findings,
                       "rules": sorted({item["pattern_id"] for item in findings}), "scanned_at": result.scanned_at,
@@ -839,8 +997,7 @@ def format_scan_report(result: ScanResult) -> str:
     """Compact multi-line report for CLI/chat display; findings sorted critical → low."""
     lines = [f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {result.verdict.upper()}"]
     if result.findings:
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        for f in sorted(result.findings, key=lambda f: order.get(f.severity, 4)):
+        for f in sorted(result.findings, key=lambda f: _SEVERITY_ORDER.get(f.severity, 4)):
             lines.append(f"  {f.severity.upper().ljust(8)} {f.category.ljust(14)} "
                          f"{f'{f.file}:{f.line}'.ljust(30)} \"{f.match[:60]}\"")
         lines.append("")
@@ -849,9 +1006,8 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines + [f"Decision: {status} — {reason}"])
 
 
-def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
-    """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks); *ignore(rel) -> bool*
-    excludes paths from every count and finding."""
+def _check_structure(skill_dir: Path) -> list[Finding]:
+    """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks)."""
     findings = []
 
     def add(pid, sev, cat, rel, match, desc):
@@ -859,7 +1015,7 @@ def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
     file_count = total_size = 0
     for f in skill_dir.rglob("*"):
         rel = str(f.relative_to(skill_dir))
-        if not (f.is_file() or f.is_symlink()) or (ignore is not None and ignore(rel)):
+        if not (f.is_file() or f.is_symlink()):
             continue
         file_count += 1
         if f.is_symlink():
@@ -892,48 +1048,6 @@ def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
         add("oversized_skill", "low", "structural", "(directory)", f"{total_size // 1024}KB total",
             f"skill is {total_size // 1024}KB total (limit: {MAX_TOTAL_SIZE_KB}KB)")
     return findings
-
-
-# `.skillignore` is Hermes-native; `.clawhubignore` is honored for skills published through ClawHub.
-_SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
-
-
-def _load_skill_ignore(skill_dir: Path):
-    """Build ``ignore(rel_posix_path) -> bool`` from `.skillignore` / `.clawhubignore`. gitignore basics: blank
-    lines and ``#`` comments skipped; trailing ``/`` = directory (it and everything under it); ``*``/``?`` globs via
-    fnmatch on the full path and each segment; leading ``/`` anchors to the root. Ignore files always excluded;
-    ``SKILL.md`` never."""
-    patterns: list[str] = []
-    for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
-        with suppress(UnicodeDecodeError, OSError):
-            if ig.is_file():
-                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8-sig").splitlines())
-                                if s and not s.startswith("#"))
-
-    def ignore(rel: str) -> bool:
-        rel_posix = Path(rel).as_posix()
-        segs = rel_posix.split("/")
-        base = segs[-1]
-        if base == "SKILL.md":
-            return False
-        if base in _SKILL_IGNORE_FILENAMES:
-            return True
-        for pat in patterns:
-            anchored = pat.startswith("/")
-            p = pat.strip("/")
-            if not p:
-                continue
-            below = rel_posix.startswith(p + "/")
-            if pat.endswith("/"):  # the dir itself or anything under it; unanchored also as an inner path component
-                if rel_posix == p or below or (not anchored and ("/" + p + "/") in ("/" + rel_posix + "/")):
-                    return True
-            # Unanchored: also the basename, any path segment, or a prefix dir (`docs` ignores docs/plans/x.md).
-            elif fnmatch.fnmatch(rel_posix, p) or (not anchored and (fnmatch.fnmatch(base, p) or below or (
-                    "/" not in p and any(fnmatch.fnmatch(seg, p) for seg in segs)))):
-                return True
-        return False
-
-    return ignore
 
 
 _SOURCE_PREFIX_ALIASES = ("skills-sh/", "skills.sh/", "skils-sh/", "skils.sh/")

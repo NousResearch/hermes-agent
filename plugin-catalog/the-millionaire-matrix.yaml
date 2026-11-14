@@ -1,0 +1,21 @@
+name: the-millionaire-matrix
+version: "0.4.0"
+repo: https://github.com/bufirstrepo/hybrid-critic-loop
+sha: "dfcac0f6196722cd86d013d556ff1a3339618bdf"
+description: "Every model family you have a seat for generates a candidate; all of them blind-score each other on a peer validity matrix anchored by real tests (hard and measured gates outrank the matrix), the field steps down round by round to one answer behind a human gate, and verified lessons carry into your next session. Disclosure — after you approve each `critic_run` (Hermes shows the repo and every test/sensor command), this plugin runs those commands on the host against model-generated changes, and can launch your installed coding CLIs (codex, claude, grok, qwen, kimi, agy) to edit files in git worktrees under the repo with your user's permissions. Merging a winner happens only through `/critic gate` or `hermes critic gate`. Its usage panel runs those CLIs' own read-only quota commands and reads Claude statusline/Grok billing logs to show your plan usage."
+category: tools
+tier: community
+maintainer: bufirstrepo
+requires_hermes: ">=0.21.0"
+capabilities:
+  provides_tools:
+    - critic_run
+    - critic_matrix
+    - critic_lessons
+    - critic_ledger
+    - critic_gate
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+  requires_env: []

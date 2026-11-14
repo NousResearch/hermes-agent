@@ -15,6 +15,7 @@ import hermes_yaml as yaml
 from cron.scheduler import _deliver_result
 from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
 from gateway.config import Platform, PlatformConfig
+from gateway.profile_routing import ProfileRoute
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 PRIMARY_YAML = {
@@ -217,3 +218,66 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
     # The routed view releases the primary adapter for exactly the route-mapped target.
     assert shared.get(Platform.DISCORD, {"chat_id": "C1"}) is primary
     assert shared.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
+
+
+def test_telegram_dm_user_id_only_route_authorizes_cron_target():
+    """#146336 — the documented Telegram DM route shape declares only ``user_id``. A DM's chat id
+    IS the user id for every bot (#104933), so the route is as target-exact for a cron delivery to
+    that chat as a ``chat_id`` one; before, ``get()`` skipped user_id-only routes as not
+    target-exact and the credentialless satellite fell to standalone
+    "platform 'telegram' not configured/enabled"."""
+    primary = object()
+    routes = [ProfileRoute(name="dm", platform="telegram", profile="sat", user_id="399611999")]
+    shared = SharedRouteAdapters({Platform.TELEGRAM: primary}, routes)
+    # the DM itself: chat_id == user_id → the primary adapter is lent
+    assert shared.get(Platform.TELEGRAM, {"chat_id": "399611999"}) is primary
+    # a route declaring BOTH user_id and chat_id (the workaround shape) is equally exact
+    mixed = SharedRouteAdapters({Platform.TELEGRAM: primary}, [
+        ProfileRoute(name="dm2", platform="telegram", profile="sat",
+                     user_id="399611999", chat_id="399611999")])
+    assert mixed.get(Platform.TELEGRAM, {"chat_id": "399611999"}) is primary
+    # any other chat (another DM, or a group) stays a miss — fail closed
+    assert shared.get(Platform.TELEGRAM, {"chat_id": "42"}) is None
+    assert shared.get(Platform.TELEGRAM, {"chat_id": "-1001234"}) is None
+    assert shared.get(Platform.TELEGRAM) is None
+
+
+def test_user_id_route_stays_fail_closed_outside_telegram():
+    """Non-Telegram DM chat ids live in a separate id space than user ids, so a ``user_id``-only
+    route must NOT treat an equal chat_id as target-exact there — #146336 keeps those fail
+    closed."""
+    primary = object()
+    routes = [ProfileRoute(name="d", platform="discord", profile="sat", user_id="399611999")]
+    shared = SharedRouteAdapters({Platform.DISCORD: primary}, routes)
+    assert shared.get(Platform.DISCORD, {"chat_id": "399611999"}) is None
+
+
+def test_satellite_cron_job_reaches_its_telegram_dm_through_the_primary_bot(tmp_path, monkeypatch):
+    """End to end through ``_deliver_result``: a satellite whose primary routes it a Telegram DM by
+    ``user_id`` only (the documented DM shape) delivers its cron output to that DM through the
+    primary bot; another chat still never borrows the primary bot (#146336)."""
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "emil"
+    sat_home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {
+        "multiplex_profiles": True,
+        "profile_routes": [{"name": "emil", "platform": "telegram", "user_id": "399611999", "profile": "emil"}],
+    }}), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = _primary_adapter()
+    config = MagicMock()
+    config.platforms = {}
+    config.get_home_channel = lambda p: None
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        shared = SharedRouteAdapters({Platform.TELEGRAM: primary}, _primary_profile_routes_for_current_home())
+        for chat, delivered in (("399611999", True), ("42", False)):
+            primary.sent.clear()
+            job = {"id": "a7ae1520356c", "name": "reminder", "deliver": f"telegram:{chat}"}
+            with patch("gateway.config.load_gateway_config", return_value=config):
+                error, _standalone = _run(job, shared)
+            assert (error is None) is delivered, error
+            assert primary.sent == ([chat] if delivered else [])
+    finally:
+        reset_hermes_home_override(token)

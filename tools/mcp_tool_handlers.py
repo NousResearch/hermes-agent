@@ -220,8 +220,11 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
 
 
 def _untrusted(server_name: str) -> bool:
+    """The calling profile's tier, resolved as ``_trust_gate_check`` does: a missing record fails closed."""
     from tools.mcp_tool_scope import _server_key
-    return _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL) == _core._TRUST_UNTRUSTED
+    key = _server_key(server_name)
+    trust = _core._server_trust_levels.get(key)
+    return (trust if trust is not None else _configured_trust(server_name, key)) == _core._TRUST_UNTRUSTED
 
 
 class _RefusedRetry(str):

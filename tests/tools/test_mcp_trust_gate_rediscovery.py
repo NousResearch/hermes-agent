@@ -138,6 +138,25 @@ def test_recycled_wake_with_unchanged_hint_never_asks():
     assert result == {"result": "ok"} and asked == []
 
 
+def test_recheck_with_no_trust_record_reads_the_configured_tier():
+    """The post-acquire re-check resolves a missing record like the gate does (#153706), not as ``full``."""
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"mcp_servers": {"srv": UNTRUSTED}}))  # JSON is YAML
+    task = _install(_server())
+    new = _session(read_only=False)
+
+    def wake(server_name, server):
+        _reconnect(server, new)
+        mcp_tool._server_trust_levels.clear()  # the record is gone for the caller when the re-check runs
+        return True
+    task.session, task._recycled_reason = None, "idle"
+    with patch.object(discovery, "_request_lazy_reconnect", side_effect=wake):
+        result, asked = _call(answer="decline")
+    assert len(asked) == 1 and "NOT run" in result["error"]
+    new.call_tool.assert_not_awaited()
+
+
 def test_denied_recheck_refunds_the_gate_booked_charge():
     task = _install(_server(COSTED))
     new = _session(read_only=False)

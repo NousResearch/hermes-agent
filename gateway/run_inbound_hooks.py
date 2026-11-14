@@ -120,6 +120,7 @@ class GatewayInboundHooksMixin:
                     else:
                         rewritten = dataclasses.replace(event, text=_new_text)
                         carry_callback(event, rewritten)
+                        rewritten._rewritten_from = event  # accept_interrupt reaches the adapter's event
                         _carry_replied_voice_answer(event, rewritten, _new_text)
                         event = rewritten
                 break

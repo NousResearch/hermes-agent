@@ -101,3 +101,23 @@ def test_hostile_platform_values_are_bounded(gated, monkeypatch):
     assert resp.json()["gateway_platforms"] == {"telegram": {"state": "fatal"}}
     # A source-controlled code already is the bounded form and passes through unchanged.
     assert resp.json()["gateway_exit_reason"] == "loop_liveness_watchdog"
+
+
+def test_loopback_dashboard_gates_detail_on_the_session_token(gated, monkeypatch):
+    # No sign-in gate on a loopback bind: the SPA's injected session token is the credential.
+    for key, value in (("bound_host", "127.0.0.1"), ("auth_required", False)):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    client = TestClient(web_server.app, base_url="http://127.0.0.1:9130")
+    anonymous = client.get("/api/status")
+    assert anonymous.status_code == 200
+    assert SECRET not in anonymous.text
+    body = client.get("/api/status", headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN}).json()
+    assert SECRET in body["gateway_platforms"]["telegram"]["error_message"]
+
+
+def test_unlisted_platform_state_reads_as_unknown():
+    # A live gateway's entries reach the projection whatever their state; only the enum passes.
+    from hermes_cli.web_routers.status_public import redact_status_for_unverified
+    status = {"gateway_platforms": {"telegram": {"state": f"fatal: {SECRET}"}}}
+    redact_status_for_unverified(status)
+    assert status["gateway_platforms"] == {"telegram": {"state": "unknown"}}

@@ -357,7 +357,9 @@ def _rich_send_result(rich, chat_id, outcome) -> dict:
     """Envelope for a finished rich send. ``retryable`` (nothing sent) only on the adapter's
     ``never_sent`` proof: a lost answer or a server error may already be in the chat."""
     if rich.success:
-        return _success(chat_id, message_id=rich.message_id)
+        as_file = isinstance(rich.raw_response, dict) and rich.raw_response.get("sent_as_file")
+        warnings = ["Message was longer than the Telegram split cap; sent it as a file"] if as_file else None
+        return _success(chat_id, warnings, message_id=rich.message_id)
     never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
     return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
 
@@ -480,7 +482,9 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
         from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
     extra = getattr(pconfig, "extra", None) or {}
-    return await _send_telegram(
+    result = await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
         disable_link_previews=bool(extra.get("disable_link_previews")), force_document=force_document,
         extra=extra, notify=notify)
+    from plugins.platforms.telegram.telegram_send_errors import explain_username_chat_not_found
+    return explain_username_chat_not_found(result, chat_id)

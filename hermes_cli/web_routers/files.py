@@ -21,12 +21,13 @@ import sys
 import tempfile
 import urllib.parse
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 load_env = late("load_env", "hermes_cli.config")
@@ -118,7 +120,28 @@ def _is_sensitive_path(path: Path) -> bool:
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
-def _refuse_sensitive_write(target: Path, requested: str) -> None:
+_LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
+
+
+def _link_chain(start: Path) -> Optional[list[Path]]:
+    """Every path a leaf symlink chain passes through from *start*, or None past the hop bound.
+
+    *start* is listed with its parent canonicalized, each later hop raw and canonicalized: ``d/srv.json``
+    with ``d -> mcp-tokens`` only names the credential dir once ``d`` is resolved."""
+    hops, current = [Path(os.path.realpath(start.parent), start.name)], start
+    for hop in range(_LINK_CHAIN_MAX_HOPS + 1):  # the extra readlink tells a 40-link chain from a longer one
+        try:
+            link = os.readlink(current)
+        except OSError:
+            return hops
+        if hop == _LINK_CHAIN_MAX_HOPS:
+            return None
+        current = Path(os.path.dirname(current), link)
+        hops += (current, Path(os.path.realpath(current.parent), current.name))
+    return None
+
+
+def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] = None) -> None:
     """403 when a write/delete would land on a credential file the read side hides.
 
     *target* is the resolver's (symlink-resolved) path and *requested* the client's path as sent:
@@ -130,7 +153,13 @@ def _refuse_sensitive_write(target: Path, requested: str) -> None:
         # the managed routes take the text verbatim, so a URL they cannot parse stays as sent.
         with contextlib.suppress(ValueError):
             requested = _file_url_path(requested)
-    if any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)))):
+    # A credential name in the MIDDLE of a chain (alias.txt -> config.yaml -> settings-store) is neither
+    # the name sent nor the final target, so walk the chain from where the client's path lands.
+    anchor = Path(requested).expanduser()
+    if not anchor.is_absolute():
+        anchor = root.expanduser() / anchor if root is not None else None
+    hops = _link_chain(anchor) if anchor is not None else []
+    if hops is None or any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
         raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 
@@ -164,6 +193,23 @@ def _fs_mime_type(path: Path) -> str:
         return _FS_MIME_TYPES[suffix]
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed or "application/octet-stream"
+
+
+def _fs_preview_type_path(requested: str, target) -> PurePath:
+    """The name a preview takes its MIME type and language from: the path as requested, so a
+    ``report.html`` link to an extensionless cache file previews as HTML. A requested name whose
+    extension names no type (``latest``, ``notes.draft``) falls back to the file it resolves to.
+    A ``file:`` URL counts by the native path it names, decoded as the read decoded it (never
+    resolved). Bytes and checks stay on *target*."""
+    requested = str(requested or "").strip()
+    if requested.lower().startswith("file:"):
+        try:
+            requested = _file_url_path(requested)
+        except ValueError:
+            return PurePath(target)
+    alias = PurePath(requested)
+    known = alias.suffix.lower() in _FS_PREVIEW_LANGUAGE_BY_EXT or _fs_mime_type(alias) != "application/octet-stream"
+    return alias if known else PurePath(target)
 
 
 def _fs_looks_binary(data: bytes) -> bool:
@@ -876,7 +922,7 @@ async def stream_managed_file(
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
-    _refuse_sensitive_write(target, path)
+    _refuse_sensitive_write(target, path, policy.locked_root)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -972,7 +1018,7 @@ async def upload_managed_file_stream(
 @router.post("/api/files/mkdir")
 def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
-    _refuse_sensitive_write(target, payload.path)
+    _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
     with _io_errors("Directory is not writable", "Could not create directory"):
@@ -983,7 +1029,7 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
-    _refuse_sensitive_write(target, payload.path)
+    _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
@@ -1057,19 +1103,20 @@ async def fs_read_text(
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
-                backend.read_bytes,
+                _remote_read_bytes,
+                backend,
                 path,
                 max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
                 read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
-        target_path = Path(target)
+        type_path = _fs_preview_type_path(path, target)
         return {
             "binary": _fs_looks_binary(data[:4096]),
             "byteSize": size,
-            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target_path.suffix.lower(), "text"),
-            "mimeType": _fs_mime_type(target_path),
+            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(type_path.suffix.lower(), "text"),
+            "mimeType": _fs_mime_type(type_path),
             "path": target,
             "text": data.decode("utf-8", errors="replace"),
             "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
@@ -1086,11 +1133,12 @@ async def fs_read_text(
     data = await asyncio.to_thread(
         _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
     )
+    type_path = _fs_preview_type_path(path, target)
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
-        "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target.suffix.lower(), "text"),
-        "mimeType": _fs_mime_type(target),
+        "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(type_path.suffix.lower(), "text"),
+        "mimeType": _fs_mime_type(type_path),
         "path": str(target),
         "text": data.decode("utf-8", errors="replace"),
         "truncated": st.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
@@ -1107,17 +1155,36 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save). The
     target resolves as ``read-text`` resolves it, ``session_id`` included, so a
-    file saves to the same place it was read from.
+    file saves to the same place it was read from, behind the same guards: the
+    sensitive-file denylist and a locked managed-files root (#95306).
     """
     text = payload.content or ""
+    # Refuse NT namespace paths on raw input: resolving them can initiate SMB auth. Judge the path as
+    # the resolvers read it: stripped, and a file: URL by the path it decodes to.
+    raw = payload.path.strip()
+    if raw.lower().startswith("file:"):
+        with contextlib.suppress(ValueError, OSError):
+            raw = _file_url_path(raw)
+    if get_nt_namespace_error(raw, verb="Write"):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     session = await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
+        # The SSH write replaces the lexical path (mv onto a link swaps the link), so judge that
+        # path exactly as the adapter writes it: stripped, ``~`` and cwd expanded, ``..`` folded.
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+        try:
+            target = backend.normalize(payload.path)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        if _is_sensitive_path(Path(target)):
+            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
         try:
             target, byte_size = await asyncio.to_thread(
                 backend.write_text,
-                payload.path,
+                target,
                 text,
                 max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
             )
@@ -1128,7 +1195,18 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     target = await _fs_download_path(
         payload.path, profile, payload.session_id, session=session, decode_fallback=False, own_sandbox_only=True,
     )
-    _refuse_sensitive_write(target, payload.path)
+    # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
+    cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
+    _refuse_sensitive_write(target, payload.path, Path(cwd))
+    # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too,
+    # under the requested profile's scope so its own state.db / sessions/ count as protected. A save has
+    # no approval channel, so a path the file tools gate on approval (~/.ssh/config) fails closed.
+    with _config_profile_scope(profile):
+        denied = get_write_denied_error(str(target)) or is_write_approval_required(str(target))
+    if denied:
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -1223,12 +1301,12 @@ async def fs_read_data_url(
     if backend is not None:
         try:
             data, _size, target = await asyncio.to_thread(
-                backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
+                _remote_read_bytes, backend, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
-        return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
+        return {"dataUrl": f"data:{_fs_mime_type(_fs_preview_type_path(path, target))};base64,{encoded}"}
     target = await _fs_download_path(path, profile, session_id, session=session)
     # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
@@ -1246,7 +1324,8 @@ async def fs_read_data_url(
 
     def _render() -> JSONResponse:
         encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
-        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}, headers=validators)
+        mime_type = _fs_mime_type(_fs_preview_type_path(path, target))
+        return JSONResponse({"dataUrl": f"data:{mime_type};base64,{encoded}"}, headers=validators)
 
     # Read, encode and render off the event loop: up to 16 MB inline stalls every other request (and /api/ws).
     return await asyncio.to_thread(_render)
@@ -1273,6 +1352,13 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
     if _is_sensitive_path(Path(target)):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, size
+
+
+def _remote_read_bytes(backend, path: str, **limits) -> tuple[bytes, int, str]:
+    """*path* read from the SSH workspace once download's checks pass on the path it resolves to:
+    a link named ``notes.txt`` that points at ``~/.hermes/.env`` is refused before any byte moves."""
+    target, _size = _remote_download_target(backend, path)
+    return backend.read_bytes(target, **limits)
 
 
 def _remote_stream_target(backend, path: str) -> tuple[str, int]:

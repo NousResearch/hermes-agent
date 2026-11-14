@@ -1831,7 +1831,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
-    from agent.turn_finalizer import settle_held_final
+    from agent.turn_finalizer import fence_result_reply, settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1860,6 +1860,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    fence_result_reply(result)
     settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):

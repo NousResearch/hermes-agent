@@ -444,6 +444,9 @@ class PlatformConfig:
     # Runtime-only, never serialized: set when the GATEWAY_RELAY_URL relay-exclusive rule
     # (config_env._relay) switched an enabled platform off, so surfaces can say why (#141175).
     disabled_by_relay: bool = False
+    # Runtime-only: the config.yaml version this copy was loaded from (taken before the read), so the
+    # live-allowlist baseline names the file that produced the adapter's gates, not a later edit.
+    loaded_version: Optional[tuple] = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -847,15 +850,35 @@ class GatewayConfig:
         return "public" if choice is None else choice
 
 
-def load_gateway_config() -> GatewayConfig:
-    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults."""
+def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
+    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults.
+
+    ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
+    allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
+    from gateway.platforms._shared import gate_config_version, yaml_env_transaction
 
     _home = get_hermes_home()
+    version = gate_config_version()
     gw_data = config_loader.load_legacy_gateway_json(_home)
+    # One transaction through typed construction, overrides and validation: the runner's authorization
+    # reads the bridged env, so a load that fails after the YAML overlay must not leave its writes.
+    with yaml_env_transaction():
+        config = _load_gateway_config_layers(_home, gw_data, strict)
+    for platform_config in config.platforms.values():
+        platform_config.loaded_version = version
+    return config
+
+
+def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> GatewayConfig:
+    from gateway import config_loader
+    from gateway.platforms._shared import abort_yaml_env_refresh
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
+        if strict:
+            raise
+        abort_yaml_env_refresh()
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.

@@ -815,7 +815,10 @@ class GatewayBusySessionMixin:
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
         the bot, a bare silence marker must not end the turn, and once another sender's input joins
         it the turn has no single actor (approvals raised after it fail closed). Returns the turn,
-        or None when a newer turn already owns the slot."""
+        or None when a newer turn already owns the slot. A plugin turn waiting for the session's
+        background work stops waiting, as for a person's queued input."""
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, session_key)
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
@@ -962,7 +965,7 @@ class GatewayBusySessionMixin:
         if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
-                "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
+                "user=%s, platform=%s, session=%s", event.source.user_id,
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
@@ -1185,6 +1188,7 @@ class GatewayBusySessionMixin:
         return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
         from gateway.run import _INTERRUPT_REASON_STOP
         await _busy_accepted()

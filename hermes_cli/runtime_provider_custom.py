@@ -577,7 +577,8 @@ def _try_resolve_from_custom_pool(
     base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Runtime dict from the first credential pool that owns this custom endpoint, else None. A pool
-    the owning entry shares with a same-named built-in yields only the entry's rows (entry_scoped_pool)."""
+    the owning entry shares with a same-named built-in yields only the entry's rows, and only those
+    bound to this endpoint's origin (entry_scoped_pool)."""
     rp = _rp()
     try:
         # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
@@ -591,7 +592,7 @@ def _try_resolve_from_custom_pool(
     candidates = list(dict.fromkeys(k for k in (str(key or "").strip().lower() for key in raw_keys) if k))
     for pool_key in candidates:
         try:
-            if (pool := entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner)) is None:
+            if (pool := entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner, base_url)) is None:
                 continue
             entry = pool.select() if pool.has_credentials() else None
             pool_api_key = rp._pool_entry_api_key(entry) if entry is not None else ""

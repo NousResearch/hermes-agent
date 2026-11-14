@@ -167,10 +167,13 @@ gateway:
     upload_failed: "✗ Failed to upload debug report: {error}"
     header: "**Debug report uploaded:**"
     auto_delete: "⏱ Pastes will auto-delete in 6 hours."
-    full_logs_hint: "For full log uploads, use `hermes debug share` from the CLI."
+    full_logs_hint: "This summary has no log lines. If support needs full logs, run `hermes debug share --nous` from the CLI (private storage)."
     share_hint: "Share these links with the Hermes team for support."
     report_label: "Report"
-    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug` to upload the summary report."
+    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug upload` to upload the summary report."
+    upload_hint: "Nothing was uploaded. Send `/debug upload` to upload the summary report."
+    upload_hint_local: "Nothing was uploaded. Send `/debug upload` to upload the summary report, or `/debug local` to view it here."
+    nous_refused: "Nothing was uploaded. Private Nous uploads aren't available from here: run `hermes debug share --nous` in a terminal, or use Send diagnostics in the desktop app. `/debug upload` uploads the summary to a public paste instead."
   deny:
     stale: "❌ Command denied (approval was stale)."
     no_pending: "No pending command to deny."
@@ -605,6 +608,7 @@ gateway:
     disabled: "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
     enabled: "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
   shared:
+    fallback_model_suffix: " — fallback for `{primary}`"
     session_db_unavailable: "Session database not available."
     session_db_unavailable_prefix: "Session database not available"
     session_not_found: "Session not found in database."
@@ -651,8 +655,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Couldn't deliver the {kind} attachment ({file_name})."
     delivery_failed_retry: "⚠️ Message delivery failed after multiple attempts. Please try again — your request was processed but the response could not be sent."
     plain_fallback_prefix: "(Response formatting failed, plain text:)\n\n{content}"
-    turn_error_no_details: "no details available"
-    turn_error_detailed: "Sorry, I encountered an error ({error_type}).\n{error_detail}\nTry again or use /reset to start a fresh session."
     turn_error: "Sorry, I encountered an error."
     context_injection_refused: "Context injection refused."
     no_home_channel: "📬 No home channel is set for {platform}. A home channel is where Hermes delivers cron job results and cross-platform messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore to skip."
@@ -827,6 +829,7 @@ gateway:
 
   moa:
     prepare_failed: "Failed to prepare MoA turn."
+    managed_session: "/moa isn't available in this session: safe-mode, config-free, kanban and managed-worker sessions run every turn on their own model. Send the prompt without /moa."
 
   quick_command:
     no_output: "Command returned no output."
@@ -1026,6 +1029,7 @@ platform:
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
   shared:
+    response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
     approval_expired: "⌛ Approval expired — the command was not run (it already timed out or was resolved elsewhere)."
@@ -1222,8 +1226,6 @@ platform:
         unknown: "Unknown skill: `{name}`. Start typing for autocomplete suggestions."
       auto_args_description: "Arguments: {args_hint}"
       auto_description_fallback: "Run /{name}"
-    limits:
-      response_truncated: "⚠️ **Response truncated** — this reply exceeded the delivery limit ({max_messages} messages). {dropped_chars} characters were not delivered; the full response is in the session logs."
     forum:
       default_title: "New Post"
     voice:
@@ -1307,6 +1309,11 @@ platform:
       affirm: "✓ Yes"
       negate: "✗ No"
       other: "✏️ Other (type answer)"
+      multi_hint: "Select one or more, then tap Send."
+      send: "✅ Send"
+      selected_count: "Selected: {count}"
+      select_one: "Select at least one option first."
+      toggle_failed: "Couldn't update the selection — tap again."
       expired_toast: "⚠️ This prompt expired — please /retry."
       expired_body: "⚠️ This question expired or the session reset — please /retry."
       type_answer: "✏️ Type your answer in the chat."
@@ -1780,7 +1787,7 @@ slash:
   version:
     description: "Show Hermes Agent version"
   debug:
-    description: "Upload debug report (system info + logs) and get shareable links"
+    description: "Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links"
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
@@ -3937,7 +3944,7 @@ tips:
   t246: "HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal."
   t247: "Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container."
   t248: "Ctrl+C has 5 priority tiers: cancel recording → cancel prompts → cancel picker → interrupt agent → exit."
-  t249: "Every interrupt during an agent run is logged to ~/.hermes/interrupt_debug.log with timestamps."
+  t249: "Interrupts during an agent run are logged to agent.log (view with `hermes logs`); set HERMES_DEBUG_INTERRUPT=1 for a detailed trace."
   t250: "BROWSER_CDP_URL connects browser tools to any running Chromium-family browser — accepts WebSocket, HTTP, or host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true enables advanced anti-detection with custom Chromium (Scale Plan)."
   t252: "The CLI auto-switches to compact mode in terminals narrower than 80 columns."
@@ -4034,7 +4041,7 @@ tips:
   t343: "/voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts."
   t344: "/reload-skills re-scans ~/.hermes/skills/ so drop-in skills appear without restarting the session."
   t345: "/indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs."
-  t346: "/debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too."
+  t346: "/debug upload uploads a summary (versions, config keys, error counts; no log text) and returns a shareable link — works in chat too."
   t347: "hermes -z \"<prompt>\" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts."
   t348: "hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it."
   t349: "hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step."

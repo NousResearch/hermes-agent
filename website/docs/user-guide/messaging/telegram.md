@@ -96,6 +96,12 @@ Notes:
   A hard crash leaves the last-known status — the inherent limitation of a
   profile-text indicator.
 - Off by default, since it mutates the bot's global profile.
+- Hermes saves the bot's own short description (the one set in @BotFather) before
+  it first writes **Online**, and keeps that copy across restarts and crashes.
+  Turn `status_indicator` off and the next connect puts your text back, unless
+  you have set a new description in @BotFather since (yours is kept). Edit the
+  description while the gateway is down and the new text is what Hermes saves.
+  If Hermes cannot read and save your text at connect, it writes no status that run.
 
 ### Cold-boot pending queue (Optional)
 
@@ -405,6 +411,7 @@ Add the following to `~/.hermes/.env`:
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
 TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
 # TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
+# TELEGRAM_WEBHOOK_HOST=::          # optional, bind host (e.g. IPv6-only)
 ```
 
 | Variable | Required | Description |
@@ -412,6 +419,7 @@ TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
 | `TELEGRAM_WEBHOOK_URL` | Yes | Public HTTPS URL where Telegram will send updates. The URL path is auto-extracted (e.g., `/telegram` from the example above). |
 | `TELEGRAM_WEBHOOK_SECRET` | **Yes** (when `TELEGRAM_WEBHOOK_URL` is set) | Secret token that Telegram echoes in every webhook request for verification. The gateway refuses to start without it — see [GHSA-3vpc-7q5r-276h](https://github.com/NousResearch/hermes-agent/security/advisories/GHSA-3vpc-7q5r-276h). Generate with `openssl rand -hex 32`. |
 | `TELEGRAM_WEBHOOK_PORT` | No | Local port the webhook server listens on (default: `8443`). |
+| `TELEGRAM_WEBHOOK_HOST` | No | Local bind host for the webhook server. Default: unset → dual-stack bind on all interfaces (IPv4+IPv6). Set this on IPv6-only deployments (e.g. Fly.io 6PN) or to pin the listener to a specific interface. Can also be set via `platforms.telegram.extra.webhook_host` in `config.yaml`. |
 
 When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP webhook server instead of polling. When unset, polling mode is used — no behavior change from previous versions.
 
@@ -480,6 +488,7 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 
 :::tip
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
+An `@username` works only for a public channel or supergroup: Telegram answers "Chat not found" for a person's handle, so use the numeric ID for a DM home.
 :::
 
 ### Cron deliveries in topic mode
@@ -833,6 +842,10 @@ Messages in Telegram topics `31` and `42` are always ignored before the mention 
 - Patterns use Python regular expressions
 - Matching is case-insensitive
 - Patterns are checked against both text messages and media captions
+- A captionless voice note has no text, so it can only wake the bot by reply or @mention. Set
+  `voice_mention_patterns: true` to transcribe such a group voice note first and match these patterns
+  against what was said. It is off by default because every unaddressed voice note in the group then
+  goes to your speech-to-text provider. The turn reuses that transcript (one STT call)
 - Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
 - If you want a pattern to match only at the start of a message, anchor it with `^`
 
@@ -1207,6 +1220,8 @@ gateway:
 
 A rich-eligible message longer than the 32,768-character rich text limit is sent as several rich messages, split between blocks (a `<details>` section, table or code block is never cut unless it alone is over the limit, in which case a table repeats its header and a code block reopens in the next part). Any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
 
+**Long replies arrive as a file.** A reply that would need more than 8 Telegram messages (about 32,000 characters of prose) is sent as one `reply-<id>.md` document holding the complete text, with a short caption, instead of a burst of messages that can trip Telegram's flood limits. While a long reply streams, Hermes stops opening new messages once it reaches the limit, uploads the finished reply as the file, and then deletes the partial messages it had already posted for it. If the upload fails, nothing is deleted and the rest of the reply arrives as ordinary messages, so no text is lost; a message Telegram will not let the bot delete (older than 48 hours, or missing permission) simply stays. `hermes send` and the `send_message` tool do the same for an over-long message. A reply over Telegram's 50 MB document limit is split across numbered files.
+
 **MarkdownV2 fallback.** When the rich path is unavailable for a message, Hermes converts markdown to MarkdownV2. Since MarkdownV2 has no native table syntax, pipe tables are normalized:
 
 - **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.
@@ -1283,6 +1298,7 @@ Behavior:
 - `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
 - A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
 - Use `*` in any of these to allow any sender/chat.
+- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`.
 - This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
 
 ### Migration from before PR #17686

@@ -539,6 +539,14 @@ emit_manifest() {
 
 git_runs() { command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
 
+# An exported GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets every
+# `git -C "$INSTALL_DIR"` at the user's other repo, and the rerun's stash/reset would act on
+# it (#146032). Stages run in a subshell (run_stage), so this stays local to the stage.
+drop_git_location_env() {
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+}
+
 # macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
 # installed: it is on PATH, but every call fails ("see man xcode-select").
 # Prefer Homebrew (headless); else open Apple's install dialog and wait for the
@@ -712,13 +720,19 @@ stable_unreachable() {
 
 stage_repository() {
     local pinned=false channel="" release="" origin
+    drop_git_location_env
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the
     # initial commit yet", #40998); a killed update or a sync tool can leave
     # one git rejects outright (empty HEAD, a gitdir: file pointing nowhere),
     # where `hermes update` cannot fetch. Move it aside -- never delete it, it
     # may hold something the user wants -- and clone fresh below.
-    if [ -e "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # A .git git cannot read makes it search the parent directories, and a
+    # git-managed $HOME would pass the probe and get the stash/reset below
+    # (#146032): the ceiling keeps the probe to INSTALL_DIR's own .git.
+    local ceiling
+    ceiling="$(CDPATH="" cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" && ceiling="$(dirname "$ceiling")" || ceiling=""
+    if { [ -e "$INSTALL_DIR/.git" ] || [ -L "$INSTALL_DIR/.git" ]; } && ! GIT_CEILING_DIRECTORIES="$ceiling" git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
         log_warn "$INSTALL_DIR is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"
@@ -1174,6 +1188,7 @@ stage_gateway() {
 
 stage_complete() {
     local commit
+    drop_git_location_env
     commit="$INSTALL_COMMIT"
     [ -n "$commit" ] || commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || commit=""
     if [ -n "$commit" ]; then

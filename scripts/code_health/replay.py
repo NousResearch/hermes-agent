@@ -95,7 +95,7 @@ def replay_one(repo: Path, measurer: Measurer, base: str, head: str) -> list[dic
     measurer.ctx.known_env = gitio.known_env_names(repo, base)
     base_m = measurer.measure(base, base_paths)
     head_m = measurer.measure(head, head_paths)
-    findings = compare(base_m, head_m, changes)
+    findings = compare(base_m, head_m, changes, gitio.tree_moves(repo, head))
     apply_allows(findings, head_m)
     return [asdict(f) for f in findings if f.allowed_reason is None]
 

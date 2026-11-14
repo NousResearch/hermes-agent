@@ -244,7 +244,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
                 cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
         return cleaned.strip() or text
 
-    def _should_process_message(self, data: dict[str, Any]) -> bool:
+    def _should_process_message(self, data: dict[str, Any], *, spoken_mention: bool = False) -> bool:
+        """``spoken_mention``: a voice note's transcript matched ``mention_patterns`` (the caller checked)."""
         chat_id = str(data.get("chatId") or "")
         # Broadcast pseudo-chats are filtered even in self-chat mode (fromMe events).
         if self._is_broadcast_chat(chat_id):
@@ -261,6 +262,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             str(data.get("body") or "").strip().startswith("/")
             or self._message_is_reply_to_bot(data)
             or self._message_mentions_bot(data)
+            or spoken_mention
             or self._message_matches_mention_patterns(data)
         )
 
@@ -291,7 +293,8 @@ def resolve_whatsapp_bridge_dir() -> Path:
     /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
     import shutil
     from hermes_constants import get_hermes_home
-    install_bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    from hermes_cli._startup_fast import project_root_str
+    install_bridge = Path(project_root_str()) / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
     try:
         (install_bridge / ".write_test").touch()

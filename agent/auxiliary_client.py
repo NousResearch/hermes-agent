@@ -33,6 +33,8 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_custom_credentials import (
+    _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
@@ -3535,15 +3537,15 @@ def _recoverable_pool_provider(
 
 
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "",
-                           verdict: Optional[aux_errors.ClassifiedError] = None) -> bool:
+                           verdict: Optional[aux_errors.ClassifiedError] = None, base_url: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
-    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
-    another process already rotated (current() would be None).
+    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if another process already
+    rotated (current() would be None). ``base_url``: where the failed request went (a custom entry rotates its rows bound there).
     """
     normalized = _normalize_aux_provider(provider)
     try:
-        pool = pool_for_aux_provider(provider, normalized, load_pool)
+        pool = pool_for_aux_provider(provider, normalized, load_pool, base_url)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
         return False
@@ -4396,7 +4398,7 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
-        fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
+        fast_model = _get_aux_model_for_provider(fast_catalog_provider(runtime, main_provider), prefer_fast=True)
         if fast_model and fast_model != main_model:
             logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
                          task, fast_model, main_model)
@@ -4632,7 +4634,7 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry, custom_base)) is None or not pool.has_credentials():
                     continue
                 if (pool_entry := pool.select(model=model)) is None:
                     continue
@@ -4732,13 +4734,6 @@ class _ResolveRequest(NamedTuple):
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
-
-
-def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
-    """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
-    if callable(raw) and not isinstance(raw, str):
-        return raw
-    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
@@ -4936,12 +4931,15 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            custom_key = (
-                _normalize_api_key(req.explicit_api_key)
-                or _scoped_key_env("OPENAI_API_KEY")
-                or _read_main_api_key_if_same_origin(custom_base)
-                or "no-key-required"  # local servers don't need auth
-            )
+            # Only THIS route's credentials (main same-origin, owning providers: entry) beat env keys (#145452).
+            from hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
+            paired = any(openai_env_key_authoritative_for(u, _scoped_key_env("OPENAI_BASE_URL"))  # requested URL too:
+                         for u in (req.explicit_base_url, custom_base))  # _to_openai_base_url rewrites its path
+            custom_key = (_normalize_api_key(req.explicit_api_key) or _read_main_api_key_if_same_origin(custom_base)
+                          or declared_custom_key_for_base_url(req.explicit_base_url, req.original_provider or provider)
+                          or declared_custom_key_for_base_url(custom_base, req.original_provider or provider)
+                          or (_scoped_key_env("OPENAI_API_KEY") if paired else "")
+                          or "no-key-required")  # local servers don't need auth
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
@@ -5654,7 +5652,9 @@ def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_ke
     # Same normalization as the client build, which treats a blank explicit key as keyless.
     if _normalize_api_key(api_key):
         return ()
-    borrowed = _read_main_api_key_if_same_origin(_to_openai_base_url(base_url).strip())
+    custom_base = _to_openai_base_url(base_url).strip()  # the providers: entry's key is borrowed the same way
+    borrowed = (_read_main_api_key_if_same_origin(custom_base) or declared_custom_credential_identity(base_url, provider)
+                or declared_custom_credential_identity(custom_base, provider))  # raw URL first, as the build does
     return (_runtime_cache_discriminator("api_key", borrowed),)
 
 
@@ -5886,10 +5886,10 @@ def _get_cached_client(
             del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
-    # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
+    # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
     effective_api_key = api_key
     if not effective_api_key:
-        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
+        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
         if _pool is not None and (_pe := _peek_pool_entry(provider, _pool, model)) is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
@@ -7630,7 +7630,7 @@ def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Opt
 def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> bool:
     pool_provider, failed_api_key = _failure_pool(route, failure)
     return bool(pool_provider) and _recover_provider_pool(
-        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict)
+        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict, base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or ""))
 
 
 def _ladder_credential_rungs(

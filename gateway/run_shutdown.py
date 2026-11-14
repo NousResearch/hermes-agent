@@ -30,6 +30,11 @@ from gateway.restart import (
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.session_runtime_workers import uncounted_runtime_work_units
+from gateway.run_shutdown_home_notice import (
+    HOME_NOTICE_MUTED,
+    GatewayHomeShutdownNoticeMixin,
+    settle_home_online_notice_debt,
+)
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -171,7 +176,7 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
-class GatewayShutdownMixin(GatewaySessionEndMixin):
+class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
     @dataclasses.dataclass
@@ -1035,12 +1040,27 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     restart_source.platform.value, restart_source.chat_id, restart_source.thread_id
                 )
         notified: set[tuple[str, str, Optional[str]]] = set()
+        delivered: set[tuple[str, str, Optional[str]]] = set()  # the subset that really got the notice
+        # Record the loop before sending active-chat notices: a running task in a home chat must not
+        # bypass the same restart-loop cap that applies to the home broadcast (#60438).
+        home_skip_reason = self._home_shutdown_broadcast_skip_reason()
+        muted_home_targets = set()
+        if self._home_shutdown_notice == HOME_NOTICE_MUTED:
+            muted_home_targets = {
+                _delivery_target_key(platform.value, cfg.home_channel.chat_id,
+                                     cfg.home_channel.thread_id, profile=profile)
+                for profile, platform, cfg in self._served_home_channel_configs()
+                if cfg.home_channel and cfg.home_channel.chat_id
+            }
         for session_key in self._snapshot_running_agents():
             target = await self._shutdown_notification_target(session_key)
             if target is None:
                 continue
             source, platform_str, chat_id, thread_id, profile = target
             dedup_key = _delivery_target_key(platform_str, chat_id, thread_id, profile=profile)
+            if dedup_key in muted_home_targets:
+                notified.add(dedup_key)
+                continue
             if dedup_key in notified:
                 continue
             try:
@@ -1074,6 +1094,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
                 ):
                     notified.add(dedup_key)
+                    delivered.add(dedup_key)
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
@@ -1082,53 +1103,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:
                 notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
-        if self._restart_requested and restart_source is not None:
-            logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
-            return
-        # A quiet drain (routine fleet auto-update) suppresses ONLY the home-channel broadcast; per-session
-        # pings above stay. Current-epoch marker only; a failing check fails toward the louder behaviour.
-        with _log_suppressed(logging.DEBUG, "drain_notification_suppressed check failed: %s"):
-            from gateway.drain_control import drain_notification_suppressed
-            if drain_notification_suppressed():
-                logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
-                )
-                return
-        # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
-        # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'
-        # channels silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit
-        # a fatal path (_handle_fatal) that pops the adapter -> "dictionary changed size during iteration".
-        profile_adapters = getattr(self, "_profile_adapters", None) or {}
-        for profile, platform, platform_cfg in list(self._served_home_channel_configs()):
-            home = platform_cfg.home_channel
-            if not home or not home.chat_id:
-                continue
-            adapter = (self.adapters if profile is None else profile_adapters.get(profile) or {}).get(platform)
-            if adapter is None:
-                continue
-            if not self._notice_allowed(platform, "home channel", platform_cfg):
-                continue
-            dedup_key = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
-            if dedup_key in notified:
-                continue
-            try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
-                )
-                continue
-            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
-                if await self._send_shutdown_notice(
-                    adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
-                ):
-                    notified.add(dedup_key)
-            from gateway.warning_notifications import present_notification
-            from gateway.run import _async_profile_runtime_scope
-            # present_notification reads the ACTIVE profile's display settings: bind the served one's.
-            profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
-            async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
-                await present_notification(_send_home, platform=platform)
+        await self._notify_home_channels_of_shutdown(
+            msg, notified, delivered, skip_reason=home_skip_reason
+        )
 
     # Agent finalization / resource cleanup
     @staticmethod
@@ -1420,12 +1397,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             inherited = os.environ.get("VIRTUAL_ENV")
             if inherited:
                 watcher_env["VIRTUAL_ENV"] = inherited
-        project_root = Path(__file__).resolve().parent.parent
-        # Console python under CREATE_NO_WINDOW: nothing flashes. NOT pythonw.exe — a console-less
-        # watcher makes every console-subsystem descendant allocate a visible conhost (#54220/#56747).
-        # The watcher runs sys.executable (console python) under the CREATE_NO_WINDOW detach kwargs below:
-        # it owns one hidden console, inherited by the `hermes gateway restart` child, so nothing flashes.
-        # See #54220, #56747.
+        from hermes_cli._startup_fast import project_root_str
+        project_root = Path(project_root_str())
+        # Console python (NOT pythonw.exe) under CREATE_NO_WINDOW: the watcher owns one hidden console its
+        # `hermes gateway restart` child inherits; a console-less watcher makes every descendant allocate a
+        # visible conhost (#54220/#56747).
         from hermes_cli._launchers import runtime_command
         watcher_argv = runtime_command(project_root,
             [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
@@ -1848,6 +1824,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         await self._cancel_secondary_profile_reconnect_tasks()
         # Notify all chats with active agents BEFORE draining — adapters are still connected here.
         await self._notify_active_sessions_of_shutdown()
+        # Settle now, not only at exit: a process killed mid-drain (supervisor deadline) has already
+        # sent its goodbye, so it must spend its loop slot and owe the "online" before the drain starts.
+        settle_home_online_notice_debt(self)
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
     async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
@@ -2132,6 +2111,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     via_service=bool(self._restart_via_service),
                     detached=bool(self._restart_detached),
                 )
+        settle_home_online_notice_debt(self)
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
             self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

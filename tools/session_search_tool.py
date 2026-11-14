@@ -431,17 +431,44 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
+def _cross_profile_reads_confined() -> bool:
+    """True when the calling task may read only its own profile's store.
+
+    One process serving several profiles (multiplexed gateway, a pooled or ``--isolated`` backend
+    on a multi-profile host, a routed turn) makes each secondary profile a tenant: its allowlisted
+    users must not reach the root profile's transcripts by naming it (#87779). The root profile
+    keeps cross-profile reads, which is how its ``@session:<profile>/<id>`` links resolve. A
+    standalone process for one profile has no such boundary, and neither does the operator's own
+    CLI/TUI/Desktop/ACP session (its frozen launch policy), whose All-profiles sidebar offers
+    ``@session:`` chips from every profile; A2A peers, hosted rooms, cron and messaging stay confined.
+    The caller is the active scope (``get_hermes_home()``), never ``os.environ``, which holds the
+    launch profile's home.
+    """
+    from agent.secret_scope import serves_routed_profile
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from tools.approval_context import is_local_interactive_session
+    if not serves_routed_profile() or is_local_interactive_session():
+        return False
+    return hermes_home_key(get_hermes_home()) != hermes_home_key(get_profile_dir("default"))
+
+
 def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
         return None
     from hermes_cli import profiles as profiles_mod
+    from hermes_constants import get_hermes_home, hermes_home_key
     from hermes_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
+    target = profiles_mod.get_profile_dir(canon)
+    if hermes_home_key(target) != hermes_home_key(get_hermes_home()) and _cross_profile_reads_confined():
+        raise PermissionError("this profile may only search its own sessions; reading another "
+                              "profile's sessions is limited to the default profile")
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return SessionDB(db_path=target / "state.db", read_only=True)
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str | None = None) -> str:
@@ -473,6 +500,8 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
     result = _read_session(db, sid, link_profile=profile)
     if json.loads(result).get("success") is not False or profile:
         return result
+    if _cross_profile_reads_confined():
+        return tool_error(f"session_id not found in this profile: {sid}", success=False)
     return tool_error(f"session_id not found in this profile: {sid}. If it belongs to another "
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 

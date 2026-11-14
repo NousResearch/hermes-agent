@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.platforms.base_media_cache import secure_media_cache_dir as _secure_media_cache_dir
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
@@ -567,43 +568,6 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
 
 get_image_cache_dir, cleanup_image_cache = _cache_dir_accessors(
     "image", "IMAGE_CACHE_DIR", "cache/images", "image_cache")
-
-
-def _secure_media_cache_dir(cache_dir: Path) -> None:
-    """Create/reconcile a gateway media-cache dir owner-only (0700), except managed.
-
-    Inbound media (photos, voice notes, documents a user sent through a
-    messaging platform) is user content, not regenerable cache: the
-    umask-derived 0755 these dirs inherited made them readable by every other
-    local account whenever ``HERMES_HOME`` is traversable — the documented
-    ``HERMES_HOME_MODE=0701`` web-server hatch. The mode is passed to ``mkdir``
-    so it is set at creation, then reconciled by the house policy helper
-    ``hermes_cli.config._secure_dir`` (managed/NixOS installs keep their
-    group-share design: these lazily-created dirs are not covered by the
-    module's ``systemd.tmpfiles`` rules, so the mode is left to the
-    configured umask/setgid). Best-effort: never fails a media write.
-    """
-    try:
-        managed = False
-        try:
-            from hermes_cli.config import is_managed
-
-            managed = bool(is_managed())
-        except Exception:  # pragma: no cover - defensive
-            pass
-        if managed:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            return
-        make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
-        try:
-            from hermes_cli.config import _secure_dir
-
-            _secure_dir(cache_dir)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("media cache dir chmod skipped: %s", exc)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("media cache dir creation failed for %s: %s", cache_dir, exc)
-        cache_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
@@ -3596,6 +3560,17 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 # error_str on every attempt so the break/continue decision below
                 # reflects the current attempt, not a stale first-send classification.
                 is_rate_limited = self._is_rate_limited_error(error_str)
+                # A retry that ends in a read/write timeout is the same "may have delivered" case the
+                # first attempt already refuses to retry or reformat: falling through to the plain-text
+                # fallback would re-send the whole payload and the user sees the message twice (#147536).
+                # Rate limits keep their own path — the delivery ledger owns that redelivery.
+                if not is_rate_limited and self._is_timeout_error(error_str):
+                    logger.warning(
+                        "[%s] Retry %d/%d ended in a timeout — not re-sending as plain text "
+                        "(the payload may already be delivered): %s",
+                        self.name, attempt, max_retries, error_str,
+                    )
+                    return result
                 if not (
                     result.retryable
                     or is_rate_limited

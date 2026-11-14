@@ -16,7 +16,10 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
+from hermes_agent.compat.moves import MOVES
+from hermes_agent.compat.paths import current_globs, current_module, original_module
 from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
+from hermes_cli._startup_fast import project_root_str
 
 _PLUGIN_API = Path(__file__).resolve().parent / "data" / "plugin_api.json"
 
@@ -37,13 +40,14 @@ _SHOWN = 10
 def _hermes_packages() -> frozenset:
     """Hermes-owned top-level names: pyproject's ``packages.find`` includes plus the root modules
     setup.py ships as ``py-modules`` (every root ``*.py``)."""
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     try:
         pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
         packages = {name.split(".")[0] for name in pyproject["tool"]["setuptools"]["packages"]["find"]["include"]}
     except (OSError, KeyError, ValueError):
         packages = set(_hermes_top_level()) - {"hermes_plugins", "tests", "evals"}
-    return frozenset((packages | {p.stem for p in root.glob("*.py")}) - {"setup", "conftest"})
+    moved = {name.split(".")[0] for name in MOVES}
+    return frozenset((packages | moved | {p.stem for p in root.glob("*.py")}) - {"setup", "conftest"})
 
 
 def _local_modules(rels) -> set[str]:
@@ -79,7 +83,7 @@ def _imported(node: ast.AST) -> list[tuple[str, str]]:
 
 @lru_cache(maxsize=512)
 def _core_module_exists(module: str) -> bool:
-    path = Path(__file__).resolve().parents[1].joinpath(*module.split("."))
+    path = Path(project_root_str()).joinpath(*current_module(module).split("."))
     return path.with_suffix(".py").is_file() or path.is_dir()
 
 
@@ -96,9 +100,9 @@ def _private_target(module: str, name: str, core: frozenset, local: set[str]) ->
     target = f"{module}.{name}" if name else module
     own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
     hermes = module.split(".")[0] in core and module not in local and not own
-    public_api = _public_api()
-    public = target in public_api or f"{module}:{name}" in public_api \
-        or (module in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
+    public_api, old = _public_api(), original_module(module)
+    public = original_module(target) in public_api or f"{old}:{name}" in public_api \
+        or (old in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
     return target if hermes and not public else ""
 
 
@@ -150,9 +154,9 @@ _CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_state_*.py", "run_agent.py", 
 
 @lru_cache(maxsize=1)
 def _core_private_methods() -> frozenset:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     names: set[str] = set()
-    for pattern in _CORE_HANDLE_SOURCES:
+    for pattern in (found for source in _CORE_HANDLE_SOURCES for found in current_globs(source)):
         for path in root.glob(pattern):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8-sig"))

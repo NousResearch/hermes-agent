@@ -83,6 +83,25 @@ origins; nothing is inferred beyond the URLs saved on the item.
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
+## Logins saved in your real browser
+
+If you turn on [real-profile browsing](browser.md#real-profile-browsing-use-your-own-logins)
+(`browser.use_real_profile: true`), the passwords your everyday Chrome / Brave /
+Edge has saved become a login source too, shown in the Browser bar's key-button
+picker as **Browser profile — `your browser`** beside the Hermes vault and any
+1Password / Bitwarden entries. Pick one and Hermes fills it into the in-app
+browser just like a vault login.
+
+It is **read-only** and needs no master password: Hermes reads only the site and
+username from your profile's saved logins, and the password is filled by your own
+browser (which decrypts its own store) and read back over the debugging protocol
+at the moment of the fill — the agent never sees it, and it is scrubbed from every
+tool result and log. Nothing is decrypted or copied out by Hermes, and there is no
+separate switch: the source appears exactly while real-profile browsing is on, and
+disappears (along with the profile snapshot) when you turn it off. This is the
+saved-passwords companion to the real-profile **cookies** that the in-app browser
+already carries.
+
 ## Paying and filling addresses
 
 Cards and addresses work the same way as logins: saved once (**Settings →

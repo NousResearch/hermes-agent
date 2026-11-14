@@ -8,6 +8,7 @@ description: "通过签名 APT 仓库安装适用于 aarch64 Android 的 Hermes 
 
 Hermes 的 Termux 软件包适用于 aarch64（arm64-v8a）设备，目前处于预发布测试阶段。
 它包含 Python、Node.js、npm、uv、ripgrep、FFmpeg 和核心 Python 依赖。
+首次运行 `hermes dashboard` 时会下载 pnpm，并安装 Web UI 的 JavaScript 依赖。
 安装时无需在手机上编译核心依赖或组装 Python 环境。
 
 请使用标准 Termux 应用和前缀 `/data/data/com.termux/files/usr`。

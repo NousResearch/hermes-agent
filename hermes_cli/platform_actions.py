@@ -27,6 +27,19 @@ def _ok(**fields: Any) -> dict[str, Any]:
     return {"ok": True, **fields}
 
 
+def _turn_message_thread(platform: str, required: dict[str, Any]) -> str:
+    """The bound turn's thread when *required* names that turn's own message. A reaction carries no
+    thread, so without this a topic-pinned satellite could not react to the message it is answering:
+    the thread-less chat is the chat's top level, which its route does not cover (#147602)."""
+    from gateway.session_context import get_session_env
+
+    if (required.get("message_id") != get_session_env("HERMES_SESSION_MESSAGE_ID")
+            or required.get("chat_id") != get_session_env("HERMES_SESSION_CHAT_ID")
+            or str(platform).strip().lower() != get_session_env("HERMES_SESSION_PLATFORM")):
+        return ""
+    return get_session_env("HERMES_SESSION_THREAD_ID")
+
+
 # -- per-platform verb implementations (adapter, *args) -> result ------------
 
 
@@ -93,7 +106,7 @@ class PlatformActions:
             logger.debug("platform_actions capability check failed for %s", self._plugin_id, exc_info=True)
             return False
 
-    def _resolve_adapter(self, platform: str):
+    def _resolve_adapter(self, platform: str, chat_id: str = "", thread_id: str = ""):
         """Return ``(adapter, error_dict)``; exactly one is non-None."""
         try:
             from gateway.run import _gateway_runner_ref
@@ -132,6 +145,12 @@ class PlatformActions:
                     "(active profile could not be resolved)",
                 )
             adapter = resolve_fn(platform_enum, profile_name)
+            # A shared-bot satellite's map is the primary's bots; the caller-chosen chat must be
+            # routed to it (#147602).
+            if adapter is not None and not runner._shared_bot_target_allowed(
+                    platform_enum, profile_name, chat_id, thread_id):
+                return None, _err("adapter_not_registered",
+                                  f"{platform_enum.value}:{chat_id} is not routed to profile {profile_name}")
         else:
             adapter = getattr(runner, "adapters", {}).get(platform_enum)
         if adapter is None:
@@ -156,7 +175,8 @@ class PlatformActions:
         for name, value in required.items():
             if not isinstance(value, str) or not value.strip():
                 return None, _err("invalid_argument", f"{name} must be a non-empty string")
-        return self._resolve_adapter(platform)
+        return self._resolve_adapter(platform, required.get("chat_id", ""),
+                                     required.get("thread_id") or _turn_message_thread(platform, required))
 
     async def _run(self, verb: str, platform: str, *args: str, **required: Any) -> dict[str, Any]:
         """Gate, dispatch *verb* to the adapter's platform implementation, audit, return."""

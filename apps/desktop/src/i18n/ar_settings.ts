@@ -601,7 +601,10 @@ export const arSettings = {
       invalidJson: 'JSON غير صالح',
       voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
       voiceShortcutHintDesc:
-        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.',
+      desktopReadAloudTitle: 'قراءة الردود صوتياً في هذا التطبيق',
+      desktopReadAloudDesc:
+        'ينطق كل رد مكتمل في Desktop. هو نفس مفتاح زر حقل الكتابة؛ ينطبق على كل النوافذ المفتوحة، وإيقافه يوقف الرد أثناء قراءته. خيار «قراءة الردود صوتياً» أدناه مخصص للمراسلة وCLI.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -672,7 +675,14 @@ export const arSettings = {
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
       webappHostTitle: 'مضيف Hermes',
       webappHostDesc:
-        'يستخدم Webapp دائمًا مضيف Hermes الذي يقدّمه. لتبديل البوابة أو تسجيل الدخول إلى Hermes Cloud أو إدارة الاتصالات المحفوظة، استخدم تطبيق Hermes Desktop.',
+        'يعمل Webapp دائمًا على مضيف Hermes الذي يقدّمه. الاتصالات المحفوظة أدناه هي قائمة هذا الجهاز، مشتركة مع تطبيق Hermes Desktop؛ ويتم الوصول إلى البوابات الأخرى عبر هذا المضيف.',
+      webappOauthPaste: {
+        title: 'إكمال تسجيل الدخول',
+        description: 'إذا انتهت علامة تبويب تسجيل الدخول على عنوان لا يُحمَّل (هذا المتصفح ليس على جهاز البوابة)، فالصق ذلك العنوان هنا.',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: 'إكمال',
+        failed: 'تعذّر إكمال تسجيل الدخول'
+      },
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:

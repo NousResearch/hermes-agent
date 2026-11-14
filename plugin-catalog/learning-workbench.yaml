@@ -1,0 +1,49 @@
+name: learning-workbench
+repo: https://github.com/alfredbirkelund/hermes-learning-workbench
+sha: 7724a7cbea573889025ed750cd9102c4ec3de926
+subdir: ""
+version: "0.2.0"
+title: Learning Workbench
+description: >-
+  Study with Hermes in a Desktop pane: a short diagnosis, a route of 2–7 steps you can rename or
+  skip, then one lesson and exercise at a time, answered in your own words. The plugin keeps the
+  record honest: answer keys, rubrics and hints are frozen before you answer, only you can submit
+  an attempt (the agent's six tools propose and read), every check must quote your words and the
+  quote is verified, and each attempt is labelled unaided, after feedback, after hints, after help
+  in chat or after a revealed solution. Drafts and attempts survive restarts and compaction, a
+  contest keeps the earlier verdict, and a study exports as a Markdown record. /study covers the
+  CLI and messaging.
+  Disclosure: studies are stored locally in $HERMES_HOME/plugin-data/learning-workbench/ (SQLite)
+  until you delete them, including after uninstall; while an exercise is open in a chat, the
+  pre_llm_call hook adds a short reminder with that exercise's question to the turn's user message
+  and records that the turn happened (not its text); chats without an open exercise are untouched.
+  No network calls of its own, no credentials, no shell commands, no background processes, no
+  telemetry. Verdicts use the user's configured model.
+maintainer: alfredbirkelund
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/alfredbirkelund/hermes-learning-workbench#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-learning-workbench/7724a7cbea573889025ed750cd9102c4ec3de926/docs/screenshots/goal-material-route.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-learning-workbench/7724a7cbea573889025ed750cd9102c4ec3de926/docs/screenshots/lesson-above-the-check.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-learning-workbench/7724a7cbea573889025ed750cd9102c4ec3de926/docs/screenshots/verdict-quotes-the-learner.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-learning-workbench/7724a7cbea573889025ed750cd9102c4ec3de926/docs/screenshots/answer-in-your-own-words.png
+platforms: []
+known_issues:
+  - "The Desktop pane is opt-in: after installing, turn it on under Capabilities → Plugins → Learning Workbench."
+  - "Verdicts come from your configured model. They are proposals, not grades; contest any you disagree with."
+capabilities:
+  provides_tools:
+    - learning_workbench_start
+    - learning_workbench_get
+    - learning_workbench_propose_plan
+    - learning_workbench_propose_exercise
+    - learning_workbench_assess
+    - learning_workbench_revise_reference
+  provides_hooks:
+    - post_compaction
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

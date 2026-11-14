@@ -241,7 +241,9 @@ def test_a_copy_that_turns_read_only_is_not_reported_as_damage(cjk_db, monkeypat
 
 def test_retirement_succeeds_beside_an_index_whose_tokenizer_is_missing(cjk_db):
     """Renaming the retired shadows must not re-parse another index's triggers: a build without trigram would fail
-    there before the open's own tokenizer-unavailable handling runs (seen on SQLite 3.45)."""
+    there before the open's own tokenizer-unavailable handling runs. Discriminates only on SQLite whose modern rename
+    re-parses triggers (3.33.0 and 3.45.1 fail without the fix); 3.53.1 passes either way, so a green run there is
+    not coverage of the fix."""
     import contextlib
 
     with contextlib.closing(sqlite3.connect(cjk_db, isolation_level=None)) as raw:
@@ -260,8 +262,9 @@ def test_retirement_succeeds_beside_an_index_whose_tokenizer_is_missing(cjk_db):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
-def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeypatch):
-    """Copy and retirement succeed; the copy then turns read-only, so only the snapshot's own scan fails."""
+@pytest.mark.parametrize("mode", [0o400, 0o000], ids=["read-only", "unopenable"])
+def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeypatch, mode):
+    """Copy and retirement succeed; the copy then turns read-only or unopenable, so only its own scan fails."""
     import hermes_state_fts
 
     retire = hermes_state_fts.drop_retired_cjk_index
@@ -272,7 +275,7 @@ def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeyp
         path = Path(cursor.connection.execute("PRAGMA database_list").fetchone()[2])
         if path != Path(cjk_db):
             for item in path.parent.iterdir():
-                item.chmod(0o400)
+                item.chmod(mode)
             path.parent.chmod(0o500)
             frozen.append(path.parent)
         return removed
@@ -288,3 +291,21 @@ def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeyp
                     item.chmod(0o600)
     assert frozen
     assert isinstance(reason, repair.HealthCheckUnavailable), reason
+
+
+
+def test_corruption_found_by_the_final_scan_stays_damage(cjk_db, monkeypatch):
+    """A SQLITE_CORRUPT raised by the copy's own scan is the store's damage, not a temporary-file failure."""
+    probe = repair._db_opens_cleanly
+
+    def corrupt_scan(path):
+        if path == cjk_db:
+            return probe(path)
+        error = sqlite3.DatabaseError("database disk image is malformed")
+        error.sqlite_errorcode = 11  # SQLITE_CORRUPT
+        raise error
+
+    monkeypatch.setattr(repair, "_db_opens_cleanly", corrupt_scan)
+    reason = probe(cjk_db)
+    assert reason == "database disk image is malformed"
+    assert not isinstance(reason, repair.HealthCheckUnavailable)

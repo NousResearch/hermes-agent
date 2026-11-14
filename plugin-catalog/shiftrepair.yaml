@@ -1,0 +1,38 @@
+name: shiftrepair
+title: ShiftRepair
+repo: https://github.com/Whyme-Labs/shift-repair
+sha: da929bb29704d5df558874bfaa0128b01702228a
+description: Repair weekly staff schedules with minimum disruption, verified constraints and a shared Desktop board.
+maintainer: wms2537
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+readme: true
+platforms:
+  - linux
+  - macos
+screenshots:
+  - https://raw.githubusercontent.com/Whyme-Labs/shift-repair/da929bb29704d5df558874bfaa0128b01702228a/submission/media/native-repair.png
+  - https://raw.githubusercontent.com/Whyme-Labs/shift-repair/da929bb29704d5df558874bfaa0128b01702228a/submission/media/native-conflict.png
+  - https://raw.githubusercontent.com/Whyme-Labs/shift-repair/da929bb29704d5df558874bfaa0128b01702228a/submission/media/native-light.png
+known_issues:
+  - Supports one location and seven days, with at most one assignment per person per day.
+  - Does not model labor law, contract terms, payroll, shift hours or minimum rest intervals.
+  - Native Desktop was exercised on macOS with Hermes v0.22.7; model-backed chat and remote gateway switching were not tested.
+  - A cold OR-Tools import on macOS can take over two minutes; wait for startup and refresh after a first-request timeout.
+capabilities:
+  provides_tools:
+    - shiftrepair_get_board
+    - shiftrepair_load_demo
+    - shiftrepair_import_roster
+    - shiftrepair_change
+    - shiftrepair_solve
+    - shiftrepair_apply
+    - shiftrepair_discard
+    - shiftrepair_undo
+    - shiftrepair_export
+    - shiftrepair_import_csv
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

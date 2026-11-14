@@ -1,4 +1,4 @@
-"""Credential shapes that leaked past agent.redact (#53741, #125680, #134475, #141283, #147240).
+"""Credential shapes that leaked past agent.redact (#53741, #125680, #134475, #141283, #142852, #147240).
 
 Each class pins one family: the leak is masked in both the default (head/tail) mask and the
 non-reusable ``file_read`` + ``secret_file`` sentinel, and the look-alike identifiers or docs
@@ -192,3 +192,95 @@ class TestNetworkPathUserinfo:
                                       "//user:${SMB_PASSWORD}@host/share", "//user:%SMB_PASSWORD%@host/share"])
     def test_comments_relative_urls_and_placeholders_unchanged(self, text):
         _assert_unchanged(text)
+
+
+class TestGoogleOAuthCredentials:
+    """#64351: a pasted ``client_secret.json`` / OAuth access token logged as a chat preview leaked."""
+
+    SECRET = "GOCSPX-" + "k1fQ7z_P2mX9vLk4n-Rt8wYb1cDf6"  # real bodies are base64url: carry "-" and "_"
+    ACCESS = "ya29." + "a0AfH6SMBq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"
+    SA_ACCESS = "ya29.c." + "c0ASRK0GaPq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # service account / GCE metadata
+    STS_ACCESS = "ya29.d." + "c0AZ4bNpq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # workload identity federation (STS)
+
+    @pytest.mark.parametrize("template", [
+        "msg='client_secret\":\"{}\",\"redirect_uris\":[\"http://localhost\"]}}}}'",  # cut mid-JSON
+        "here is my secret {} thanks", "[\"{}\"]", "Authorization: {}",
+    ])
+    def test_masked_without_a_secret_key_name(self, template):
+        for secret in (self.SECRET, self.ACCESS, self.SA_ACCESS, self.STS_ACCESS):
+            _assert_masked(template.format(secret), secret)
+
+    def test_client_secret_fragment_cut_by_the_preview_is_masked(self):
+        fragment = self.SECRET[:17]  # 80-char preview can end mid-body
+        _assert_masked("msg='client_secret\":\"" + fragment, fragment)
+
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_client_secret_glued_to_identifier_is_masked(self, separator):
+        # Full base64url secrets need masking even if no body run reaches 16 alphanumerics.
+        _assert_masked(f"msg='archive{separator}{self.SECRET}'", self.SECRET)
+
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_access_token_glued_to_identifier_is_masked(self, separator):
+        # Same shape for ya29.: separators every few chars leave no 16-alphanumeric run.
+        token = "ya29.a0AfH6SM_q7z-P2mX9vL_k4n-Rt8wYb1c-Df6gHj3s_A0x"
+        _assert_masked(f"msg='log{separator}{token}'", token)
+
+    @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
+    def test_short_or_embedded_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestSeparatorTail:
+    """A token followed by ``_``/``-`` (``ghp_…_SUFFIX``) was missed wholesale: the shared trailing
+    guard rejected the separator and backtracking could not end the body anywhere else (#142852)."""
+
+    BODY = "Ab3" * 12
+
+    @pytest.mark.parametrize("prefix", ["ghp_", "npm_", "hf_"])
+    @pytest.mark.parametrize("lead,tail", [("", "_SUFFIX"), ("", "-backup"), ("x-", "_SUFFIX"),
+                                           ("never_", "-backup"), ("", ".x")])
+    def test_token_with_separator_tail_is_masked(self, prefix, lead, tail):
+        token = prefix + self.BODY
+        text = f"value {lead}{token}{tail} here"
+        _assert_masked(text, token)
+        for out in _both_modes(text):
+            assert f"{tail} here" in out, out
+
+    def test_exact_length_aws_key_with_underscore_tail_is_masked(self):
+        token = "AKIA" + "AB12" * 4
+        _assert_masked(f"export {token}_old", token)
+
+    @pytest.mark.parametrize("text", ["id AKIA" + "AB12" * 4 + "xyz here", "ghp_tooshort_x here",
+                                      "pip install scikit-learn backup-sk-learn"])
+    def test_alnum_tail_short_body_and_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestKnownPrefixUnderscoreDashTail:
+    def test_prefix_tokens_followed_by_an_underscore_or_dash_are_masked(self):
+        """The trailing guard rejects ``_``/``-`` only when a pattern's body class admits
+        them: the old shared class, wider than the body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]``),
+        failed at the token's natural end and at every backtrack step alike, so
+        ``ghp_…_SUFFIX`` was not matched at all and shipped in cleartext (#142852)."""
+        cases = [
+            ("ghp_" + "A" * 40, "_SUFFIX"),        # env-var / log-key shape
+            ("gho_" + "B" * 40, "_env"),
+            ("hf_" + "C" * 20, "_KEY"),
+            ("npm_" + "D" * 36, "-token"),
+            ("xoxb-" + "E" * 24, "_SUFFIX"),
+            ("AKIA" + "F" * 16, "_TAIL"),           # exact AWS access-key length
+            ("rk_live_" + "G" * 24, "_limited"),
+            ("gsk_" + "H" * 56, "-prod"),
+            ("github_pat_" + "I" * 36, "-env"),     # body has ``_`` but no ``-``
+        ]
+        for token, delimiter in cases:
+            out = redact_sensitive_text(f"value {token}{delimiter} here", force=True)
+            assert token not in out, f"{token[:9]}… followed by {delimiter!r} survived: {out!r}"
+            # The mask ends at the token: the delimiter-joined suffix is not secret
+            # matter and must survive for debuggability.
+            assert f"{delimiter} here" in out, out
+
+    def test_underscore_shape_still_requires_the_length_floor(self):
+        """A too-short body keeps the pattern silent even with an underscore tail —
+        the fix loosened the boundary, not the length gate."""
+        assert redact_sensitive_text("ghp_tooshort_x here", force=True) == "ghp_tooshort_x here"

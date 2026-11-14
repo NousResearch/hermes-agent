@@ -751,7 +751,8 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
     while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
     Cannot-open / locked stays False so the caller keeps the FTS path."""
     try:
-        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=1.0)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        conn = connect_tracked(read_only_db_uri(db_path), uri=True, timeout=1.0, tracking_path=db_path)
     except sqlite3.Error:
         return False
     try:
@@ -819,7 +820,12 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
                     if _is_temporary_file_failure(exc):
                         return HealthCheckUnavailable(f"the probe copy failed ({exc})")
                     return str(exc)
-            reason = _db_opens_cleanly(snapshot)
+            try:
+                reason = _db_opens_cleanly(snapshot)
+            except sqlite3.Error as exc:  # it opens its connection before its own handler
+                if _is_temporary_file_failure(exc):
+                    return HealthCheckUnavailable(f"the probe copy failed ({exc})")
+                raise
     except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
         return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
     if reason is not None and _is_temporary_file_failure(reason):

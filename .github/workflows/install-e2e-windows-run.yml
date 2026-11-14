@@ -128,7 +128,7 @@ jobs:
           cache-node: false
       - name: Install locked chat driver dependencies
         shell: bash
-        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
+        run: just js-install-tests
       - name: Verify native helpers
         shell: pwsh
         run: |
@@ -217,7 +217,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
+        run: just js-install-tests
 
       # A released tag prints its one-shot chat through prompt_toolkit, whose Windows
       # output object needs a console screen buffer -- piping the CLI's stdout into the

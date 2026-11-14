@@ -26,7 +26,7 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
-from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
+from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
 from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
@@ -419,7 +419,7 @@ def _room_permission_for(request: web.Request) -> str:
 def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
     """Opaque auth/profile namespace; never persist bearer credentials."""
     if self._room_grant_token(request):
-        claims = self._room_grant_claims(request, permission=_room_permission_for(request))
+        claims = room_run_claims(self, request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
         return room_run_scope(claims)
     parts = (_api_server._api_request_profile.get() or "default",
@@ -439,7 +439,7 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
     if not self._room_grant_token(request):
         return self._check_auth(request)
     try:
-        self._room_grant_claims(request, permission=permission)
+        room_run_claims(self, request, permission=permission)
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
     return None
@@ -1355,9 +1355,6 @@ def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
             q.put_nowait(_run_event(run_id, name, **fields))
 
 
-_APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
-
-
 async def _handle_run_approval(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
     _openai_error = _api_server._openai_error
@@ -1373,8 +1370,10 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         if self._room_grant_token(request) and body.get('choice') not in {'once', 'deny'}:
             return _json_error(_openai_error, 'Room approvals require once or deny', status=400)
         return await _respond_authority_run(self, run_id, body, kind='approval', _api_server=_api_server)
-    raw_choice = str(body.get("choice", "")).strip().lower()
-    choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
+    # Normalize before the allow-list check below so aliases ("approve") aren't rejected here; the
+    # alias map lives in tools.approval (lazy import: this module must not pull it in at load time).
+    from tools.approval import canonical_approval_choice
+    choice = canonical_approval_choice(body.get("choice", ""))
     room_scoped = bool(self._room_grant_token(request))
     raw_request_id = body.get("request_id")
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""

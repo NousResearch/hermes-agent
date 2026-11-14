@@ -222,7 +222,8 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.process_transport import is_local_server
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -237,7 +238,7 @@ class CLIInfoMixin:
                 fix = t("cli.banner.fix_ollama", tokens=str(MINIMUM_CONTEXT_LENGTH))
             elif _port == 1234:
                 fix = t("cli.banner.fix_lm_studio")
-            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+            elif is_local_server(base_url, getattr(self, "provider", None)):  # llama.cpp / vLLM / any local server — not Ollama
                 fix = t("cli.banner.fix_local_server",
                         tokens_k=str(MINIMUM_CONTEXT_LENGTH // 1000), tokens=str(MINIMUM_CONTEXT_LENGTH))
             else:
@@ -278,7 +279,9 @@ class CLIInfoMixin:
         except Exception:
             return False
         agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
+        def route(field):
+            return getattr(agent, field, None) or getattr(self, field, None)
+        return model_supports_fast_mode(route("model"), provider=route("provider"), base_url=route("base_url"))
 
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":

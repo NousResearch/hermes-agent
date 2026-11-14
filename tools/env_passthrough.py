@@ -65,12 +65,14 @@ def _is_hermes_provider_credential(name: str) -> bool:
     return _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name)
 
 
-def register_env_passthrough(var_names: Iterable[str]) -> None:
+def register_env_passthrough(var_names: Iterable[str]) -> list[str]:
     """Register env var names as allowed in sandboxed environments (typically a
     skill's ``required_environment_variables``). Hermes-managed provider credentials
     are rejected (GHSA-rhgp-j443-p4rf) — such skills should use the main-process tools
-    (web_search, web_extract, …); third-party keys pass normally."""
-    for name in _accepted((n.strip() for n in var_names), (
+    (web_search, web_extract, …); third-party keys pass normally. Returns the refused
+    names so the caller can tell the user, not just the log."""
+    names = [n.strip() for n in var_names]
+    for name in _accepted(names, (
         "env passthrough: refusing to register Hermes provider "
         "credential %r (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
         "Skills must not override the execute_code sandbox's "
@@ -78,6 +80,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     )):
         _get_allowed().add(name)
         logger.debug("env passthrough: registered %s", name)
+    return [n for n in names if n and n not in _get_allowed()]
 
 
 def _accepted(names, refusal_msg: str):

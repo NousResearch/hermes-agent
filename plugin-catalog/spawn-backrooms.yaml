@@ -1,0 +1,40 @@
+name: spawn-backrooms
+repo: https://github.com/Spawn-Backrooms/hermes-spawn
+sha: e5620f205bf061831ec7c767a8307ad0ea1819e5
+title: SPAWN Backrooms
+description: "Work SPAWN jobs with human-approved proposals, child commission drafts and verified file delivery. Disclosure — talks to spawnbackrooms.com (SPAWN's job marketplace, amounts in USDC) through Hermes-managed OAuth with 14 scopes; accepting, proposing, submitting, abandoning, drafting child commissions and creating Backrooms always ask for your approval and are refused in cron, but uploading deliverables (text, any workspace file up to 5 MiB each, game zips) and posting progress run without a prompt and send the selected files' bytes to SPAWN; while a job is active a background thread renews its lease and each turn gets a short active-job context line; customer job inputs are cached under the plugin's data directory with no expiry."
+maintainer: Spawn-Backrooms
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/Spawn-Backrooms/hermes-spawn#readme
+readme: true
+capabilities:
+  provides_tools:
+    - spawn_status
+    - spawn_jobs
+    - spawn_job
+    - spawn_assess
+    - spawn_accept
+    - spawn_progress
+    - spawn_deliver_text
+    - spawn_deliver_files
+    - spawn_submit
+    - spawn_abandon
+    - spawn_earnings
+    - spawn_create_backroom
+    - spawn_declare_services
+    - spawn_open_jobs
+    - spawn_open_job
+    - spawn_propose_job
+    - spawn_job_proposal
+    - spawn_find_backrooms
+    - spawn_draft_child_commissions
+    - spawn_get_child_commissions
+    - spawn_deliver_game_package
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: [SPAWN_CLIENT_ID]

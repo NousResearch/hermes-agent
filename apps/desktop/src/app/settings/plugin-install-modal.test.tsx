@@ -151,6 +151,13 @@ describe('A reviewed catalog pick', () => {
     expect(installCalls()[0]?.[1]).toMatchObject({ catalog_name: 'blender', enable: true, force: false })
   })
 
+  it('reads the repository at its reviewed pin, not the default branch', async () => {
+    renderFlow()
+    act(() => openPluginInstallRequest(BLENDER))
+
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalledWith({ identifier: BLENDER.repo, ref: BLENDER.sha }))
+  })
+
   it('waits under the loader for an inspection still running, then installs once', async () => {
     const probe = deferred<unknown>()
     probePluginRepo.mockReturnValue(probe.promise)
@@ -208,6 +215,78 @@ describe('A reviewed catalog pick', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
     await waitFor(() => expect(installCalls()).toHaveLength(2))
+  })
+
+  it('a desktop-only pick hands Electron its catalog entry, and a refusal shows Force reinstall', async () => {
+    // Accent Picker: the card had no installed state, so a second Install stopped at "already exists"
+    // with Force hidden behind a collapsed Advanced (a catalog pick never offered Force at all).
+    const ACCENT = {
+      ...BLENDER,
+      catalogName: 'accent-picker',
+      repo: `${BLENDER.repo.split('#')[0]}#accent-picker`,
+      title: 'Accent Picker'
+    }
+
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: false,
+      desktop: true,
+      desktopName: 'accent-picker',
+      warnings: []
+    })
+    installDesktopPlugin.mockResolvedValue({
+      ok: false,
+      exists: true,
+      error: "Desktop plugin 'accent-picker' already exists. Enable force reinstall to replace it."
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest(ACCENT))
+    const dialog = await screen.findByRole('dialog', { name: 'Accent Picker' })
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalled())
+    fireEvent.click(installButton())
+
+    await waitFor(() =>
+      expect(installDesktopPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({ catalogName: 'accent-picker', sha: ACCENT.sha })
+      )
+    )
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('already exists')
+    const force = within(dialog).getByRole('switch')
+    fireEvent.click(force)
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'accent-picker' })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(installDesktopPlugin).toHaveBeenLastCalledWith(expect.objectContaining({ force: true })))
+  })
+
+  it('a refusal Force cannot fix offers no Force', async () => {
+    const ACCENT = {
+      ...BLENDER,
+      catalogName: 'accent-picker',
+      repo: `${BLENDER.repo.split('#')[0]}#accent-picker`,
+      title: 'Accent Picker'
+    }
+
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: false,
+      desktop: true,
+      desktopName: 'accent-picker',
+      warnings: []
+    })
+    installDesktopPlugin.mockResolvedValue({ ok: false, error: 'git clone failed: network unreachable' })
+    renderFlow()
+    act(() => openPluginInstallRequest(ACCENT))
+    const dialog = await screen.findByRole('dialog', { name: 'Accent Picker' })
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalled())
+    fireEvent.click(installButton())
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('network unreachable')
+    // Advanced stays as it was; opened, it still holds no Force switch.
+    expect(within(dialog).queryByText('Source code')).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    expect(within(dialog).getByText('Source code')).toBeTruthy()
+    expect(within(dialog).queryByRole('switch')).toBeNull()
   })
 })
 
@@ -363,6 +442,34 @@ describe('Unified package desktop half on a local backend', () => {
 
     expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+
+  it('offers no Force for a desktop half refused as installed once the agent half went in', async () => {
+    // Force reinstalls both halves: offered here, it would replace the agent plugin just installed.
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install' ? { ok: true, plugin_name: 'pkg' } : { plugins: [] }
+    )
+    installDesktopPlugin.mockResolvedValue({ ok: false, exists: true, error: "Desktop plugin 'pkg' already exists." })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() =>
+      openPluginInstallRequest({ ...BLENDER, catalogName: 'pkg', repo: 'https://github.com/example/pkg', title: 'Pkg' })
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Pkg' })
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('already exists')
+    expect(installDesktopPlugin).toHaveBeenCalled()
+
+    if (!within(dialog).queryByText('Source code')) {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    }
+
+    expect(within(dialog).getByText('Source code')).toBeTruthy()
+    expect(within(dialog).queryByRole('switch')).toBeNull()
   })
 
   it('turns the desktop half on with the agent half: install means ready for the whole package', async () => {

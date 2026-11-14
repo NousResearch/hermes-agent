@@ -1,6 +1,6 @@
 name: vibe-relay
 repo: https://github.com/trenthalden/vibe-relay
-sha: "aac27eea07fea6fe7ffa9767b53be811559ffa04"
+sha: a730e4de6f033e653738f212847f7c430bb3e0dd
 title: Vibe Relay
 description: >-
   Vibecoding without burning your best model. Sets Hermes `delegation.backend` to a quota-aware
@@ -11,51 +11,59 @@ description: >-
   coding work must go through `delegate_task` (children never blocked; `enforce_executor_lane`
   default true). At `stop_used_percent` (default 90% used) the same hook blocks parent
   `delegate_task` and writers, auto-parks once per reset window (handoff + one one-shot cron),
-  and injects `parked until …; do not start new work` via `pre_llm_call`; the block lifts after
-  reset or when used drops below stop. Every task must carry `allowed` path globs and a `gate`
-  command — exit 0 alone is not done. A `post_tool_call` hook captures gate PASS output bound to
-  a working-tree hash; `pre_verify` continues the turn until a fresh PASS exists; `vibe_accept`
-  checks changed paths ⊆ allowed. Manual `/vibe park` and blueprint `resume-after-reset` remain.
-  Ships an Agent Workshop of 14 portable skills (build/debug loop, architecture audit, harness+evals,
-  context budget, memory/retrieval, known-errors registry, frozen-tree review, product-aware releases,
-  subagent-driven development, companion maintenance, lean executor orchestration, field-first
-  acceptance, TDD, systematic debugging) registered as `vibe-relay:<name>` via `skill_view`.
-  Vendors DEV Framework tools (`df_init`, `df_check`, `df_nav`); `df_check` returns the gate command
-  for the agent to run via `terminal` (approvals apply). Disclosure — quota via public
-  `fetch_account_usage(..., read_only=True)` at most once per 180s into
-  `$HERMES_HOME/plugin-data/vibe-relay/` (empty fetches: 15s negative TTL; no private usage-cache
-  import); checklist/handoff slugs confined to `[A-Za-z0-9._-]+` under `docs/`; park skips
-  resume-cron inside `HERMES_CRON_SESSION` unless `cron.allow_agent_scheduling`; `df_init`/`df_nav`
-  run the plugin's vendored scripts with `python -I` and a scrubbed child env; `df_nav` never
-  executes the target's navigate.py; `df_init` refuses Hermes home, `$HOME` itself, filesystem
-  root, and protected $HOME dots; acceptance uses session terminal cwd when none is passed;
-  template scripts may call `git`/`gh` only when the user or agent runs them; cron via
-  `cronjob_manage`; no credential-file reads; no YOLO shells.
+  and injects `parked until …; do not start new work` via `pre_llm_call`. Every task must carry
+  `allowed` path globs and a `gate` command — exit 0 alone is not done; `post_tool_call` captures
+  gate PASS bound to a working-tree hash, `pre_verify` continues the turn until a fresh PASS
+  exists, `vibe_accept` checks changed paths ⊆ allowed. Night shift for large projects left
+  overnight (`vibe_night_start|log|status|arm|report`, `/night`): plan, queue, decisions and
+  timeline in a self-ignored `<repo>/.vibe-relay/night-<stamp>/`; `pre_tool_call` refuses new
+  dispatch after the hard stop or at the quota reserve (running work is not killed);
+  `post_tool_call` keeps a parent liveness stamp so continuation wakes exit instead of becoming a
+  second orchestrator; wakes (early checkpoint, quota reset, report) are armed once from the live
+  session via `cronjob_manage` after a quota preflight on the provider cron will use (the plugin
+  never sets a job's model); the morning report is assembled from records. Ships an Agent Workshop
+  of 15 portable skills, including `night-shift` and `lean-executor-orchestration` 2.0, registered
+  as `vibe-relay:<name>`. Vendors DEV Framework tools (`df_init`, `df_check`, `df_nav`);
+  `df_check` returns the gate command for the agent to run via `terminal` (approvals apply).
+  Disclosure — only documented Hermes surfaces (a test fails on any other core import); quota via
+  `fetch_account_usage(..., read_only=True)` cached ≤180 s (15 s negative TTL) in
+  `$HERMES_HOME/plugin-data/vibe-relay/`, which stores metadata only (no gate commands, gate
+  output or task text; no raw usage payloads); night plan content stays in the working repo;
+  handoff slugs confined under `docs/`; no cron scheduling from cron runs unless
+  `cron.allow_agent_scheduling`; `df_init`/`df_nav` run the plugin's vendored scripts with
+  `python -I` and a scrubbed child env and refuse Hermes home, `$HOME`, `/` and protected dot
+  folders; no credential reads; no YOLO shells.
 maintainer: trenthalden
 tier: community
 category: automation
-requires_hermes: ">=0.22.5"
+requires_hermes: '>=0.22.5'
 docs_url: https://github.com/trenthalden/vibe-relay#readme
-image: https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/banner.png
-screenshots:
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-1.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-2.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-3.png
-version: "0.3.2"
+version: 0.4.0
 platforms: [linux, macos]
 capabilities:
   provides_tools:
-    - vibe_accept
-    - df_init
-    - df_check
-    - df_nav
+  - vibe_accept
+  - vibe_night_start
+  - vibe_night_log
+  - vibe_night_status
+  - vibe_night_arm
+  - vibe_night_report
+  - df_init
+  - df_check
+  - df_nav
   provides_hooks:
-    - pre_llm_call
-    - api_request_error
-    - pre_tool_call
-    - post_tool_call
-    - pre_verify
-    - subagent_start
-    - subagent_stop
+  - pre_llm_call
+  - api_request_error
+  - pre_tool_call
+  - post_tool_call
+  - pre_verify
+  - subagent_start
+  - subagent_stop
   provides_middleware: []
   requires_env: []
+image: 
+  https://raw.githubusercontent.com/trenthalden/vibe-relay/a730e4de6f033e653738f212847f7c430bb3e0dd/assets/banner.png
+screenshots:
+- https://raw.githubusercontent.com/trenthalden/vibe-relay/a730e4de6f033e653738f212847f7c430bb3e0dd/assets/shot-1.png
+- https://raw.githubusercontent.com/trenthalden/vibe-relay/a730e4de6f033e653738f212847f7c430bb3e0dd/assets/shot-2.png
+- https://raw.githubusercontent.com/trenthalden/vibe-relay/a730e4de6f033e653738f212847f7c430bb3e0dd/assets/shot-3.png

@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { GatewayClient } from '../gatewayClient.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -412,13 +413,13 @@ export function ModelPicker({
         return
       }
 
-      if (key.upArrow && reasoningIdx > 0) {
+      if (isListUp(ch, key) && reasoningIdx > 0) {
         setReasoningIdx(v => v - 1)
 
         return
       }
 
-      if (key.downArrow && reasoningIdx < reasoningRows.length - 1) {
+      if (isListDown(ch, key) && reasoningIdx < reasoningRows.length - 1) {
         setReasoningIdx(v => v + 1)
 
         return
@@ -462,13 +463,13 @@ export function ModelPicker({
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
 
-    if (key.upArrow && sel > 0) {
+    if (isListUp(ch, key) && sel > 0) {
       setSel(v => v - 1)
 
       return
     }
 
-    if (key.downArrow && sel < count - 1) {
+    if (isListDown(ch, key) && sel < count - 1) {
       setSel(v => v + 1)
 
       return

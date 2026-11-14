@@ -5,6 +5,7 @@ import type { UsageModelData } from '@hermes/shared/gateway-types'
 import { type ReactNode, useState } from 'react'
 
 import { liftForContrast } from '../lib/color.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import type { Theme } from '../theme.js'
 
 /**
@@ -55,11 +56,11 @@ export function useMenu(rows: MenuRowSpec[], onEscape: () => void, onKey?: (ch: 
       return onEscape()
     }
 
-    if (key.upArrow && sel > 0) {
+    if (isListUp(ch, key) && sel > 0) {
       setSel(v => v - 1)
     }
 
-    if (key.downArrow && sel < rows.length - 1) {
+    if (isListDown(ch, key) && sel < rows.length - 1) {
       setSel(v => v + 1)
     }
 

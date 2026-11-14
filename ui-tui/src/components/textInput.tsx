@@ -6,6 +6,7 @@ import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.j
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
@@ -1937,6 +1938,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  (key.ctrl && (isListUp(input, key) || isListDown(input, key))) ||
   (key.ctrl && (input === 'p' || input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||

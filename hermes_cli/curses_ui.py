@@ -368,9 +368,12 @@ def _enhanced_key_action(codepoint: int, modifier: int = 1) -> str:
     """Map CSI-u/modifyOtherKeys codepoints to setup menu actions."""
     if codepoint in _ENHANCED_NAV:
         return _ENHANCED_NAV[codepoint]
-    # CSI-u encodes Ctrl+C as `c` plus the Ctrl modifier bit; lock-state bits may be added, so
-    # test the Ctrl bit rather than the canonical value 5.
-    has_ctrl = bool((max(1, modifier) - 1) & 4)
+    # CSI-u encodes Ctrl+C as `c` plus the Ctrl modifier bit; lock-state bits (64/128) may be added,
+    # while list navigation requires unmodified Ctrl (no Shift/Alt/Super/Hyper/Meta in bits 0..5).
+    mask = max(1, modifier) - 1
+    has_ctrl = bool(mask & 4)
+    if (mask & 0x3F) == 4 and codepoint in (112, 80, 110, 78):
+        return NAV_UP if codepoint in (112, 80) else NAV_DOWN
     if codepoint == 3 or (codepoint in (99, 67) and has_ctrl):
         return NAV_INTERRUPT
     return NAV_CANCEL if codepoint == 4 or (codepoint in (100, 68) and has_ctrl) else NAV_NONE
@@ -423,6 +426,7 @@ def _decode_menu_key(stdscr, key: int) -> str:
     plain = {
         curses.KEY_UP: NAV_UP, ord("k"): NAV_UP, curses.KEY_DOWN: NAV_DOWN, ord("j"): NAV_DOWN,
         curses.KEY_LEFT: NAV_BACK, 3: NAV_INTERRUPT,  # 3 = Ctrl+C in raw/cbreak mode
+        16: NAV_UP, 14: NAV_DOWN,  # Ctrl+P / Ctrl+N
         4: NAV_CANCEL,  # 4 = Ctrl+D (EOF) in raw mode: leaves the menu, as it does in cooked mode
         curses.KEY_ENTER: NAV_SELECT, 10: NAV_SELECT, 13: NAV_SELECT,
         ord(" "): NAV_TOGGLE, ord("q"): NAV_CANCEL}

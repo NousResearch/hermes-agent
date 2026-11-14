@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { noSkillsInstalled } from '../app/userMessages.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -120,13 +121,13 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
     const sel = stage === 'category' ? catIdx : skillIdx
     const setSel = stage === 'category' ? setCatIdx : setSkillIdx
 
-    if (key.upArrow && sel > 0) {
+    if (isListUp(ch, key) && sel > 0) {
       setSel(v => v - 1)
 
       return
     }
 
-    if (key.downArrow && sel < count - 1) {
+    if (isListDown(ch, key) && sel < count - 1) {
       setSel(v => v + 1)
 
       return

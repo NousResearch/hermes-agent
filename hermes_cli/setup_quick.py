@@ -139,39 +139,29 @@ def _quick_setup_nous_portal(config: dict) -> None:
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool, imported_from: str = ""):
-    """Streamlined first-time setup via Nous Portal: OAuth, model, terminal & messaging;
-    everything else gets defaults. A model brought by an agent import (*imported_from* names the
-    agents) is offered first and kept by default, which skips the Nous Portal step."""
+    """Streamlined first-time setup via Nous Portal: OAuth and a model; everything else gets
+    defaults so the first chat is one sign-in away. The terminal backend is kept as it is
+    (``local`` on a fresh install, the same as Enter on Full Setup's menu), and messaging and the
+    gateway service are left to ``hermes setup gateway``, named in the closing hint. A model
+    brought by an agent import (*imported_from* names the agents) is offered first and kept by
+    default, which skips the Nous Portal step."""
     from hermes_cli.setup import (
-        _apply_default_agent_settings, _info, print_info, _print_setup_summary, print_success,
-        prompt_choice, save_config, setup_gateway, setup_terminal_backend
+        _apply_default_agent_settings, _info, _print_setup_summary, cfg_get, print_success, save_config
     )
     # Step 1: the imported model, or Nous Portal.
     if not _keep_imported_model(config, imported_from):
         _quick_setup_nous_portal(config)
 
-    # Step 2: Terminal Backend; Step 3: defaults for everything else.
-    setup_terminal_backend(config)
+    # Step 2: defaults for everything else — no terminal-backend, messaging or service question.
     _apply_default_agent_settings(config)
     save_config(config)
-
-    # Step 4: Offer messaging gateway setup
-    print()
-    gateway_choice = prompt_choice("Connect a messaging platform? (Telegram, Discord, etc.)", [
-        "Set up messaging now (recommended)", "Skip — set up later with 'hermes setup gateway'",
-    ], 0)
-    if gateway_choice == 0:
-        setup_gateway(config)
-        save_config(config)
-    else:
-        # Messaging is optional; service persistence still requires explicit consent.
-        from hermes_cli.gateway_setup_service import ensure_gateway_service
-        ensure_gateway_service(context="setup", interactive=True, config=config)
+    backend = cfg_get(config, "terminal", "backend", default="local")
     print()
     print_success("Setup complete! You're ready to go.")
-    _info(None, "  Configure all settings:    hermes setup")
-    if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+    _info(None, "  Connect a chat app:        hermes setup gateway",
+          "    (Telegram, Discord, Slack, …; it also offers the background service)",
+          f"  Change terminal backend:   hermes setup terminal  (now: {backend})",
+          "  Configure all settings:    hermes setup")
     _print_macos_fda_tip()
     print()
     _print_setup_summary(config, hermes_home)

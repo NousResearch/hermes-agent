@@ -1787,6 +1787,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
             self._app = AsyncApp(
+                # Explicit name: slack_bolt otherwise derives it with ``inspect.stack()[1]``
+                # (async_app.py:221), which walks every frame and reads source files. That ran on
+                # the gateway loop on every (re)connect and was one of the stalls the liveness
+                # watchdog hard-killed the gateway over (exit 75). ``adapter.py`` is what its own
+                # default computes here, so the label is unchanged.
+                name=os.path.basename(__file__),
                 token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
                 before_authorize=_slack_per_request_proxy_middleware(proxy_url))
             _apply_slack_proxy(self._app.client, proxy_url)

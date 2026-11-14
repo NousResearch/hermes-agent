@@ -116,6 +116,20 @@ def test_ordinary_config_from_a_bulk_source_is_not_a_global_scrub(tmp_path):
         assert OPAQUE not in redact_sensitive_text(f"x {OPAQUE}")
 
 
+def test_secret_named_settings_holding_a_word_or_host_are_not_a_global_scrub(tmp_path):
+    # Settings ABOUT auth, named like secrets (teknium1 review on #155274).
+    home = _home(tmp_path, "a")
+    settings = {"AUTH_MODE": "password", "AUTH_PROVIDER": "localhost", "SECRET_BACKEND": "bitwarden",
+                "API_KEY_HEADER": "Authorization", "AUTH_HOST": "auth-server-01.example.com"}
+    secrets = {"VENDOR_TOKEN": OPAQUE, "DB_PASSWORD": "correcthorse"}
+    redact_secret_sources.publish_secret_source_values(home, {**settings, **secrets})
+    text = "use password auth on localhost via bitwarden; Authorization at auth-server-01.example.com"
+    with _profile(home):
+        assert redact_secret_sources.redact_secret_source_values(text) == text
+        for value in secrets.values():
+            assert value not in redact_secret_sources.redact_secret_source_values(f"x {value}")
+
+
 def test_json_serialised_value_is_masked(tmp_path):
     home = _home(tmp_path, "a")
     value = 'Qw3"rT9\\yU7iO1p'

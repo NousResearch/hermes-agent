@@ -5,7 +5,6 @@ onto server.py, so they must not collide with its globals.
 """
 
 import logging
-import sqlite3
 
 from hermes_cli.profiles_cache import yaml_scalar_to_json as _yaml_scalar_to_json
 from .method_ctx import HandlerRegistry, bind_module
@@ -140,7 +139,11 @@ def _live_count_field(db, session_id) -> dict:
     """``{"live_message_count": n}`` sized like a stored-transcript read, else ``{}`` (older stores).
 
     The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
-    rewinds, model-only rows), which once made the roster wait for history no reader serves."""
+    rewinds, model-only rows), which once made the roster wait for history no reader serves.
+    ``sqlite3`` is imported HERE: this body runs on server.py's globals (method_ctx.bind_module),
+    which publishes no imported modules, so the except clause raised ``NameError`` instead of
+    absorbing a locked store (#152709)."""
+    import sqlite3
     try:
         return {"live_message_count": db.display_message_count(str(session_id))}
     except sqlite3.Error:

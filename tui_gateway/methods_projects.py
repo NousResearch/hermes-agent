@@ -7,6 +7,10 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+# Alias, not a second registry: a rebound body reads its globals from server.py's namespace, which
+# publishes ``_profile_scoped`` but no registry object, so ``_registry.profile_scoped`` inside a
+# factory raised NameError when that copy ran (#152709).
+_profile_scoped = _registry.profile_scoped
 
 
 # JSON-RPC error codes: generic failure / id resolved to nothing / invalid argument.
@@ -29,7 +33,7 @@ def _projects_method(name: str):
     so app-global remote mode reads that profile's ``projects.db``."""
     def decorator(fn):
         @method(name)
-        @_registry.profile_scoped
+        @_profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
                 from hermes_cli import projects_db as pdb

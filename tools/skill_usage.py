@@ -37,7 +37,15 @@ _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
 # Load-bearing built-ins (by frontmatter ``name``) the curator must NEVER archive/consolidate regardless of
 # ``curator.prune_builtins``, pins or LLM judgment — archiving one breaks its slash command. Keep tiny.
-PROTECTED_BUILTIN_SKILLS: set[str] = set()
+PROTECTED_BUILTIN_SKILLS: set[str] = {
+    # Force-loaded into every review-lane worker (hermes_cli/kanban_db_dispatch.py review claim and
+    # gateway/session_kanban.py); if it is missing from the assignee's skills root the claim dies before the
+    # first model call, so a curator archive of it silently kills the review gate.
+    "sdlc-review",
+    # Force-injected into every session's system prompt (agent/skill_utils.ESSENTIAL_SKILLS);
+    # archiving it would strip the always-on Hermes self-help skill from all profiles.
+    "hermes-agent",
+}
 
 
 def is_protected_builtin(skill_name: str) -> bool:

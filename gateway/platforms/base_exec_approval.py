@@ -129,6 +129,20 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
     says so in the card: where the full command was sent just before it (``full_command_shown``), or
     that only Deny is offered because it could not be (#62359)."""
+    description, preview, fence, notice = card_layout(adapter, command, description, smart_denied, full_command_shown)
+    code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
+    text = (f"{adapter._EA_HEADER}"
+            f"{code_open}{adapter._ea_escape(preview)}{code_close}"
+            f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
+            f"{adapter._ea_deadline_line()}")
+    return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), preview != command
+
+
+def card_layout(adapter: Any, command: str, description: str, smart_denied: bool,
+                full_command_shown: bool) -> tuple[str, str, str, str]:
+    """``(reason, preview, fence, cut notice)`` as ``render_exec_approval`` shows them, all raw (unescaped):
+    the reason after its budget and the cap's share, the command preview, its fence, and the cut notice
+    (empty when the preview is the whole command)."""
     if adapter._EA_REASON_BUDGET:
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
     key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
@@ -151,14 +165,7 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
         return adapter._ea_fit(command, max(left, 0) if capped else max(left, budget // 2))
 
     preview, fence = fit_fenced(command, fit)
-    truncated = preview != command
-    notice = cut_notice if truncated else ""
-    code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
-    text = (f"{adapter._EA_HEADER}"
-            f"{code_open}{adapter._ea_escape(preview)}{code_close}"
-            f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
-            f"{adapter._ea_deadline_line()}")
-    return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
+    return description, preview, fence, (cut_notice if preview != command else "")
 
 
 async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str, request_id: Optional[str],

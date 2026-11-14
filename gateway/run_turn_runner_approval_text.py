@@ -17,20 +17,28 @@ from agent.i18n import t
 
 def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_id: str | None, command: str,
                          description: str, prefix: str, **flags: bool) -> str:
-    """The plain-text approval prompt for ``adapter``. An adapter that splits long messages gets the
-    default layout; one whose send cuts text gets ``_cutting_text_prompt``, and when even that cannot
-    show the whole command the request is marked Deny-only like a card that could not."""
+    """The plain-text approval prompt for ``adapter`` (``text_prompt``); when it offers Deny alone the
+    request is marked Deny-only like a card that could not show the whole command."""
+    text, layout = text_prompt(adapter, chat_id, command, description, prefix, **flags)
+    if layout == "deny":
+        from tools.approval import restrict_gateway_approval_card_to_deny
+        restrict_gateway_approval_card_to_deny(session_key, request_id)
+    return text
+
+
+def text_prompt(adapter: Any, chat_id: str, command: str, description: str, prefix: str,
+                **flags: bool) -> tuple[str, str]:
+    """``(prompt, layout)``, without marking the request. An adapter that splits long messages gets the
+    default layout (``"split"``) when its send can prove the prompt arrives whole; otherwise
+    ``_cutting_text_prompt``: instructions first with every choice (``"cut"``), or Deny alone (``"deny"``)."""
     from gateway.platforms.base_exec_approval import send_cannot_prove_whole
     from gateway.run import _format_exec_approval_fallback
     if getattr(adapter, "splits_long_messages", True):
         text = _format_exec_approval_fallback(command, description, prefix, **flags)
         if not send_cannot_prove_whole(adapter, chat_id, text):  # a capped split drops the instructions too
-            return text
+            return text, "split"
     text, deny_only = _cutting_text_prompt(adapter, chat_id, command, description, prefix, **flags)
-    if deny_only:
-        from tools.approval import restrict_gateway_approval_card_to_deny
-        restrict_gateway_approval_card_to_deny(session_key, request_id)
-    return text
+    return text, "deny" if deny_only else "cut"
 
 
 def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: str, prefix: str, *,

@@ -120,7 +120,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
         # text-only: {"modalities": ["text"], "max_reference_images": 0}.
         # Optional keys: "supports_upscale" (bool) adds an `upscale` param, and
         # "creative_controls" lists the controls you honor from `creativity`,
-        # `intensity`, `complexity`, `movement`, `thinking`, `resolution`. Only declared controls appear
+        # `intensity`, `complexity`, `movement`, `thinking`, `resolution`, `gif`. Only declared controls appear
         # in the schema and reach generate() as kwargs. "source_image_role": "style"
         # tells the model that image inputs set the look and are not edited.
         return {"modalities": ["text", "image"], "max_reference_images": 4}
@@ -303,6 +303,15 @@ Or interactively: `hermes tools` → "Image Generation" → select `my-backend` 
 - **`plugins/image_gen/openai/__init__.py`** — gpt-image-2 at low/medium/high tiers as three virtual model IDs sharing one API model with different `quality` params. Good example of tiered models under a single backend + config.yaml precedence chain.
 - **`plugins/image_gen/xai/__init__.py`** — Grok Imagine via xAI. Different shape (URL output, simpler catalog).
 - **`plugins/image_gen/openai-codex/__init__.py`** — same catalog as `openai`, but authenticated with the ChatGPT/Codex OAuth token and posted with plain `httpx` to the Codex backend's native `images/generations` / `images/edits` endpoints. Good example of a provider that fetches remote source images client-side and inlines them as data URLs, and that reports backend-returned metadata separately from the request.
+
+The optional `gif` creative control is an object with `frame_count` of 2 through 16
+and `frame_duration_ms` of 20 through 2000, both integers and both optional. An empty
+object requests provider defaults; an omitted control keeps static generation.
+Only advertise it when the provider implements animated GIF output. The direct
+Codex provider maps it to `output_format: "gif"` and sibling frame fields, validates
+the returned frames, and reports the original `.gif` artifact with `image/gif` MIME.
+Runtime rejects GIF requests on providers that do not declare support, including
+replayed calls after a provider switch.
 
 ## Distribute via pip
 

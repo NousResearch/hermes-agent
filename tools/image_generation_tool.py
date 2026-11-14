@@ -824,6 +824,9 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    # Replayed GIF requests must not silently become static images after a provider switch.
+    if args.get("gif") is not None and "gif" not in (_active_image_capabilities().get("creative_controls") or []):
+        return _provider_error("The selected image provider does not support GIF output", "control_unsupported")
     upscale = args.get("upscale")
     task_id = kw.get("task_id")
     # Confinement chokepoint BEFORE any dispatch: every route receives sandbox-confined bytes.
@@ -945,6 +948,15 @@ _IMAGE_URL_PARAM = {
 # Creative-control vocabulary (Krea 2 and Krea 3 today); a provider advertises the names it honors
 # via ``capabilities()["creative_controls"]`` and only those reach the schema and its ``generate()``.
 _CREATIVE_CONTROL_PARAMS = {
+    "gif": {
+        "type": "object",
+        "description": "Request a looping GIF. Use {} for defaults. Availability depends on backend rollout and entitlement.",
+        "additionalProperties": False,
+        "properties": {
+            "frame_count": {"type": "integer", "minimum": 2, "maximum": 16},
+            "frame_duration_ms": {"type": "integer", "minimum": 20, "maximum": 2000},
+        },
+    },
     "creativity": {
         "type": "string", "enum": ["raw", "low", "medium", "high"],
         "description": "Prompt expansion: raw (none), low, medium or high.",

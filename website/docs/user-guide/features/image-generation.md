@@ -189,6 +189,34 @@ accepts any `model` value (including nonexistent ids) and generates with its
 own server-managed engine, so a "selected" Flare or Sunburst tier would be a
 label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
 
+### Native GIF output with Codex auth
+
+With **OpenAI (Codex auth)** selected, `image_generate` accepts an optional `gif`
+object for native animated output. Omit it for the existing static image behavior.
+Use `"gif": {}` for backend defaults, or specify either control:
+
+```json
+{
+  "prompt": "A small red dot bouncing in a seamless loop",
+  "gif": {"frame_count": 4, "frame_duration_ms": 200}
+}
+```
+
+`frame_count` must be an integer from 2 through 16. `frame_duration_ms` must be an
+integer from 20 through 2000. Reference-image inputs also work with GIF requests.
+The provider sends `output_format: "gif"` and the optional frame controls to the
+native Codex image endpoint. It decodes the returned GIF frames before saving the
+original bytes as `.gif`, and reports `mime_type: "image/gif"` in the result.
+A static response to a GIF request is an error, not a successful animation.
+
+This follows the [official Codex request contract](https://github.com/openai/codex/blob/a142c90e2601d7b7bc9ab07e4d0552a3814b0501/codex-rs/codex-api/src/images.rs).
+The [official Codex tool gates GIFs by session](https://github.com/openai/codex/blob/a142c90e2601d7b7bc9ab07e4d0552a3814b0501/codex-rs/ext/image-generation/src/tool.rs).
+Backend rollout or account entitlement may still reject the request. Hermes reports
+that error without switching to another provider. This does not add a model-version
+selector or establish which backend model weights served a request. Other providers
+do not advertise this control unless they declare support; a replayed GIF request
+to an unsupported provider fails instead of silently producing a static image.
+
 ### Custom OpenAI-compatible image endpoint
 
 The **OpenAI** provider can point at any OpenAI-compatible `/v1/images/generations`

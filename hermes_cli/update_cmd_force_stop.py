@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -29,6 +30,8 @@ from pathlib import Path
 FORCE_KILL_AFTER_S = 12.0
 #: After the kill: how long to wait for the process (and its supervisor's stop job) to settle.
 _SETTLE_S = 5.0
+#: After the kill: how long the supervisor's stop job gets to settle once its unit is empty.
+_STOP_JOB_SETTLE_S = 30.0
 
 
 def _live_work(entry: dict) -> list | None:
@@ -111,15 +114,22 @@ def _stop_one(token: dict, entry: dict, lock: threading.Lock) -> str | None:
     elif not _ask_force_stop(entry):
         _signal_stop(entry)
     print(_describe(entry, work), flush=True)
+    # One deadline for the whole service: the gateway exiting is not enough while its supervisor's
+    # stop job still waits on other processes in the unit (a tool child ignoring SIGTERM).
+    deadline = time.monotonic() + FORCE_KILL_AFTER_S
     born = {entry["pid"]: entry.get("ct")}
-    if _wait_gone([entry["pid"]], FORCE_KILL_AFTER_S, born):
-        print(f"  ⚠ gateway PID {entry['pid']} still running {FORCE_KILL_AFTER_S:.0f}s after the stop — killing it",
+    alive = bool(_wait_gone([entry["pid"]], FORCE_KILL_AFTER_S, born))
+    if supervisor is not None:
+        supervisor.join(max(0.0, deadline - time.monotonic()))
+    if alive or (supervisor is not None and supervisor.is_alive()):
+        print(f"  ⚠ gateway PID {entry['pid']} still stopping {FORCE_KILL_AFTER_S:.0f}s after the stop — killing it",
               flush=True)
-        _kill(entry)
+        _kill(entry)  # a unit: SIGKILL to every process in its cgroup, so the stop job can settle
         if _wait_gone([entry["pid"]], _SETTLE_S, born):
             return f"gateway PID {entry['pid']} did not stop"
     if supervisor is not None:
-        supervisor.join(_SETTLE_S)
+        # Keep ownership of the stop job until it settles: a rollback start would queue behind it.
+        supervisor.join(_STOP_JOB_SETTLE_S)
         if supervisor.is_alive():
             return f"the supervisor of gateway PID {entry['pid']} did not finish stopping it"
     return failed[0] if failed else None

@@ -1,0 +1,30 @@
+name: dataprobe
+repo: https://github.com/rodricksz4h5/dataprobe
+sha: 20d5190ec8e22e0ae7cc92086355d0d722b9d290
+version: "1.0.1"
+title: Dataprobe
+description: >-
+  Exact, local structure and quality checks over large CSV/TSV and JSONL data
+  files that don't fit in a model's context. data_profile reports per-column
+  inferred type, null rate, distinct count, numeric statistics and top values
+  (for JSONL, the inferred union schema with per-field presence); data_validate
+  reports only the actionable problems — mixed-type columns with the offending
+  line numbers, ragged rows, duplicate rows, non-unique key candidates, constant
+  or all-empty columns and malformed JSONL lines; data_head returns a clean
+  parsed preview that handles quoted CSV and JSON correctly. Streamed, standard
+  library only: no network, no credentials, no third-party dependencies, no
+  self-update. Disclosure: reads the local data path you pass it (read-only) and
+  honours Hermes' core read denylist.
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/dataprobe/tree/20d5190ec8e22e0ae7cc92086355d0d722b9d290
+capabilities:
+  provides_tools:
+    - data_profile
+    - data_validate
+    - data_head
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

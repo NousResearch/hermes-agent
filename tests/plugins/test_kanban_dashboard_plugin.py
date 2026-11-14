@@ -1123,6 +1123,7 @@ def test_touch_card_tap_opens_instead_of_dragging():
     result = subprocess.run(
         [node, str(probe), str(bundle)],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout

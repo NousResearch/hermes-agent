@@ -45,7 +45,7 @@ def _git_output(project_root: Path, *args: str) -> str:
     """Stripped stdout of ``git <args>`` run in *project_root*, or '' on any failure."""
     try:
         result = subprocess.run(["git", *args], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                                timeout=5, cwd=str(project_root))
+                                timeout=5, cwd=str(project_root), check=False)
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""

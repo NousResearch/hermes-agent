@@ -162,7 +162,17 @@ forward needs no response back (the provider was already satisfied), so it rides
 the same outbound WS as `inbound` via a `passthrough_forward` frame rather than
 an HTTP POST. The gateway processes the decoded request through its normal agent
 path (a Discord interaction is decoded to a `MessageEvent` and handled like a
-message; the reply egresses over the outbound / `follow_up` path). `bufferId` is
+message; the reply egresses over the outbound / `follow_up` path). An
+interaction sent inside a thread (partial `channel.type` 10, 11 or 12) is keyed
+like the text lane's thread message: `chat_type: thread`, `thread_id` = the
+thread channel id, `parent_chat_id` = `channel.parent_id`. The connector's
+capability binding for that interaction must derive the same fields, or a later
+`follow_up` names a session the vault never bound. The raw interaction has no
+chat labels, so the gateway gives it the `chat_name` / `chat_topic` the text lane
+last carried for that chat (recorded as observed, so they survive a restart), and
+names the user from the interaction itself: guild nick, else global name, else
+username. The connector's `user_display_name` on a text message must resolve the
+same way, or the two lanes name one user differently. `bufferId` is
 present when the forward was buffered (Phase 5 §5.3 buffered-only flip) and the
 gateway acks it after durable handoff.
 
@@ -422,6 +432,11 @@ The gateway calls the transport with action dicts. Source of truth:
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`.
+
+**A split `send` cannot report a lost chunk.** The `send` result has no partial-delivery field, so the
+gateway cannot tell a whole delivery from one whose connector split the content and dropped or capped a
+chunk. An exec-approval card whose preview is shortened is therefore preceded by the full command only
+as proof when that command fits one message (`max_message_length`); a longer one leaves the card Deny-only.
 
 **`metadata.profile` (multiplex round-trip).** Every chat-addressed outbound
 frame's `metadata` carries the tenant discriminators the gateway captured from

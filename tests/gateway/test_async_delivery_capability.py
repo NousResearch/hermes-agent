@@ -207,6 +207,8 @@ class TestTerminalNotifyGate:
         assert d.get("notify_on_complete") is False
         assert d.get("notify_unsupported"), "must explain the limitation"
         assert "poll" in d["notify_unsupported"].lower()
+        from tools.process_registry import PROCESS_SCHEMA
+        assert f"{PROCESS_SCHEMA['name']}(action=" in d["notify_unsupported"]
         assert len(process_registry.pending_watchers) == 0
 
 

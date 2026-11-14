@@ -527,8 +527,6 @@ def test_restricted_channels_skipped_during_subscribe():
     adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
     adapter._restricted_channels.add(CHANNEL)
 
-    subscriptions = {}
-
     class _CountingWs:
         sent = []
 

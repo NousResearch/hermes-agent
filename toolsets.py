@@ -14,12 +14,9 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     "vision_analyze", "image_generate",
     "skills_list", "skill_view", "skill_manage",
-    "browser_navigate", "browser_snapshot", "browser_click",
-    "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
-    "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
+    "browser_exec",  # THE browser: Python over CDP (browser-harness)
+    "browser_cdp", "browser_dialog",
+    "browser_vault",  # rides with the browser; deferred by default (tools.tool_search.defer)
     "text_to_speech",
     "todo_list", "memory",
     "session_search",
@@ -44,7 +41,6 @@ _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
-_YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
 
 def _ts(description, tools=(), includes=(), **extra):
@@ -110,8 +106,8 @@ TOOLSETS = {
     # web_search from every session, because disabled toolsets are a strict
     # end-of-pipeline subtraction (#17309, #64503).
     "browser": _ts(
-        "Browser automation for web interaction (navigate, click, type, scroll, "
-        "iframes, hold-click)",
+        "Browser automation: drive a real browser with Python over CDP (navigate, "
+        "click, type, extract, screenshots), raw CDP, dialogs and vault logins",
         [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")],
     ),
     "cronjob": _ts(
@@ -138,15 +134,13 @@ TOOLSETS = {
     # process env var, which is blind to a desktop client on a remote backend.
     "desktop_ui": _ts(
         "Desktop GUI affordances — in-app terminal/browser panes, pane focus, "
-        "reactions (GUI sessions only)",
+        "reactions, appearance (GUI sessions only)",
         ["read_terminal", "close_terminal", "desktop_preview", "drive_preview",
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
-         "gui_tour", "show_tip"],
+         "gui_tour", "show_tip", "set_theme"],
     ),
-    "setup": _ts("Onboarding-only surface for the setup profile: question and picker cards", ["setup_choose"],
-                 platforms=frozenset({"desktop"})),
-    "start_chat": _ts("Start a new visible desktop chat that runs a task in a chosen profile", ["start_chat"],
-                      platforms=frozenset({"desktop"})),
+    "onboarding": _ts("First-run onboarding cards; folded in only for the onboarding chat (tui_gateway/methods_onboarding.py)",
+                      ["setup_beat"], platforms=frozenset({"desktop"})),
     # ``platforms``: the session platforms this toolset exists for (TOOLSET_SESSION_PLATFORMS).
     "catalog": _ts(
         "Desktop catalog plugin/skill install requests through the approval card (GUI sessions only)",
@@ -168,7 +162,6 @@ TOOLSETS = {
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),
-    "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
 
@@ -224,12 +217,6 @@ TOOLSETS = {
     "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
     "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),
     "hermes-wecom-callback": _bundle("WeCom callback toolset - enterprise self-built app messaging (full access)"),
-    "hermes-yuanbao": {
-        "description": "Yuanbao Bot 元宝消息平台工具集 - 群信息、成员查询、私聊、贴纸表情",
-        "tools": _HERMES_CORE_TOOLS + _YUANBAO_TOOLS,
-        "module": "tools.yuanbao_tools",
-        "includes": [],
-    },
     "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
     "hermes-webhook": _ts("Webhook toolset - receive and process external webhook events", _HERMES_WEBHOOK_SAFE_TOOLS),
     "hermes-gateway": _ts(
@@ -240,7 +227,7 @@ TOOLSETS = {
             "hermes-signal", "hermes-bluebubbles", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
             "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
-            "hermes-qqbot", "hermes-webhook", "hermes-yuanbao",
+            "hermes-qqbot", "hermes-webhook",
         ],
     ),
 }
@@ -457,13 +444,24 @@ def session_platform_tool_drops(platform: Optional[str]) -> frozenset:
                      for tool in resolve_toolset(name))
 
 
-def session_disabled_toolsets(disabled: Optional[list[str]], platform: Optional[str]) -> Optional[list[str]]:
-    """*disabled* plus every platform-gated toolset a session on *platform* does not get. An agent stores
-    this as its ``disabled_toolsets``, so the tool list, the tool_search listing and bridge, MCP refreshes
+def session_disabled_toolsets(
+    disabled: Optional[list[str]], platform: Optional[str], *, oneshot: bool = False,
+) -> Optional[list[str]]:
+    """*disabled* plus every platform-gated toolset a session on *platform* does not get, and for a *oneshot*
+    session the toolsets nobody is there to use (``agent.oneshot_footprint.ONESHOT_DISABLED_TOOLSETS``). An agent
+    stores this as its ``disabled_toolsets``, so the tool list, the tool_search listing and bridge, MCP refreshes
     and delegate children (which inherit it) all subtract the gated tools in ``_select_tool_names``."""
-    gated = [name for name, platforms in TOOLSET_SESSION_PLATFORMS.items()
-             if platform not in platforms and name not in (disabled or ())]
+    from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS
+    gated = [name for name, platforms in TOOLSET_SESSION_PLATFORMS.items() if platform not in platforms]
+    gated += ONESHOT_DISABLED_TOOLSETS if oneshot else ()
+    gated = [name for name in gated if name not in (disabled or ())]
     return [*(disabled or ()), *gated] if gated else disabled
+
+
+def tool_selection_key(enabled: Optional[list[str]], disabled: Optional[list[str]]) -> tuple:
+    """The toolset selection a tools[] snapshot was built from, order-free. Recorded next to the registry
+    generation: the tools[] freeze (``tools.mcp_tool_agent``) holds new tools back only while neither moved."""
+    return frozenset(enabled) if enabled is not None else None, frozenset(disabled or ())
 
 
 def agent_tool_drops(agent: Any) -> frozenset:
@@ -471,6 +469,18 @@ def agent_tool_drops(agent: Any) -> frozenset:
     the toolsets its session platform does not get. Applied at load, MCP refresh and prefix restore."""
     from tools.connectors.turn import side_agent_tool_drops
     return side_agent_tool_drops(agent) | session_platform_tool_drops(getattr(agent, "platform", None))
+
+
+def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*tools* as *agent* carries them: :func:`agent_tool_drops` removed and, in a one-shot session or a gateway
+    session that joins its delegations in the turn (``delegation.gateway_mode``), the joined ``delegate_task``
+    variant (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load, MCP refresh)
+    before any merge: a pinned or carried entry keeps the bytes already sent."""
+    from agent.oneshot_footprint import agent_is_oneshot, oneshot_tool_schemas
+    from tools.delegate_tool_config import agent_joins_delegation
+    drops = agent_tool_drops(agent)
+    tools = [tool for tool in tools if (tool.get("function") or {}).get("name") not in drops] if drops else list(tools)
+    return oneshot_tool_schemas(tools) if agent_is_oneshot(agent) or agent_joins_delegation(agent) else tools
 
 
 def validate_toolset(name: str) -> bool:

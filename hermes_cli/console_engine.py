@@ -355,7 +355,6 @@ _BLOCKED_TOP = frozenset(
 
 _BLOCKED_PAIRS = {
     ("config", "edit"): "`config edit` opens an editor and is not available in Hermes Console.",
-    ("mcp", "serve"): "`mcp serve` starts a server and is not available in Hermes Console.",
     ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
     ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
     ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
@@ -561,7 +560,7 @@ def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 _doctor = _simple_command(
     "doctor", "hermes_cli.doctor", "run_doctor", lambda: (SimpleNamespace(fix=False, ack=None),))
-_config_show = _simple_command("config show", "hermes_cli.config", "show_config")
+_config_show = _simple_command("config show", "hermes_cli.config_show", "show_config")
 _cron_status = _simple_command("cron status", "hermes_cli.cron", "cron_status")
 
 
@@ -640,12 +639,12 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
     _expect_no_args(args, "config migrate")
     from hermes_cli.config import migrate_config
     results = migrate_config(interactive=False, quiet=False)
-    if results.get("env_added") or results.get("config_added"):
-        print("Configuration updated.")
-    else:
-        print("Configuration is up to date.")
     for warning in results.get("warnings") or []:
         print(f"Warning: {warning}")
+    if results.get("failed_step") is not None:
+        raise ConsoleCommandError(f"config migrate: {results['failed_warning']}")
+    print("Configuration updated." if results.get("env_added") or results.get("config_added")
+          else "Configuration is up to date.")
 
 
 def _guard_exports(db, session_ids: list[str]) -> None:
@@ -716,12 +715,14 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
     from hermes_state import DEFAULT_DB_PATH
-    from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
     db_path = DEFAULT_DB_PATH
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
     reason = _db_opens_cleanly(db_path)
+    if isinstance(reason, HealthCheckUnavailable):
+        raise ConsoleCommandError(f"Could not check {db_path}: {reason}")
     if reason is None:
         print(f"{db_path} opens cleanly; no repair needed.")
         return

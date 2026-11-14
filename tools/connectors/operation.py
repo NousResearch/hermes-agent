@@ -1,7 +1,9 @@
-"""One backend-owned connection operation per ``manage_connections`` call. Pure data, no I/O."""
+"""One backend-owned connection operation per ``manage_connections`` call. Pure data; its only
+I/O is one local log line per state change and per settle."""
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -10,8 +12,11 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
 
+logger = logging.getLogger(__name__)
+
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
-OPERATION_DEADLINE_SECONDS = 300.0
+# As long as a connect link lives (10 minutes), so a slow authorization settles connected, not failed.
+OPERATION_DEADLINE_SECONDS = 600.0
 
 
 class IllegalTransition(ValueError):
@@ -41,6 +46,12 @@ class Target:
     extra: dict[str, Any] = field(default_factory=dict)
     # The install step an ``initiated`` catalog row is in (an ``InstallPhase`` id); drawn only then.
     phase: Optional[str] = None
+    # The name of the one hosted account this target connects or repairs; absent for the connector's default account.
+    alias: Optional[str] = None
+    # The existing account a reconnect repairs, by id: an unnamed account, which no alias can address.
+    repair_id: Optional[str] = None
+    # What an MCP row will run or contact ({kind, target, env?, cwd?}), scrubbed; the card shows it before consent.
+    launch: Optional[dict[str, Any]] = None
 
     @property
     def resolved(self) -> bool:
@@ -49,6 +60,8 @@ class Target:
     def snapshot(self, *, with_url: bool = True) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value,
                                "resolved": self.resolved}
+        if self.alias:
+            out["alias"] = self.alias
         if self.phase and self.state == TargetState.initiated:
             out["phase"] = self.phase
         if self.detail:
@@ -63,6 +76,8 @@ class Target:
             out["attempt"] = self.attempt
         if self.required_env:
             out["required_env"] = self.required_env
+        if self.launch:
+            out["launch"] = self.launch
         out.update(self.extra)
         return out
 
@@ -80,6 +95,8 @@ class ConnectionOperation:
     profile_key: str = ""
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: Optional[str] = None
+    # The opening call's ids (a ``CallRef``) for the requests a Try again makes; unset for account ops.
+    call: Optional[Any] = None
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
     deadline_at: float = 0.0
@@ -129,6 +146,7 @@ class ConnectionOperation:
             if extra:
                 target.extra = dict(extra)
             snapshot = self._bump_locked()
+        logger.info("connection op %s: %s %s -> %s by %s", self.op_id, name, change["from"], to.value, actor.value)
         self.wake.set()
         self._changed(change, snapshot)
         return change
@@ -191,6 +209,8 @@ class ConnectionOperation:
                 if not target.resolved:
                     target.state = TargetState.not_connected
             self._settled_snapshot = self._bump_locked()
+            outcomes = ", ".join(f"{t.name}={t.state.value}" for t in self.targets)
+        logger.info("connection op %s settled by %s: %s", self.op_id, by.value, outcomes)
         self.wake.set()
         self._changed(None, self._settled_snapshot)
         return True
@@ -227,6 +247,7 @@ class ConnectionOperation:
         for target in result["targets"]:
             target.pop("connection_id", None)
             target.pop("resolved", None)  # the card's flag; the model reads state
+            target.pop("launch", None)  # the card's consent line; the model named the server itself
         if result.get("settled_at") is None:
             return result
         from tools.registry import registry

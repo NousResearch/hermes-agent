@@ -74,7 +74,7 @@ def test_malformed_tags_rejected_by_both_mappings(tag):
     (["v1.2"], 1, ""), (["--channel", "v1.2"], 1, ""),
 ])
 def test_cli_dispatch(args, status, output):
-    result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, check=False)
     assert result.returncode == status, result.stderr
     assert result.stdout.strip() == output
     if status:

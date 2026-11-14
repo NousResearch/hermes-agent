@@ -2,9 +2,6 @@
 # Consumes receipt-verified bytes; never builds, repairs, or relaxes Gatekeeper.
 set -euo pipefail
 fail() { printf '%s\n' "bundle smoke: $*" >&2; exit 1; }
-[[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Darwin ]] ||
-  fail 'Disposable native GitHub-hosted macOS runner required'
-
 artifact= arch= commit= tag= channel_request= work= out=
 while (($#)); do
   (($# >= 2)) || fail "Missing value for $1"
@@ -78,3 +75,19 @@ cmp "$out/artifact-before.sha256" "$out/artifact-after.sha256"
 cd "$work"
 "$node" "$assets/desktop-smoke.ts" --exe "$exe" --root "$root" --origin bundled \
   --home "$work/home" --user-data "$work/user-data" --out "$out" --phase installed --expect-commit "$commit"
+# The chat ran the bundle's own Python: a pyc written into the app breaks its seal, and Gatekeeper holds the next update.
+/usr/bin/codesign --verify --deep --strict --verbose=2 "${apps[0]}" || fail 'The app modified its own signed bundle while it ran'
+# The chat's processes keep their bytecode out of the app; the backend's detached actions (gateway
+# start/stop/restart, update, skill and MCP installs) run `python -I -c <bootstrap>`
+# (hermes_cli/_launchers.py runtime_command), where -I ignores PYTHONPYCACHEPREFIX. Run the
+# cheapest command of that shape: only bytecode baked fresh into the payload keeps it out.
+pythons=("$root"/tools/python-*/bin/python3)
+((${#pythons[@]} == 1)) || fail 'Expected exactly one bundled interpreter'
+/usr/bin/env -i HOME="$work/home" HERMES_HOME="$work/home" PATH=/usr/bin:/bin HERMES_RUNTIME_DIR="$root/tools" \
+  "${pythons[0]}" -I -B -c 'import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli._launchers import runtime_command
+command = runtime_command(Path(sys.argv[1]), sys.argv[2:])
+os.execv(command[0], command)' "$root/hermes-agent" --version
+/usr/bin/codesign --verify --deep --strict --verbose=2 "${apps[0]}" || fail 'A backend action wrote into the signed bundle'

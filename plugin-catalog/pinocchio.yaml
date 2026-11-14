@@ -1,0 +1,22 @@
+name: pinocchio
+repo: https://github.com/tobadaniel/pinocchio
+sha: 348929d85c87867670c1418e549e64efb6e9c312
+description: "Pinocchio is the honesty layer for Hermes Agent: it keeps the receipts for everything the agent does and holds the agent's closing claims against them. A post_tool_call hook records work evidence for every session (commands and exit codes, test runs, builds, file writes, git operations, deploys); a transform_llm_output hook extracts the checkable claims in the agent's closing message (all tests pass, the build succeeds, a file was updated, changes are committed, it is deployed) and stamps the delivered message verified, unverified, or contradicted, citing the most recent matching receipt; a pre_verify hook bounces a contradicted claim back once on coding turns so the agent re-runs the failing step or corrects the record, and an all-time nose counter tallies the contradicted claims. Two tools (pinocchio_report, the session truth table, and pinocchio_receipts, the recorded evidence), a /pinocchio command (report, receipts, nose), and a bundled pinocchio-honesty skill that teaches the agent how to earn verified stamps. No second model grades the first: verdicts are deterministic comparisons between the agent's own words and its own tool receipts, in pure Python standard library. Disclosure — no network calls, no shell commands spawned by the plugin, no background processes, no credentials read or stored, no telemetry; the only storage is a local SQLite database in the active profile's plugin data directory holding tool-call metadata (tool name, truncated command or target, status, exit code, timestamp) and the claim snippets it stamped."
+maintainer: tobadaniel
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/tobadaniel/pinocchio
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - pinocchio_report
+    - pinocchio_receipts
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

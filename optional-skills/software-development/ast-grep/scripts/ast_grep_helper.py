@@ -179,6 +179,7 @@ def which_binary() -> Optional[Path]:
                         stdin=subprocess.DEVNULL, capture_output=True,
                         text=True,
                         timeout=5,
+                        check=False,
                     )
                     if out.returncode != 0 or "ast-grep" not in (out.stdout + out.stderr).lower():
                         continue
@@ -396,6 +397,7 @@ def run_sg(
             stdin=subprocess.DEVNULL, capture_output=capture,
             text=True,
             timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         err(f"ast-grep call timed out after {timeout}s")
@@ -606,7 +608,7 @@ def cmd_install(_args: argparse.Namespace) -> int:
         return 1
     trace(f"running installer: {' '.join(cmd)}")
     # health: allow HX006 -- the installer downloads a release; its duration depends on the network
-    return subprocess.run(cmd, stdin=subprocess.DEVNULL).returncode
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL, check=False).returncode
 
 
 def cmd_validate(args: argparse.Namespace) -> int:

@@ -11,7 +11,6 @@ here (config, provider resolution, lazy SDK importers) through ``_origin()`` at 
 from pm import install_hint
 import asyncio
 import contextlib
-import copy
 import datetime
 import importlib.util
 import json
@@ -20,9 +19,10 @@ import os
 import re
 import tempfile
 import uuid
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
+
+import copy
 
 from hermes_constants import display_hermes_home
 
@@ -130,196 +130,8 @@ def _default_output_dir() -> str:
     return _get_default_output_dir()
 
 
-# ===========================================================================
-# Korean TTS reading normalization: Korean voices read raw digits/units poorly
-# ("23°C" is spelled out glyph by glyph, "$1,700" reads "dollar one seven zero
-# zero").
-# Upstream's ``tts_text_normalize`` targets English ("dollars", "percent"),
-# so this block rewrites Korean readings for Korean-voice synthesis only.
-# ===========================================================================
-_KOREAN_DIGITS = ("영", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구")
-_KOREAN_SMALL_UNITS = ("", "십", "백", "천")
-_KOREAN_LARGE_UNITS = ("", "만", "억", "조", "경")
-_DOLLAR_AMOUNT_RE = re.compile(
-    r"(?<![\w가-힣])(?P<lead>\s*)(?P<sign>[-−])?\s*(?P<prefix>US\$|\$|USD)\s*"
-    r"(?P<amount>\d(?:[\d,]*\d)?(?:\.\d+)?)(?P<suffix>[KMBT])?(?![\dA-Za-z])",
-    re.IGNORECASE,
-)
-_TEMPERATURE_RE = re.compile(
-    r"(?P<lead>\s*)(?P<sign>[-−])?\s*(?P<value>\d+(?:\.\d+)?)\s*"
-    r"(?:°\s*C|℃|도\s*C|도씨)",
-    re.IGNORECASE,
-)
-_WEATHER_DEGREE_RE = re.compile(
-    r"(?P<context>(?:기온|온도|체감|현재|최고|최저|낮|아침|밤|새벽|오전|오후)[^\n]{0,12}?)"
-    r"(?P<lead>\s*)(?P<sign>[-−])?\s*(?P<value>\d+(?:\.\d+)?)\s*도(?![A-Za-z])"
-)
-_PERCENT_RE = re.compile(r"(?P<sign>[+＋\-−])?\s*(?P<value>\d+(?:\.\d+)?)\s*%")
-_INDEX_VALUE_RE = re.compile(
-    r"(?P<name>에스앤피 오백|나스닥 종합|나스닥 백|나스닥|다우존스 산업평균|"
-    r"다우 존스|코스피|코스닥|니케이 이백이십오|러셀 이천|빅스|풋시 백|닥스|항셍)"
-    r"\s+(?P<value>\d[\d,]*(?:\.\d+)?)"
-)
-_STOCK_INDEX_REPLACEMENTS = (
-    (re.compile(r"\bS\s*&\s*P\s*500\b", re.IGNORECASE), "에스앤피 오백"),
-    (re.compile(r"\bNASDAQ\s+Composite\b", re.IGNORECASE), "나스닥 종합"),
-    (re.compile(r"\bNASDAQ\s+100\b", re.IGNORECASE), "나스닥 백"),
-    (re.compile(r"\bNASDAQ\b", re.IGNORECASE), "나스닥"),
-    (re.compile(r"\bDow\s+Jones\s+Industrial\s+Average\b", re.IGNORECASE), "다우존스 산업평균"),
-    (re.compile(r"\bDJIA\b", re.IGNORECASE), "다우존스 산업평균"),
-    (re.compile(r"\bDow\s+Jones\b", re.IGNORECASE), "다우 존스"),
-    (re.compile(r"\bKOSPI\b", re.IGNORECASE), "코스피"),
-    (re.compile(r"\bKOSDAQ\b", re.IGNORECASE), "코스닥"),
-    (re.compile(r"\bNikkei\s+225\b", re.IGNORECASE), "니케이 이백이십오"),
-    (re.compile(r"\bRussell\s+2000\b", re.IGNORECASE), "러셀 이천"),
-    (re.compile(r"\bFTSE\s+100\b", re.IGNORECASE), "풋시 백"),
-    (re.compile(r"\bVIX\b", re.IGNORECASE), "빅스"),
-    (re.compile(r"\bDAX\b", re.IGNORECASE), "닥스"),
-    (re.compile(r"\bHang\s+Seng\b", re.IGNORECASE), "항셍"),
-)
-
-def _under_10000_to_korean(number: int) -> str:
-    parts = []
-    for power in range(3, -1, -1):
-        unit_value = 10 ** power
-        digit = number // unit_value
-        number %= unit_value
-        if digit == 0:
-            continue
-        unit = _KOREAN_SMALL_UNITS[power]
-        if power > 0 and digit == 1:
-            parts.append(unit)
-        else:
-            parts.append(f"{_KOREAN_DIGITS[digit]}{unit}")
-    return "".join(parts)
-
-def _int_to_korean(number: int) -> str:
-    if number == 0:
-        return _KOREAN_DIGITS[0]
-    if number < 0:
-        return f"마이너스 {_int_to_korean(abs(number))}"
-
-    groups = []
-    while number:
-        groups.append(number % 10000)
-        number //= 10000
-
-    parts = []
-    for idx in range(len(groups) - 1, -1, -1):
-        group = groups[idx]
-        if group == 0:
-            continue
-        parts.append(f"{_under_10000_to_korean(group)}{_KOREAN_LARGE_UNITS[idx]}")
-    return "".join(parts)
-
-def _decimal_text_to_korean(value: str) -> str:
-    normalized = value.replace(",", "").strip()
-    if not normalized:
-        return ""
-    if "." not in normalized:
-        return _int_to_korean(int(normalized))
-    integer, decimal = normalized.split(".", 1)
-    decimal = decimal.rstrip()
-    if not decimal:
-        return _int_to_korean(int(integer or "0"))
-    spoken_decimal = " ".join(_KOREAN_DIGITS[int(char)] for char in decimal if char.isdigit())
-    return f"{_int_to_korean(int(integer or '0'))} 점 {spoken_decimal}"
-
-def _format_temperature_reading(match: re.Match[str]) -> str:
-    value = match.group("value")
-    sign = match.group("sign")
-    lead = match.groupdict().get("lead", "")
-    spoken = _decimal_text_to_korean(value)
-    if sign:
-        return f"{lead}영하 {spoken} 도"
-    if Decimal(value) == 0:
-        return f"{lead}영 도"
-    return f"{lead}영상 {spoken} 도"
-
-def _format_weather_degree_reading(match: re.Match[str]) -> str:
-    return f"{match.group('context')}{_format_temperature_reading(match)}"
-
-def _format_dollar_reading(match: re.Match[str]) -> str:
-    amount_text = match.group("amount").replace(",", "")
-    suffix = (match.group("suffix") or "").upper()
-    try:
-        amount = Decimal(amount_text)
-    except InvalidOperation:
-        return match.group(0)
-
-    lead = match.group("lead") or ""
-    sign = "마이너스 " if match.group("sign") else ""
-    multipliers = {
-        "K": Decimal("1000"),
-        "M": Decimal("1000000"),
-        "B": Decimal("1000000000"),
-        "T": Decimal("1000000000000"),
-    }
-    if suffix:
-        total = (amount * multipliers[suffix]).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        return f"{lead}{sign}{_int_to_korean(int(total))} 달러"
-
-    dollars = int(amount)
-    cents = int(((amount - Decimal(dollars)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    if cents == 100:
-        dollars += 1
-        cents = 0
-
-    spoken = f"{lead}{sign}{_int_to_korean(dollars)} 달러"
-    if cents:
-        spoken = f"{spoken} {_int_to_korean(cents)} 센트"
-    return spoken
-
-def _format_percent_reading(match: re.Match[str]) -> str:
-    sign = match.group("sign")
-    prefix = ""
-    if sign in {"+", "＋"}:
-        prefix = "플러스 "
-    elif sign in {"-", "−"}:
-        prefix = "마이너스 "
-    return f"{prefix}{_decimal_text_to_korean(match.group('value'))} 퍼센트"
-
-def _format_index_value_reading(match: re.Match[str]) -> str:
-    return f"{match.group('name')} {_decimal_text_to_korean(match.group('value'))}"
-
-def _looks_like_korean_tts(provider: str, tts_config: Dict[str, Any]) -> bool:
-    provider_cfg = tts_config.get(provider) if isinstance(tts_config.get(provider), dict) else {}
-    voice = str(provider_cfg.get("voice") or provider_cfg.get("voice_id") or "")
-    language = str(provider_cfg.get("language") or tts_config.get("language") or "")
-    instructions = str(provider_cfg.get("instructions") or "")
-
-    return (
-        voice.lower().startswith("ko-kr")
-        or language.lower().startswith("ko")
-        or "korean" in instructions.lower()
-        or "한국어" in instructions
-    )
-
-def _should_normalize_korean_tts_reading(provider: str, tts_config: Dict[str, Any]) -> bool:
-    config = tts_config.get("korean_reading") if isinstance(tts_config.get("korean_reading"), dict) else {}
-    enabled = config.get("enabled") if config else tts_config.get("korean_reading_enabled")
-    if isinstance(enabled, str) and enabled.strip().lower() == "auto":
-        enabled = None
-    if enabled is not None:
-        return _config_bool(enabled, default=False)
-    return _looks_like_korean_tts(provider, tts_config)
-
-def _normalize_korean_tts_reading(text: str, provider: str, tts_config: Dict[str, Any]) -> str:
-    """Rewrite terse finance/weather notation into Korean spoken forms."""
-    if not _should_normalize_korean_tts_reading(provider, tts_config):
-        return text
-
-    normalized = _TEMPERATURE_RE.sub(_format_temperature_reading, text)
-    normalized = _WEATHER_DEGREE_RE.sub(_format_weather_degree_reading, normalized)
-    normalized = _DOLLAR_AMOUNT_RE.sub(_format_dollar_reading, normalized)
-    for pattern, replacement in _STOCK_INDEX_REPLACEMENTS:
-        normalized = pattern.sub(replacement, normalized)
-    normalized = _INDEX_VALUE_RE.sub(_format_index_value_reading, normalized)
-    normalized = _PERCENT_RE.sub(_format_percent_reading, normalized)
-    return normalized
-
-
 def _load_tts_config() -> dict[str, Any]:
+    """Return the ``tts`` config section ({} when unavailable)."""
     try:
         from hermes_cli.config import load_config
         return load_config().get("tts") or {}
@@ -493,6 +305,51 @@ def _apply_call_overrides(tts_config: dict[str, Any], speed: Optional[float], pr
     return tts_config, configured_provider
 
 
+# ElevenLabs voice ids are short alphanumeric tokens; anything else never reaches the URL path.
+_ELEVENLABS_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
+
+
+def elevenlabs_voice_selection_active(tts_config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether the model may pick voices: built-in ElevenLabs is the configured provider (gates
+    the ``voice_id`` and ``find_voices`` schema fields, so other providers see neither)."""
+    tts_config = _load_tts_config() if tts_config is None else tts_config
+    return (_get_provider(tts_config) == "elevenlabs"
+            and _resolve_command_provider_config("elevenlabs", tts_config) is None)
+
+
+def _apply_voice_override(tts_config: dict[str, Any], provider: str, voice_id: Optional[str]):
+    """Per-call ElevenLabs ``voice_id`` on a copy of the config -> ``(tts_config, error_json)``.
+    Ignored (logged) on any other provider: a schema cached before a provider switch may still
+    send it, and it must not fail the speech."""
+    voice_id = (voice_id or "").strip()
+    if not voice_id:
+        return tts_config, None
+    if provider != "elevenlabs" or not elevenlabs_voice_selection_active(tts_config):
+        logger.warning("Ignoring per-call TTS voice_id; tts.provider is %r", provider)
+        return tts_config, None
+    if not _ELEVENLABS_VOICE_ID_RE.match(voice_id):
+        return tts_config, tool_error(
+            f"Invalid ElevenLabs voice_id {voice_id!r}: use a voice_id returned by find_voices.",
+            success=False)
+    section = dict(tts_config.get("elevenlabs") or {})
+    section["voice_id"] = voice_id
+    return {**tts_config, "elevenlabs": section}, None
+
+
+def _find_voices(find: Any) -> str:
+    """``text_to_speech(find_voices=...)``: one page of ElevenLabs voices to pick a voice_id from."""
+    if not isinstance(find, dict):
+        return tool_error("find_voices must be an object, e.g. {\"query\": \"orc\"}", success=False)
+    tts_config = _load_tts_config()
+    if not elevenlabs_voice_selection_active(tts_config):
+        return tool_error("find_voices needs tts.provider: elevenlabs", success=False)
+    api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
+    if not api_key:
+        return tool_error("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/", success=False)
+    from tools.tts_elevenlabs_voices import search_voices
+    return search_voices(find, tts_config, api_key)
+
+
 def _session_platform() -> tuple:
     """``(platform, wants_opus)`` — platforms delivering voice bubbles only as Ogg/Opus want Opus."""
     from gateway.session_context import get_session_env
@@ -644,19 +501,18 @@ def _synthesize_chunks(chunks: list[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    instructions: Optional[str] = None, provider: Optional[str] = None,
+    voice_id: Optional[str] = None, find_voices: Optional[dict[str, Any]] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
     sequentially, then packed against the platform's upload limit: a failed combine keeps the
-    separate valid files and no over-limit artifact is ever returned."""
+    separate valid files and no over-limit artifact is ever returned. ``find_voices`` (ElevenLabs
+    only) searches voices instead of speaking."""
+    if find_voices is not None:  # {} = browse with the defaults
+        return _find_voices(find_voices)
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
-    # Korean reading normalization must run BEFORE the shared English cleaner:
-    # prepare_spoken_text rewrites "23°C"→"23 degrees Celsius" and "$12.34"→
-    # "12.34 dollars", which destroys the Korean patterns.
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
-    text = _normalize_korean_tts_reading(text, provider, tts_config)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
         from tools.tts_text_normalize import prepare_spoken_text
         text = prepare_spoken_text(text, max_chars=None)
@@ -664,6 +520,10 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    tts_config, error = _apply_voice_override(tts_config, provider, voice_id)
+    if error:
+        return error
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)
@@ -827,12 +687,25 @@ def _tts_schema_overrides() -> dict:
     would name the launch profile's home for everyone else (#95685)."""
     params = copy.deepcopy(TTS_SCHEMA["parameters"])
     params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
-    return {"parameters": params}
+    if not elevenlabs_voice_selection_active():
+        return {"parameters": params}
+    from tools.tts_elevenlabs_voices import FIND_VOICES_SCHEMA
+    params["properties"]["voice_id"] = {
+        "type": "string",
+        "description": ("ElevenLabs voice for this audio (a voice_id from find_voices). "
+                        "Omit to use the user's configured voice.")}
+    params["properties"]["find_voices"] = copy.deepcopy(FIND_VOICES_SCHEMA)
+    params["required"] = []  # a find_voices call carries no text
+    return {"parameters": params, "description": TTS_SCHEMA["description"].replace(
+        _CONFIGURED_VOICE_SENTENCE, _ELEVENLABS_VOICE_SENTENCE)}
 
+
+_CONFIGURED_VOICE_SENTENCE = "Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected."
+_ELEVENLABS_VOICE_SENTENCE = "The provider is user-configured (ElevenLabs); pick a voice per call with voice_id, found with find_voices (one character per voice, e.g. for game NPCs)."
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. " + _CONFIGURED_VOICE_SENTENCE,
     "parameters": {
         "type": "object",
         "properties": {
@@ -868,7 +741,8 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        **{k: args.get(k) for k in ("output_path", "speed", "instructions")}),
+        **{k: args.get(k) for k in ("output_path", "speed", "instructions", "voice_id", "find_voices")}),
     check_fn=check_tts_requirements,
     emoji="🔊",
+    compat_args=("voice_id", "find_voices"),  # advertised per provider; find_voices needs no text
     dynamic_schema_overrides=_tts_schema_overrides)

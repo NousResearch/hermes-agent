@@ -1,6 +1,5 @@
+import type { DelegationStatusResponse } from '@hermes/shared/gateway-types'
 import { atom } from 'nanostores'
-
-import type { DelegationStatusResponse } from '../gatewayTypes.js'
 
 export interface DelegationState {
   // Last known caps from `delegation.status` RPC.  null until fetched.

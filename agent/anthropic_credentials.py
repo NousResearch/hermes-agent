@@ -25,10 +25,9 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from utils import atomic_json_write, base_url_hostname
 from agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
@@ -61,10 +60,19 @@ def _first_env(*names: str) -> str:
 
 
 def _is_oauth_token(key: str) -> bool:
-    """True for Anthropic OAuth/setup tokens (sk-ant-*, eyJ JWTs, cc-); False for sk-ant-api* Console keys."""
-    if not key or key.startswith("sk-ant-api"):
+    """True for Anthropic OAuth/setup tokens (sk-ant-oat*, eyJ JWTs, cc-); False for the Console
+    API-key families sk-ant-api*, sk-ant-usr*, sk-ant-svc* and sk-ant-admin* (#133856) — they pay
+    per token and authenticate as x-api-key, so the Claude Code identity must not ride along.
+    Unknown sk-ant-* prefixes still classify as OAuth so OAuth prefixes Anthropic ships later keep working."""
+    if not key or key.startswith(("sk-ant-api", "sk-ant-usr", "sk-ant-svc", "sk-ant-admin")):
         return False
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
+
+
+def is_native_anthropic_host(base_url: Any) -> bool:
+    """True when *base_url* is exactly ``api.anthropic.com`` (an empty base_url is the native default)."""
+    text = str(base_url or "").strip()
+    return not text or base_url_hostname(text) == "api.anthropic.com"
 
 
 def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:
@@ -78,9 +86,7 @@ def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Option
     materialized once for the shape test (``CommandTokenSource`` caches, so this never double-mints)
     and a mint failure classifies as non-OAuth — the wire client surfaces the real error.
     """
-    text = str(base_url or "").strip()
-    native_host = not text or (urlparse(text).hostname or "").lower().rstrip(".") == "api.anthropic.com"
-    if not (native_host or (provider or "").strip().lower() == "anthropic"):
+    if not (is_native_anthropic_host(base_url) or (provider or "").strip().lower() == "anthropic"):
         return False
     if callable(credential) and not isinstance(credential, str):
         try:
@@ -265,6 +271,7 @@ def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -294,6 +301,7 @@ def _read_claude_code_keychain_payload() -> Optional[dict[str, Any]]:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
@@ -597,6 +605,7 @@ def _mirror_claude_code_credentials_to_keychain(
             account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
         result = subprocess.run(
             argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            check=False,
         )
     except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
         logger.debug("Keychain mirror skipped (%s)", e)
@@ -717,7 +726,7 @@ def run_oauth_setup_token() -> Optional[str]:
         raise FileNotFoundError("The 'claude' CLI is not installed. Install it with: npm install -g @anthropic-ai/claude-code")
     # Interactive: stdio inherited so the user can complete the OAuth prompt.  noqa: subprocess-stdin
     try:
-        subprocess.run([claude_path, "setup-token"])
+        subprocess.run([claude_path, "setup-token"], check=False)
     except (KeyboardInterrupt, EOFError):
         return None
     creds = read_claude_code_credentials()

@@ -88,6 +88,14 @@ def update_tree(tmp_path, monkeypatch):
                            args=args, resumed=resumed, requests=requests, plans=plans)
 
 
+def _publish_stable(monkeypatch, t):
+    """stable = the latest published GitHub release; its resolver pins t.wanted (v1.1.0)."""
+    from hermes_cli import source_releases
+
+    monkeypatch.setattr(source_releases, '_resolve_stable', lambda repository, *_: source_releases.SourceTarget(
+        'stable', 'stable', repository, commit=t.wanted, version='1.1.0'))
+
+
 @pytest.mark.parametrize('case', ['main', 'explicit', 'missing', 'no-move', 'wrong-branch',
                                 'fork-no-upstream', 'fork-upstream', 'fork-upstream-push-ok',
                                 'fork-upstream-wrong-branch', 'fork-upstream-reverted',
@@ -205,20 +213,8 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
     """A stable update is pinned to the channel's exact commit: no tag lookup on
     origin, the stale local ``v1.1.0`` never moves, and an explicit --branch
     bypasses the channel."""
-    from hermes_cli import source_releases
-    from hermes_cli.release_channels import ChannelResolution
-
     t = update_tree
-    # The stable channel is an R2 record whose published build pins t.wanted
-    # (the documented reader seam; see test_source_channel_integration).
-    record = {"schema": 1, "name": "stable", "repository": "NousResearch/hermes-agent",
-              "policy": "stable-release", "state": "active", "identity": {}, "nextSequence": 2,
-              "head": {"buildId": "build-fixture", "sequence": 1}}
-    manifest = {"schema": 1, "request": {"buildId": "build-fixture", "channel": "stable", "sequence": 1,
-                "repository": "NousResearch/hermes-agent", "commit": t.wanted, "sourceVersion": "1.1.0",
-                "version": "0.0.1", "identity": {}, "bundleEnv": {}}, "packages": []}
-    monkeypatch.setattr(source_releases, '_resolve_channel',
-                        lambda name, repository: ChannelResolution(record, record, manifest))
+    _publish_stable(monkeypatch, t)
     expected = t.wanted
     if server in {'at-release', 'ahead-release'}:
         git(t.clone, 'fetch', '--no-tags', 'origin', t.wanted)
@@ -279,23 +275,13 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
 @pytest.mark.platforms('windows')
 @pytest.mark.parametrize('transport', ['gitless', 'no-git', 'git-error', 'dirty'])
 def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, monkeypatch, tmp_path, transport):
-    from hermes_cli import source_releases
-    from hermes_cli.release_channels import ChannelResolution
-
     t = update_tree
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update',
                         lambda: {"resume_needed": True})
     archive = tmp_path / 'source.zip'
     git(t.origin, 'archive', '--format=zip', '--prefix=hermes-agent-source/', f'--output={archive}', t.wanted)
     archive_bytes = archive.read_bytes()
-    record = {"schema": 1, "name": "stable", "repository": "NousResearch/hermes-agent",
-              "policy": "stable-release", "state": "active", "identity": {}, "nextSequence": 2,
-              "head": {"buildId": "build-fixture", "sequence": 1}}
-    manifest = {"schema": 1, "request": {"buildId": "build-fixture", "channel": "stable", "sequence": 1,
-                "repository": "NousResearch/hermes-agent", "commit": t.wanted, "sourceVersion": "1.1.0",
-                "version": "0.0.1", "identity": {}, "bundleEnv": {}}, "packages": []}
-    monkeypatch.setattr(source_releases, '_resolve_channel',
-                        lambda name, repository: ChannelResolution(record, record, manifest))
+    _publish_stable(monkeypatch, t)
     routes = {
         f'/NousResearch/hermes-agent/archive/{t.wanted}.zip': archive_bytes,
     }

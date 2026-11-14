@@ -24,7 +24,7 @@ def test_fail_inside_a_stage_emits_one_json_frame_with_the_reason(tmp_path):
     result = subprocess.run(
         [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
          "-Stage", "repository", "-Json", "-InstallDir", str(install_dir)],
-        env=env, capture_output=True, text=True, timeout=240)
+        env=env, capture_output=True, text=True, timeout=240, check=False)
     frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     assert result.returncode == 1
     assert len(frames) == 1, result.stdout

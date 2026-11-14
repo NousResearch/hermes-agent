@@ -45,9 +45,12 @@ _CHILD = textwrap.dedent('''
         # The selected interpreter is the shim: its SQLite probe is the runtime-safety fact.
         sys.executable = os.environ["PROBE_SHIM"]
     import hermes_yaml as yaml
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_cli.config import DEFAULT_CONFIG, ensure_hermes_home
     home = Path(os.environ["HERMES_HOME"])
     home.mkdir(parents=True, exist_ok=True)
+    # The process's first config read secures the home (0700) once. Do it now, as a real process
+    # has by the time it runs the update tail: config-ro's later chmod must stay in force.
+    ensure_hermes_home()
     (home / "config.yaml").write_text(yaml.safe_dump({
         "_config_version": DEFAULT_CONFIG["_config_version"] - 1,
         "telemetry": {"shared_metrics": {"enabled": False}},
@@ -64,6 +67,9 @@ _CHILD = textwrap.dedent('''
     update_cmd._fleet_restart_skip_reason = lambda plan: None
     update_cmd._surviving_pre_update_serve_runtimes = lambda plan: []
     maint._refresh_dashboard_after_update = lambda **kwargs: None
+    # A detached git writer would outlive the test in its deleted tmp checkout.
+    from hermes_cli import git_commit_graph
+    git_commit_graph.spawn_commit_graph_refresh = lambda root: False
     verify._print_legacy_units_warning = lambda: None
     verify._collect_fleet_snapshot = lambda *args: []
     windows_resume = None
@@ -172,7 +178,7 @@ def _run_completion(tmp_path: Path, mode: str, *, sqlite: str | None = None) -> 
     child = tmp_path / "child.py"
     child.write_text(_CHILD, encoding="utf-8")
     done = subprocess.run([sys.executable, "-B", str(child), str(ROOT), str(cell), mode],
-                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240)
+                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240, check=False)
     assert done.returncode == 0, done.stdout + done.stderr
     summary = json.loads((cell / "summary.json").read_text(encoding="utf-8-sig"))
     summary["output"] = done.stdout + done.stderr
@@ -336,7 +342,7 @@ def test_zip_update_never_replays_a_refused_resume_after_the_commit_point(tmp_pa
     driver = tmp_path / "zip_parent.py"
     driver.write_text(_ZIP_PARENT, encoding="utf-8")
     done = subprocess.run([sys.executable, "-B", str(driver), str(ROOT), str(cell)],
-                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240)
+                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240, check=False)
     output = done.stdout + done.stderr
     assert done.returncode == 0, output
     assert (home / ".update_exit_code").read_text().strip() == "0", output
@@ -385,7 +391,7 @@ def test_old_schema_handoff_receipt_keeps_the_previous_runs_manual_serve_debt(tm
 
         def run(*args):
             done = subprocess.run([sys.executable, "-B", str(child), str(ROOT), *args],
-                                  env=env, capture_output=True, text=True, timeout=120)
+                                  env=env, capture_output=True, text=True, timeout=120, check=False)
             assert done.returncode == 0, done.stdout + done.stderr
 
         def owed():

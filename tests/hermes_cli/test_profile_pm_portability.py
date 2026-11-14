@@ -17,7 +17,8 @@ def transfer_home(tmp_path, monkeypatch):
     from hermes_cli import backup, gateway, profiles
 
     # Restoring data must not install host services or modify the test user's shell.
-    monkeypatch.setattr(gateway, "ensure_gateway_service", lambda **kwargs: False)
+    from hermes_cli import gateway_setup_service
+    monkeypatch.setattr(gateway_setup_service, "ensure_gateway_service", lambda *args, **kwargs: False)
     monkeypatch.setattr(gateway, "_is_service_running", lambda: False)
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: "test has no aliases")
     monkeypatch.setattr(backup, "_collect_memory_provider_external_paths", list)

@@ -54,6 +54,7 @@ Remove-PSBreakpoint $breakpoint
         env={**os.environ, "HOME": str(home), "HERMES_HOME": str(home),
              "TEMP": str(tmp_path), "TMP": str(tmp_path)},
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     receipt = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8"))
     assert receipt["ok"] is False, (receipt, result.stdout, result.stderr)

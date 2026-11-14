@@ -99,7 +99,8 @@ def will_retry(job: dict[str, Any]) -> bool:
     from cron.jobs import _parse_aware, compute_next_run
 
     now = _hermes_now()
-    natural_next = _parse_aware(compute_next_run(job.get("schedule") or {}, now.isoformat()))
+    natural_next = _parse_aware(compute_next_run(
+        job.get("schedule") or {}, now.isoformat(), timezone=job.get("timezone")))
     if natural_next is None:
         # The natural occurrence is uncomputable (e.g. croniter missing): _advance_after_run
         # leaves the record state=error — terminal — so plan_retry never runs either.

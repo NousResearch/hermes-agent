@@ -1361,7 +1361,6 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
-    container_id = env._container_id
     terminal_tool._active_environments["session-close-test"] = env
 
     cleanup_calls = []
@@ -1898,3 +1897,36 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+@pytest.mark.parametrize("base", ["default", "profile:research-assistant-for-the-quarterly-ops"])
+def test_workspace_container_labels_identify_it_to_the_orphan_reaper(monkeypatch, base):
+    """The orphan reaper must recognise an idle-STOPPED workspace container from the labels the
+    create path actually stamps. ``hermes-task-id`` is truncated to 63 chars, so a profile name of
+    36+ chars cut the ``_ws_<digest>`` suffix and the next sweep ``docker rm``-ed the container,
+    losing everything installed outside the mounts."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    _make_dummy_env(task_id=f"{base}:ws:0123456789abcdef")
+    labels = dict(lbl.split("=", 1) for lbl in _labels_in_run_args(_run_args_from_calls(calls)))
+
+    def _inspect(cmd, **kwargs):
+        key = re.search(r'Labels "([^"]+)"', cmd[cmd.index("--format") + 1]).group(1)
+        return subprocess.CompletedProcess(cmd, 0, stdout=labels.get(key, "<no value>") + "\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _inspect)
+    assert docker_env._is_idle_workspace_container("/usr/bin/docker", "cid"), labels
+
+
+def test_non_workspace_container_is_not_an_idle_workspace(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    _make_dummy_env(task_id="profile:research-assistant-for-the-quarterly-ops")
+    labels = dict(lbl.split("=", 1) for lbl in _labels_in_run_args(_run_args_from_calls(calls)))
+
+    def _inspect(cmd, **kwargs):
+        key = re.search(r'Labels "([^"]+)"', cmd[cmd.index("--format") + 1]).group(1)
+        return subprocess.CompletedProcess(cmd, 0, stdout=labels.get(key, "<no value>") + "\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _inspect)
+    assert not docker_env._is_idle_workspace_container("/usr/bin/docker", "cid"), labels

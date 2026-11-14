@@ -99,6 +99,7 @@ def can_spawn(python: Path) -> bool:
             text=True,
             timeout=30,
             env=child_env(),
+            check=False,
         )
         return r.returncode == 0
     except Exception:

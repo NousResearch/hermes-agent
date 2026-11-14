@@ -6,10 +6,12 @@ import logging
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+from gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS
 from hermes_cli.sqlite_util import add_column_if_missing
 
 
@@ -17,6 +19,8 @@ from hermes_cli.sqlite_util import add_column_if_missing
 logger = logging.getLogger("gateway.platforms.api_server")
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+# A key closed by ``find_or_close``: no request body hashes to it, so it never replays as a run.
+_CLOSED_FINGERPRINT = "closed"
 
 _SELECT_BY_KEY = (
     "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at "
@@ -166,6 +170,31 @@ class RunIdempotencyStore:
             self._conn.commit()
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
+    def find_or_close(self, scope: str, key: str):
+        """``("found", record)`` for the run *key* admitted, else ``("closed", None)`` after
+        closing it in the same write transaction as ``reserve``: a closed key never admits, since
+        a later POST under it answers a fingerprint conflict. A key whose run ended and aged out
+        (only terminal rows are pruned) is closed too, which still means nothing runs under it."""
+        now = time.time()
+        # Another grant alive at this close may outlast the one carrying the request.
+        retention_until = now + MAX_STATUS_GRANT_TTL_SECONDS
+        with self._immediate_txn():
+            self._prune_stale_terminal_locked(now)
+            row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            if row is None:
+                self._conn.execute(
+                    "INSERT INTO run_idempotency(scope,idempotency_key,fingerprint,run_id,status_json,"
+                    "retention_until,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (scope, key, _CLOSED_FINGERPRINT, f"closed_{uuid.uuid4().hex}",
+                     _encode_status({"status": "cancelled"}), retention_until, now, now))
+            elif row[0] == _CLOSED_FINGERPRINT:
+                self._conn.execute(_EXTEND_RETENTION_BY_KEY,
+                                   (retention_until, scope, key, _CLOSED_FINGERPRINT))
+            self._conn.commit()
+        if row is None or row[0] == _CLOSED_FINGERPRINT:
+            return "closed", None
+        return "found", _record(*row[1:])
+
     def _prune_stale_terminal_locked(self, now: float) -> None:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
@@ -222,6 +251,12 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
+            self._conn.commit()
+
+    def forget(self, scope: str, key: str) -> None:
+        """Release a reservation whose run was refused before it existed."""
+        with self._lock:
+            self._conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
             self._conn.commit()
 
     def close(self) -> None:

@@ -1,17 +1,11 @@
 """Regression tests for xAI curated + models.dev picker-time merge."""
 
 from unittest.mock import patch
-from hermes_cli.models_catalog_static import _XAI_TOP_MODEL
 
 from hermes_cli.models import (
     _PROVIDER_MODELS,
     provider_model_ids,
 )
-
-
-def test_xai_headline_is_default_pin():
-    models = _PROVIDER_MODELS["xai-oauth"]
-    assert models[0] == _XAI_TOP_MODEL
 
 
 
@@ -56,3 +50,10 @@ def test_xai_pin_survives_when_top_model_only_in_extras():
         models = provider_model_ids("xai-oauth")
 
     assert models[0] == top
+
+
+def test_xai_headline_model_leads_the_static_catalog():
+    from hermes_cli.models_catalog_static import _XAI_TOP_MODEL
+
+    assert _PROVIDER_MODELS["xai-oauth"][0] == _XAI_TOP_MODEL == "grok-4.7"
+

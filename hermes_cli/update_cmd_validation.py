@@ -50,7 +50,7 @@ def _critical_module_import_failures(
     try:
         result = subprocess.run(
             runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120)
+            encoding="utf-8", errors="replace", timeout=120, check=False)
     except subprocess.TimeoutExpired:
         return _probe_failure("TimeoutExpired", "timed out before reporting import health")
     except (OSError, subprocess.SubprocessError):

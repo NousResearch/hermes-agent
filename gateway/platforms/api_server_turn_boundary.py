@@ -49,6 +49,8 @@ def response_turn_start_index(
     agent_messages = result.get("messages") if isinstance(result, dict) else None
     if not isinstance(agent_messages, list) or not agent_messages:
         return 0
+    if result.get('_messages_are_turn_suffix'):
+        return 0
     user_idx = reanchor_current_turn_user_idx(agent_messages, user_message)
     if user_idx >= 0:
         return user_idx + 1

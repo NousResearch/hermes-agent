@@ -403,6 +403,7 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> tuple[bool, int, s
         proc = subprocess.run(
             gate.command, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=max(1, int(gate.timeout_seconds)), cwd=cwd or None,
+            check=False,
         )
         combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         return proc.returncode == 0, proc.returncode, combined[-_GATE_OUTPUT_TAIL_CHARS:]
@@ -1097,6 +1098,10 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+
+    def refresh(self) -> None:
+        """Re-read state from the DB (another writer, e.g. a tool, moved it)."""
+        self._state = load_goal(self.session_id)
 
     # --- introspection ------------------------------------------------
 

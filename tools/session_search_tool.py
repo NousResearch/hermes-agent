@@ -431,17 +431,44 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
+def _cross_profile_reads_confined() -> bool:
+    """True when the calling task may read only its own profile's store.
+
+    One process serving several profiles (multiplexed gateway, a pooled or ``--isolated`` backend
+    on a multi-profile host, a routed turn) makes each secondary profile a tenant: its allowlisted
+    users must not reach the root profile's transcripts by naming it (#87779). The root profile
+    keeps cross-profile reads, which is how its ``@session:<profile>/<id>`` links resolve. A
+    standalone process for one profile has no such boundary, and neither does the operator's own
+    CLI/TUI/Desktop/ACP session (its frozen launch policy), whose All-profiles sidebar offers
+    ``@session:`` chips from every profile; A2A peers, hosted rooms, cron and messaging stay confined.
+    The caller is the active scope (``get_hermes_home()``), never ``os.environ``, which holds the
+    launch profile's home.
+    """
+    from agent.secret_scope import serves_routed_profile
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from tools.approval_context import is_local_interactive_session
+    if not serves_routed_profile() or is_local_interactive_session():
+        return False
+    return hermes_home_key(get_hermes_home()) != hermes_home_key(get_profile_dir("default"))
+
+
 def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
         return None
     from hermes_cli import profiles as profiles_mod
+    from hermes_constants import get_hermes_home, hermes_home_key
     from hermes_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
+    target = profiles_mod.get_profile_dir(canon)
+    if hermes_home_key(target) != hermes_home_key(get_hermes_home()) and _cross_profile_reads_confined():
+        raise PermissionError("this profile may only search its own sessions; reading another "
+                              "profile's sessions is limited to the default profile")
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return SessionDB(db_path=target / "state.db", read_only=True)
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str | None = None) -> str:
@@ -473,6 +500,8 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
     result = _read_session(db, sid, link_profile=profile)
     if json.loads(result).get("success") is not False or profile:
         return result
+    if _cross_profile_reads_confined():
+        return tool_error(f"session_id not found in this profile: {sid}", success=False)
     return tool_error(f"session_id not found in this profile: {sid}. If it belongs to another "
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
@@ -575,33 +604,17 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-              around_message_id, window, sort, profile, detail, owned_dbs,
+              around_message_id, window, sort, profile, detail,
               after=None, before=None, exclude_session_ids=None) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set.
-    Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
-    # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
-    # split on it and adopt the embedded profile only when none was passed.
-    if isinstance(session_id, str) and "/" in session_id:
-        emb_profile, _, emb_id = session_id.partition("/")
-        if emb_id:
-            session_id = emb_id
-            if emb_profile and (profile is None or not str(profile).strip()):
-                profile = emb_profile
-    # Cross-profile: swap in the named profile's DB (read-only) for every shape;
-    # current-lineage guards key off ids that won't collide, so they stay inert.
-    try:
-        profile_db = _resolve_profile_db(profile)
-    except Exception as e:
-        return tool_error(f"profile '{profile}': {e}", success=False)
-    if profile_db is not None:
-        db, current_session_id = profile_db, None
-        owned_dbs.append(profile_db)
+    """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
         return _read_scoped(db, session_id.strip(), profile)
-    limit = _clamp_int(limit, 3, 1, 10)
-    if not query or not isinstance(query, str) or not query.strip():
+    browse = not query or not isinstance(query, str) or not query.strip()
+    # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
+    limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
+    if browse:
         return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
@@ -616,23 +629,52 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
 
-def session_search(query: str = "", role_filter: str | None = None, limit: int = 3, db=None,
+def session_search(query: str = "", role_filter: str | None = None, limit: int | None = None, db=None,
                    current_session_id: str | None = None, session_id: str | None = None, around_message_id: int | None = None,
                    window: int = 5, sort: str | None = None, profile: str | None = None, detail: str = "adaptive",
                    after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from hermes_state import format_session_db_unavailable
-    from hermes_state_registry import acquire, release_or_close
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB, format_session_db_unavailable
+    from hermes_state_registry import release_or_close
     owned_dbs: list[Any] = []
+    # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
+    # split on it and adopt the embedded profile only when none was passed.
+    if isinstance(session_id, str) and "/" in session_id:
+        emb_profile, _, emb_id = session_id.partition("/")
+        if emb_id:
+            session_id = emb_id
+            if emb_profile and (profile is None or not str(profile).strip()):
+                profile = emb_profile
+    # Cross-profile: swap in the named profile's DB (read-only) for every shape;
+    # current-lineage guards key off ids that won't collide, so they stay inert.
+    try:
+        profile_db = _resolve_profile_db(profile)
+    except Exception as e:
+        logging.debug("session_search: cannot open profile %r", profile, exc_info=True)
+        return tool_error(f"profile '{profile}': {e}", success=False)
+    if profile_db is not None:
+        db, current_session_id = profile_db, None
+        owned_dbs.append(profile_db)
+    # A managed worker's handle is a RuntimeSessionStore: it mirrors the owner's write and lineage
+    # surface, not the FTS read API, and every read is an owner RPC. Handing it here made recall in a
+    # worker fail with `'RuntimeSessionStore' object has no attribute 'search_messages'` (#141705), so
+    # recall opens its own read-only handle — the same one the no-db path below uses.
+    from agent.runtime_session_store import RuntimeSessionStore
+    if isinstance(db, RuntimeSessionStore):
+        db = None
     if db is None:
-        db = _quiet(acquire, None, "SessionDB unavailable for session_search")
+        db = _quiet(
+            lambda: SessionDB(db_path=get_hermes_home() / "state.db", read_only=True),
+            None, "SessionDB unavailable for session_search",
+        )
         if db is None:
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                         around_message_id, window, sort, profile, detail, owned_dbs,
+                         around_message_id, window, sort, profile, detail,
                          after=after, before=before, exclude_session_ids=exclude_session_ids)
     finally:
         for owned_db in reversed(owned_dbs):
@@ -651,8 +693,7 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Recall past conversations: search or read old Hermes sessions (FTS5), or "
-        "scroll inside one. Four shapes, picked by args: `query` = discovery "
+        "Search or read past Hermes conversations (FTS5), or scroll inside one. Four shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "
         "`session_id` alone = read a whole session — how you resolve an "
@@ -680,11 +721,11 @@ SESSION_SEARCH_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
+                    "Max sessions to return. Discovery defaults to 3; browse/no-args "
+                    "defaults to 10. Max 10. Bump discovery to 5–10 when the topic "
+                    "likely spans several sessions and you want to pick the right one "
+                    "to scroll into."
                 ),
-                "default": 3,
             },
             "sort": {
                 "type": "string",
@@ -788,7 +829,7 @@ registry.register(
     toolset="session_search",
     schema=SESSION_SEARCH_SCHEMA,
     handler=lambda args, **kw: session_search(
-        query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
+        query=args.get("query") or "", limit=args.get("limit"), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
                                     "after", "before", "exclude_session_ids")}),

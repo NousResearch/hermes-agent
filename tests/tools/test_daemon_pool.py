@@ -79,6 +79,7 @@ def test_wedged_worker_does_not_block_interpreter_exit():
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert proc.returncode == 0
     assert "main-done" in proc.stdout

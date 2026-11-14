@@ -1299,7 +1299,6 @@ class TestBadNextRunAtRecovery:
         from datetime import timezone, timedelta as td
         now = datetime.now(UTC)
         past = (now - td(seconds=30)).isoformat()
-        future = (now + td(days=1)).isoformat()
 
         # Bad record: next_run_at is not a valid ISO string (e.g. from hand-edit or corruption)
         # Healthy sibling is past due with good schedule.
@@ -1376,7 +1375,7 @@ class TestPerJobScanContainment:
         import cron.jobs as jobs_mod
         real_grace = jobs_mod._compute_grace_seconds
 
-        def selective_grace(schedule):
+        def selective_grace(schedule, grace_minutes=None):
             if schedule.get("minutes") == 7:
                 raise RuntimeError("simulated unforeseen malformed field")
             return real_grace(schedule)

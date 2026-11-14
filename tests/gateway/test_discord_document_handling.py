@@ -224,9 +224,6 @@ class TestIncomingDocumentHandling:
         content1 = b"First file content"
         content2 = b"Second file content"
 
-        call_count = 0
-        responses = [content1, content2]
-
         def make_session(_responses):
             idx = 0
 

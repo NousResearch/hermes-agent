@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { setTimeout } from 'node:timers/promises'
@@ -31,10 +31,16 @@ function contains(parent, child) {
 
 const productMarker = '.hermes-product'
 const productOwner = 'hermes-frontend-product-v1\n'
-const developerOutputs = ['ui-tui/dist', 'hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps']
+const developerOutputs = ['ui-tui/dist', 'hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/dist-webapp', 'apps/desktop/build/native-deps']
+
+// `pnpm run builder --<platform> --<arch>` stages one native tree per target
+// (apps/desktop/scripts/run-electron-builder.mjs): build/native-deps-<platform>-<arch>.
+const nativeTargetOutput = /^apps[\\/]desktop[\\/]build[\\/]native-deps-(darwin|linux|win32)-(x64|arm64)$/
 
 function developerOutput(source, out) {
-  return source && developerOutputs.some(name => path.resolve(out) === path.join(path.resolve(source), name))
+  if (!source) return false
+  const relative = path.relative(path.resolve(source), path.resolve(out))
+  return developerOutputs.some(name => relative === path.join(name)) || nativeTargetOutput.test(relative)
 }
 
 // A destination name alone does not confer ownership of its existing contents.
@@ -42,7 +48,7 @@ function requireOwnedOutput(out, source) {
   const stat = lstatSync(out, { throwIfNoEntry: false })
   if (!stat) return
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Output must be a directory, not a file or symlink: ${out}`)
-  // These exact npm destinations belong to their compiler. Other paths require
+  // These exact developer destinations belong to their compiler. Other paths require
   // explicit ownership before an existing directory can be replaced.
   if (developerOutput(source, out)) return
   const marker = path.join(out, productMarker)
@@ -126,24 +132,6 @@ export function publishDirectory(staged, out, { source } = {}) {
 export async function withProduct(out, compile, { source } = {}) {
   requireOwnedOutput(out, source)
   mkdirSync(path.dirname(out), { recursive: true })
-  // A build that died mid-flight (kill -9, power loss) leaves its scratch
-  // behind forever — mkdtemp names are unique so nothing reuses them and the
-  // checkout accumulates one per aborted build (measured: 11 stale dirs from
-  // 2026-09-26). A scratch older than a day is unambiguously dead: builds
-  // hold no locks across days. Sweep those before staging a new one.
-  try {
-    const prefix = `.${path.basename(out)}-build-`
-    const parent = path.dirname(out)
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000
-    for (const entry of readdirSync(parent)) {
-      if (!entry.startsWith(prefix)) continue
-      const full = path.join(parent, entry)
-      const stats = statSync(full)
-      if (stats.isDirectory() && stats.mtimeMs < cutoff) await rmTree(full)
-    }
-  } catch {
-    // The sweep is best-effort: a locked or fresh scratch must never block the build.
-  }
   const scratch = mkdtempSync(path.join(path.dirname(out), `.${path.basename(out)}-build-`))
   const product = path.join(scratch, 'product')
   mkdirSync(product)

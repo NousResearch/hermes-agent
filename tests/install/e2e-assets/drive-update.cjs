@@ -20,9 +20,10 @@
 const path = require('node:path')
 const fs = require('node:fs')
 
-const { _electron } = require('@playwright/test')
+// The checkout's tests-js declares the driver's Playwright.
+const { _electron } = require(require.resolve('@playwright/test', { paths: [path.join(__dirname, '../../../tests-js')] }))
 const { prepareWindowForInput } = require('./window-input.cjs')
-const { observeProcessClose } = require('./process-close.cjs')
+const { observeProcessClose, recordProcessOutput } = require('./process-close.cjs')
 const { pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } = require('./update-ui.cjs')
 const { installSourceBranchProbe, prepareSourceBranchEnvironment } = require('./source-branch-probe.cjs')
 
@@ -91,6 +92,7 @@ async function main() {
   })
   if (!nativeHandoff) await installSourceBranchProbe(app)
   const child = app.process()
+  recordProcessOutput(child, path.join(proofDir, 'app-output.log'))
 
   const waitForProcessClose = observeProcessClose(child)
   // On Windows Playwright's child is a shell wrapper, not Hermes.exe.

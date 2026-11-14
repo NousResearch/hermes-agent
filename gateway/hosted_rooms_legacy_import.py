@@ -22,7 +22,7 @@ SOURCE_NAME = "state.db"
 MARKER_TABLE = "hosted_room_legacy_imports"
 # Liveness state, never copied: a lease is a ~15s heartbeat plus a process generation, so a copied
 # lease names a process that is gone. The driver claims a fresh one instead.
-_SKIP_TABLES = frozenset({"hosted_room_driver_leases"})
+_SKIP_TABLES = frozenset({"hosted_room_driver_leases", "hosted_room_router_claims"})
 # Sources this process could not import (unreadable file, rows the target refused). Every store open
 # re-checks readiness, so without this a broken legacy file would re-run the copy and re-warn on
 # every poll; the retry happens on the next process start instead.
@@ -66,8 +66,9 @@ def _select_expressions(legacy: sqlite3.Connection, target: sqlite3.Connection, 
     return pairs
 
 
-def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
+def _copy_rows(target: sqlite3.Connection, source: Path, *, only: frozenset[str] | None = None) -> int:
     """Copy every room ``target`` does not have yet, with all of its child rows; returns rooms copied.
+    ``only``: copy just these room ids and no install-wide (room-less) table rows.
 
     A room id present in both stores is skipped as a unit: grafting the legacy events under this
     store's room would leave ``next_seq`` behind ``MAX(seq)`` and every later append colliding.
@@ -97,8 +98,11 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
             rows = legacy.execute(f"SELECT {', '.join(expr for _, expr in pairs)} FROM {name}")
             if "room_id" in columns:
                 room_index = columns.index("room_id")
-                rows = (row for row in rows if str(row[room_index]) not in existing)
+                rows = (row for row in rows if str(row[room_index]) not in existing
+                        and (only is None or str(row[room_index]) in only))
                 verb = "INSERT"
+            elif only is not None:
+                continue
             else:
                 verb = "INSERT OR IGNORE"
             if name == "hosted_rooms":

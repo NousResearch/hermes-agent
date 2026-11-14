@@ -137,7 +137,7 @@ for task, model, rep in cells:
             f.write(json.dumps(rec) + "\n")
         continue
     env = {**ENV_BASE, **extra_env, "BUBENCH_TASKS": args.tasks}
-    subprocess.run(["pkill", "-f", "browser_harness"], capture_output=True)
+    subprocess.run(["pkill", "-f", "browser_harness"], capture_output=True, check=False)
     try:
         proc = subprocess.run(
             [PY, os.path.join(ROOT, "single_run.py"), "pr", task, model, str(rep)],
@@ -145,6 +145,7 @@ for task, model, rep in cells:
             text=True,
             timeout=args.run_timeout,
             env=env,
+            check=False,
         )
         rec = None
         for line in (proc.stdout or "").splitlines():

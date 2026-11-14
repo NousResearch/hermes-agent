@@ -114,7 +114,7 @@ def _git_branch(cwd: str) -> str:
         import subprocess
         r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, check=False)
     except Exception:
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""

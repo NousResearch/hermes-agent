@@ -91,3 +91,46 @@ def test_retry_after_is_bounded_and_interruptible(monkeypatch, retry_after, mini
         network.retry_network(fail, wait=cancel)
     assert len(attempts) == len(waits) == 1
     assert minimum <= waits[0] <= network._MAX_DELAY
+
+
+@pytest.mark.parametrize("status,headers,cdn", [
+    pytest.param(403, {"Server": "Vercel", "x-vercel-mitigated": "deny"}, "Vercel", id="vercel-deny"),
+    pytest.param(429, {"Server": "Vercel", "x-vercel-mitigated": "challenge"}, "Vercel", id="vercel-challenge-429"),
+    pytest.param(403, {"Server": "cloudflare", "cf-mitigated": "challenge", "cf-cache-status": "DYNAMIC"},
+                 "Cloudflare", id="cloudflare-challenge"),
+    pytest.param(403, {"Server": "cloudflare"}, None, id="cloudflare-origin-not-r2"),
+    pytest.param(404, {"Server": "cloudflare"}, None, id="missing-object"),
+    pytest.param(403, {"Server": "AmazonS3"}, None, id="origin-403"),
+])
+def test_download_failure_names_only_a_cdn_firewall_refusal(status, headers, cdn):
+    from pm.downloader import DownloadTransportError
+
+    hdrs = Message()
+    for key, value in headers.items():
+        hdrs[key] = value
+    url = "https://mirror.example/x"
+    message = str(DownloadTransportError(url, urllib.error.HTTPError(url, status, "failed", hdrs, None)))
+    if cdn is None:
+        assert "CDN firewall" not in message
+    else:
+        assert f"mirror.example's CDN firewall ({cdn}) refused this network" in message, message
+
+
+@pytest.mark.parametrize("retry_after,expected", [("60", 60), ("600", None)])
+def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
+    attempts = []
+    waits = []
+
+    def request():
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise _http_error(503, retry_after)
+        return "complete"
+
+    if expected is None:
+        with pytest.raises(urllib.error.HTTPError):
+            network.retry_network(request, wait=waits.append, progress=lambda: 0)
+        assert len(attempts) == 1 and not waits
+    else:
+        assert network.retry_network(request, wait=waits.append, progress=lambda: 0) == "complete"
+        assert waits == [expected]

@@ -84,7 +84,7 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
         assert "STALLED" not in output
 
 
-def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, capsys, monkeypatch):
+def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, capsys, monkeypatch, request):
     """The OTHER rung: a published host record answers before the config-derived one.
 
     Both rungs print a "Scheduler host: the host gateway…" line, so they are only distinguishable
@@ -96,6 +96,9 @@ def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, c
     from gateway import host_rendezvous as hr
     from hermes_cli import cron
 
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+    request.addfinalizer(lambda: hr.release_host_lock(hr.ROLE_GATEWAY))
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "probe"))
 
     cron.cron_status()

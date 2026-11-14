@@ -29,8 +29,8 @@ stdout), 2 = inventory/analysis error.
 Usage:
     python scripts/ci/check_lazy_deps_imports.py [repo_root]
 
-Wired unconditionally into .github/workflows/lazy-deps-guard.yml
-(blocking job); the contract tests driving this CLI against fixture
+Wired unconditionally into .github/workflows/repo-guards.yml
+(blocking step); the contract tests driving this CLI against fixture
 repos live in tests/pm/test_no_lazy_deps.py.
 """
 
@@ -50,6 +50,7 @@ def _tracked_python_files(root: Path) -> list[str]:
     proc = subprocess.run(
         ["git", "-C", str(root), "ls-files", "-z", "--", "*.py"],
         capture_output=True,
+        check=False,
     )
     if proc.returncode != 0:
         sys.stderr.write(

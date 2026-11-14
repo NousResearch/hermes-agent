@@ -1,4 +1,4 @@
-/** Skill install targets shared by the public Skills Hub and Desktop's skill deep link. */
+/** Install targets shared by the public docs galleries and native catalog. */
 export interface SkillCatalogTarget {
   name: string
   source: string
@@ -28,4 +28,8 @@ export function skillCatalogInstallUrl(skill: SkillCatalogTarget): string | null
   const identifier = skillCatalogInstallIdentifier(skill)
 
   return identifier ? `hermes://skill/install?${new URLSearchParams({ identifier })}` : null
+}
+
+export function pluginCatalogInstallUrl(plugin: { name: string }): string {
+  return `hermes://plugin/install?${new URLSearchParams({ catalog: plugin.name })}`
 }

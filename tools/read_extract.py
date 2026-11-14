@@ -256,7 +256,7 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
         return None
     try:
         proc = subprocess.run(
-            ["pdftotext", path, "-"], stdin=subprocess.DEVNULL, capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT)
+            ["pdftotext", path, "-"], stdin=subprocess.DEVNULL, capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     out = proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else ""

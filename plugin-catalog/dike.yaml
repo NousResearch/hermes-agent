@@ -1,0 +1,30 @@
+name: dike
+repo: https://github.com/Grizaceo/hermes-dike
+sha: cbd8322317de2d42162385de7646d4b7f7a3c2bd
+title: "Diké"
+description: "Diké: checks the article citations of Chilean law in a legal brief against a sealed, hash-identified local copy of 25 statutes (Ley Chile), and refuses to certify what it cannot prove. Each citation comes back verified, with its identifier, source URL and text SHA-256, or unverified with the engine's reason (AMBIGUOUS, UNRESOLVABLE). Three tools (dike_verificar_citas on text or a .md/.txt/.docx path; dike_leer_articulo and dike_buscar_corpus, read-only on the corpus), two commands (/dike-verificar, /dike-estado) and two skills. Text in English, Spanish optional; statute text and engine codes stay in Spanish. Not legal advice: it never certifies that a provision supports an argument, nor that a dated copy is today's text. The opt-in Desktop page adds a Case Writer (a brief editor where only the engine can mark a citation verified, a pseudonymization step you control before any text leaves, and a chat about the brief in your own Hermes gateway), a read-only 3D map of the sealed corpus and a versioned case board; a Dashboard tab and a backend at /api/plugins/dike serve them. Disclosure — the vendored Diké engine runs in a child process (same interpreter, no shell, minimal environment without agent credentials), inside bubblewrap without network when it is available and in a declared degraded mode when it is not. One such sandboxed engine process stays up per session so the corpus is verified once (about 170 MB; it exits after 10 idle minutes or with Hermes). Two hooks (pre_llm_call, pre_tool_call) act only on Case Writer chat sessions, which carry a <dike-escritor v=\\\"1\\\"> envelope: they add fixed instructions and block every tool except skills, tool discovery and this plugin's three tools with text arguments; other sessions are untouched. Model calls happen only when you use that chat, case-board suggestions or opt-in prediction, through your own gateway, after pseudonymization unless you switch it off and confirm sending the real data. Reads only the text passed or the named regular .md/.txt/.docx file (no symlinks). Writes only under HERMES_HOME/plugin-data/dike: the corpus (about 300 MB, unpacked once after a SHA-256 check, checked by file stat on every call and fully re-hashed once per process), temporary files, engine caches, Case Writer briefs, pseudonym maps (they hold the real values; files 0600) and send and hook logs without content. The Desktop page adds one scoped <style> element and removes it on unload. No network of its own after dependency install, no telemetry, never signs."
+maintainer: Grizaceo
+tier: community
+category: tools
+docs_url: https://github.com/Grizaceo/hermes-dike#readme
+version: "0.10.0"
+image: https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/screenshots/01-citation-check.png
+  - https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/screenshots/02-two-statutes-refused.png
+  - https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/screenshots/03-pseudonymization.png
+  - https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/screenshots/04-brief-chat.png
+  - https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/screenshots/05-corpus-graph.png
+  - https://raw.githubusercontent.com/Grizaceo/hermes-dike/cbd8322317de2d42162385de7646d4b7f7a3c2bd/docs/media/screenshots/06-article-node.png
+requires_hermes: ">=0.23.0"
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - dike_verificar_citas
+    - dike_leer_articulo
+    - dike_buscar_corpus
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

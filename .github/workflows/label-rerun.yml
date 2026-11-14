@@ -26,7 +26,7 @@ jobs:
   rerun-with-e2e:
     name: Rerun CI with every E2E lane
     if: github.event.label.name == 'run-e2e'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - name: Cancel and rerun the head commit's CI, Docker and Nix runs

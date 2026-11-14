@@ -20,10 +20,12 @@ _WARNED: set[str] = set()
 def chat_keeps_phone_numbers() -> bool:
     """True only when the active profile's config.yaml sets ``security.redact_phone_numbers: false``.
     Any other value, or a config that cannot be read, keeps phone numbers masked (fails closed)."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     try:
         from hermes_cli.config import load_config_readonly
         raw = (load_config_readonly().get("security") or {}).get("redact_phone_numbers", True)
-    except Exception:  # health: allow BLE001 -- an unreadable config keeps the masked default (fails closed)
+    # A refused backend read is a SystemExit subclass: it must not abort the reply being delivered.
+    except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- an unreadable config keeps the masked default (fails closed)
         return False
     if isinstance(raw, bool):
         return not raw

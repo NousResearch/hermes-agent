@@ -65,3 +65,16 @@ def test_phone_numbers_stay_masked_unless_explicitly_false(home, security):
         assert PHONE not in out, (surface, out)
         assert PHONE[:4] + "****" + PHONE[-4:] in out, (surface, out)
 
+
+def test_a_refused_config_backend_keeps_numbers_masked_without_aborting_the_reply(home, monkeypatch):
+    """``ConfigBackendUnavailable`` is a ``SystemExit``: it must fail closed, not escape delivery."""
+    from hermes_cli import config as hermes_config
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    home({"redact_phone_numbers": "false"})
+
+    def refuse(*a, **k):
+        raise ConfigBackendUnavailable("backend refused the profile read")
+    monkeypatch.setattr(hermes_config, "load_config_readonly", refuse)
+    for surface, out in _replies(f"Call {PHONE} now.").items():
+        assert PHONE not in out, (surface, out)

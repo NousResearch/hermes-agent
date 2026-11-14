@@ -89,8 +89,8 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
 def _scrub(text: str) -> str:
     """The shared egress scrub. Like chat-platform and cron delivery it holds even when
     ``security.redact_secrets`` is off (that setting governs local logs, not what leaves the agent)
-    and fails closed."""
-    return redact_for_egress(text)
+    and fails closed. Providers archive rather than navigate, so URL query credentials are masked too."""
+    return redact_for_egress(text, urls=True)
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_\-./+]{16,}")

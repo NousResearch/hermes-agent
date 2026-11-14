@@ -11,8 +11,6 @@ category: memory
 requires_hermes: ">=0.22.0"
 docs_url: ""
 version: "0.1.0"
-image: ""
-screenshots: []
 readme: true
 platforms: [linux, macos, windows]
 title: Hermes Eye Memory

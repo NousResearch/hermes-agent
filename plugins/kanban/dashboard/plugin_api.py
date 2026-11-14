@@ -178,9 +178,18 @@ BOARD_COLUMNS: list[str] = list(kanban_workflow.DEFAULT_WORKFLOW.keys())
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+def _wire_id(value: Any) -> Optional[str]:
+    """A task id as the UI reads it (``KanbanTask.id: string``). Hermes writes ``t_<hex>`` text, but a board seeded
+    outside Hermes (#112953) may declare ``tasks.id`` INTEGER or leave it untyped, so SQLite hands back numbers, and
+    the desktop page calls string methods on every card's id. Only the response is converted: queries keep the stored
+    value, which an untyped column matches only in its own type."""
+    return None if value is None else str(value)
+
+
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
                current_run_started_at: Optional[int] = None) -> dict[str, Any]:
     d = asdict(task)
+    d["id"] = _wire_id(task.id)
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)
@@ -281,7 +290,7 @@ def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[d
     for task_id in dict.fromkeys([*links["parents"], *links["children"]]):
         task = kanban_db.get_task(conn, task_id)
         if task:
-            rows.append({"id": task.id, "title": task.title, "status": task.status})
+            rows.append({"id": _wire_id(task.id), "title": task.title, "status": task.status})
     return rows
 
 
@@ -404,7 +413,7 @@ def get_task(
             "links": links,
             "link_tasks": _link_tasks(conn, links),
             "child_results": [
-                {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
+                {"id": _wire_id(c.id), "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
                 for c in children],
             "runs": [asdict(r) for r in kanban_db.list_runs(conn, task_id, state_type=run_state_type, state_name=run_state_name)]}
 

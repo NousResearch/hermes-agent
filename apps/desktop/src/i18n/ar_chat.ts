@@ -461,6 +461,8 @@ export const arChat = {
     zoomIn: 'تكبير',
     zoomOut: 'تصغير',
     resetZoom: 'إعادة تعيين التكبير',
+    previousImage: 'الصورة السابقة',
+    nextImage: 'الصورة التالية',
     imagePreviewFailed: 'فشلت معاينة الصورة',
     imageAttach: 'إرفاق الصورة',
     imageWriteFailed: 'فشل كتابة الصورة',

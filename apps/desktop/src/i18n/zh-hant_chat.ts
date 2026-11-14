@@ -483,6 +483,8 @@ export const zhHantChat = {
     zoomIn: '放大',
     zoomOut: '縮小',
     resetZoom: '重設縮放',
+    previousImage: '上一張圖片',
+    nextImage: '下一張圖片',
     imagePreviewFailed: '圖片預覽失敗',
     imageAttach: '附加圖片',
     imageWriteFailed: '無法將圖片寫入磁碟。',

@@ -4843,6 +4843,8 @@ export const en: Translations = {
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
     resetZoom: 'Reset zoom',
+    previousImage: 'Previous image',
+    nextImage: 'Next image',
     imagePreviewFailed: 'Image preview failed',
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',

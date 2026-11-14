@@ -8,7 +8,6 @@ such as COHERE_API_KEY stayed out. Expectations here come from independent confi
 literal policy examples, never from the finished blocklist.
 """
 
-import json
 import os
 from pathlib import Path
 
@@ -35,7 +34,7 @@ SECRET = "sk-profi...14729"
 # Names Hermes mints per endpoint: two endpoints on one host get separate slots.
 MINTED = [custom_endpoint_key_env("my endpoint"), custom_endpoint_key_env("127.0.0.1:1234")]
 # Names an operator chose themselves — the half the minted-name shape cannot cover.
-DECLARED = ["THETA_PROXY_KEY", "CORP_LLM_TOKEN"]
+DECLARED = ["THETA_PROXY_KEY", "CORP_LLM_TOKEN", "CAMEL_GW_KEY", "REF_GW_KEY"]
 # Operator vars that only resemble either form: not Hermes credentials, so they must pass.
 OPERATOR_VARS = ["HERMES_CUSTOM_BANNER", "MY_CUSTOM_API_KEY", "THETA_PROXY_URL", "CORP_TEAM_ID"]
 
@@ -57,7 +56,12 @@ def _write_profile_config(home: Path, monkeypatch) -> None:
         f"    key_env: {DECLARED[1]}\n"
         "custom_providers:\n"
         f"  - name: legacy\n"
-        f"    key_env: {DECLARED[1]}\n",
+        f"    key_env: {DECLARED[1]}\n"
+        # The readers accept camelCase aliases and ``${VAR}`` refs in credential fields.
+        f"  - name: camel\n"
+        f"    apiKeyEnv: {DECLARED[2]}\n"
+        f"  - name: ref\n"
+        f"    api_key: ${{{DECLARED[3]}}}\n",
         encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
@@ -100,12 +104,28 @@ def test_snapshot_holds_no_plaintext_key(isolated_home, monkeypatch):
 
 
 def test_inheriting_child_keeps_the_key(isolated_home, monkeypatch):
-    """Provider tier, not internal: a credentialed child that drives the endpoint still has it."""
+    """Declared names are provider tier: a credentialed child that drives the endpoint keeps them.
+    Minted names are internal-tier on main (``_is_hermes_internal_secret``) and stay stripped."""
     _write_profile_config(isolated_home / "hermes", monkeypatch)
     for name in BLOCKED:
         monkeypatch.setenv(name, SECRET)
     inherited = local.hermes_subprocess_env(inherit_credentials=True)
-    assert observe_child(inherited, BLOCKED) == {k: SECRET for k in BLOCKED}
+    assert observe_child(inherited, BLOCKED) == {**{k: SECRET for k in DECLARED}, **dict.fromkeys(MINTED)}
+
+
+def test_declared_name_is_case_folded_and_follows_config_edits(isolated_home, monkeypatch):
+    """The config's spelling does not decide: env names fold on Windows, so a lowercase
+    ``key_env`` denies the canonical name. Dropping the declaration releases it on the next spawn."""
+    home = isolated_home / "hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    config = home / "config.yaml"
+    config.write_text("providers:\n  theta:\n    key_env: theta_proxy_key\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv(DECLARED[0], SECRET)
+    assert DECLARED[0] not in local._sanitize_subprocess_env(dict(os.environ))
+    config.write_text("providers:\n  theta:\n    base_url: https://example.invalid/v1\n", encoding="utf-8")
+    os.utime(config, ns=(1, 1))  # a different signature even on a coarse-mtime filesystem
+    assert local._sanitize_subprocess_env(dict(os.environ)).get(DECLARED[0]) == SECRET
 
 
 def test_passthrough_cannot_re_allow_a_provider_key(isolated_home, monkeypatch):
@@ -118,7 +138,19 @@ def test_passthrough_cannot_re_allow_a_provider_key(isolated_home, monkeypatch):
     assert not (set(BLOCKED) & set(result))
 
 
-def test_policy_predicates_on_names_alone():
-    """Pure-name checks, no config read: the minted shape is denied, look-alikes are not."""
-    assert all(_is_provider_env_blocklisted(n) for n in MINTED)
+def test_unparsable_config_keeps_the_denial(isolated_home, monkeypatch):
+    """A config that stops parsing must not reopen the leak it had already closed."""
+    _write_profile_config(isolated_home / "hermes", monkeypatch)
+    monkeypatch.setenv(DECLARED[0], SECRET)
+    assert DECLARED[0] not in local._sanitize_subprocess_env(dict(os.environ))
+    config = isolated_home / "hermes" / "config.yaml"
+    config.write_text("providers: [unclosed\n", encoding="utf-8")
+    os.utime(config, ns=(1, 1))
+    assert DECLARED[0] not in local._sanitize_subprocess_env(dict(os.environ))
+
+
+def test_look_alikes_are_not_denied(isolated_home, monkeypatch):
+    """Only declared names count: operator vars that resemble them still pass."""
+    _write_profile_config(isolated_home / "hermes", monkeypatch)
+    assert all(_is_provider_env_blocklisted(n) for n in DECLARED)
     assert not any(_is_provider_env_blocklisted(n) for n in OPERATOR_VARS)

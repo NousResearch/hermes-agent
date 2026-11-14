@@ -116,8 +116,10 @@ _CMDPOS = (
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
+# A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
+# `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root.
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
-    return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
+    return rf'(?:["\'](?:{path_alt})["\'](?:(?:\.\.?)?/)*(?:\.\.?)?\**(?=\s|$|[)`;|&])|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.

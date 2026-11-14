@@ -242,6 +242,10 @@ class TestDriveLetterRoots:
         "rm -rf C:\\",
         "rm -rf c:/*",
         "rm -rf 'D:/'",
+        "rm -rf 'C:/'*",
+        "rm -rf \"C:/\"../",
+        "rm -rf 'C:/'..",
+        "(rm -rf 'C:/')",
         "rm -rf C:/ *",
         "sudo rm -rf C:/./",
         # Backslash root after a separator: only the marked Windows-path variant keeps both the
@@ -257,6 +261,12 @@ class TestDriveLetterRoots:
         "rm -rf C:/Users/me/build",
         "rm -rf c:",
         "git commit -m 'rm -rf C:/'",
+        # A quoted root prefix glued to the rest of the word deletes a subdirectory.
+        'rm -rf "C:/"Users/me/build',
+        "rm -rf 'C:/'Users/me/build",
+        'rm -rf "$HOME"/build',
+        'rm -rf "/"tmp/x',
+        'rm -rf "/usr"/local/build',
     ])
     def test_drive_subdirectory_or_prose_is_not_hardline(self, cmd):
         assert detect_hardline_command(cmd) == (False, None), cmd

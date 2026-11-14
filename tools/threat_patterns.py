@@ -107,9 +107,16 @@ _PATTERNS: list[tuple[str, str, str]] = [
 # Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py
 # INVISIBLE_CHARS): zero-width space/non-joiner/joiner, word joiner, invisible times/separator/
 # plus, BOM, LTR/RTL embedding + pop + overrides, LTR/RTL/first-strong isolates + pop.
+# Plus the Unicode TAG block U+E0000–U+E007F: invisible, maps 1:1 onto ASCII ("ASCII smuggling").
 INVISIBLE_CHARS = frozenset(
     "\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff"
-    "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+    "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+) | frozenset(map(chr, range(0xE0000, 0xE0080)))
+
+# Subdivision-flag emoji (TR51: U+1F3F4 + 2-7 lowercase/digit tags + CANCEL TAG, e.g. Scotland) are
+# the one legitimate use of TAG chars. Spaces and punctuation are excluded so the exemption cannot
+# carry a smuggled sentence.
+EMOJI_TAG_SEQUENCE_RE = re.compile("\U0001F3F4[\U000E0030-\U000E0039\U000E0061-\U000E007A]{2,7}\U000E007F")
 
 # Compiled per scope at import; inclusion is cumulative (all ⊂ context ⊂ strict).
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}
@@ -137,7 +144,8 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
+    raw_chars = set(EMOJI_TAG_SEQUENCE_RE.sub("", content))
+    findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in raw_chars & INVISIBLE_CHARS]
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
@@ -159,4 +167,4 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "scan_for_threats"]
+__all__ = ["EMOJI_TAG_SEQUENCE_RE", "INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "scan_for_threats"]

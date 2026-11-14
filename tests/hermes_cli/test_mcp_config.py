@@ -296,6 +296,18 @@ class TestMcpTest:
         assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
         assert "not found in config" in capsys.readouterr().out
 
+    def test_transport_line_masks_url_query_credentials(self, tmp_path, capsys, monkeypatch):
+        """``Transport: HTTP →`` prints the rendered URL; a ``?userToken=`` key must not reach stdout (#133713)."""
+        secret = "OPAQUE" + "k" * 24
+        _seed_config(tmp_path, {"penpot": {"url": f"http://127.0.0.1:9001/mcp/stream?userToken={secret}"}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: [])
+        assert cmd_mcp_test(_make_args(name="penpot")) == 0
+        out = capsys.readouterr().out
+        assert secret not in out
+        assert "http://127.0.0.1:9001/mcp/stream?userToken=***" in out
+
     def test_cli_dispatcher_forwards_test_exit_code(self, tmp_path, monkeypatch):
         """``hermes mcp test`` reaches ``main()`` with the handler's code (the dispatcher used to drop it)."""
         _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})

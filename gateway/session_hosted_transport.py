@@ -298,6 +298,10 @@ def _check_remote_hosted_admission(authority, ref, row):
         if row['payload'] != attested_submission_payload(
                 attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
             raise ValueError('input changed')
+    except RuntimeStoreError:
+        # A source that no longer holds the attempt answers stale_hosted_task; the target needs that
+        # verdict to settle the row, so it is not folded into a hard denial here.
+        raise
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
     if attested.get('retired') is True:  # the source says this unchanged attempt is over

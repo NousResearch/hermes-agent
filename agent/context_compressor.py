@@ -39,6 +39,7 @@ from agent.context_compressor_retry import retryable_user_text, typed_prompt_con
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
+    unread_delegation_result_cut, last_index_with_role as _last_index_with_role,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
@@ -1322,11 +1323,6 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     if not (msg.get("reasoning") or msg.get("reasoning_content")):
         tokens += _reasoning_details_text_chars(msg.get("reasoning_details")) // _CHARS_PER_TOKEN
     return tokens
-
-
-def _last_index_with_role(messages: list[dict[str, Any]], role: str) -> int:
-    """Index of the newest dict message with ``role``, or -1."""
-    return max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == role), default=-1)
 
 
 def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
@@ -5034,6 +5030,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                     )
             else:
                 cut_idx = asst_anchored_cut
+        cut_idx = unread_delegation_result_cut(self, messages, head_end, cut_idx)  # unread results stay verbatim
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the

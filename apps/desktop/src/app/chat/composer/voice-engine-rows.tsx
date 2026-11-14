@@ -8,14 +8,21 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import {
+  gptLiveEngineAvailable,
+  gptLiveEngineReason,
+  grokLiveEngineAvailable,
+  grokLiveEngineReason,
+  isVoiceChatMode
+} from '@/lib/voice-live'
 import { notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from '@/store/voice-live'
 
 /**
  * Which engine the next voice conversation mounts: the chained
- * speech-to-text → Hermes → speech loop, or GPT-Live delegating to Hermes.
+ * speech-to-text → Hermes → speech loop, GPT-Live, or Grok Voice.
  *
- * Radio rows, not a toggle: the user is choosing between two named things and
+ * Radio rows, not a toggle: the user is choosing between named engines and
  * the checked row tells them which one the next press starts. Rendered inside
  * whichever menu the layout has room for (the folded voice menu, or the
  * right-click menu on the start button), so the same rows appear in both.
@@ -31,21 +38,23 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
     return null
   }
 
-  const liveAvailable = status.available
+  const liveAvailable = gptLiveEngineAvailable(status)
+  const grokAvailable = grokLiveEngineAvailable(status)
+  const selected = selectedVoiceChatMode(status)
 
   return (
     <>
       <DropdownMenuLabel>{c.voiceEngine}</DropdownMenuLabel>
       <DropdownMenuRadioGroup
         onValueChange={value => {
-          if (value !== 'chained' && value !== 'gpt-live') {
+          if (!isVoiceChatMode(value)) {
             return
           }
 
           triggerHaptic('open')
           setVoiceChatMode(value).catch(error => notifyError(error, c.voiceEngineChangeFailed))
         }}
-        value={selectedVoiceChatMode(status)}
+        value={selected}
       >
         <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} value="chained">
           {c.voiceEngineChained}
@@ -55,7 +64,17 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
             <span>{c.voiceEngineLive}</span>
             {liveAvailable ? null : (
               <span className="text-muted-foreground truncate text-xs">
-                {status.reason ?? c.voiceEngineLiveNeedsKey}
+                {gptLiveEngineReason(status) ?? c.voiceEngineLiveNeedsKey}
+              </span>
+            )}
+          </span>
+        </DropdownMenuRadioItem>
+        <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled || !grokAvailable} value="grok-live">
+          <span className="flex min-w-0 flex-col">
+            <span>{c.voiceEngineGrok}</span>
+            {grokAvailable ? null : (
+              <span className="text-muted-foreground truncate text-xs">
+                {grokLiveEngineReason(status) ?? c.voiceEngineGrokNeedsCredential}
               </span>
             )}
           </span>
@@ -74,7 +93,15 @@ export function useVoiceEngineName(): null | string {
     return null
   }
 
-  return selectedVoiceChatMode(status) === 'gpt-live'
-    ? t.composer.voiceEngineLiveShort
-    : t.composer.voiceEngineChainedShort
+  const mode = selectedVoiceChatMode(status)
+
+  if (mode === 'gpt-live') {
+    return t.composer.voiceEngineLiveShort
+  }
+
+  if (mode === 'grok-live') {
+    return t.composer.voiceEngineGrokShort
+  }
+
+  return t.composer.voiceEngineChainedShort
 }

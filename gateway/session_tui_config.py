@@ -181,7 +181,7 @@ def _authorize_write(connection, ref, params):
 # Profile settings main's sidecar wrote for Desktop's toggles (``tui_gateway/server.py::_DISPLAY_TOGGLE_KEYS``)
 # and its voice-engine pick: config.yaml leaves with main's validation.
 _DISPLAY_TOGGLE_KEYS = frozenset({'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'})
-_VOICE_CHAT_MODES = frozenset({'chained', 'gpt-live'})
+_VOICE_CHAT_MODES = frozenset({'chained', 'gpt-live', 'grok-live'})
 
 
 async def config_set(connection, ref, params):

@@ -1196,10 +1196,13 @@ DEFAULT_CONFIG = {
 
     "voice": {
         # How the Desktop voice conversation is wired:
-        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
-        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
-        #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        #   chained   — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
+        #   gpt-live  — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
+        #               DELEGATES every real request to Hermes (any model / provider you have
+        #               selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        #   grok-live — xAI Grok Voice (grok-voice-latest) over the realtime WebSocket. The gateway
+        #               mints a 300s client secret with the xAI OAuth sign-in, falling back to
+        #               XAI_API_KEY only when that sign-in is absent. Does not use /v1/tts.
         "voice_chat_mode": "chained",
         "gpt_live": {
             "model": "gpt-live-1",
@@ -1207,6 +1210,13 @@ DEFAULT_CONFIG = {
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
+        },
+        "grok_live": {
+            "model": "grok-voice-latest",  # alias of grok-voice-3.0
+            "voice": "eve",
+            "reasoning_effort": "none",  # none | high — the voice layer only talks; Hermes does the work
+            # Extra sentences appended to the Grok Voice persona (tone, pacing, language).
+            "instructions": "",
         },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript

@@ -12,7 +12,14 @@ import {
   resolveSpokenReply
 } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
-import { toLiveHistory } from '@/lib/voice-live'
+import {
+  gptLiveEngineAvailable,
+  gptLiveEngineReason,
+  grokLiveEngineAvailable,
+  grokLiveEngineReason,
+  toLiveHistory,
+  type VoiceChatMode
+} from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -31,6 +38,7 @@ import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { useGrokVoiceConversation } from './use-grok-voice-conversation'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
@@ -96,7 +104,7 @@ export function useComposerVoice({
   useEffect(() => (voiceConversationActive ? retainVoiceStreamPaint() : undefined), [voiceConversationActive])
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
-  const [liveEngineActive, setLiveEngineActive] = useState(false)
+  const [voiceEngine, setVoiceEngine] = useState<VoiceChatMode>('chained')
   // Barge-in can retain a submit callback from a render where the interrupted
   // turn was still busy. Read the current gate when its transcript arrives so
   // that stale closure does not silently drop the next voice turn.
@@ -221,7 +229,7 @@ export function useComposerVoice({
   const chainedConversation = useVoiceConversation({
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && !liveEngineActive,
+    enabled: voiceConversationActive && voiceEngine === 'chained',
     onFatalError: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next
@@ -245,7 +253,7 @@ export function useComposerVoice({
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && liveEngineActive,
+    enabled: voiceConversationActive && voiceEngine === 'gpt-live',
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
     onStopWord: () => setVoiceConversationActive(false),
@@ -254,29 +262,53 @@ export function useComposerVoice({
     seedHistory: seedLiveHistory
   })
 
-  const conversation = liveEngineActive ? liveConversation : chainedConversation
+  const grokConversation = useGrokVoiceConversation({
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    busy,
+    consumePendingResponse,
+    enabled: voiceConversationActive && voiceEngine === 'grok-live',
+    onFatalError: () => setVoiceConversationActive(false),
+    onInterrupt,
+    onStopWord: () => setVoiceConversationActive(false),
+    onSubmit: submitLiveDelegation,
+    pendingResponse: pendingTurnResponse
+  })
+
+  const conversation =
+    voiceEngine === 'gpt-live' ? liveConversation : voiceEngine === 'grok-live' ? grokConversation : chainedConversation
 
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
-   *  decided in the same state batch so the other engine never sees a frame of
-   *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
+   *  decided in the same state batch so the other engines never see a frame of
+   *  `enabled`. A full-duplex mode that cannot start falls back to chained with
+   *  a notice rather than a dead button. */
   const activateConversation = useCallback(() => {
     const status = $voiceLiveStatus.get()
-    let live = false
+    const selected = selectedVoiceChatMode(status)
+    let engine: VoiceChatMode = 'chained'
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
-      if (status?.available) {
-        live = true
+    if (selected === 'gpt-live') {
+      if (gptLiveEngineAvailable(status)) {
+        engine = 'gpt-live'
       } else {
         notify({
           id: 'voice-live-unavailable',
           kind: 'warning',
-          message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
+          message: t.notifications.voice.liveUnavailable(gptLiveEngineReason(status) ?? 'not configured')
+        })
+      }
+    } else if (selected === 'grok-live') {
+      if (grokLiveEngineAvailable(status)) {
+        engine = 'grok-live'
+      } else {
+        notify({
+          id: 'voice-grok-unavailable',
+          kind: 'warning',
+          message: t.notifications.voice.grokUnavailable(grokLiveEngineReason(status) ?? 'not configured')
         })
       }
     }
 
-    setLiveEngineActive(live)
+    setVoiceEngine(engine)
     setVoiceConversationActive(true)
     recordFeatureUse('voice_conversation')
   }, [t])
@@ -410,8 +442,8 @@ export function useComposerVoice({
   // lease, and the backend unloads resident local models once no surface holds
   // one. Fire-and-forget — the toggle never waits on or fails from this.
   useEffect(() => {
-    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive)
-  }, [liveEngineActive, voiceConversationActive])
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && voiceEngine === 'chained')
+  }, [voiceConversationActive, voiceEngine])
 
   useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
 

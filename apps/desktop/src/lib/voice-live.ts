@@ -19,7 +19,7 @@ import { hermesApi } from '@/hermes'
  * https://developers.openai.com/api/docs/guides/live-delegation
  */
 
-export type VoiceChatMode = 'chained' | 'gpt-live'
+export type VoiceChatMode = 'chained' | 'gpt-live' | 'grok-live'
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
@@ -27,6 +27,80 @@ export interface VoiceLiveStatus {
   reason: null | string
   model: string
   voice: string
+  /** How Grok Voice authenticated, when the backend reports it. Never a secret. */
+  auth?: 'api_key' | 'none' | 'oauth'
+  grok_available?: boolean
+  grok_reason?: null | string
+  grok_auth?: 'api_key' | 'none' | 'oauth'
+  /** OpenAI-key verdict, kept even when the saved mode is grok-live. */
+  gpt_live_available?: boolean
+  gpt_live_reason?: null | string
+}
+
+export function normalizeVoiceChatMode(mode: null | string | undefined): VoiceChatMode {
+  if (mode === 'gpt-live') {
+    return 'gpt-live'
+  }
+
+  if (mode === 'grok-live') {
+    return 'grok-live'
+  }
+
+  return 'chained'
+}
+
+export function isVoiceChatMode(value: string): value is VoiceChatMode {
+  return value === 'chained' || value === 'gpt-live' || value === 'grok-live'
+}
+
+/** GPT-Live can start. Falls back to the top-level verdict on backends that predate Grok. */
+export function gptLiveEngineAvailable(status: null | VoiceLiveStatus): boolean {
+  if (!status) {
+    return false
+  }
+
+  if (typeof status.gpt_live_available === 'boolean') {
+    return status.gpt_live_available
+  }
+
+  return status.mode !== 'grok-live' && status.available
+}
+
+export function gptLiveEngineReason(status: null | VoiceLiveStatus): null | string {
+  if (!status || gptLiveEngineAvailable(status)) {
+    return null
+  }
+
+  if (status.gpt_live_reason) {
+    return status.gpt_live_reason
+  }
+
+  return status.mode === 'grok-live' ? null : status.reason
+}
+
+/** Grok Voice can start. Falls back to the top-level verdict when that is the saved mode. */
+export function grokLiveEngineAvailable(status: null | VoiceLiveStatus): boolean {
+  if (!status) {
+    return false
+  }
+
+  if (typeof status.grok_available === 'boolean') {
+    return status.grok_available
+  }
+
+  return status.mode === 'grok-live' && status.available
+}
+
+export function grokLiveEngineReason(status: null | VoiceLiveStatus): null | string {
+  if (!status || grokLiveEngineAvailable(status)) {
+    return null
+  }
+
+  if (status.grok_reason) {
+    return status.grok_reason
+  }
+
+  return status.mode === 'grok-live' ? status.reason : null
 }
 
 export interface LiveHistoryMessage {
@@ -90,8 +164,14 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
     }
 
     return {
+      auth: response.auth,
       available: Boolean(response.available),
-      mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
+      gpt_live_available: response.gpt_live_available,
+      gpt_live_reason: response.gpt_live_reason ?? null,
+      grok_auth: response.grok_auth,
+      grok_available: response.grok_available,
+      grok_reason: response.grok_reason ?? null,
+      mode: normalizeVoiceChatMode(response.mode),
       model: response.model,
       reason: response.reason ?? null,
       voice: response.voice

@@ -254,7 +254,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
-  'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  'voice.voice_chat_mode': ['chained', 'gpt-live', 'grok-live'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -671,7 +671,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   voice: {
     autoTts: 'Automatically speak assistant responses.',
     voiceChatMode:
-      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
+      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute. grok-live: full-duplex xAI Grok Voice (grok-voice-latest). Needs a Grok sign-in (hermes auth add xai-oauth) or an XAI_API_KEY. The subscription sign-in is accepted by the realtime client-secret endpoint; voice minutes may still be metered by xAI at the Voice API rate ($0.08/min) when an API key is used.',
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:

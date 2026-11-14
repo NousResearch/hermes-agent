@@ -182,11 +182,30 @@ async def get_client_voice_config(request: Request, profile: Optional[str] = Non
 
 @router.get("/api/audio/voice-live/status")
 async def get_voice_live_status(profile: Optional[str] = None):
-    """Which voice chat mode the profile selected (``chained`` | ``gpt-live``) and whether GPT-Live
-    can start. Non-secret: the desktop decides which conversation engine to mount from this."""
-    from tools.voice_live import resolve_gpt_live_status
-    with http_failure("GPT-Live status resolution failed", 500, "GPT-Live status failed"):
-        result = await _run_config_scoped(profile, resolve_gpt_live_status)
+    """Which voice chat mode the profile selected (``chained`` | ``gpt-live`` | ``grok-live``).
+
+    For ``gpt-live`` and ``chained``, ``available`` is still the OpenAI-key verdict. When the
+    saved mode is ``grok-live``, availability comes from Grok Voice (OAuth sign-in or
+    ``XAI_API_KEY``), not from an OpenAI key. Non-secret: no bearer, no client secret.
+    """
+    from tools.voice_live import resolve_voice_chat_status
+    with http_failure("Voice chat status resolution failed", 500, "Voice chat status failed"):
+        result = await _run_config_scoped(profile, resolve_voice_chat_status)
+    return {"ok": True, **result}
+
+
+@router.post("/api/audio/grok-voice/session")
+async def create_grok_voice_session(profile: Optional[str] = None):
+    """Mint a 300s xAI realtime client secret for the desktop WebSocket.
+
+    The long-lived bearer stays on this host. 503 when no credential resolves, 502 when xAI
+    rejects the mint. The response carries the ephemeral secret only.
+    """
+    from tools.grok_voice import GrokVoiceError, mint_grok_voice_session
+    try:
+        result = await _run_config_scoped(profile, mint_grok_voice_session)
+    except GrokVoiceError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message)
     return {"ok": True, **result}
 
 

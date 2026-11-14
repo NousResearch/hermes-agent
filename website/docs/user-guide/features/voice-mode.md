@@ -225,11 +225,11 @@ Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, an
 
 ### Desktop: GPT-Live voice chat mode (full duplex, delegates to Hermes)
 
-The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
+The chained loop above is the default voice chat mode. GPT-Live replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
 
 ```yaml
 voice:
-  voice_chat_mode: gpt-live     # chained (default) | gpt-live
+  voice_chat_mode: gpt-live     # chained (default) | gpt-live | grok-live
   gpt_live:
     voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
     instructions: ""            # optional extra persona sentences (tone, pace, language)
@@ -240,6 +240,26 @@ Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or 
 How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+
+### Desktop: Grok Voice (`grok-live`)
+
+`grok-live` is the same shape of conversation on xAI's realtime voice model (`voice.grok_live.model`, default `grok-voice-latest`, today `grok-voice-3.0`). The voice listens and speaks over a WebSocket. It has two tools: `hermes_task` hands real work to Hermes as a normal turn on the open chat (`surface: voice-live`), and `end_call` hangs up after a goodbye. Hermes keeps the model, tools, memory, and approvals you already selected.
+
+```yaml
+voice:
+  voice_chat_mode: grok-live
+  grok_live:
+    model: grok-voice-latest
+    voice: eve
+    reasoning_effort: "none"   # none | high — the voice only talks; Hermes does the work
+    instructions: ""           # optional extra persona sentences
+```
+
+The long-lived credential stays on the gateway. Pressing the voice button asks the gateway to mint a 300-second client secret (`POST /api/audio/grok-voice/session`); the desktop opens `wss://api.x.ai/v1/realtime` with that secret as the `xai-client-secret.<value>` subprotocol and never receives the bearer.
+
+Auth, in order: the xAI OAuth sign-in (`hermes auth add xai-oauth` — SuperGrok / X Premium+), then `XAI_API_KEY` only when that sign-in is missing. The OAuth bearer is what mints the client secret. That path was verified against the live API on 2026-11-11 (`POST https://api.x.ai/v1/realtime/client_secrets` returned a secret, and the realtime socket spoke as `grok-voice-3.0`). xAI's public examples only show an API key. `/v1/tts` is a different endpoint — the subscription bearer is rejected there — and this mode does not use it.
+
+This is not a free tier. The subscription sign-in is accepted by the realtime client-secret endpoint; when an API key is used, voice minutes may still be metered by xAI at the Voice API rate ($0.08 per minute). The Hermes turn is billed on its own provider as always. If `grok-live` is selected but no credential resolves, the button falls back to the chained mode with a notice. The CLI/TUI `/voice` command stays on the chained loop.
 
 ### Voice chat model
 

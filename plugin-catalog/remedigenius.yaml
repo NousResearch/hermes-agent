@@ -1,7 +1,7 @@
 name: remedigenius
 repo: https://github.com/RajaRenga/RemediGenius-CE
 subdir: profiles/remedigenius/plugins/rg-triage
-sha: 651a54d35d480fb3eccbfc559eac1c3cbff9bcdd
+sha: 27e980af6553cad0701ed7a745f2c9c4ab3fceda
 version: "0.9.2"
 title: RemediGenius — AWS Security Triage Desk
 description: >-
@@ -13,12 +13,12 @@ description: >-
 maintainer: RajaRenga
 tier: community
 category: tools
-docs_url: https://github.com/RajaRenga/RemediGenius-CE/tree/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/profiles/remedigenius/plugins/rg-triage#readme
-image: https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/marketplace-banner.png
+docs_url: https://github.com/RajaRenga/RemediGenius-CE/tree/27e980af6553cad0701ed7a745f2c9c4ab3fceda/profiles/remedigenius/plugins/rg-triage#readme
+image: https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/27e980af6553cad0701ed7a745f2c9c4ab3fceda/docs/media/marketplace-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/spot-v091/board-overview.png
-  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/spot-v091/knowledge.png
-  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/hermes-triage/coverage-response.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/27e980af6553cad0701ed7a745f2c9c4ab3fceda/docs/media/spot-v091/board-overview.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/27e980af6553cad0701ed7a745f2c9c4ab3fceda/docs/media/spot-v091/knowledge.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/27e980af6553cad0701ed7a745f2c9c4ab3fceda/docs/media/hermes-triage/coverage-response.png
 requires_hermes: ">=0.23.1"
 platforms: [windows, macos, linux]
 capabilities:

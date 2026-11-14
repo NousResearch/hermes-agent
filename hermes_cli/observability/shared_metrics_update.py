@@ -72,7 +72,9 @@ _EXCEPTION_TYPE_CLASSES = (
 # Fixed stop-reason prefixes Hermes itself writes (only the prefix is read, never what follows):
 # _update_takeover's preparation failure and update_completion's Windows gateway resume failure.
 _STOP_REASON_PREFIX_CLASSES = (
-    ("historical takeover preparation failed", "deps_failed"), ("Windows gateway recovery failed", "restart_failed"),
+    ("historical takeover preparation failed", "deps_failed"), ("gateway recovery failed", "restart_failed"),
+    # A receipt parked by a version that still called the same failure Windows-only.
+    ("Windows gateway recovery failed", "restart_failed"),
 )
 # An OSError that ended the run, read by its errno token alone (never the text after it):
 # ENOSPC (28 on every platform), Windows ERROR_HANDLE_DISK_FULL (39) / ERROR_DISK_FULL (112).

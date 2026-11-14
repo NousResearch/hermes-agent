@@ -365,7 +365,7 @@ describe('the 30s drain does not open a gateway socket with nothing to deliver (
 })
 
 describe('relay-route socket retention (#93594)', () => {
-  it('does not poll or retain the non-primary local source of a remote-primary Desktop', async () => {
+  it('does not retain an unused non-primary local source of a remote-primary Desktop', async () => {
     hostMock.profileRoutes = vi.fn(async () => [
       route('remote-primary', { primary: true }),
       route('remote-primary', { primary: true, profile: 'research' }),
@@ -373,17 +373,19 @@ describe('relay-route socket retention (#93594)', () => {
       route('local', { mode: 'local', profile: 'research' })
     ])
     const pins = trackRetention()
-    const calls = respondWith(() => ({ envelopes: [] }))
+    const calls = respondWith(call =>
+      call.connectionId === 'local' && call.method === 'profiles.list' ? { profiles: [] } : { envelopes: [] }
+    )
     const { startBotRelay, stopBotRelay } = await loadRelay()
 
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
     await pushAndSettle()
 
-    // Only the sole remaining connection's one-time roster clear goes out — once per profile
-    // route, since each profile home holds its own roster; the local source is never polled.
-    // Two profiles of one connection are not peers: no profiles.list, nothing pinned.
-    expect(calls).toEqual([
+    // The local profile is checked to distinguish an unused default from a Bot.
+    // The sole remaining connection receives one clear per profile route, since
+    // each profile home owns a separate roster.
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([
       { connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] }, route: route('remote-primary', { primary: true }) },
       {
         connectionId: 'remote-primary',
@@ -392,6 +394,7 @@ describe('relay-route socket retention (#93594)', () => {
         route: route('remote-primary', { primary: true, profile: 'research' })
       }
     ])
+    expect(calls.filter(call => call.connectionId === 'local' && call.method === 'profiles.list')).toHaveLength(2)
     expect(pins).toHaveLength(0)
 
     stopBotRelay()
@@ -533,6 +536,40 @@ describe('relay-route socket retention (#93594)', () => {
 })
 
 describe('the roster loop pushes the OTHER connections’ agents', () => {
+  it('keeps a local route with a titled Bot when the remote connection is primary', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('local', { mode: 'local' })
+    ])
+    const calls = respondWith(call => {
+      if (call.method !== 'profiles.list') {
+        return {}
+      }
+
+      return {
+        profiles:
+          call.connectionId === 'local'
+            ? [{ name: 'default', ui_meta: { 'hermes-bots': { title: 'Local Bot' } } }]
+            : [{ name: 'ops' }]
+      }
+    })
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+
+    expect(syncs.find(call => call.connectionId === 'remote-primary')?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'local', profile: 'default', title: 'Local Bot' })
+    ])
+    expect(syncs.find(call => call.connectionId === 'local')?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'remote-primary', profile: 'ops' })
+    ])
+
+    stopBotRelay()
+  })
+
   it.each([false, true])('discards a stopped roster fetch (restart=%s)', async restart => {
     let release!: () => void
 

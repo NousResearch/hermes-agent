@@ -1,0 +1,22 @@
+name: hermes-multibot
+repo: https://github.com/ivanvanes18/hermes-multibot
+sha: e08ae1e09449a0ba7da2a2987b0ea0563bfb8bc3
+subdir: plugin
+title: "Hermes Multibot"
+description: 'Several Telegram bots in one Hermes profile: each extra bot is its own private-DM transport with its own session, alias and numeric allowlist, while memory, skills and tools stay shared. Independent BasePlatformAdapter registered through register_platform; no core patches, no fork or wrapper of the bundled Telegram adapter. Disclosure — network: Telegram Bot API long polling, messages and file downloads; credentials: up to eight declared password secrets read only through Hermes secret scope; files: own replay store and capped media cache under HERMES_HOME; one poller per configured bot inside the gateway process. No telemetry or self-update.'
+maintainer: ivanvanes18
+tier: community
+category: platform
+version: "0.2.0"
+docs_url: https://github.com/ivanvanes18/hermes-multibot#readme
+requires_hermes: ">=0.23.0"
+readme: true
+known_issues:
+  - Private DMs only; no groups, topics, albums, voice, streaming or full bundled command parity.
+  - One shared profile is not a security sandbox between admitted users.
+  - Replay suppression is bounded at-most-once; a crash after claim can lose a message.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

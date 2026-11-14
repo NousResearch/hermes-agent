@@ -1,0 +1,32 @@
+name: hermes-screen
+repo: https://github.com/johaankjis/terebi
+sha: ddee305d10946a894aedd6746edb5e0c8bbb25c0
+description: "Pick what to watch from your own Jellyfin library using real watch history, play movies and saved scenes on your Chromecast with receiver-verified status, send YouTube links to the TV, and play camera rock-paper-scissors against Hermes. Network calls: your Jellyfin server, your Chromecast (Cast protocol, TCP 8009), YouTube on the TV, www.gstatic.com (receiver SDK), your own optional game service, and optional YouTube Data API. Listeners: a temporary expiring movie relay while something plays, and an opt-in two-container game service you deploy yourself. No telemetry. Secrets only via Hermes; no .env reads. Camera frames never leave the phone. Disclosure — while something plays, tv_play opens a temporary listener on your configured cast_relay_bind that serves only the selected Jellyfin item at a random, expiring URL; anyone on your LAN who learns that URL can fetch that one item until it expires. The optional rock-paper-scissors service you deploy yourself runs behind a public Cloudflare quick tunnel."
+maintainer: Johaan Jis
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+title: Hermes Screen
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/johaankjis/terebi/ddee305d10946a894aedd6746edb5e0c8bbb25c0/docs/evidence/rps-aero/tv-reveal.png
+  - https://raw.githubusercontent.com/johaankjis/terebi/ddee305d10946a894aedd6746edb5e0c8bbb25c0/docs/evidence/rps-aero/tv-ready.png
+  - https://raw.githubusercontent.com/johaankjis/terebi/ddee305d10946a894aedd6746edb5e0c8bbb25c0/docs/evidence/rps-aero/phone-controller.png
+capabilities:
+  provides_tools:
+    - library_status
+    - library_pick
+    - tv_play
+    - tv_pause
+    - library_scene_find
+    - library_scene_save
+    - tv_scene_play
+    - tv_game_start
+    - tv_game_stop
+    - tv_youtube_play
+    - tv_youtube_pause
+    - library_youtube_search
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

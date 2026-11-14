@@ -39,7 +39,7 @@ def test_overflow_exhaustion_is_non_retryable_context_overflow_with_slash_comman
 
 
 def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 500: Context size has been exceeded.",
-                       base_url: str = "http://127.0.0.1:1234/v1"):
+                       base_url: str = "http://127.0.0.1:1234/v1", provider: str = "lmstudio"):
     """Drive ``_recover_context_length`` with a provider "context exceeded" and a request the rough
     estimator prices at ``request_tokens`` against a ``window``-token model (no output cap)."""
     from unittest.mock import patch
@@ -51,7 +51,7 @@ def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 50
     st.compression_attempts = 0
     st.agent.max_tokens = None
     st.agent.context_compressor = SimpleNamespace(context_length=window)
-    st.agent.provider, st.agent.base_url, st.agent.tools = "lmstudio", base_url, None
+    st.agent.provider, st.agent.base_url, st.agent.tools = provider, base_url, None
     st.agent._buffer_vprint = st.agent._buffer_diagnostic_status = lambda *a, **k: None
     compressed = []
     st.agent._compress_context = lambda msgs, *a, **k: (compressed.append(1) or [{"role": "user", "content": "x"}], None)
@@ -94,6 +94,20 @@ def test_hosted_context_rejection_far_below_the_known_window_compresses():
     verdict, compressed = _context_rejection(
         47_000, window=1_000_000, base_url="https://api.anthropic.com",
         error="This model's maximum context length was exceeded. Please reduce the length of the messages.",
+    )
+    assert compressed and verdict.action == "break"
+
+
+@pytest.mark.parametrize("base_url", ["process://fixture-cli", "acp://fixture-cli"])
+def test_process_transport_context_rejection_compresses_like_hosted_route(monkeypatch, base_url):
+    """An external-process provider is a hosted model behind a child process, whatever its URL looks
+    like: no single-slot local-server wait, compress and retry (#129153)."""
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name="fixture-cli", auth_type="external_process", base_url=base_url)
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == profile.name else None)
+    verdict, compressed = _context_rejection(
+        47_000, window=1_000_000, base_url=base_url, provider=profile.name, error="prompt is too long",
     )
     assert compressed and verdict.action == "break"
 

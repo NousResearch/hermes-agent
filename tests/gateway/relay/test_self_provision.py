@@ -12,11 +12,15 @@ managed, which is False on a NAS-hosted Fly agent). The real gate is
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 
 import pytest
 
-import gateway.relay as relay
+from agent import secret_scope
+from gateway import relay
+from gateway.run_startup import GatewayStartupMixin
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +39,7 @@ def _clean_env(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     # Never read config.yaml off disk in these tests.
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
 
 
 def _stub_post(captured: dict):
@@ -155,7 +159,7 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         def read(self):
             return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
 
-    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
+    def _fake_urlopen(req, timeout=None):
         sent["body"] = json.loads(req.data.decode())
         return _Resp()
 
@@ -238,4 +242,112 @@ def test_relay_display_name_suppresses_stock_brand(monkeypatch):
     monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
     assert relay.relay_display_name() is None
 
+
+# ───────────────── boot refresh routing on a multiplexed gateway ─────────────────
+
+
+def _boot_with_expired_login(tmp_path, monkeypatch, *, env_file: str, stored_portal: str) -> list[str]:
+    """Launch home whose Nous access token expired while the box slept, so the startup
+    self-provision is the first caller to refresh it. Returns the Portal URLs the refresh used."""
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    (launch_home / ".env").write_text(env_file, encoding="utf-8")
+    (launch_home / "auth.json").write_text(json.dumps({
+        "active_provider": "nous",
+        "providers": {"nous": {
+            "portal_base_url": stored_portal,
+            "access_token": "expired-access-token", "refresh_token": "refresh-token",
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    for name in ("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL", "NOUS_INFERENCE_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(relay, "relay_url", lambda: "wss://connector.example/relay")
+    monkeypatch.setattr(relay, "register_relay_adapter", lambda: False)
+    portals: list[str] = []
+
+    def _refresh(**kwargs):
+        portals.append(kwargs["portal_base_url"])
+        raise RuntimeError("stop before any network call")
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_nous_or_quarantine", _refresh)
+    return portals
+
+
+def test_startup_refresh_uses_launch_profile_portal_when_multiplexed(tmp_path, monkeypatch, caplog):
+    """A Portal override in the launch profile's .env survives the startup refresh."""
+    portals = _boot_with_expired_login(
+        tmp_path, monkeypatch, env_file="HERMES_PORTAL_BASE_URL=https://portal.example\n",
+        stored_portal="https://portal.example")
+    secret_scope.set_multiplex_active(True)
+
+    with caplog.at_level(logging.WARNING):
+        GatewayStartupMixin._start_register_plugins_relay_hooks()
+
+    assert portals == ["https://portal.example"]
+    assert not [r for r in caplog.records if "no profile secret scope" in r.getMessage()]
+
+
+def test_startup_refresh_without_override_stays_on_default_portal(tmp_path, monkeypatch):
+    """With no override anywhere, the startup refresh keeps the default Portal."""
+    from hermes_cli.auth_nous import DEFAULT_NOUS_PORTAL_URL
+
+    portals = _boot_with_expired_login(
+        tmp_path, monkeypatch, env_file="", stored_portal=DEFAULT_NOUS_PORTAL_URL)
+    secret_scope.set_multiplex_active(True)
+
+    GatewayStartupMixin._start_register_plugins_relay_hooks()
+
+    assert portals == [DEFAULT_NOUS_PORTAL_URL]
+
+
+def test_startup_refresh_single_profile_reads_process_env_override(tmp_path, monkeypatch):
+    """Single-profile hosts (multiplexing off) still take the override from the process env."""
+    portals = _boot_with_expired_login(
+        tmp_path, monkeypatch, env_file="", stored_portal="https://portal.example")
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", "https://portal.example")
+
+    GatewayStartupMixin._start_register_plugins_relay_hooks()
+
+    assert portals == ["https://portal.example"]
+
+
+def test_startup_idp_secret_ref_keeps_launch_env_value_when_multiplexed(tmp_path, monkeypatch):
+    """Only the Nous token step runs in the launch profile's scope: a ``${VAR}`` IdP secret injected
+    into the launch env (systemd, ``op run``) still reaches the IdP, as it did unscoped."""
+    import io
+    from unittest.mock import Mock
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    (launch_home / ".env").write_text("", encoding="utf-8")
+    (launch_home / "config.yaml").write_text(
+        "gateway:\n  idp:\n    token_url: https://idp.example/token\n"
+        "    client_id: relay-client\n    client_secret: ${RELAY_IDP_SECRET}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    # The autouse fixture stubs config reads; this test needs the real ``${VAR}`` expansion.
+    from hermes_cli.config_effective import load_user_config_effective
+    monkeypatch.setattr("gateway.run._load_gateway_config",
+                        lambda config_path=None: load_user_config_effective(launch_home / "config.yaml"))
+    monkeypatch.setenv("RELAY_IDP_SECRET", "injected-launch-secret")
+    for name in ("GATEWAY_RELAY_IDP_TOKEN_URL", "GATEWAY_RELAY_IDP_CLIENT_ID",
+                 "GATEWAY_RELAY_IDP_CLIENT_SECRET", "GATEWAY_RELAY_IDP_SCOPE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(relay, "relay_url", lambda: "wss://connector.example/relay")
+    monkeypatch.setattr(relay, "register_relay_adapter", lambda: False)
+    monkeypatch.setattr(relay, "_post_provision", Mock(return_value={}))
+    bodies: list[str] = []
+
+    def _idp(req, timeout=None):
+        bodies.append(req.data.decode())
+        return io.BytesIO(b'{"access_token": "idp-workload-token"}')
+
+    monkeypatch.setattr("urllib.request.urlopen", _idp)
+    secret_scope.set_multiplex_active(True)
+
+    GatewayStartupMixin._start_register_plugins_relay_hooks()
+
+    assert len(bodies) == 1
+    assert "client_secret=injected-launch-secret" in bodies[0]
 

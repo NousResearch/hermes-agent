@@ -1,0 +1,16 @@
+name: pmp-handoff-bridge
+title: PMP Handoff Bridge
+repo: https://github.com/Mad-Max8063/pmp-handoff-bridge
+sha: 04f04711dfc10edbf9e77bb98dd390ab03bea60c
+description: Verify selected PMP handoff files, detect workspace drift, and persist reception receipts. Reads/writes the explicitly authorized workspace; no network or credentials.
+maintainer: Mad-Max8063
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+platforms: [windows, linux]
+capabilities:
+  provides_tools: [pmp_inspect, pmp_prepare_handoff, pmp_verify_handoff, pmp_receive_handoff]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [PMP_BRIDGE_WORKSPACE]

@@ -1,0 +1,24 @@
+name: quick-eval
+title: Quick Eval
+repo: https://github.com/tikiverse/quick-eval
+sha: ebd73221b6a966f55ab4c2128aa44aaac64007a4
+subdir: plugins/quick-eval
+version: "0.1.0"
+description: "Get a second opinion on any answer. /quick-eval sends your last question to other models, shows the answers side by side, and records which ones you mark good. Runs and picks go to an append-only JSONL file, and a review page (/quick-eval open: the Quick Eval page in Hermes Desktop on Hermes 0.22.3 or newer, or a browser page elsewhere; also a tab in hermes dashboard) shows each comparison and a model leaderboard. Disclosure — sends your last question (only that message) to the models you name through Hermes' configured providers; probes localhost ports 11434, 1234, 8000 and 8080 for local model servers and, the first time you name a model one of them serves, adds that server as a `providers:` entry in config.yaml; asks for the model/provider-override permission on Hermes' consent screen (`/quick-eval allow` writes it into config.yaml on older Hermes); writes ~/.hermes/evals/evals.jsonl; reads ~/.hermes/state.db read-only to show your sessions; `/quick-eval open` outside Hermes Desktop serves the review page, which includes full session transcripts, on 127.0.0.1:8765 (or a free port) until Hermes exits, locked to a random per-launch token in the opened URL."
+maintainer: tikiverse
+tier: community
+category: models
+requires_hermes: ">=0.19"
+docs_url: https://github.com/tikiverse/quick-eval/tree/main/plugins/quick-eval#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/tikiverse/quick-eval/ebd73221b6a966f55ab4c2128aa44aaac64007a4/docs/img/demo.gif
+  - https://raw.githubusercontent.com/tikiverse/quick-eval/ebd73221b6a966f55ab4c2128aa44aaac64007a4/docs/img/tiananmen.png
+platforms: []
+known_issues:
+  - "Local thinking models (Qwen3 and similar) can return no answer on a server with a small default token cap: Hermes drops a custom provider's extra_body and max_tokens on plugin calls (hermes-agent#124290, #50132). Turn thinking off on the server."
+capabilities:
+  provides_tools: []
+  provides_hooks: [post_llm_call]
+  provides_middleware: []
+  requires_env: []

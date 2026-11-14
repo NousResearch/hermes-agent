@@ -12,7 +12,7 @@ Hermes Web Dashboard（`hermes dashboard`）在设计上支持换肤和扩展，
 2. **UI 插件（UI plugins）** — 一个包含 `manifest.json` 和 JavaScript bundle 的目录，可注册标签页、替换内置页面、通过页面级插槽增强内置页面，或向命名 shell 插槽注入组件。
 3. **后端插件（Backend plugins）** — 插件目录内的 Python 文件，暴露一个 FastAPI `router`；路由挂载在 `/api/plugins/<name>/` 下，由插件的 UI 调用。
 
-三者均为**运行时即插即用**：无需克隆仓库、无需 `npm run build`、无需修改 dashboard 源码。本页是三者的权威参考文档。
+三者均为**运行时即插即用**：无需克隆仓库、无需 `pnpm run build`、无需修改 dashboard 源码。本页是三者的权威参考文档。
 
 如果只是想使用 dashboard，请参阅 [Web Dashboard](./web-dashboard)。如果想为终端 CLI（而非 Web Dashboard）换肤，请参阅 [Skins & Themes](./skins) —— CLI 皮肤系统与 dashboard 主题无关。
 

@@ -17,8 +17,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# session_key -> {"confirm_id", "command", "handler", "created_at"}
-_pending: Dict[str, Dict[str, Any]] = {}
+# session_key -> {"confirm_id", "command", "handler", "created_at", "authority"}
+_pending: dict[str, dict[str, Any]] = {}
 _lock = threading.RLock()
 
 # Older pending confirms are discarded when the session's next message arrives (buttons live
@@ -27,14 +27,18 @@ DEFAULT_TIMEOUT_SECONDS = 300
 
 
 def register(session_key: str, confirm_id: str, command: str,
-             handler: Callable[[str], Awaitable[Optional[str]]]) -> None:
-    """Register a pending confirm, superseding any prior one for the session."""
+             handler: Callable[[str], Awaitable[Optional[str]]], authority: Optional[dict] = None) -> None:
+    """Register a pending confirm, superseding any prior one for the session. *authority* says who
+    may answer it (``gateway.approval_actor.slash_confirm_refusal``); default: the current turn's."""
+    if authority is None:
+        from tools.approval_context import prompt_authority
+        authority = prompt_authority()
     with _lock:
         _pending[session_key] = {"confirm_id": confirm_id, "command": command,
-                                 "handler": handler, "created_at": time.time()}
+                                 "handler": handler, "created_at": time.time(), "authority": authority}
 
 
-def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
+def get_pending(session_key: str) -> Optional[dict[str, Any]]:
     """Return a copy of the pending confirm dict for a session, or None."""
     with _lock:
         entry = _pending.get(session_key)
@@ -47,7 +51,7 @@ def clear(session_key: str) -> None:
         _pending.pop(session_key, None)
 
 
-def _is_stale(entry: Dict[str, Any], timeout: float) -> bool:
+def _is_stale(entry: dict[str, Any], timeout: float) -> bool:
     return time.time() - float(entry.get("created_at", 0) or 0) > timeout
 
 

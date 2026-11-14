@@ -1,0 +1,19 @@
+name: api-indonesia
+title: API Indonesia
+repo: https://github.com/khmuhtadin/api-indonesia-examples
+sha: 5f165d4d2707adccf4939f802c696253488ac9ef
+version: "1.0.0"
+description: "Indonesian public data from official sources, right inside your agent: regions down to villages, postal codes, holidays, prayer times, BMKG weather and earthquakes, and more. Connects to API Indonesia's hosted MCP server with your API key.\n\n- Regions and places: provinces down to villages with Kemendagri codes, postal codes, region boundaries\n- Calendar: public holidays and cuti bersama, prayer times, Hijri dates\n- Public services: schools, universities, hospitals, BMKG earthquakes, weather and warnings\n- Money and checks: Bank Indonesia exchange rates, minimum wage (UMP), NIK/NPWP format checks, QRIS parsing, rupiah terbilang\n- References: halal and BPOM lookups, OJK investment lists, KBBI, Al-Quran and Alkitab\n- Bundles the api-indonesia skill; Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only\n\nDisclosures\n- Hosted-only connector with no local code: every tool call, with its arguments, goes to mcp.apiindonesia.id.\n- Successful calls spend the key owner's API Indonesia credits; failed calls are not charged.\n- The key is read from API_INDONESIA_KEY in the profile .env (or the plugin's settings form) and sent as a bearer header.\n- All tools are read-only lookups and calculators.\n- The tool set is served by the remote server at runtime and is not covered by the pinned sha. Disclosure — hosted-only connector with no local code: every tool call, with its arguments, goes to mcp.apiindonesia.id and successful calls spend the key owner's API Indonesia credits (failed calls are not charged; current rates at apiindonesia.id/#harga). The key is read from API_INDONESIA_KEY in the profile .env (or the plugin's settings form) and sent as a bearer header. All tools are read-only lookups and calculators; the tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: khmuhtadin
+tier: community
+category: tools
+docs_url: https://github.com/khmuhtadin/api-indonesia-examples#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/khmuhtadin/api-indonesia-examples/5f165d4d2707adccf4939f802c696253488ac9ef/assets/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [API_INDONESIA_KEY]

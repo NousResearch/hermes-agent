@@ -18,6 +18,8 @@ Two invariants, each of which has been broken before:
 
 import json
 import os
+import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,7 +64,7 @@ def test_cli_starts_from_a_deleted_cwd(tmp_path):
         result = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", "--version"],
             capture_output=True, text=True, timeout=60, env=env,
-            cwd=REPO_ROOT, preexec_fn=lambda: os.fchdir(fd))
+            cwd=REPO_ROOT, preexec_fn=lambda: os.fchdir(fd), check=False)
     finally:
         os.close(fd)
     assert result.returncode == 0, result.stderr
@@ -83,6 +85,7 @@ def test_startup_fast_import_weight():
         text=True,
         timeout=30,
         cwd=REPO_ROOT,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     loaded = set(json.loads(result.stdout))
@@ -93,8 +96,26 @@ def test_startup_fast_import_weight():
     )
 
 
+# A dead local proxy: every HTTP(S) call (GitHub's API, a git https fetch) fails at once.
+_OFFLINE = {"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
+            "NO_PROXY": "", "no_proxy": ""}
+
+
+@pytest.mark.parametrize("package", ["hermes_cli", "hermes_agent/hermes_cli"])
+def test_project_root_is_the_folder_that_holds_hermes_agent(tmp_path, package):
+    """The install-root owner gives the same answer before and after hermes_cli moves into the package."""
+    (tmp_path / "hermes_agent" / "compat").mkdir(parents=True)
+    (tmp_path / package).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "hermes_cli" / "_startup_fast.py", tmp_path / package / "_startup_fast.py")
+    owner = runpy.run_path(str(tmp_path / package / "_startup_fast.py"))["project_root_str"]
+    assert owner() == os.path.realpath(tmp_path)
+
+
 def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:
-    env = {**os.environ, **env_overrides}
+    # --version's update check is not under test; offline it answers at once instead of
+    # waiting out GitHub's 30 s API and 60 s ls-remote timeouts (the test's own budget).
+    env = {**os.environ, **_OFFLINE, **env_overrides}
     env.pop("HERMES_DEV", None)
     return subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "--version"],
@@ -103,6 +124,7 @@ def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:
         timeout=60,
         cwd=REPO_ROOT,
         env=env,
+        check=False,
     )
 
 
@@ -146,6 +168,7 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "config", "path"],
         capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(fake_home / ".x" / "config.yaml")
@@ -157,6 +180,7 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
     probe = subprocess.run(
         [sys.executable, "-c", "import hermes_cli.main, os; print(os.environ['HERMES_HOME'])"],
         capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr
     assert probe.stdout.strip() == str(fake_home / ".x")
@@ -200,6 +224,7 @@ def test_bootstrap_preserves_live_cwd_and_recovers_deleted_cwd(tmp_path, remove_
         [sys.executable, "-c", probe, str(cwd), "deleted" if remove_cwd else "live"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True,
         timeout=60, cwd=REPO_ROOT, env=env,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(REPO_ROOT if remove_cwd else cwd)

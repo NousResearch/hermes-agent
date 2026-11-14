@@ -14,15 +14,24 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from gateway import hosted_rooms
+from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
+# ``turn.deferred`` receipts come from explicit user retries, not from the configured reply
+# budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
+MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 1
+_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
+MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
+# What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
+_REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
 
 _SCHEMA_DDL = (
+    """CREATE TABLE IF NOT EXISTS hosted_room_policy_capacity (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), max_active_events INTEGER NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_cursors (
         room_id TEXT PRIMARY KEY, through_seq INTEGER NOT NULL DEFAULT 0,
         stopped_through_seq INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL DEFAULT 0)""",
@@ -51,6 +60,9 @@ _SCHEMA_DDL = (
         kind TEXT NOT NULL, settled_seq INTEGER, PRIMARY KEY(room_id, thread_id, seq))""",
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_transcript_state (
         room_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL)""",
+    """CREATE INDEX IF NOT EXISTS idx_hosted_room_user_thread
+       ON hosted_room_events(room_id, json_extract(payload_json, '$.thread_id'), seq)
+       WHERE kind='message.user'""",
 )
 
 _ROOM_EVENT_COLUMNS = hosted_rooms._EVENT_COLUMNS
@@ -63,7 +75,7 @@ _TRANSCRIPT_EVENTS_SQL = f"""WITH transcript_events(seq) AS (
     SELECT {", ".join("events." + column for column in _ROOM_EVENT_COLUMNS.split(", "))}
     FROM transcript_events
     JOIN hosted_room_events AS events ON events.room_id=? AND events.seq=transcript_events.seq
-    ORDER BY events.seq"""
+    ORDER BY events.seq LIMIT ?"""
 
 
 @dataclass(frozen=True)
@@ -101,13 +113,52 @@ def _settled_message(
     return event
 
 
+def _settled_source_users(
+    conn: sqlite3.Connection, *, room_id: str, thread_id: str, events: Mapping[int, Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Load canonical user sources required by retained non-pass settlements."""
+    source_ids = {
+        _text(event["payload"], "discussion_event_id")
+        for event in events.values()
+        if event["kind"] == "turn.settled" and not event["payload"].get("passed")
+    }
+    source_ids.difference_update(_text(event, "event_id") for event in events.values())
+    if not source_ids:
+        return []
+    sources = []
+    ids = sorted(source_ids)
+    for offset in range(0, len(ids), 500):
+        batch = ids[offset:offset + 500]
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events "
+            f"WHERE room_id=? AND kind='message.user' "
+            f"AND json_extract(payload_json, '$.thread_id')=? AND event_id IN ({placeholders})",
+            (room_id, thread_id, *batch),
+        ).fetchall()
+        sources.extend(_event_from_room_row(row) for row in rows)
+    return sources
+
+
 class HostedRoomPolicyCheckpoint:
     """Incrementally index room policy without compacting visible history."""
-    def __init__(self, db_path: DbPath) -> None:
+    def __init__(self, db_path: DbPath, *, max_active_events: int = MAX_ACTIVE_POLICY_EVENTS) -> None:
+        if isinstance(max_active_events, bool) or not isinstance(max_active_events, int) or max_active_events < 1:
+            raise ValueError("max_active_events must be a positive integer")
         self.db_path = Path(db_path)
+        # LIMIT also reads one overflow sentinel; keep its parameter inside SQLite's integer range.
+        capacity = min(2**63 - 2, max(MAX_ACTIVE_POLICY_EVENTS, max_active_events))
         with self._transaction() as conn:
             for ddl in _SCHEMA_DDL:
                 conn.execute(ddl)
+            # Preserve replay capacity across restarts with a lower scheduling budget.
+            conn.execute("""INSERT INTO hosted_room_policy_capacity(singleton, max_active_events)
+                VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET
+                max_active_events=MAX(max_active_events, excluded.max_active_events)""", (capacity,))
+            self.max_active_events = int(conn.execute(
+                "SELECT max_active_events FROM hosted_room_policy_capacity WHERE singleton=1").fetchone()[0])
+        self.max_transcript_policy_events = min(
+            2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (self.max_active_events + MAX_ACTIVE_RETRY_RECEIPTS + 2))
 
     def _connect(self) -> sqlite3.Connection:
         # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
@@ -147,41 +198,30 @@ class HostedRoomPolicyCheckpoint:
                     "DELETE FROM hosted_room_policy_transcript WHERE room_id=? AND thread_id=? AND seq<?",
                     (event["room_id"], thread_id, int(cutoff["seq"])))
 
-    def _backfill_transcript(self, conn: sqlite3.Connection, *, room_id: str, through_seq: int) -> None:
-        """Migrate bounded committed thread history from the durable room log."""
-        if through_seq <= 0:
-            return
-        settled_seq_by_message = {
-            message_event_id: int(row["seq"])
-            for row in conn.execute("""SELECT seq, payload_json FROM hosted_room_events
-               WHERE room_id=? AND seq<=? AND kind='turn.settled' ORDER BY seq""", (room_id, through_seq))
-            if (message_event_id := _text(json.loads(row["payload_json"]), "message_event_id"))}
-        for row in conn.execute(
-            f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
-               WHERE room_id=? AND seq<=? AND kind IN ('message.user', 'message.member')
-               ORDER BY seq""", (room_id, through_seq)):
-            if row["kind"] == "message.member" and row["event_id"] not in settled_seq_by_message:
-                continue
-            event = _event_from_room_row(row)
-            thread_id = _text(event["payload"], "thread_id")
-            if thread_id:
-                self._store_transcript_event(
-                    conn, event=event, thread_id=thread_id, settled_seq=settled_seq_by_message.get(str(row["event_id"]))
-                )
-
     def _discussion_events(
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
     ) -> list[dict[str, Any]]:
         """Merge the thread transcript with the active projection, ordered by seq."""
-        active_rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
-               WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT ?""",
-            (room_id, discussion_event_id, MAX_ACTIVE_POLICY_EVENTS + 1)).fetchall()
-        if len(active_rows) > MAX_ACTIVE_POLICY_EVENTS:
-            raise RuntimeError(bound_error)
-        rows = conn.execute(_TRANSCRIPT_EVENTS_SQL, (room_id, thread_id, room_id, thread_id, room_id)).fetchall()
+        active_rows = []
+        for receipts, bound in ((0, self.max_active_events), (1, MAX_ACTIVE_RETRY_RECEIPTS)):
+            rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
+                   WHERE room_id=? AND discussion_event_id=?
+                     AND (json_extract(event_json, '$.kind') = 'turn.deferred') = ?
+                   ORDER BY seq LIMIT ?""",
+                (room_id, discussion_event_id, receipts, bound + 1)).fetchall()
+            if len(rows) > bound:
+                raise RuntimeError(bound_error)
+            active_rows.extend(rows)
+        rows = conn.execute(_TRANSCRIPT_EVENTS_SQL,
+                            (room_id, thread_id, room_id, thread_id, room_id,
+                             self.max_transcript_policy_events + 1)).fetchall()
+        if len(rows) > self.max_transcript_policy_events:
+            raise RuntimeError("thread policy transcript exceeded its bound")
         events_by_seq = {
             int(event["seq"]): event
             for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
+        for event in _settled_source_users(conn, room_id=room_id, thread_id=thread_id, events=events_by_seq):
+            events_by_seq[int(event["seq"])] = event
         return [events_by_seq[seq] for seq in sorted(events_by_seq)]
 
     # -- per-kind projection handlers (dispatched by _apply_event) -----------
@@ -229,6 +269,9 @@ class HostedRoomPolicyCheckpoint:
             if committed is not None:
                 seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
+        else:
+            # Non-visible receipts still supply historical reconstruction watermarks.
+            self._store_transcript_event(conn, event=event, thread_id=thread_id)
         if member_id and seen_through_seq > 0:
             conn.execute("""INSERT INTO hosted_room_policy_watermarks(
                        room_id, thread_id, member_id, seen_through_seq
@@ -240,8 +283,45 @@ class HostedRoomPolicyCheckpoint:
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         room_id, thread_id = str(event["room_id"]), _text(payload, "thread_id")
-        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
-        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
+        discussion_event_id = _text(payload, "discussion_event_id")
+        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, discussion_event_id))
+        # A newer message on this thread may already have reopened it under its own discussion: the
+        # old discussion's completion (planned before that message) must not close the new one.
+        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=? AND discussion_event_id=?",
+                     (room_id, thread_id, discussion_event_id))
+
+    def _apply_continued(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+        """Continue reopens a discussion its cap completed: restore its thread row and active projection
+        from the room log (the cap's ``room.activity`` dropped both)."""
+        room_id, discussion_event_id = str(event["room_id"]), _text(payload, "discussion_event_id")
+        source = conn.execute(f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?",
+                              (room_id, discussion_event_id)).fetchone()
+        if source is None or source["kind"] != "message.user":
+            return
+        source_event = _event_from_room_row(source)
+        thread_id = _text(source_event["payload"], "thread_id")
+        # A Continue written by an older build after a newer message on the thread (the router now
+        # refuses those) must not hand the thread back: the newer discussion owns it.
+        if conn.execute("""SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? AND seq<=?
+                AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=? LIMIT 1""",
+                (room_id, int(source_event["seq"]), int(event["seq"]), thread_id)).fetchone():
+            return
+        conn.execute("""INSERT INTO hosted_room_policy_threads(
+                   room_id, thread_id, discussion_event_id, latest_user_seq, completed
+               ) VALUES (?, ?, ?, ?, 0)
+               ON CONFLICT(room_id, thread_id) DO UPDATE SET
+                   discussion_event_id=excluded.discussion_event_id,
+                   latest_user_seq=excluded.latest_user_seq, completed=0""",
+            (room_id, thread_id, discussion_event_id, int(source_event["seq"])))
+        self._store_active_event(conn, event=source_event, thread_id=thread_id, discussion_event_id=discussion_event_id)
+        for row in conn.execute(f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
+                WHERE room_id=? AND seq>? AND seq<=? AND kind IN ({",".join("?" * len(_REOPENED_KINDS))})
+                  AND json_extract(payload_json, '$.discussion_event_id')=? ORDER BY seq""",
+                (room_id, int(source_event["seq"]), int(event["seq"]), *_REOPENED_KINDS,
+                 discussion_event_id)).fetchall():
+            self._store_active_event(conn, event=_event_from_room_row(row), thread_id=thread_id,
+                                     discussion_event_id=discussion_event_id)
 
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -252,6 +332,9 @@ class HostedRoomPolicyCheckpoint:
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
         **dict.fromkeys(_TERMINAL_KINDS, _apply_discussion_event), "room.activity": _apply_room_activity,
+        # The lead's assignment joins its discussion's projection so the planner sees who takes round 0.
+        "room.assignment": _apply_discussion_event,
+        "room.routed": _apply_discussion_event, "room.continued": _apply_continued,
         "room.stop_requested": _apply_stop_requested}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:
@@ -261,7 +344,7 @@ class HostedRoomPolicyCheckpoint:
             handler(self, conn, event, payload if isinstance(payload, Mapping) else {})
 
     def _ensure_cursor_and_transcript(self, conn: sqlite3.Connection, room_id: str) -> int:
-        """Create the room cursor if absent, backfill the transcript once, return through_seq."""
+        """Create the cursor and migrate derived policy caches by bounded replay."""
         _require_room(conn, room_id)
         conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_cursors(
                    room_id, through_seq, stopped_through_seq, updated_at
@@ -272,7 +355,13 @@ class HostedRoomPolicyCheckpoint:
         transcript_state = conn.execute(
             "SELECT schema_version FROM hosted_room_policy_transcript_state WHERE room_id=?", (room_id,)).fetchone()
         if transcript_state is None or int(transcript_state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
-            self._backfill_transcript(conn, room_id=room_id, through_seq=cursor)
+            # Rebuild derived history without rewriting admissions or the room log.
+            for table in ("hosted_room_policy_events", "hosted_room_policy_threads",
+                          "hosted_room_policy_watermarks", "hosted_room_policy_transcript"):
+                conn.execute(f"DELETE FROM {table} WHERE room_id=?", (room_id,))
+            conn.execute("UPDATE hosted_room_policy_cursors SET through_seq=0, stopped_through_seq=0 WHERE room_id=?",
+                         (room_id,))
+            cursor = 0
             conn.execute("""INSERT INTO hosted_room_policy_transcript_state(room_id, schema_version)
                    VALUES (?, ?)
                    ON CONFLICT(room_id) DO UPDATE SET schema_version=excluded.schema_version""",
@@ -285,7 +374,12 @@ class HostedRoomPolicyCheckpoint:
             conn.execute("BEGIN IMMEDIATE")
             cursor = self._ensure_cursor_and_transcript(conn, room_id)
         if cursor > latest_seq:
-            raise RuntimeError("room policy cursor is ahead of the durable log")
+            with self._connect() as conn:
+                room = conn.execute("SELECT next_seq FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+                if room is None:
+                    raise hosted_rooms.RoomNotFoundError("hosted room not found")
+                if cursor >= int(room["next_seq"]):
+                    raise RuntimeError("room policy cursor is ahead of the durable log")
         while cursor < latest_seq:
             page = hosted_rooms.read_events(
                 self.db_path, room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
@@ -296,6 +390,14 @@ class HostedRoomPolicyCheckpoint:
             with self._transaction() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 _require_room(conn, room_id)
+                current = conn.execute("SELECT through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
+                                       (room_id,)).fetchone()
+                if current is None:
+                    raise RuntimeError("room policy cursor disappeared during replay")
+                if int(current["through_seq"]) != cursor:
+                    # Another worker applied the page: reload before any projection effects.
+                    cursor = int(current["through_seq"])
+                    continue
                 for event in rows:
                     self._apply_event(conn, event)
                 fenced_update(
@@ -307,10 +409,13 @@ class HostedRoomPolicyCheckpoint:
 
     def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
         """Return only the oldest active discussion and its watermark set."""
-        through_seq = self.sync(room_id=room_id, latest_seq=latest_seq)
+        self.sync(room_id=room_id, latest_seq=latest_seq)
         with self._transaction() as conn:
             cursor = conn.execute(
-                "SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
+                "SELECT through_seq, stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
+            if cursor is None:
+                raise hosted_rooms.RoomNotFoundError("hosted room checkpoint not found")
+            through_seq = int(cursor["through_seq"])
             stopped_through_seq = int(cursor["stopped_through_seq"])
             thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
                    WHERE room_id=? AND completed=0 AND latest_user_seq>?
@@ -341,14 +446,39 @@ class HostedRoomPolicyCheckpoint:
         with self._transaction() as conn:
             return conn.execute(sql, params).fetchone() is not None
 
-    def events_for_task(self, *, room_id: str, source_event_seq: int) -> list[dict[str, Any]]:
+    def events_for_task(self, *, room_id: str, source_event_seq: int,
+                        input_context: Mapping[str, Any] | None = None,
+                        task_id: str | None = None) -> list[dict[str, Any]]:
         """Load one bounded discussion projection for terminal reconstruction."""
         with self._transaction() as conn:
+            published = self._published_task_events(conn, room_id=room_id, task_id=task_id)
+            if input_context is not None:
+                context = validate_task_input(input_context)
+                seqs = sorted({source_event_seq, *context["event_seqs"]})
+                placeholders = ",".join("?" for _ in seqs)
+                rows = conn.execute(f"SELECT * FROM hosted_room_events WHERE room_id=? AND seq IN ({placeholders}) ORDER BY seq",
+                                    (room_id, *seqs)).fetchall()
+                if len(rows) != len(seqs):
+                    raise RuntimeError("admitted task input event is missing")
+                events = {int(row["seq"]): _event_from_room_row(row) for row in rows}
+                source_event = events[source_event_seq]
+                thread_id = _text(source_event["payload"], "thread_id")
+                if source_event["kind"] != "message.user" or not thread_id:
+                    raise RuntimeError("admitted task source is not a user discussion")
+                # Supersession remains authoritative after the display projection compacts.
+                latest = conn.execute("""SELECT * FROM hosted_room_events
+                    WHERE room_id=? AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=?
+                    ORDER BY seq DESC LIMIT 1""", (room_id, thread_id)).fetchone()
+                if latest is not None:
+                    events[int(latest["seq"])] = _event_from_room_row(latest)
+                for event in published:
+                    events[int(event["seq"])] = event
+                return [events[seq] for seq in sorted(events)]
             row = conn.execute(
                 f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()
             if row is None or row["kind"] != "message.user":
-                return []
+                return published
             source = _event_from_room_row(row)
             events = self._discussion_events(
                 conn, room_id=room_id, thread_id=_text(source["payload"], "thread_id"),
@@ -356,7 +486,7 @@ class HostedRoomPolicyCheckpoint:
                 bound_error="task policy projection exceeded its bound")
             # The source can age out of BOTH bounded projections while a
             # deferred task remains retryable. Its frozen prompt lives in the task.
-            by_seq = {event["seq"]: event for event in events}
+            by_seq = {event["seq"]: event for event in (*events, *published)}
             by_seq[source_event_seq] = source
             return [by_seq[seq] for seq in sorted(by_seq)]
 
@@ -368,3 +498,24 @@ class HostedRoomPolicyCheckpoint:
             ).fetchall():
                 conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, str(row["discussion_event_id"])))
             conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND completed=1", (room_id,))
+
+
+    def _published_task_events(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        room_id: str,
+        task_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if not task_id:
+            return []
+        digest = task_id.removeprefix("dtask:")
+        rows = conn.execute(
+            """SELECT * FROM hosted_room_events
+               WHERE room_id=? AND event_id IN (?, ?) ORDER BY seq""",
+            (room_id, f"dmessage:{digest}", f"dterminal:{digest}"),
+        ).fetchall()
+        events = [_event_from_room_row(row) for row in rows]
+        if any(event["payload"].get("task_id") != task_id for event in events):
+            raise RuntimeError("published task receipt identity changed")
+        return events

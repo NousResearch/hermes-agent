@@ -101,6 +101,101 @@ def test_migrate_config_restores_backup_when_version_does_not_advance(
     assert backups, "backup file must exist"
 
 
+def test_boot_keeps_the_steps_before_a_failing_one_and_retries_it_each_start(
+    tmp_path, monkeypatch, capsys
+):
+    """A step that raises is partial progress at boot, not a failure to undo: the steps before it
+    stay (no backup restore), the stamp stops at the last good one, the failing step is retried on
+    every start of the same revision, and ``hermes doctor`` says why the version is behind."""
+    import json
+
+    import hermes_yaml as yaml
+    from hermes_cli import boot_bootstrap
+    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_cli.doctor_config import _drift_config_version
+    from hermes_cli.doctor_report import Finding
+
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "payload"
+    root.mkdir()
+    (root / "install-stamp.json").write_text(json.dumps({"commit": "abcdef012345", "payload": "full"}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("migrate_config", step_migrate_config),))
+    config_path = home / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "_config_version": 16, "compression": {"summary_model": "m"}, "plugins": {"disabled": [["x"]]},
+    }), encoding="utf-8")
+
+    def boot():
+        return boot_bootstrap.run_boot_bootstrap(root)["home"]
+
+    first = boot()["migrate_config"]
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert first["ok"] is False and first["failed_step"] == 21
+    assert raw["_config_version"] == 20
+    assert raw["auxiliary"]["compression"]["model"] == "m", "v17 must not be restored away"
+
+    assert boot()["migrate_config"]["failed_step"] == 21, "same revision: retried on the next start"
+    assert len(list(home.glob("config.yaml.bak-*"))) == 1, "a retry that changed nothing keeps no backup"
+    _drift_config_version(Finding(), False, config_path)
+    assert "unhashable type" in capsys.readouterr().out, "plain doctor says why the step failed"
+
+    raw["plugins"]["disabled"] = []
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert boot()["migrate_config"] == {"ok": True, "migrated": f"20->{DEFAULT_CONFIG['_config_version']}"}
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    assert boot() == "skipped"
+
+
+def test_a_retry_that_raises_still_owes_the_step(tmp_path, monkeypatch):
+    """A retry can raise before the ladder runs (a full disk while taking the backup). That says
+    nothing about the failing step, so the next start must retry it again: only a retry that
+    succeeded clears it."""
+    import json
+
+    import hermes_yaml as yaml
+    from hermes_cli import boot_bootstrap
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "payload"
+    root.mkdir()
+    (root / "install-stamp.json").write_text(json.dumps({"commit": "abcdef012345", "payload": "full"}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("migrate_config", step_migrate_config),))
+    config_path = home / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"_config_version": 20, "plugins": {"disabled": [["x"]]}}),
+                           encoding="utf-8")
+
+    def boot():
+        return boot_bootstrap.run_boot_bootstrap(root)["home"]
+
+    assert boot()["migrate_config"]["failed_step"] == 21
+    real_backup = post_update._backup_existing
+
+    def full_disk(paths):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(post_update, "_backup_existing", full_disk)
+    raised = boot()["migrate_config"]
+    assert raised["ok"] is False and raised["failed_step"] == 21
+    assert "No space left" in raised["failed_warning"], "doctor shows why THIS retry broke"
+    monkeypatch.setattr(post_update, "_backup_existing", real_backup)
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["plugins"]["disabled"] = []
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert boot()["migrate_config"] == {"ok": True, "migrated": f"20->{DEFAULT_CONFIG['_config_version']}"}, \
+        "the step is still owed after a retry that raised"
+    assert boot() == "skipped"
+
+
 # ── step_state_db_guard ──────────────────────────────────────────────
 
 
@@ -186,7 +281,7 @@ def test_provisioning_does_not_use_human_diagnostics(tmp_path, monkeypatch):
 def test_provision_runtimes_is_a_noop_when_pm_is_current(monkeypatch):
     import pm
 
-    monkeypatch.setattr(pm, "drift", lambda: {})
+    monkeypatch.setattr(pm, "drift", dict)
     assert post_update.step_provision_runtimes() == {"ok": True, "skipped": "current"}
 
 

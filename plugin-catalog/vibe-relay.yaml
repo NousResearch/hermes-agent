@@ -1,0 +1,61 @@
+name: vibe-relay
+repo: https://github.com/trenthalden/vibe-relay
+sha: "aac27eea07fea6fe7ffa9767b53be811559ffa04"
+title: Vibe Relay
+description: >-
+  Vibecoding without burning your best model. Sets Hermes `delegation.backend` to a quota-aware
+  strategy: when remaining usage is above a threshold (default 51%) the parent model keeps the
+  work (`self`); otherwise each `delegate_task` is routed to a configured cheap executor
+  (provider+model or profile). When the executor lane is selected, a `pre_tool_call` hook blocks
+  the parent from `patch`/`write_file` and obvious terminal writes (`sed -i`, `>`/`>>`, `tee`) so
+  coding work must go through `delegate_task` (children never blocked; `enforce_executor_lane`
+  default true). At `stop_used_percent` (default 90% used) the same hook blocks parent
+  `delegate_task` and writers, auto-parks once per reset window (handoff + one one-shot cron),
+  and injects `parked until …; do not start new work` via `pre_llm_call`; the block lifts after
+  reset or when used drops below stop. Every task must carry `allowed` path globs and a `gate`
+  command — exit 0 alone is not done. A `post_tool_call` hook captures gate PASS output bound to
+  a working-tree hash; `pre_verify` continues the turn until a fresh PASS exists; `vibe_accept`
+  checks changed paths ⊆ allowed. Manual `/vibe park` and blueprint `resume-after-reset` remain.
+  Ships an Agent Workshop of 14 portable skills (build/debug loop, architecture audit, harness+evals,
+  context budget, memory/retrieval, known-errors registry, frozen-tree review, product-aware releases,
+  subagent-driven development, companion maintenance, lean executor orchestration, field-first
+  acceptance, TDD, systematic debugging) registered as `vibe-relay:<name>` via `skill_view`.
+  Vendors DEV Framework tools (`df_init`, `df_check`, `df_nav`); `df_check` returns the gate command
+  for the agent to run via `terminal` (approvals apply). Disclosure — quota via public
+  `fetch_account_usage(..., read_only=True)` at most once per 180s into
+  `$HERMES_HOME/plugin-data/vibe-relay/` (empty fetches: 15s negative TTL; no private usage-cache
+  import); checklist/handoff slugs confined to `[A-Za-z0-9._-]+` under `docs/`; park skips
+  resume-cron inside `HERMES_CRON_SESSION` unless `cron.allow_agent_scheduling`; `df_init`/`df_nav`
+  run the plugin's vendored scripts with `python -I` and a scrubbed child env; `df_nav` never
+  executes the target's navigate.py; `df_init` refuses Hermes home, `$HOME` itself, filesystem
+  root, and protected $HOME dots; acceptance uses session terminal cwd when none is passed;
+  template scripts may call `git`/`gh` only when the user or agent runs them; cron via
+  `cronjob_manage`; no credential-file reads; no YOLO shells.
+maintainer: trenthalden
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/trenthalden/vibe-relay#readme
+image: https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-3.png
+version: "0.3.2"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - vibe_accept
+    - df_init
+    - df_check
+    - df_nav
+  provides_hooks:
+    - pre_llm_call
+    - api_request_error
+    - pre_tool_call
+    - post_tool_call
+    - pre_verify
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

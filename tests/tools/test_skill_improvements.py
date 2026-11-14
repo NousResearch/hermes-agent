@@ -107,7 +107,7 @@ word word word
         """Blocked skill creation removes the newly created skill directory."""
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            lambda _skill_dir, _baseline=None: "blocked",
         )
 
         result = _create_skill("blocked-skill", SKILL_CONTENT)
@@ -228,7 +228,7 @@ word word word
         reference.chmod(0o660)
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            lambda _skill_dir, _baseline=None: "blocked",
         )
 
         result = _patch_skill(
@@ -251,7 +251,7 @@ word word word
         replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "blocked edit")
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            lambda _skill_dir, _baseline=None: "blocked",
         )
 
         result = _edit_skill("rollback-skill", replacement)
@@ -268,7 +268,7 @@ word word word
         skill_md.chmod(0o600)
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            lambda _skill_dir, _baseline=None: "blocked",
         )
 
         result = _patch_skill(
@@ -291,7 +291,7 @@ word word word
         reference.chmod(0o660)
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            lambda _skill_dir, _baseline=None: "blocked",
         )
 
         result = _write_file("rollback-skill", "references/example.md", "blocked\n")
@@ -306,7 +306,7 @@ word word word
         reference = self.skills_dir / "rollback-skill" / "references/example.md"
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            lambda _skill_dir, _baseline=None: "blocked",
         )
 
         result = _write_file("rollback-skill", "references/example.md", "blocked\n")

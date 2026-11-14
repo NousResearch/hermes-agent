@@ -37,6 +37,10 @@ name: Install & Update E2E (reusable)
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       install-method:
         description: 'How the starting version gets installed. Supported: installer-script (the real curl | install.sh one-liner) and installer-script+desktop (the same one-liner with --include-desktop).'
         required: true
@@ -99,7 +103,7 @@ jobs:
       # in that clone. A shallow clone cannot serve either need.
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
 
       # The checkout owns the chat driver, not OLD's installed Node/runtime.
@@ -114,7 +118,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       # One recording mechanism on every OS (Xvfb gives headless linux a
       # display; the same display serves any app the driver launches).

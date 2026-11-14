@@ -1,0 +1,27 @@
+name: inventory-reminder
+repo: https://github.com/ether-btc/inventory-reminder
+sha: 57704f3a3788f9b6da519a9c873c45bac936cc22
+subdir: ""
+description: >-
+  Live, evidence-backed inventory of the host an agent is running on: repos (cloned vs
+  online-only), skills, MCP servers, CLIs, local models and services, regenerated from ground
+  truth by read-only scanners. Registers two tools — inventory_where(term) answers "do I
+  already have X?" across every section with a ready detail line, and inventory_summary()
+  returns a one-line digest for session bootstrap. Both read a cached digest file
+  ($INVENTORY_JSON, else ~/.hermes/inventory.json); no live rescan per turn, no network, no
+  writes. Disclosure — the digest describes the host (repo names, skill names, CLI paths,
+  model names, service names) and that text is returned to the model.
+maintainer: ether-btc
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+docs_url: https://github.com/ether-btc/inventory-reminder#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - inventory_where
+    - inventory_summary
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

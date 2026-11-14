@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   api,
   authedFetch,
+  buildWsUrl,
   fetchJSON,
   getManagementProfile,
   setManagementProfile,
@@ -113,6 +114,18 @@ describe("api.getModelOptions", () => {
 });
 
 describe("management profile scope", () => {
+  it("sends explicit WhatsApp re-pair consent to the selected profile", async () => {
+    const fetchMock = jsonFetchMock({ pairing_id: "fresh", status: "starting" });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.startWhatsAppOnboarding({ mode: "bot", reset_session: true });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/messaging/whatsapp/onboarding/start?profile=worker");
+    expect(JSON.parse(String(init?.body))).toEqual({ mode: "bot", reset_session: true });
+  });
+
   // Every family whose routes write into a named profile's home must carry the
   // scope; an unprofiled request 400s on a host that merely HAS a second profile.
   it.each([
@@ -206,6 +219,45 @@ describe("management profile scope", () => {
   );
 });
 
+describe("plugin SDK calls follow the selected profile (PLG-3)", () => {
+  // A plugin's bundle is the selected profile's copy; its backend calls must name that
+  // profile too, or they reach the launch profile's handlers (or 404 for a secondary-only one).
+  it.each([
+    ["fetchJSON", fetchJSON],
+    ["authedFetch", authedFetch],
+  ] as const)("%s scopes /api/plugins/ to the selected profile", async (_name, helper) => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("beta");
+
+    await helper("/api/plugins/kanban/board?id=1");
+    await helper("/api/plugins/kanban/board?profile=alpha");
+
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      "/api/plugins/kanban/board?id=1&profile=beta",
+      "/api/plugins/kanban/board?profile=alpha",
+    ]);
+  });
+
+  it("buildWsUrl names the selected profile on a plugin socket only", async () => {
+    vi.stubGlobal("window", {
+      __HERMES_SESSION_TOKEN__: "tok",
+      location: { protocol: "http:", host: "127.0.0.1:9119" },
+    });
+    setManagementProfile("beta");
+    const query = async (path: string, params?: Record<string, string>) =>
+      new URL(await buildWsUrl(path, params)).searchParams;
+
+    const plugin = await query("/api/plugins/kanban/events", { board: "b" });
+    expect([plugin.get("board"), plugin.getAll("profile"), plugin.get("token")]).toEqual([
+      "b", ["beta"], "tok",
+    ]);
+    expect((await query("/api/plugins/kanban/events", { profile: "alpha" })).getAll("profile")).toEqual(["alpha"]);
+    expect((await query("/api/events")).has("profile")).toBe(false);
+  });
+});
+
 describe("api OAuth helpers", () => {
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });
@@ -285,5 +337,67 @@ describe("api OAuth helpers", () => {
       "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
       "/api/providers/oauth/sessions/oauth-session?profile=worker",
     ]);
+  });
+});
+
+describe("api.getAuthMe loopback contract", () => {
+  it("accepts a token-authenticated synthetic loopback identity", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const identity = {
+      display_name: "Local",
+      email: "",
+      expires_at: 0,
+      org_id: "",
+      provider: "loopback",
+      user_id: "local",
+    };
+    const fetchMock = jsonFetchMock(identity);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getAuthMe()).resolves.toEqual(identity);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).get(SESSION_HEADER)).toBe("loopback-token");
+  });
+});
+
+describe("session token stays on the dashboard origin", () => {
+  const foreign = [
+    "https://evil.example/x.png",
+    "//evil.example/x.png",
+    "http://localhost:1/api/status", // same host, other port: another origin
+  ];
+
+  it.each(foreign)("fetchJSON and authedFetch refuse %s without calling fetch", async (url) => {
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authedFetch(url)).rejects.toThrow(/Refusing to send the Hermes session/);
+    await expect(fetchJSON(url)).rejects.toThrow(/Refusing to send the Hermes session/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("relative and same-origin absolute URLs still carry the token", async () => {
+    window.__HERMES_SESSION_TOKEN__ = "live-token";
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const own = `${window.location.origin}/api/plugins/demo/blob`;
+
+    await authedFetch("/api/plugins/demo/blob", { mode: "cors" });
+    await authedFetch(own);
+    await fetchJSON("/api/plugins/demo/data", { mode: "no-cors" });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/plugins/demo/blob",
+      own,
+      "/api/plugins/demo/data",
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect((init?.headers as Headers).get(SESSION_HEADER)).toBe("live-token");
+      expect(init?.credentials).toBe("include");
+      // Pinned after the caller's init: the browser then refuses cross-origin
+      // redirects and off-origin <base href> resolution the URL check can't see.
+      expect(init?.mode).toBe("same-origin");
+    }
   });
 });

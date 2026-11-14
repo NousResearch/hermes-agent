@@ -1,0 +1,16 @@
+name: looot
+repo: https://github.com/loootai/hermes-looot
+sha: b4d9a4a212139938c7e8c1b10d5e73f8b0b70c59
+description: "looot gives Hermes one sign-in and one prepaid balance for 2,500+ data API endpoints from 90+ providers: work emails and phones, company and people search, Google results, web pages as markdown, news, local businesses. Portable Agent Plugins v1 package with the hosted MCP server (remote streamable-http, OAuth 2.1 with dynamic client registration) and 21 skills. Disclosure — the run tool spends your prepaid looot balance (Hermes asks before each paid call and refuses them in unattended runs); the names, domains and emails you look up are sent to looot.ai and its upstream data providers; a `looot` server you define in config.yaml replaces the package's and drops that prompt unless you add `trust: untrusted`."
+maintainer: looot
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/loootai/hermes-looot#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

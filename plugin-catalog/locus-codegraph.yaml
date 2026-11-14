@@ -1,0 +1,49 @@
+name: locus-codegraph
+title: Locus Codegraph
+repo: https://github.com/atikur/hermes-locus
+sha: "e083a7c6df70f4f4d54a5247890deb14015d689e"
+version: "0.2.0"
+description: >-
+  Rehearse a Python refactor before making it, and catch missed callers when you do.
+  @whatif:<symbol>(<new parameters>) or the locus_rehearse tool binds every statically
+  proven caller against a proposed signature before any file is edited and lists which
+  call sites would break and why. After an edit, the same check appends caller locations,
+  binding errors and, for a renamed keyword, a caller patch to review to the editing
+  tool's result. Covers functions, class constructors, static and class methods, methods
+  on locally constructed instances, and calls inside the edited file, through direct and
+  module-qualified imports, aliases and static re-exports. Receivers whose type is not in
+  view (self, parameters, attributes), decorated callables and dynamic bindings are not
+  checked; other supported languages receive structural indexing only. One local index
+  also powers five tools, @sym:/@impact:/@hotspots: references, /locus commands, and
+  Web Dashboard and Desktop caller inboxes. Suggested tests and impact scores are static
+  heuristics, not execution coverage; no alert or predicted break is not proof of safety.
+  Disclosure: reads supported workspace source subject to exclusions and size caps,
+  rejects symlink escapes, and stores structure, call shapes, and drift history in
+  profile-scoped SQLite. Expands explicit references and adds diagnostics and proposed
+  patches to editing-tool results and the configured model's context. Does not modify
+  workspace source, apply patches, or run tests. No external network requests, credential
+  access, shell subprocesses, background daemons, or additional runtime packages.
+maintainer: atikur
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/atikur/hermes-locus/blob/e083a7c6df70f4f4d54a5247890deb14015d689e/README.md
+image: https://raw.githubusercontent.com/atikur/hermes-locus/e083a7c6df70f4f4d54a5247890deb14015d689e/assets/locus-v020-demo-poster.jpg
+screenshots:
+  - https://raw.githubusercontent.com/atikur/hermes-locus/e083a7c6df70f4f4d54a5247890deb14015d689e/assets/locus-v020-whatif.jpg
+  - https://raw.githubusercontent.com/atikur/hermes-locus/e083a7c6df70f4f4d54a5247890deb14015d689e/assets/locus-v020-dashboard.jpg
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - locus_map
+    - locus_rehearse
+    - locus_symbol
+    - locus_impact
+    - locus_hotspots
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

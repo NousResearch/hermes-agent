@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
+import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
+import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -27,6 +29,8 @@ interface VoiceRecorderOptions {
 interface Dictation {
   owner: ResolvedOwner
   warmup: Promise<void>
+  /** Live STT session (stt.streaming): resolves to null when the host has no live wire. */
+  live?: () => Promise<DictationStreamSession | null>
 }
 
 export function useVoiceRecorder({
@@ -45,6 +49,7 @@ export function useVoiceRecorder({
   ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [partial, setPartial] = useState('')
   const startedAtRef = useRef(0)
   const intervalRef = useRef<number | null>(null)
   const timeoutRef = useRef<number | null>(null)
@@ -75,6 +80,7 @@ export function useVoiceRecorder({
 
       if (dictation) {
         void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+        void dictation.live?.().then(session => session?.cancel())
       }
     },
     []
@@ -110,7 +116,8 @@ export function useVoiceRecorder({
         return
       }
 
-      const transcript = (await onTranscribeAudio(result.audio, dictation.owner)).trim()
+      const transcript =
+        (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
 
       if (!live()) {
         return
@@ -134,11 +141,29 @@ export function useVoiceRecorder({
     }
   }
 
+  // The live session's final text, or null to transcribe the recorded blob instead (no session,
+  // socket failure, or an empty result over a take the recorder kept).
+  const liveTranscript = async (dictation: Dictation): Promise<null | string> => {
+    const session = await dictation.live?.()
+
+    if (!session) {
+      return null
+    }
+
+    try {
+      return (await session.stop()) || null
+    } catch {
+      return null
+    }
+  }
+
   // The transcript settled (or failed): this dictation no longer needs the
   // engine held. Released to the owner that acquired it. The backend keeps the
   // shared model resident regardless.
   const finish = (dictation: Dictation) => {
     dictationRef.current = null
+    setPartial('')
+    void dictation.live?.().then(session => session?.cancel())
     void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
   }
 
@@ -149,15 +174,32 @@ export function useVoiceRecorder({
       return
     }
 
+    if (dictationRef.current) {
+      return
+    }
+
+    const owner = resolveOwnerNow(ownerRef.current)
+    const stream = liveStream(owner)
+    const dictation: Dictation = { live: stream.session, owner, warmup: Promise.resolve() }
+    dictationRef.current = dictation
+
     try {
-      await handle.start({ onError: error => notifyError(error, voiceCopy.recordingFailed) })
+      await handle.start({
+        onError: error => notifyError(error, voiceCopy.recordingFailed),
+        onPcm: stream.push,
+        onPcmRate: stream.open
+      })
+
+      if (dictationRef.current !== dictation) {
+        return
+      }
+
       // The mic is open, so a transcript is coming: warm the backend's STT
       // engine now so a cold local model loads while the user is still
       // speaking instead of inside the transcription timeout (#105955).
       // Fire-and-forget for the MIC UX — but keep the promise: stop() awaits
       // it as the readiness barrier before transcription (see above).
-      const owner = resolveOwnerNow(ownerRef.current)
-      dictationRef.current = { owner, warmup: syncSttLease(VOICE_INPUT_LEASE, true, owner) }
+      dictation.warmup = syncSttLease(VOICE_INPUT_LEASE, true, owner)
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
@@ -166,9 +208,51 @@ export function useVoiceRecorder({
       const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
       timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
     } catch (error) {
+      if (dictationRef.current !== dictation) {
+        return
+      }
+
+      finish(dictation)
       setVoiceStatus('idle')
       notifyError(error, voiceCopy.recordingFailed)
     }
+  }
+
+  // Live dictation plumbing for one take: chunks captured before the socket opens are buffered
+  // (bounded) and flushed, so the first words reach the provider too. `session()` is null when the
+  // host has no live wire, or when the meter never reported a rate (no PCM tap this take).
+  const liveStream = (owner: ResolvedOwner) => {
+    let session: DictationStreamSession | null = null
+    let settled = false
+    let buffered: ArrayBuffer[] = []
+    let opening: Promise<DictationStreamSession | null> | null = null
+
+    const open = (sampleRate: number) => {
+      opening = (async () => {
+        const config = await fetchVoiceClientConfigFor(owner).catch(() => null)
+        const opened = config?.stt.streaming ? await openDictationStream(owner, sampleRate, setPartial) : null
+
+        for (const chunk of opened ? buffered : []) {
+          opened!.pushAudio(chunk)
+        }
+
+        buffered = []
+        settled = true
+        session = opened
+
+        return opened
+      })()
+    }
+
+    const push = (chunk: ArrayBuffer) => {
+      if (session) {
+        session.pushAudio(chunk)
+      } else if (!settled && buffered.length < 64) {
+        buffered.push(chunk)
+      }
+    }
+
+    return { open, push, session: () => opening ?? Promise.resolve(null) }
   }
 
   const dictate = () => {
@@ -182,6 +266,7 @@ export function useVoiceRecorder({
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
     level,
+    partial,
     status: voiceStatus
   }
 

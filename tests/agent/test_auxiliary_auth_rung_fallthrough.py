@@ -3,7 +3,7 @@
 Both auth-refresh rungs in ``agent/auxiliary_client.py`` perform their retry with a
 bare ``yield`` inside a ``return`` statement:
 
-    if _is_auth_error(first_err) and client_is_nous:
+    if aux_errors.auth_refresh(failure.verdict) and client_is_nous:
         step = _refreshed_nous_step(...)
         if step is not None:
             return (yield step), None          # nous rung
@@ -13,8 +13,7 @@ bare ``yield`` inside a ``return`` statement:
 
 ``_rung()`` exists to convert a retry failure into ``(None, exc)`` -- but only when the
 rung's accept predicate claims the error -- so the caller can fall through to the next
-rung. An unclaimed failure (a 500, a malformed response) re-raises on purpose, since
-``_ladder_provider_fallback`` only acts on the reasons in ``_FALLBACK_REASONS``.
+rung. A failure no later rung acts on (``aux_errors.ladder_accepts``) re-raises on purpose.
 Used this way no exception is caught: when the
 refreshed client also fails (e.g. an out-of-credit 404 on a stale Nous runtime token),
 the error escapes ``_aux_recovery_ladder`` and ``_ladder_provider_fallback`` never
@@ -58,15 +57,15 @@ def _auth_error():
 
 def _credit_error():
     return _ApiError(
-        "Error code: 404 - Model '%s' requires available credits. "
-        "Your account balance is too low to use paid models." % AUX_MODEL,
+        f"Error code: 404 - Model '{AUX_MODEL}' requires available credits. "
+        "Your account balance is too low to use paid models.",
         status_code=404,
     )
 
 
 class _FakeClient:
     api_key = "sk-test"
-    base_url = "https://%s/v1" % NOUS_HOST
+    base_url = f"https://{NOUS_HOST}/v1"
 
 
 class _ExplicitProviderClient:
@@ -74,7 +73,7 @@ class _ExplicitProviderClient:
     base_url = "https://vertex.example/v1"
 
 
-def _ladder(base_info=("https://%s/v1" % NOUS_HOST), resolved_provider="nous"):
+def _ladder(base_info=(f"https://{NOUS_HOST}/v1"), resolved_provider="nous"):
     return aux._aux_recovery_ladder(
         _auth_error(),
         client=_FakeClient(),
@@ -99,9 +98,9 @@ def hermetic(monkeypatch):
     """Keep the ladder off the network and record the provider-fallback rung."""
     chain_calls = []
 
-    def _fake_provider_fallback(first_err, route):
+    def _fake_provider_fallback(failure, route, **_kw):
         """Stands in for the last rung: a generator that performs no steps."""
-        chain_calls.append(first_err)
+        chain_calls.append(failure.error)
         yield from ()
         return "chain-response"
 
@@ -121,7 +120,7 @@ def test_post_refresh_retry_owns_the_ladder_outcome(
     if rung == "nous":
         monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
                             lambda **kwargs: (_FakeClient(), AUX_MODEL))
-        expected_step, expected_base = "call", ("https://%s/v1" % NOUS_HOST)
+        expected_step, expected_base = "call", (f"https://{NOUS_HOST}/v1")
     else:
         monkeypatch.setattr(aux, "_auth_refresh_provider_for_route",
                             lambda *a, **kw: "codex")
@@ -151,8 +150,8 @@ def test_post_refresh_retry_owns_the_ladder_outcome(
         result = aux._drive_ladder(ladder, perform)
     except _ApiError as exc:
         pytest.fail(
-            "the ladder let %r escape instead of falling through to the configured "
-            "fallback chain (steps performed: %s)" % (exc, performed)
+            f"the ladder let {exc!r} escape instead of falling through to the configured "
+            f"fallback chain (steps performed: {performed})"
         )
 
     assert performed == [expected_step], "the post-refresh retry is the only request"
@@ -188,6 +187,7 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
         return client, FALLBACK_MODEL, label
 
     monkeypatch.setattr(aux, "_try_configured_fallback_chain", configured_chain)
+    route_info = {"provider": "vertex", "model": AUX_MODEL}
     ladder = aux._aux_recovery_ladder(
         _auth_error(),
         client=_ExplicitProviderClient(),
@@ -203,7 +203,7 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
         final_model=AUX_MODEL,
         max_tokens=None,
         main_runtime=None,
-        route_info={},
+        route_info=route_info,
     )
 
     def perform(step):
@@ -218,6 +218,9 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
     else:
         with pytest.raises(_ApiError, match="Unauthorized"):
             aux._drive_ladder(ladder, perform)
+        # The PRIMARY error is raised, so route_info must name the primary route, not the
+        # last fallback candidate tried (the compressor blames whatever route_info names).
+        assert route_info == {"provider": "vertex", "model": AUX_MODEL}
     assert not chain
 
 
@@ -273,7 +276,7 @@ def nous_ladder_endpoint(monkeypatch):
         return resolve_address(host, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", local_nous_address)
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,%s" % NOUS_HOST)
+    monkeypatch.setenv("NO_PROXY", f"127.0.0.1,localhost,{NOUS_HOST}")
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status, payload):
@@ -298,8 +301,8 @@ def nous_ladder_endpoint(monkeypatch):
                     self._send(401, {"error": {"message": "Unauthorized", "type": "authentication_error"}})
                     return
                 self._send(404, {"error": {
-                    "message": "Model '%s' requires available credits. Your account "
-                               "balance is too low to use paid models." % AUX_MODEL,
+                    "message": f"Model '{AUX_MODEL}' requires available credits. Your account "
+                               "balance is too low to use paid models.",
                     "type": "invalid_request_error",
                     "code": "insufficient_credits",
                 }})
@@ -326,7 +329,7 @@ def nous_ladder_endpoint(monkeypatch):
     )
     thread.start()
     try:
-        yield "http://%s:%d" % (NOUS_HOST, server.server_port), requests
+        yield f'http://{NOUS_HOST}:{server.server_port:d}', requests
     finally:
         aux.shutdown_cached_clients()
         server.shutdown()
@@ -338,7 +341,7 @@ def test_auth_refresh_retry_failure_reaches_the_configured_chain_over_http(
         tmp_path, monkeypatch, nous_ladder_endpoint):
     """End to end: the configured chain must serve the retry the refresh could not."""
     host_url, requests = nous_ladder_endpoint
-    local_url = "http://127.0.0.1:%s" % host_url.rsplit(":", 1)[1]
+    local_url = "http://127.0.0.1:{}".format(host_url.rsplit(":", 1)[1])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("AUX_FB_KEY", "fallback-test-key")
     config = {
@@ -376,8 +379,7 @@ def test_auth_refresh_retry_failure_reaches_the_configured_chain_over_http(
         body.get("model") for path, body in requests if path == "/v1/chat/completions"
     ]
     assert seen == [AUX_MODEL, AUX_MODEL, FALLBACK_MODEL], (
-        "401, then the refreshed retry fails on credits, then the configured chain: %r"
-        % (seen,)
+        f"401, then the refreshed retry fails on credits, then the configured chain: {seen!r}"
     )
 
 
@@ -386,10 +388,9 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
     monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
                         lambda **kwargs: (_FakeClient(), AUX_MODEL))
 
-    def _no_chain(first_err, route):
-        hermetic.append(first_err)
+    def _no_chain(failure, route, **_kw):
+        hermetic.append(failure.error)
         yield from ()
-        return None
 
     monkeypatch.setattr(aux, "_ladder_provider_fallback", _no_chain)
     failure = _credit_error()
@@ -401,5 +402,5 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
         aux._drive_ladder(_ladder(), perform)
 
     assert raised.value is failure, (
-        "the ladder must surface the actionable retry failure, got %r" % (raised.value,))
+        f"the ladder must surface the actionable retry failure, got {raised.value!r}")
     assert hermetic == [failure]

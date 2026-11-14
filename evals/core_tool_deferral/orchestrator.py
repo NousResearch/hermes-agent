@@ -60,7 +60,7 @@ def run_cell(cell):
     t0 = time.time()
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 60,
-                           env=os.environ.copy())
+                           env=os.environ.copy(), check=False)
         if p.returncode == 3:
             return (cell, "INFRA_ABORT", p.stderr[-500:])
         if p.returncode != 0 and not os.path.exists(out):

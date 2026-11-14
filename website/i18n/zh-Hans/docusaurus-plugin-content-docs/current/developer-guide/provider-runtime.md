@@ -46,7 +46,6 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic（原生）
 - Google / Gemini（`gemini`）
 - Alibaba / DashScope（`alibaba`、`alibaba-coding-plan`）
@@ -105,7 +104,7 @@ Hermes 包含相关逻辑，以避免在存在多个 provider 密钥时（例如
 
 - `OPENROUTER_API_KEY` 仅发送至 `openrouter.ai` 端点
 - `AI_GATEWAY_API_KEY` 仅发送至 `ai-gateway.vercel.sh` 端点
-- `OPENAI_API_KEY` 用于自定义端点及作为回退
+- `OPENAI_API_KEY` 仅发送至 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之精确配对的 `OPENAI_BASE_URL`
 
 Hermes 还区分以下两种情况：
 
@@ -148,9 +147,7 @@ Codex 使用独立的 Responses API 路径：
 辅助任务包括：
 
 - 视觉
-- 网页提取摘要
 - 上下文压缩摘要
-- skills hub 操作
 - MCP 辅助操作
 - 记忆刷新
 

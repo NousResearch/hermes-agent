@@ -261,7 +261,7 @@ def _state_filter(state: Optional[str]) -> tuple[str, tuple]:
     return ("", ()) if state is None else (" WHERE state=?", (state,))
 
 
-def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_incidents(state: Optional[str] = None) -> list[dict[str, Any]]:
     """Return incidents, newest-activity first, optionally filtered by state."""
     if state is not None and state not in INCIDENT_STATES:
         return []
@@ -276,7 +276,7 @@ def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def get_incident(incident_id: str) -> Optional[Dict[str, Any]]:
+def get_incident(incident_id: str) -> Optional[dict[str, Any]]:
     with _transaction() as conn:
         row = conn.execute(
             "SELECT * FROM cron_incidents WHERE id=?", (incident_id,)

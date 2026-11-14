@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ def _iso_timestamp(value: Any) -> str:
         return ""
     if (ts := coerce_epoch(value)) is None:
         return str(value)  # corrupt cell: odd-looking date, not an aborted export
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _frontmatter_line(key: str, value: Any) -> str:
@@ -169,8 +169,15 @@ def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool,
 def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of a session export dict with secrets redacted.
 
-    Every message's content and tool-call arguments go through the force-mode redaction pass
-    (``agent.redact.redact_sensitive_text``) so credentials in tool output never land in exports.
+    Runs every string in the export through the force-mode redaction pass
+    (``agent.redact.redact_sensitive_text``) — message content, tool-call
+    arguments, AND session-level fields outside ``messages``/``segments``.
+    The auto-generated session title quotes the first user message, so a
+    credential pasted into that message rides into the title and, before
+    this walked the whole dict, straight into the export header in
+    plaintext despite ``--redact`` (#90361). Force mode ignores the user's
+    global ``security.redact_secrets`` preference — an explicit ``--redact``
+    export must never emit raw secrets anywhere in the file.
     """
     from agent.redact import redact_sensitive_text
 
@@ -180,10 +187,13 @@ def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, list):
             return [_clean(v) for v in value]
         if isinstance(value, dict):
-            return {k: _clean(v) for k, v in value.items()}
+            # Keys are strings too — a credential-shaped key (a misbehaving
+            # JSON emitter writing {"sk-...": value}) must not pass through
+            # verbatim when the user asked for --redact (review on #90361).
+            return {_clean(k) if isinstance(k, str) else k: _clean(v) for k, v in value.items()}
         return value
 
-    return {**session, **{k: _clean(session[k]) for k in ("messages", "segments") if session.get(k) is not None}}
+    return _clean(session)
 
 
 def _export_dir(output_dir: Path | str) -> Path:

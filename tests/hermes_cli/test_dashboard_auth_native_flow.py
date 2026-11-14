@@ -226,6 +226,37 @@ def _native_authorize_params(challenge, **overrides):
     return params
 
 
+@pytest.mark.parametrize("forwarded_template", ["198.51.100.{i}", ", 198.51.100.{i}"],
+                         ids=["rotated-address", "empty-first-hop"])
+def test_native_authorize_spoofed_forwarded_headers_cannot_bypass_pending_cap(
+    gated_client: TestClient, forwarded_template: str,
+) -> None:
+    # The public OAuth entry point must limit one peer before allocating the
+    # global pending store, even when XFF rotates or has an empty first hop.
+    _verifier, challenge = _make_pkce()
+    params = _native_authorize_params(challenge, provider="stub")
+    for i in range(native_flow._MAX_PENDING_PER_IP):
+        response = gated_client.get(
+            "/auth/native/authorize", params=params,
+            headers={"X-Forwarded-For": forwarded_template.format(i=i)},
+        )
+        assert response.status_code == 302
+
+    blocked = gated_client.get(
+        "/auth/native/authorize", params=params,
+        headers={"X-Forwarded-For": forwarded_template.format(i=native_flow._MAX_PENDING_PER_IP)},
+    )
+    assert blocked.status_code == 503
+    assert "too many pending" in blocked.json()["detail"]
+
+    # Exhausting one peer's allowance must leave room for another real peer.
+    other_client = TestClient(
+        web_server.app, base_url=str(gated_client.base_url),
+        client=("203.0.113.10", 50000), follow_redirects=False,
+    )
+    assert other_client.get("/auth/native/authorize", params=params).status_code == 302
+
+
 def test_native_authorize_mixed_providers_offers_both_choices(gated_client):
     """SSO-with-password-fallback (one OAuth + the bundled password provider): the desktop
     sends no ``provider``, so BOTH configured methods must stay reachable. #78906's symptom
@@ -339,6 +370,22 @@ def test_bearer_authenticates_gated_route_without_cookie(gated_client):
     )
     assert r.status_code == 200, r.text
     assert r.json()["user_id"] == "stub-user-1"
+
+
+def test_a_native_bearer_reads_the_full_webapp_status(gated_client, monkeypatch):
+    """The Webapp trims a signed-out ``/api/status``; a Desktop's redeemed bearer is signed in."""
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(web_server.app.state, "listener_public_url", "", raising=False)
+    verifier, challenge = _make_pkce()
+    code, _state = _walk_native_login(
+        gated_client, redirect_uri="http://127.0.0.1:53999/cb", challenge=challenge)
+    at = gated_client.post(
+        "/auth/native/token", json={"code": code, "code_verifier": verifier}).json()["access_token"]
+    gated_client.cookies.clear()
+
+    assert "install_id" not in gated_client.get("/api/status").json()
+    full = gated_client.get("/api/status", headers={"Authorization": f"Bearer {at}"}).json()
+    assert full["install_id"] and "profiles" in full
 
 
 
@@ -581,7 +628,7 @@ def test_native_password_login_full_roundtrip(pw_gated_client):
 def test_native_password_login_wrong_password_keeps_pending(pw_gated_client):
     """A failed credential attempt must not consume the pending
     authorization — the user retypes and succeeds on the same broker."""
-    verifier, challenge = _make_pkce()
+    _verifier, challenge = _make_pkce()
     cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
 
     r = pw_gated_client.post(

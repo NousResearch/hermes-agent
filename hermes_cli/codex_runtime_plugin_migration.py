@@ -132,18 +132,16 @@ def _translate_one_server(name: str, hermes_cfg: dict) -> tuple[Optional[dict], 
     return out, skipped
 
 
-# TOML basic-string escapes. Order matters: backslash first so the others aren't re-escaped.
-# Control chars must be \-escaped — a literal one is invalid TOML that codex refuses to load;
-# env-var passthrough (HERMES_HOME, PYTHONPATH) could carry one in pathological cases.
-_TOML_ESCAPES = (
-    ("\\", "\\\\"), ('"', '\\"'), ("\b", "\\b"), ("\t", "\\t"),
-    ("\n", "\\n"), ("\f", "\\f"), ("\r", "\\r"))
+# TOML basic-string escapes. EVERY control char (U+0000-U+001F, U+007F) must be \-escaped, not just
+# the five with short forms — a literal one is invalid TOML that codex refuses to load (and migrate()
+# refuses to write); env-var passthrough (HERMES_HOME, PYTHONPATH) could carry one in pathological cases.
+_TOML_ESCAPES = str.maketrans({
+    **{chr(code): f"\\u{code:04X}" for code in (*range(0x20), 0x7F)},
+    "\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"})
 
 
 def _escape_toml_string(value: str) -> str:
-    for raw, esc in _TOML_ESCAPES:
-        value = value.replace(raw, esc)
-    return f'"{value}"'
+    return f'"{value.translate(_TOML_ESCAPES)}"'
 
 
 def _format_toml_value(value: Any) -> str:
@@ -164,10 +162,11 @@ def _format_toml_value(value: Any) -> str:
 
 
 def _quote_key(key: str) -> str:
-    """Return key bare-or-quoted depending on whether it's a valid bare key."""
-    if key and all(c.isalnum() or c in "-_" for c in key):
+    """Return key bare-or-quoted depending on whether it's a valid bare key. Bare keys are ASCII
+    ``A-Za-z0-9_-`` only (``str.isalnum`` alone admits ``é`` / ``文``); a quoted key is a basic string."""
+    if key and key.isascii() and all(c.isalnum() or c in "-_" for c in key):
         return key
-    return '"' + key.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return _escape_toml_string(key)
 
 
 def render_codex_toml_section(

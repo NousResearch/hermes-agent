@@ -3,13 +3,14 @@ become a validated ``relay-plugins.toml`` per profile home, selected from ``.env
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
 from hermes_cli.relay_plugin_migrate import (
-    RELAY_PLUGINS_TOML_NAME, migrate_all_profile_relay_envs, migrate_profile_relay_env,
+    RELAY_PLUGINS_TOML_NAME, dumps_toml, migrate_all_profile_relay_envs, migrate_profile_relay_env,
     validate_relay_plugin_payload)
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, configured_legacy_relay_env_vars
 
@@ -131,3 +132,11 @@ def test_error_diagnostics_leave_env_untouched(profile_env, monkeypatch):
     assert result.validation_error == "ValueError: rejected"
     assert (profile_env / ".env").read_text(encoding="utf-8") == before
     assert not (profile_env / RELAY_PLUGINS_TOML_NAME).exists()
+
+
+def test_fallback_emitter_escapes_newlines_and_control_chars(monkeypatch):
+    """Without tomli_w (a dependency only on Python >= 3.14) dumps_toml's own emitter still writes
+    TOML that loads back: a newline or control char in a legacy env value stays escaped."""
+    monkeypatch.setitem(sys.modules, "tomli_w", None)  # `import tomli_w` raises ImportError
+    doc = {"version": 1, "components": [{"config": {"dir": "a\nb", "name": 'q"\\\x1b'}}]}
+    assert tomllib.loads(dumps_toml(doc)) == doc

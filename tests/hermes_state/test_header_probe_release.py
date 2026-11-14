@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state_dbfile as dbfile
-import hermes_state_registry as registry
+from persistence.sqlite import _registry as registry
 
 
 @pytest.fixture(autouse=True)
@@ -237,14 +237,14 @@ def test_probe_kept_while_an_open_is_in_flight(tmp_path, monkeypatch):
     _probe(db_path)
     entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
     entered, resume = threading.Event(), threading.Event()
-    real_open = registry._open_session_db
+    real_open = registry._open_holder
 
     def _paused_open(path):
         entered.set()
         assert resume.wait(10.0)
         return real_open(path)
 
-    monkeypatch.setattr(registry, "_open_session_db", _paused_open)
+    monkeypatch.setattr(registry, "_open_holder", _paused_open)
     opened: list = []
     opener = threading.Thread(target=lambda: opened.append(registry.acquire(db_path)), daemon=True)
     opener.start()
@@ -294,7 +294,7 @@ def test_two_spellings_of_one_path_do_not_pin_each_other(tmp_path):
 def test_close_all_under_does_not_block_on_a_held_probe_lock(tmp_path, monkeypatch):
     """The second scan runs while ``offline_file_access`` holds ``_live_lock``, so it must never
     wait unbounded on ``_HEADER_PROBE_LOCK``: a writer holding that lock in ``_pread_db_range`` can
-    be waiting on ``_live_lock`` behind a collection that finalizes an unclosed ``SessionDB``, and
+    be waiting on ``_live_lock`` behind a collection that finalizes an unclosed ``StoreHolder``, and
     the sweep would park for good. Driving ``close_all_under`` end to end is the point: the leaf
     call alone would still pass on a tree whose scan blocks."""
     import contextlib

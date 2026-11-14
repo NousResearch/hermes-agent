@@ -7,10 +7,13 @@ import * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { useStore } from '@nanostores/react'
+
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { $activeSessionId } from '@/store/session'
 import { useI18n } from '@/i18n'
 import { PanelLeftIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -58,6 +61,14 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const activeSessionId = useStore($activeSessionId)
+
+  // Picking a conversation on a phone must dismiss the drawer that lists them:
+  // nothing closed it, so the sheet stayed over the chat and read as "I was
+  // thrown back to the start and nothing turns off".
+  React.useEffect(() => {
+    setOpenMobile(false)
+  }, [activeSessionId])
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.

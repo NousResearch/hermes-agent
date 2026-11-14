@@ -36,6 +36,7 @@ from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_R
 from tools.approval_quoted_newlines import _mask_quoted_newlines
 from tools.approval_pipe_launchers import _PIPE_PATH_PREFIX_RE, _PIPE_WRAPPERS_RE
 from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
+from tools.approval_wmic import WmicShadowDeleteMatcher
 from tools.shell_heredoc import mask_heredoc_bodies_for_shell_scan
 
 logger = logging.getLogger("tools.approval")
@@ -290,63 +291,6 @@ _PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$
 
 _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
 _DOWNLOAD_THEN_RUN_DESCRIPTION = "execute a just-downloaded file"
-_WMIC_DELETE_IN_SEGMENT_RE = re.compile(r"\sshadowcopy\b.*\sdelete\b", re.IGNORECASE | re.DOTALL)
-# Leading switches of a carrier before its script: cmd /s /q /c, start /b "title", pwsh -NoProfile
-# -ExecutionPolicy Bypass -Command, doas -u x, ssh -i k -p 22 host. Option values are taken only for
-# the options known to take one, so `powershell -NoProfile wmic ...` keeps wmic as the script.
-_CARRIER_SWITCHES_RE = re.compile(
-    r"""(?:\s*+(?:/\w++(?::\S*+)?|-(?:ExecutionPolicy|ep|ex|WindowStyle|w|Version|v|WorkingDirectory|wd"""
-    r"""|ConfigurationName|config|SettingsFile|settings|OutputFormat|of|InputFormat|inp|if|u|p|i|o|l|J|F|a)"""
-    r"""\s++(?:"[^"\n]*+"|'[^'\n]*+'|[^\s;&|]++)|--?\w*+))*+""",
-    re.IGNORECASE,
-)
-# `start "title" prog`: start alone takes a quoted window title before the program.
-_START_TITLE_RE = re.compile(r"""\s*+"[^"\\\n]*+"(?=\s*+["\w\\/])""")
-
-
-class _WmicShadowDeleteMatcher:
-    """`wmic ... shadowcopy ... delete` run as a command: the program word (bare, a full path, behind
-    sudo/env/nohup...) is wmic and its own command carries shadowcopy and then delete. The script of a
-    carrier (cmd /c, pwsh, powershell, start, call, doas, wsl, xargs, ssh host) is walked the same way,
-    so `cmd /c "echo hi & wmic shadowcopy delete"` counts. Nesting is capped, so the scan stays linear."""
-
-    _CARRIERS = frozenset({"cmd", "pwsh", "powershell", "start", "call", "doas", "wsl", "xargs", "ssh"})
-    _MAX_DEPTH = 3
-
-    def search(self, text: str, depth: int = 0):
-        if "wmic" not in text.lower():
-            return None
-        for _, end, word in _iter_shell_command_word_spans(text):
-            # Split the path before deobfuscating: the shell reading drops the backslashes of C:\...\wmic.
-            name = _deobfuscate_shell_word_for_detection(re.split(r"[\\/]", word)[-1]).strip("\"'").lower().removesuffix(".exe")
-            if name == "wmic":
-                if match := _WMIC_DELETE_IN_SEGMENT_RE.search(" " + _shell_command_segment(text, end)):
-                    return match
-            elif name in self._CARRIERS and depth < self._MAX_DEPTH:
-                for script in self._carrier_script(name, _shell_command_segment(text, end)):
-                    if match := self.search(script, depth + 1):
-                        return match
-        return None
-
-    @staticmethod
-    def _carrier_script(name: str, rest: str) -> tuple[str, ...]:
-        rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1)
-        if name == "start":
-            rest = _CARRIER_SWITCHES_RE.sub("", _START_TITLE_RE.sub("", rest, count=1), count=1)
-        rest = rest.lstrip()
-        if name == "ssh":  # the first word after the options is the host
-            rest = re.sub(r"^[^\s;&|]+", "", rest, count=1)
-            rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1).lstrip()
-        rest = re.sub(r"^-(?:Command|c)\b\s*", "", rest, flags=re.IGNORECASE)
-        rest = rest.rstrip().replace('\\"', '"')
-        if rest[:1] not in ("'", '"'):
-            return (rest,)
-        # A leading quote opens either the whole script (`"wmic shadowcopy delete"`) or just the program
-        # word (`"wmic" shadowcopy delete`); the normalized variant drops `\"` pairs, so its closing quote
-        # can be missing. Read it both ways.
-        return (rest, rest[1:-1] if len(rest) > 1 and rest[-1] == rest[0] else rest[1:])
-
-
 class _PipeRemoteToShellMatcher:
     """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
     each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
@@ -623,8 +567,8 @@ DANGEROUS_PATTERNS = [
     # Backup/recovery destruction — classic ransomware prep.
     (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
     # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling. Not compiled:
-    # DANGEROUS_PATTERNS_COMPILED swaps in _WmicShadowDeleteMatcher, which checks each command-position
-    # word (wrappers, full paths, cmd /c, pwsh) instead of an unanchored regex over the whole line.
+    # DANGEROUS_PATTERNS_COMPILED swaps in WmicShadowDeleteMatcher (tools/approval_wmic.py), which checks each
+    # command-position word (wrappers, full paths, cmd /c, pwsh) instead of an unanchored regex over the whole line.
     (r'wmic shadowcopy delete', _WMIC_SHADOW_DELETE_DESCRIPTION),
     (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
     (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
@@ -927,7 +871,7 @@ DANGEROUS_PATTERNS = [
 _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
-    _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+    _WMIC_SHADOW_DELETE_DESCRIPTION: WmicShadowDeleteMatcher,
     _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),
 }

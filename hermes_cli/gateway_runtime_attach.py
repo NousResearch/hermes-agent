@@ -27,6 +27,28 @@ CLIENT_LAUNCH_ENV = (
 DISCOVER_TIMEOUT = 5.0
 
 
+# One line, stderr only: ``attach --start`` still starts the gateway (see ``windows_service_session``).
+# Installing the task is not offered, as in CLIENT_ELEVATED_REMEDY: registered through the UAC hand-off it
+# can start the gateway elevated (#152218), which trades gateway_other_session for gateway_elevated.
+SERVICE_SESSION_START_WARNING = (
+    "warning: this is an elevated Windows session-0 login (e.g. an administrator OpenSSH login); a gateway "
+    "started here refuses the user's normal Hermes windows (gateway_other_session). Start Hermes from "
+    "a normal (non-administrator) window on this machine's desktop, then attach without --start")
+
+
+def windows_service_session() -> bool:
+    """True when this process runs elevated in Windows session 0 (an administrator's OpenSSH login,
+    a service): a gateway it starts inherits both, so the user's own desktop clients are refused
+    with ``gateway_other_session``. It can still attach to a gateway the user's session started.
+    False off Windows and whenever either fact cannot be read."""
+    from hermes_dir_acl import process_is_elevated
+    from hermes_platform.host import windows_session_id
+    try:
+        return windows_session_id() == 0 and process_is_elevated()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
 def scrub_client_launch_env() -> None:
     """Drop ``CLIENT_LAUNCH_ENV`` from this process before an attach that may start a daemon (it
     inherits ``os.environ``). Only for a process that exists to attach: the CLI command and Ink's

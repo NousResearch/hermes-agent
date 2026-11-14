@@ -802,8 +802,8 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "",
-        "resume_display": "full",
-        # Recap tuning for /resume and startup resume.
+        "resume_display": "full",          # full (recap) | transcript (all messages, live-chat style) | minimal | off
+        # Recap tuning for /resume and startup resume (``full`` mode only).
         "resume_exchanges": 10,            # max user+assistant pairs to show
         "resume_max_user_chars": 300,      # truncate user message text
         "resume_max_assistant_chars": 200, # truncate non-last assistant text
@@ -2482,13 +2482,13 @@ DEFAULT_CONFIG = {
             "override_existing": True,
         },
     },
-    # Paste collapse thresholds (TUI + CLI); 0 disables each. threshold: bracketed pastes with this
-    # many newlines collapse to a file reference. fallback: same test for terminals without
-    # bracketed paste, gated by chars/newlines-added heuristics. char_threshold: single-line pastes
-    # this long collapse too.
+    # Paste collapse thresholds (TUI + CLI); 0 disables each. `threshold` newlines (or `fallback`
+    # for terminals without bracketed paste) or `char_threshold` chars collapse the paste to a file.
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
+    # Minutes a collapsed paste file survives before the sweep; 0 keeps every file forever.
+    "paste_retention_minutes": 60,
 
     # Bot Desktop: a headless Xfce screen per profile on the gateway host (Linux), streamed to Hermes
     # Desktop where a human can watch, take over (logins, 2FA, CAPTCHAs) and hand back. `hermes computer-use screen`.

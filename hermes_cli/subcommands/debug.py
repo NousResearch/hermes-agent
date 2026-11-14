@@ -25,6 +25,8 @@ Examples:
     hermes debug share --nous --no-redact  Send unredacted logs to Nous storage
     hermes debug share --nous       Upload to Nous-internal storage (private)
     hermes debug delete <url>       Delete a previously uploaded paste
+    hermes debug pastes             List local collapsed-paste files and their expiry
+    hermes debug pastes --purge     Delete every local collapsed-paste file now
 """)
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
     share_parser = debug_sub.add_parser(
@@ -63,4 +65,9 @@ Examples:
     delete_parser.add_argument(
         "urls", nargs="*", default=[],
         help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)")
+    pastes_parser = debug_sub.add_parser(
+        "pastes", help="List or purge local collapsed-paste files (never uploaded)")
+    pastes_parser.add_argument(
+        "--purge", action="store_true",
+        help="Delete every local collapsed-paste file now, regardless of age")
     debug_parser.set_defaults(func=cmd_debug)

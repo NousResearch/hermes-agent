@@ -81,9 +81,50 @@ export const openUpdateOverlayFor = (target: UpdateTarget): void => {
   void (target === 'backend' ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
 }
 
-export const resetUpdateApplyState = () => {
-  $updateApply.set(IDLE)
-  $backendUpdateApply.set(IDLE)
+export const resetUpdateApplyState = (target?: UpdateTarget) => {
+  if (target !== 'backend') {
+    $updateApply.set(IDLE)
+  }
+
+  if (target !== 'client') {
+    $backendUpdateApply.set(IDLE)
+  }
+}
+
+/** The client's update view ends (it finished in place, or the person closed its outcome): close it
+ *  and reset only the client, then show a backend outcome that waited behind it. */
+export function endClientView(): void {
+  setUpdateOverlayOpen(false)
+  resetUpdateApplyState('client')
+
+  if (backendNeedsPerson()) {
+    showBackendProgress()
+  }
+}
+
+// A client update owns the overlay from its first progress until its view is dismissed: while it
+// applies, while it restarts or hands off (no longer `applying`), and while its error or manual
+// step is on screen. A backend outcome never replaces it.
+function clientHoldsOverlay(): boolean {
+  return $updateOverlayTarget.get() === 'client' && $updateApply.get().stage !== 'idle'
+}
+
+// The progress view may have been hidden while the backend updated: an outcome that needs the
+// person (a failure, a manual step) shows it again, or waits in its own state while the client
+// holds the overlay and shows when the client's view ends.
+function showBackendProgress(): void {
+  if (clientHoldsOverlay()) {
+    return
+  }
+
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+}
+
+function backendNeedsPerson(): boolean {
+  const backend = $backendUpdateApply.get()
+
+  return !backend.applying && (backend.stage === 'error' || backend.stage === 'manual')
 }
 
 const UPDATE_TOAST_ID = 'desktop-update-available'
@@ -823,11 +864,11 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
     if (!result?.handedOff) {
       if (result?.ok) {
-        // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
-        // the overlay and let the user know the new version loads next launch
-        // rather than stranding them on an un-closeable spinner.
-        setUpdateOverlayOpen(false)
-        resetUpdateApplyState()
+        // Updated, but couldn't relaunch in place (AppImage / dev run). End the
+        // client's view and let the user know the new version loads next launch
+        // rather than stranding them on an un-closeable spinner. A hidden backend
+        // update keeps running under it; a backend outcome that waited shows now.
+        endClientView()
 
         if (result.updateAvailable === false) {
           return result
@@ -906,6 +947,7 @@ function failBackendApply(
     error: 'apply-failed',
     message
   })
+  showBackendProgress()
 
   return { ok: false, error: 'apply-failed', message: owed ? message : fallback.result }
 }
@@ -917,7 +959,13 @@ function finishBackendApply(
 ): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
-    setUpdateOverlayOpen(false)
+
+    // Only the backend's own progress closes: a client view (an update holding it, or one the
+    // person opened to read) stays.
+    if ($updateOverlayTarget.get() === 'backend') {
+      setUpdateOverlayOpen(false)
+    }
+
     void checkBackendUpdates({ force: true })
     // The update restarted the gateway process, which strands this window's
     // WebSocket: over SSH/tailscale tunnels the old TCP connection often dies
@@ -1054,6 +1102,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       // view. Only a field absent from an older backend falls back.
       const command = ((started as { update_command?: string | null }).update_command ?? 'hermes update') || null
       $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
+      showBackendProgress()
 
       return { ok: false, error: 'manual', manual: true, message, command: command ?? undefined }
     }
@@ -1151,6 +1200,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       error: 'apply-failed',
       message
     })
+    showBackendProgress()
 
     return { ok: false, error: 'apply-failed', message }
   }

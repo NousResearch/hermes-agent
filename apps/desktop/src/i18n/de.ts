@@ -4280,6 +4280,8 @@ export const deOverrides = {
     applyingBodyBackend:
       'Das Remote-Backend wendet das Update an und startet neu. Hermes verbindet sich automatisch wieder, wenn es zurück ist.',
     applyingClose: 'Dieses Fenster schließt sich während des Updates, dann öffnet sich Hermes von selbst wieder.',
+    applyingStayBackend:
+      'Sie können dies ausblenden und Ihre Chats weiter nutzen. Es erscheint wieder, falls das Update fehlschlägt.',
     errorTitle: 'Update nicht abgeschlossen',
     errorBody: 'Keine Sorge – es ging nichts verloren. Sie können es jetzt erneut versuchen.',
     blockerTitle: 'Lokale Vorschauen schließen, um Hermes zu aktualisieren?',

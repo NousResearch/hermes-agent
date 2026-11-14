@@ -2746,6 +2746,7 @@ export const jaOverrides = {
       'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に自動的に Hermes を再度開きます。更新中はご自分で Hermes を開き直さないでください。',
     applyingBodyBackend: 'リモートバックエンドが更新を適用して再起動します。復帰すると Hermes が自動的に再接続します。',
     applyingClose: 'このウィンドウは更新中に閉じ、その後 Hermes が自動的に再度開きます。',
+    applyingStayBackend: 'これを非表示にしてチャットを使い続けられます。更新が失敗した場合は再び表示されます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
     blockerTitle: 'Hermes を更新するためにローカルプレビューを閉じますか？',

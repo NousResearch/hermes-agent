@@ -1,5 +1,6 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -318,6 +319,34 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     assert not notify_path.exists()
 
 
+@pytest.mark.asyncio
+async def test_send_restart_notification_cleans_up_malformed_marker(tmp_path, monkeypatch):
+    """Malformed markers must be unlinked cleanly without UnboundLocalError."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({"platform": "telegram"}))  # missing chat_id
+
+    runner, _ = make_restart_runner()
+    delivered = await runner._send_restart_notification()
+    assert delivered is None
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_preserves_marker_when_transport_none(tmp_path, monkeypatch):
+    """Marker must be preserved for replay when transport is not yet ready."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({"platform": "telegram", "chat_id": "42"}))
+
+    runner, _ = make_restart_runner()
+    runner.adapters.clear()  # No live adapter -> transport is None
+
+    delivered = await runner._send_restart_notification()
+    assert delivered is False
+    assert notify_path.exists()
+
+
 
 
 @pytest.mark.asyncio
@@ -385,5 +414,43 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     await runner._notify_active_sessions_of_shutdown()
 
     adapter.send.assert_not_awaited()
+
+
+# ── reconnect replay wiring ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_schedule_planned_restart_replay_dispatches_pending_notification(tmp_path, monkeypatch):
+    """A reconnect must replay a restart notice whose marker is still on disk.
+
+    Guards the wiring, not just the sender: preserving the marker is only useful if
+    ``_schedule_planned_restart_replay`` actually schedules the replay for it.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.json").write_text(json.dumps({"platform": "telegram", "chat_id": "42"}))
+
+    runner, _adapter = make_restart_runner()
+    runner._send_restart_notification = AsyncMock(return_value=False)
+
+    runner._schedule_planned_restart_replay()
+    scheduled = list(runner._background_tasks)
+    assert len(scheduled) == 1, "pending restart marker should schedule exactly one replay"
+    await asyncio.gather(*scheduled)
+
+    runner._send_restart_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_schedule_planned_restart_replay_skips_when_nothing_pending(tmp_path, monkeypatch):
+    """No marker on disk -> no replay task (reconnects must not send a stale notice)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner._send_restart_notification = AsyncMock(return_value=False)
+
+    runner._schedule_planned_restart_replay()
+
+    assert not runner._background_tasks
+    runner._send_restart_notification.assert_not_awaited()
 
 

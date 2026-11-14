@@ -85,7 +85,6 @@ Or in-session:
 | `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
 | `web` | `web_extract`, `web_search` | Web search and page content extraction. |
 | `x_search` | `x_search` | Read-only public X discovery via xAI's built-in `x_search` Responses tool. Use the `xurl` skill for authenticated X API reads and account actions. Off by default; opt in via `hermes tools`. Schema only registered when xAI credentials (SuperGrok OAuth or `XAI_API_KEY`) are configured. |
-| `yuanbao` | `yb_query_group_info`, `yb_query_group_members`, `yb_search_sticker`, `yb_send_dm`, `yb_send_sticker` | Yuanbao DM/group actions and sticker search. Registered only on `hermes-yuanbao`. |
 
 ## Platform Toolsets
 
@@ -113,11 +112,10 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-wecom` | Same as `hermes-cli`. |
 | `hermes-wecom-callback` | Same as `hermes-cli`. |
 | `hermes-weixin` | Same as `hermes-cli`. |
-| `hermes-yuanbao` | Adds the five `yb_*` tools (DM/group/sticker) on top of `hermes-cli`. |
 | `hermes-webhook` | Restricted safe subset — only `web_search`, `web_extract`, `vision_analyze`, and `clarify`. Webhook-triggered runs get no terminal, file, or browser access. |
 | `hermes-gateway` | Internal gateway orchestrator toolset — union of every `hermes-<platform>` toolset; used when the gateway needs to accept any message source. |
 
-Platforms provided by plugins get an implicit `hermes-<platform>` bundle that is not part of `hermes-gateway`. For example, `hermes-homeassistant` still resolves once the `homeassistant` catalog plugin is installed, but it is no longer a built-in toolset.
+Platforms provided by plugins get an implicit `hermes-<platform>` bundle that is not part of `hermes-gateway`. For example, `hermes-homeassistant` and `hermes-yuanbao` still resolve once the `homeassistant` / `yuanbao` catalog plugin is installed, but they are no longer built-in toolsets.
 
 ## Dynamic Toolsets
 
@@ -134,6 +132,8 @@ mcp_servers:
 ```
 
 This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs. The bare server name (`github`) works as an alias. If a server is named like a built-in toolset (`browser`, `web`), that name resolves to the built-in tools **plus** the server's `mcp__<server>__*` tools; neither side shadows the other.
+
+In `platform_toolsets.<platform>`, a list that names no MCP server gets every enabled server, a list that names servers gets only those, and `no_mcp` drops them all. An explicitly empty list (`email: []`) gets no MCP servers.
 
 ### Plugin toolsets
 

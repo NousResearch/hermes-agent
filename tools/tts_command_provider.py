@@ -2,8 +2,9 @@
 
 ``tts.providers.<name>: {type: command, command: "piper -f {output_path} < {input_path}"}``
 (and the ``stt.`` twin): ``{placeholders}`` are shell-quoted for their surrounding quote
-context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-timeout
-process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
+context, ``{{``/``}}`` and backslash-escaped ``\\{placeholders}`` stay literal; on Windows
+(``cmd /c``) values holding cmd.exe metacharacters are refused. Owns the quote-aware rendering,
+the idle-timeout process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
 ``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
 ``{speed}``. Built-in provider names always win over a same-named ``providers`` entry.
@@ -52,25 +53,49 @@ def shell_quote_context(command_template: str, position: int) -> Optional[str]:
     return quote
 
 
-def quote_command_placeholder(value: str, quote_context: Optional[str]) -> str:
-    """Quote a placeholder value for its position in a shell command template."""
+# cmd.exe has no escape that survives ``cmd /c`` for these: ``%VAR%``/``!VAR!`` expand before
+# caret escaping, a ``"`` flips cmd's quote state (it ignores backslash-quote), and ``& | ^ < >``
+# or a line break end/redirect the command when unquoted. Values carrying any of them are refused.
+_WINDOWS_CMD_UNSAFE_CHARS = frozenset('&|^<>%!"\r\n')
+
+
+def quote_command_placeholder(value: str, quote_context: Optional[str], os_name: Optional[str] = None) -> str:
+    """Quote a placeholder value for its position in a shell command template.
+
+    Raises ``ValueError`` on Windows (``os_name`` ``"nt"``, default: this host) when the value holds
+    a cmd.exe metacharacter, since the command runs through ``cmd /c`` (#138361)."""
+    windows = (os_name or os.name) == "nt"
+    if windows and _WINDOWS_CMD_UNSAFE_CHARS.intersection(value):
+        unsafe = "".join(sorted(_WINDOWS_CMD_UNSAFE_CHARS.intersection(value)))
+        raise ValueError(
+            f"command provider placeholder value contains characters cmd.exe cannot quote safely: {unsafe!r}")
     if quote_context == "'":
         return value.replace("'", r"'\''")
     if quote_context == '"':
+        if windows:  # no '"' left; the CRT reads "\" literally except in the run before the closing quote
+            return value + "\\" * (len(value) - len(value.rstrip("\\")))
         return value.replace("\\", "\\\\").replace('"', r'\"').replace("$", r"\$").replace("`", r"\`")
-    return subprocess.list2cmdline([value]) if os.name == "nt" else shlex.quote(value)
+    return subprocess.list2cmdline([value]) if windows else shlex.quote(value)
 
 
-def render_command_template(command_template: str, placeholders: dict[str, str]) -> str:
-    """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``."""
+def render_command_template(command_template: str, placeholders: dict[str, str], os_name: Optional[str] = None) -> str:
+    """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``.
+
+    On POSIX a placeholder directly preceded by a backslash (``\\{name}``) stays literal: substituting it
+    would splice the template's backslash into the emitted escape sequence (e.g. ``\\`` +
+    ``\\$(...)`` → ``\\\\$(...)``), un-escaping the value and resurrecting command substitution.
+    On Windows the backslash is the path separator (``C:\\voices\\{voice}.onnx``) and a ``"`` in the
+    value is already refused, so the placeholder is substituted there."""
     names = "|".join(re.escape(name) for name in placeholders)
-    pattern = re.compile(rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
+    no_backslash = "" if (os_name or os.name) == "nt" else r"(?<!\\)"
+    pattern = re.compile(rf"{no_backslash}(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
     replacements: list[tuple[str, str]] = []
 
     def replace_match(match: re.Match[str]) -> str:
         name = match.group("double") or match.group("single")
         token = f"__HERMES_CMD_PLACEHOLDER_{len(replacements)}__"
-        quoted = quote_command_placeholder(placeholders[name], shell_quote_context(command_template, match.start()))
+        quoted = quote_command_placeholder(
+            placeholders[name], shell_quote_context(command_template, match.start()), os_name)
         replacements.append((token, quoted))
         return token
 
@@ -126,9 +151,17 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
 
 
 def command_env_passthrough(config: dict[str, Any]) -> list:
-    """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env."""
+    """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env.
+
+    Hermes-managed provider credentials are refused: operator provider config must not smuggle
+    hosted credentials into command children (#138361, same policy as ``tools.env_passthrough``)."""
+    from tools.env_passthrough import _accepted
     raw = config.get("env_passthrough")
-    return [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+    names = [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+    return list(_accepted(names, (
+        "tts/stt command provider: refusing env_passthrough of Hermes provider "
+        "credential %r into command children (GHSA-rhgp-j443-p4rf policy)."
+    )))
 
 
 def command_failure_detail(exc: subprocess.CalledProcessError) -> str:

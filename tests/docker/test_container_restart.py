@@ -1,6 +1,6 @@
 """Container-restart survives per-profile gateway registrations.
 
-The s6 dynamic scandir at /run/service/ lives on tmpfs and is wiped
+The s6 gateway scandir at /run/hermes-service/ lives on tmpfs and is wiped
 on every container restart. Phase 4 Task 4.0's container_boot module
 + cont-init.d/02-reconcile-profiles regenerate the service slots from
 $HERMES_HOME/profiles/<name>/gateway_state.json on every boot and
@@ -96,11 +96,11 @@ def test_stopped_gateway_stays_stopped_after_restart(restart_container: str) -> 
 
     # Slot exists.
     assert wait_for_path(
-        container, "/run/service/gateway-writer", kind="d", deadline_s=10.0,
+        container, "/run/hermes-service/gateway-writer", kind="d", deadline_s=10.0,
     )
 
     # Down marker present.
-    r = docker_exec_sh(container, "test -f /run/service/gateway-writer/down")
+    r = docker_exec_sh(container, "test -f /run/hermes-service/gateway-writer/down")
     assert r.returncode == 0, "down marker missing despite prior_state=stopped"
 
 

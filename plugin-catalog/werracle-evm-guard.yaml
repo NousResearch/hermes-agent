@@ -1,0 +1,24 @@
+name: werracle-evm-guard
+repo: https://github.com/pCwOrM/hermes-werracle-guard
+sha: 572b58e9619f16d62a78ebc1c5835f232ca9ac84
+version: "1.0.1"
+description: "Autonomous EVM execution guardrail and DeFi liquidation risk radar for Hermes Agent. Intercepts cast send transactions before broadcast to block unlimited token approvals, NFT operator takeovers, and high-value transfers. Performs Radar lookups to api.werracle.com by default on every werracle tool call and intercepted cast send. Disclosure — by default sends the target address and chain of every intercepted `cast send`, and the addresses, accounts and market pairs passed to its werracle_* tools, to api.werracle.com (or the user-configured api_url); WERRACLE_API_KEY is sent only to https://api.werracle.com. The guard is best-effort and fails open when the Radar lookup or key lookup errors."
+maintainer: pCwOrM
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/pCwOrM/hermes-werracle-guard#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - werracle_simulate_tx
+    - werracle_mempool_radar
+    - werracle_liquidation_health
+    - werracle_inspect_contract
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env:
+    - WERRACLE_API_KEY

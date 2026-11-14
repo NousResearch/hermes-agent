@@ -20,6 +20,7 @@ const sidebars: SidebarsConfig = {
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
+        'getting-started/official-domains',
       ],
     },
     {
@@ -628,15 +629,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/web-development/web-development-scrollcraft',
                   ],
                 },
-                {
-                  type: 'category',
-                  label: 'yuanbao',
-                  key: 'skills-optional-yuanbao',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/optional/yuanbao/yuanbao-yuanbao',
-                  ],
-                },
               ],
             },
           ],
@@ -790,6 +782,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/provider-runtime',
             'developer-guide/config-backend',
             'developer-guide/programmatic-integration',
+            'developer-guide/gateway-ssh-clients',
           ],
         },
         {
@@ -822,6 +815,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/delegation-provider-plugin',
                 'developer-guide/plugins/application-declarations',
                 'developer-guide/plugins/catalog-submission',
+                'developer-guide/plugins/public-api',
               ],
             },
             'developer-guide/creating-skills',
@@ -895,6 +889,11 @@ const sidebars: SidebarsConfig = {
         'reference/cli-symbols',
         'reference/faq',
       ],
+    },
+    {
+      type: 'link',
+      label: 'Compare Hermes Agent',
+      href: 'https://hermes-agent.nousresearch.com/compare',
     },
   ],
 };

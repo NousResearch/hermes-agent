@@ -116,4 +116,5 @@ registry.register(
         emoji=args.get("emoji", ""), message_row_id=args.get("message_row_id"),
         messages_back=args.get("messages_back")),
     check_fn=check_react_requirements, emoji="💛",
+    self_checked_args=("emoji",),  # no emoji retracts the reaction
 )

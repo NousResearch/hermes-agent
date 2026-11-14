@@ -73,6 +73,20 @@ def require_owner_write(archive: zipfile.ZipFile) -> None:
         raise ValueError(f"{len(locked)} update ZIP entries lack owner write; ShipIt cannot install it ({locked[:3]})")
 
 
+SQUIRREL_ZIP_LIMIT = 1 << 30
+
+
+def require_squirrel_downloadable(package: Path) -> None:
+    """Squirrel.Mac before Electron 44.7 (v0.22.0 ships 40) reads the whole update ZIP into one buffer;
+    from 1 GiB its growth asks Electron's allocator for 2 GiB, which refuses, and the app dies
+    mid-download (electron/electron#55089)."""
+    size = package.stat().st_size
+    if size >= SQUIRREL_ZIP_LIMIT:
+        raise ValueError(f"update ZIP is {size:,} bytes; Squirrel.Mac before Electron 44.7 crashes "
+                         f"downloading {SQUIRREL_ZIP_LIMIT:,} bytes (1 GiB) or more")
+    print(f"macOS update ZIP: {size:,} bytes, {(SQUIRREL_ZIP_LIMIT - size) / 1e6:.0f} MB under the 1 GiB limit")
+
+
 def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
            *, channel_request: dict | None = None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
@@ -114,6 +128,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         package = single(root.glob(f"*-mac-{arch}.zip"))
         if not package.name.endswith(f"-{version}-mac-{arch}.zip"):
             raise ValueError("macOS artifact filename differs from requested version")
+        require_squirrel_downloadable(package)
         app = single(root.glob("mac*/*.app"))
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         signature = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], check=True, capture_output=True, text=True, encoding="utf-8")

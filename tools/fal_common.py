@@ -11,9 +11,13 @@ Holds the stateless atoms that every FAL-backed tool needs:
 * :func:`_normalize_fal_queue_url_format`, :func:`_extract_http_status`
   — small helpers used by both the managed client wrapper and
   ``_submit_fal_request``.
+* :func:`direct_fal_client` — the direct-key ``SyncClient`` for the active
+  profile, shared by the image tool and the video plugin. Its per-profile
+  cache lives here; it is keyed on the ``fal_client`` module the caller
+  passes in, so a test that replaces that module still gets a fresh client.
 
-Stateful pieces (cache globals, ``_managed_fal_client*`` selectors,
-``_submit_fal_request``) intentionally stay on
+The managed-client stateful pieces (``_managed_fal_client*`` cache globals and
+selectors, ``_submit_fal_request``) intentionally stay on
 :mod:`tools.image_generation_tool`. That module is the patch target for
 existing test suites (``tests/tools/test_image_generation.py``,
 ``tests/tools/test_managed_media_gateways.py``) and for the
@@ -26,6 +30,7 @@ issue #26241 for details.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from typing import Any, Callable, Dict, Optional, Union
@@ -68,6 +73,33 @@ def import_fal_client() -> Any:
             raise ImportError(str(exc))
     import fal_client  # type: ignore  # noqa: WPS433 — intentionally lazy
     return fal_client
+
+
+# Profile home key -> (fal_client module, FAL_KEY, SyncClient).
+_direct_clients: dict[str, tuple[Any, str, Any]] = {}
+_direct_clients_lock = threading.Lock()
+
+
+def direct_fal_client(fal_client: Any) -> Any:
+    """A ``fal_client.SyncClient`` built with the active profile's own ``FAL_KEY``.
+
+    Never the module-level ``fal_client.submit``: it is one process-wide ``SyncClient()`` that reads
+    ``os.environ`` on first use and keeps that key, so a routed profile's request went out signed
+    with the launch profile's key. One client per profile home, keyed like the routed Bedrock and
+    Entra clients and rebuilt when that profile's key (or the ``fal_client`` module, which tests
+    replace) changes, so its ``httpx.Client`` is not leaked per call. A replaced client is not
+    closed: a result wait that started before a key rotation still polls through it."""
+    from hermes_constants import hermes_home_key
+    from tools.tool_backend_helpers import fal_key
+    key = fal_key()
+    if not key:
+        raise ValueError("FAL_KEY is not set")
+    home = hermes_home_key()
+    with _direct_clients_lock:
+        cached = _direct_clients.get(home)
+        if cached is None or cached[0] is not fal_client or cached[1] != key:
+            cached = _direct_clients[home] = (fal_client, key, fal_client.SyncClient(key=key))
+        return cached[2]
 
 
 def _normalize_fal_queue_url_format(queue_run_origin: str) -> str:

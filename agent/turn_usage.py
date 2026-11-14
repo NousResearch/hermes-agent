@@ -38,6 +38,17 @@ class ResponseUsageOutcome:
     rearmed: bool = False
 
 
+def note_response_reasoning_tokens(agent: Any, response: Any) -> None:
+    """Record *response*'s own reported reasoning count; ``_build_assistant_message`` stamps it on
+    every row the response becomes (the replay price of its encrypted reasoning, replayed_reasoning.py).
+    Set once per response, before any row is built, so a row never carries an earlier response's count.
+    ``response.usage`` is the aggregator's own usage: MoA advisors' thinking never replays."""
+    usage = getattr(response, "usage", None)
+    agent._last_response_reasoning_tokens = (
+        normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode).reasoning_tokens if usage else 0
+    )
+
+
 def _loop_mod():
     """Lazy ``agent.conversation_loop`` import (avoids an import cycle)."""
     import agent.conversation_loop as _cl

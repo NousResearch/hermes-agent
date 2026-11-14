@@ -5,7 +5,7 @@ Runs at gateway start + the periodic tick when
 due, writes a plugin-check receipt (pm.receipt, kind 'plugin-check'),
 and logs ONE actionable line when updates exist. Applying updates
 stays explicit — ``plugins.auto_apply: true`` (default false) opts into
-unattended apply for git-row plugins ONLY, scan-gated like cmd_update.
+unattended apply for catalog and tracked git plugins, scan-gated like cmd_update.
 
 Pure, injectable clock/check/update seams for hermetic tests.
 """
@@ -190,6 +190,33 @@ def run_scheduled_check(
         _tick_lock.release()
 
 
+def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callable[[str], None], log) -> None:
+    """Apply each update row the opt-in tick may move. A catalog install held with ``--ref`` is left
+    where the user put it. A widened catalog pin is a pending review, not a failure: one line naming
+    the command that walks it, no traceback every tick; other refusals are one line too."""
+    from hermes_cli.plugins_auto_update import HELD_WITH_REF, HeldWithRef, held_with_ref
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+
+    for r in updates:
+        if getattr(r, "klass", "") not in ("git", "catalog"):
+            continue
+        if held_with_ref(checked_installs.get(r.name)):
+            log.info("plugin %s not auto-updated: %s", r.name, HELD_WITH_REF.format(name=r.name))
+            continue
+        try:
+            apply_updates_fn(r.name)
+        except HeldWithRef as exc:  # held with --ref while the check ran
+            log.info("plugin %s not auto-updated: %s", r.name, exc)
+        except RepinConsentRequired:
+            log.info("plugin %s has an update that needs your review: run `hermes plugins update %s`",
+                     r.name, r.name)
+        except PluginOperationError as exc:
+            log.warning("auto-apply of %s not applied: %s", r.name, exc)
+        except (Exception, SystemExit):
+            log.warning("auto-apply of %s failed", r.name, exc_info=True)
+
+
 def _run_check_locked(
     *,
     run_checks_fn: Callable[..., list],
@@ -243,16 +270,12 @@ def _run_check_locked(
             names,
         )
 
-    # Opt-in unattended apply: git rows ONLY, scan-gated by the update
-    # path itself. Pinned/manual/drift/pip are never auto-applied
-    # (their update_available is False/None or their class excludes it).
+    # Opt-in unattended apply: the classes `hermes plugins update` can move (catalog re-pins to the
+    # reviewed sha, tracked git pulls), scan-gated by the update path itself, which also refuses a
+    # widened catalog pin or a too-new requires_hermes without a terminal. Pinned/manual/drift/pip
+    # are never auto-applied (their update_available is False/None or their class excludes it).
     if apply_updates_fn and updates and auto_apply_enabled(config_get):
-        for r in updates:
-            if getattr(r, "klass", "") == "git":
-                try:
-                    apply_updates_fn(r.name)
-                except (Exception, SystemExit):
-                    log.warning("auto-apply of %s failed", r.name, exc_info=True)
+        _auto_apply(updates, checked_installs, apply_updates_fn, log)
 
     # stamp the marker AFTER a completed run (even a failed one — a
     # failing check retrying every tick would hammer the network)
@@ -302,10 +325,10 @@ def maybe_run_gateway_check(
 
         run_checks_fn = run_checks
     if apply_updates_fn is None:
-        from hermes_cli import plugins_cmd
+        # update_one with no terminal, refusals raised (cmd_update would turn them into an exit)
+        from hermes_cli import plugins_auto_update
 
-        from functools import partial
-        apply_updates_fn = partial(plugins_cmd.cmd_update, interactive=False)
+        apply_updates_fn = plugins_auto_update.apply_unattended
     return run_scheduled_check(
         run_checks_fn=run_checks_fn,
         plugins_dir=plugins_dir,

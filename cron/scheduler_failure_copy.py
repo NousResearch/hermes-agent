@@ -86,6 +86,11 @@ _PROVIDER_FAILURE_ACTION["region_blocked"] = (
     "Retrying won't help from here: pin a provider or model that serves this region with "
     "`hermes cron edit {job_id} --provider <name>` and `--model <name>`."
 )
+_PROVIDER_FAILURE_ACTION["guardrail_blocked"] = (
+    "The provider's prompt-injection guardrail blocked the request (not your key; tool output is "
+    "scanned too): set it to Redact or Flag in the provider's settings (OpenRouter: Workspaces → "
+    "Guardrails), or pin another provider with `hermes cron edit {job_id} --provider <name>`."
+)
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 
 

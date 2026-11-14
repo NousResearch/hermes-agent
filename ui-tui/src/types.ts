@@ -1,6 +1,6 @@
-import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
-
-import type { SharedControl } from './canonicalGateway.js'
+import type { SharedControl } from '@hermes/shared/gateway-canonical'
+import type { ProjectInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
+import type { SessionInfo, SlashCategory } from '@hermes/shared/gateway-types'
 
 export interface ActiveTool {
   context?: string
@@ -134,11 +134,28 @@ export interface ClarifyReq {
   answers?: Record<string, string>
 }
 
+/** A collapsed paste in a sent user message: the chip shown and the text the model got. */
+export interface PasteSection {
+  label: string
+  text: string
+}
+
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'image' | 'intro' | 'panel' | 'slash' | 'trail'
+  // Local image paths shown inline under the row: a user turn's attachments,
+  // or (kind 'image') the picture a tool call produced or looked at.
+  images?: string[]
+  // Tells two pictures at one image path apart (a re-screenshot, a re-attached
+  // file overwritten in place): the tool call id that produced a kind 'image'
+  // row, or a per-turn id for a user turn's attachments.
+  imageRevision?: string
   panelData?: PanelData
+  /** Payloads behind this user row's paste chips, expandable in the transcript. */
+  pastes?: PasteSection[]
   role: Role
+  /** The durable message row of a resumed user prompt (backtrack browsing finds its prompt by it). */
+  rowId?: number
   text: string
   // Unix seconds the message was authored (persisted transcript timestamp on
   // rehydrate, wall clock at append time for live rows). Rendered as a dim
@@ -184,24 +201,6 @@ export interface McpServerStatus {
   transport: string
 }
 
-/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`,
- *  plus the canonical-authority fields the legacy contract does not carry yet
- *  (`gateway/session_events.py` owner stamps and the durable admission FIFO). */
-export interface SessionInfo extends SessionLiveInfo {
-  execution_epoch?: string
-  execution_generation?: number
-  execution_state?: string
-  install_warning?: string
-  pending_submissions?: Array<{
-    admission_id: string
-    input_id?: string
-    target_session_id: string
-    target_profile_home: string
-    status: string
-    user: string
-    outcome?: string | null
-  }>
-}
 export type { ProjectInfo }
 
 export interface SudoReq {
@@ -259,7 +258,3 @@ export interface SlashCatalog {
   sub: Record<string, string[]>
 }
 
-export interface SlashCategory {
-  name: string
-  pairs: [string, string][]
-}

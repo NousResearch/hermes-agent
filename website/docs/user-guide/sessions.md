@@ -224,7 +224,7 @@ hermes --resume 20250305_091523_a1b2c3 --no-restore-cwd
 
 A `↪ restored workspace dir: …` line confirms the switch. Restore failures never break the resume itself.
 
-Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
+Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Side-task models (the `auxiliary:` section: compression, vision, title generation and the other helper calls) always come from the profile's current `config.yaml`, with their keys and the `providers:` entries they name, so an edit reaches existing sessions from their next side-task call. A session started with `--ignore-user-config` or `--safe-mode` never reads them. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
 
 ### Filtering Sessions by Workspace
 
@@ -290,7 +290,7 @@ What happens:
 
 6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
 
-**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off. Handing off again moves the conversation to the new Telegram topic; the earlier topic starts a fresh conversation at its next message.
 
 **Failure modes:**
 - No home channel configured → CLI refuses with a `/sethome` hint.
@@ -1023,6 +1023,12 @@ The keyword mode supports standard FTS5 query syntax:
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
 - `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
+
+### Who can search what
+
+`session_search` reads the whole session store of the profile it runs in: every chat, from every platform and every user in that profile's allowlist. On a shared or family bot, anyone allowed to talk to it can ask the agent to find and read anyone else's conversations with it. Hermes does not separate users inside one profile (see `SECURITY.md` §2.6), and profiles on one host are not isolated from each other either: the default profile reads every profile's sessions (below), and an agent with terminal or code-execution tools can read any profile's files. Give each person who needs private history their own instance, under a separate OS user or container (`SECURITY.md` §2.2).
+
+`profile=` (and an `@session:<profile>/<id>` link) reads another profile's store. When one process serves several profiles (a multiplexed gateway, a dashboard or `hermes serve` backend on a host with more than one profile), only the **default** profile may do that, except in your own Desktop, TUI, CLI and editor (ACP) sessions; a call from any other profile that names a different profile is refused with an error. A process running a single profile on its own keeps cross-profile reads.
 
 ### When It's Used
 

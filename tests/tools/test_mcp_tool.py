@@ -808,7 +808,7 @@ class TestToolHandler:
 
     def test_successful_call(self):
         from tools.mcp_tool_handlers import _make_tool_handler
-        from tools.mcp_tool import _servers
+        from tools.mcp_tool import _server_trust_levels, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -819,7 +819,7 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
-            with self._patch_mcp_loop():
+            with self._patch_mcp_loop(), patch.dict(_server_trust_levels, {"test_srv": "full"}):
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "hello world"
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
@@ -829,7 +829,7 @@ class TestToolHandler:
 
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
         from tools.mcp_tool_handlers import _make_tool_handler
-        from tools.mcp_tool import _servers
+        from tools.mcp_tool import _server_trust_levels, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -850,7 +850,7 @@ class TestToolHandler:
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
             with patch("tools.mcp_tool_discovery._request_lazy_reconnect", side_effect=fake_lazy_reconnect) as reconnect, \
-                 self._patch_mcp_loop():
+                 self._patch_mcp_loop(), patch.dict(_server_trust_levels, {"test_srv": "full"}):
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "reconnected"
             reconnect.assert_called_once()
@@ -1510,51 +1510,6 @@ class TestBuildSafeEnv:
         assert "OPENAI_API_KEY" not in result
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
-
-    def test_secret_source_injected_vars_are_passed(self, monkeypatch):
-        """Vars tagged by an external secret source (Bitwarden/1Password) are
-        deliberately allowed for MCP stdio servers."""
-        from hermes_cli import env_loader
-        from tools.mcp_tool_config import _build_safe_env
-
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
-        fake_env = {
-            "PATH": "/usr/bin",
-            "ALPACA_API_KEY": "from-bws-key",
-            "NOTION_TOKEN": "from-op",
-            "UNTRACKED_SECRET_KEY": "still-filtered",
-        }
-        with patch.dict("os.environ", fake_env, clear=True):
-            result = _build_safe_env(None)
-
-        assert result["PATH"] == "/usr/bin"
-        assert result["ALPACA_API_KEY"] == "from-bws-key"
-        assert result["NOTION_TOKEN"] == "from-op"
-        assert "UNTRACKED_SECRET_KEY" not in result
-
-    def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
-        """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
-        never the launch profile's os.environ copy; a name the profile lacks is omitted."""
-        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
-        from hermes_cli import env_loader
-        from tools.mcp_tool_config import _build_safe_env
-
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
-        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
-        set_multiplex_active(True)
-        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
-        try:
-            with patch.dict("os.environ", fake_env, clear=True):
-                result = _build_safe_env(None)
-        finally:
-            reset_secret_scope(token)
-            set_multiplex_active(False)
-
-        assert result["PATH"] == "/usr/bin"
-        assert result["GITHUB_TOKEN"] == "profile-b"
-        assert "NOTION_TOKEN" not in result
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""

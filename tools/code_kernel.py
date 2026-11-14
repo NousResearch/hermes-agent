@@ -52,10 +52,50 @@ def _clip(text):
     return (text, False) if len(text) <= _CAPTURE_LIMIT else (text[:_CAPTURE_LIMIT], True)
 
 
+_MODULE_RECORDS = {}
+_STDLIB_PREFIX = os.path.dirname(os.__file__) + os.sep
+_INSTALLED_MARKERS = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
+
+
+def _edited_modules(report):
+    """Record the source mtime and import spec of every imported project module; with
+    *report*, name those whose file changed while the same import stayed loaded (a reload or
+    re-import installs a new spec, so it is not named). Each change is named once."""
+    edited = []
+    for name, module in list(sys.modules.items()):
+        try:
+            # Read the module dict directly: attribute access would trigger lazy loaders.
+            fields = object.__getattribute__(module, "__dict__")
+            path, spec = fields.get("__file__"), fields.get("__spec__")
+            if (not isinstance(name, str) or not isinstance(path, str) or not path.endswith(".py")
+                    or path.startswith(_STDLIB_PREFIX) or any(marker in path for marker in _INSTALLED_MARKERS)):
+                continue
+            mtime = os.stat(path).st_mtime_ns
+        except Exception:  # anything may sit in sys.modules
+            continue
+        seen = _MODULE_RECORDS.get(name)
+        if report and seen is not None and seen[0] != mtime and seen[1] is spec:
+            edited.append(name)
+        if report or seen is None or seen[1] is not spec:
+            _MODULE_RECORDS[name] = (mtime, spec)
+    return sorted(edited)
+
+
+def _scan_edited_modules(report):
+    """The scan reads state a cell may have left in any shape; it must never fail a cell."""
+    try:
+        return _edited_modules(report)
+    except Exception:
+        return []
+
+
 def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    # An imported module keeps the code it was loaded with: name the ones edited on disk since
+    # the last cell, so a fix that "still fails" is not mistaken for a wrong fix.
+    stale_modules = _scan_edited_modules(True)
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
@@ -63,9 +103,11 @@ def run_cell(request, execution_count):
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:
         status, trace = "error", traceback.format_exc()
+    _scan_edited_modules(False)  # modules this cell imported are watched from now on
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
+        "stale_modules": stale_modules,
         "id": request.get("id", ""), "status": status,
         "stdout": stdout_text, "stderr": stderr_text,
         "stdout_clipped": stdout_clipped, "stderr_clipped": stderr_clipped,
@@ -204,9 +246,13 @@ class CellAuthority:
     refused instead of running under a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, session_id: str | None = None, turn_id: str | None = None,
+                 conversation_id: str | None = None):
         import contextvars
         self.task_id = task_id
+        self.session_id = session_id
+        self.turn_id = turn_id
+        self.conversation_id = conversation_id
         self.ctx = contextvars.copy_context()
         self.active = True
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
@@ -231,6 +277,7 @@ class CellAuthority:
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
+        from tools.file_tools_read_tracking import programmatic_file_read
         previous = None
         if self._callbacks:
             try:
@@ -240,7 +287,15 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            identity = {}
+            if self.session_id is not None:
+                identity["session_id"] = self.session_id
+            if self.turn_id is not None:
+                identity["turn_id"] = self.turn_id
+            if self.conversation_id is not None:
+                identity["conversation_id"] = self.conversation_id
+            with programmatic_file_read():
+                return handle_function_call(tool_name, tool_args, task_id=self.task_id, **identity)
         finally:
             if previous is not None:
                 try:
@@ -390,6 +445,10 @@ def _resolve_owner(task_id: str) -> str:
     except Exception:
         session_key = ""
     owner = session_key or (task_id or "")
+    from tools.environments.sandbox_scope import current_sandbox_key
+    if sandbox := current_sandbox_key():
+        # Session keys are not unique across hosted agents; a kernel belongs to one agent's sandbox.
+        owner = f"{sandbox}:{owner}"
     try:
         from agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
@@ -406,6 +465,18 @@ def shutdown_all_kernels() -> None:
     _REGISTRY.shutdown()
 
 
+def session_close_owner(owner: str) -> str:
+    """The exact owner a session boundary disposes in the CURRENT scope. Session keys are not
+    unique across hosted agents, so inside a hosted scope the owner carries the bound sandbox
+    key (as ``_resolve_owner`` stamps it) and only the current agent's kernels match — never
+    another agent's identically-keyed session. Locally there is no sandbox key and the bare
+    session key is matched exactly, so an owner is never torn down as another's colon-suffix."""
+    from tools.environments.sandbox_scope import current_sandbox_key
+    if sandbox := current_sandbox_key():
+        owner = f"{sandbox}:{owner}"
+    return owner
+
+
 def shutdown_kernels_for_owner(owner: str) -> None:
     """Dispose every kernel a session owns — wired into ``tools.approval.clear_session``
     so kernels die at the same boundary that clears approval/yolo state (/new, session close).
@@ -413,7 +484,7 @@ def shutdown_kernels_for_owner(owner: str) -> None:
     See #88637.
     """
     if owner:
-        _REGISTRY.shutdown(owner)
+        _REGISTRY.shutdown(session_close_owner(owner))
 
 
 def delegated_child_owner_matcher(child_session_id: str) -> Callable[[str], bool]:
@@ -731,6 +802,23 @@ def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> tuple[st
         return "success", payload
 
 
+def stale_modules_warning(payload: dict[str, Any]) -> str:
+    """Tell the model which modules this kernel imported before they were edited on disk."""
+    reported = payload.get("stale_modules")
+    # The list comes from the cell process: keep only dotted identifiers.
+    names = [name for name in (reported if isinstance(reported, list) else [])
+             if isinstance(name, str) and len(name) <= 200 and all(part.isidentifier() for part in name.split("."))]
+    if not names:
+        return ""
+    from agent.redact import redact_sensitive_text
+    # Redacted like the cell's stdout: a module name is cell-chosen text.
+    shown = redact_sensitive_text(", ".join(names[:8]), code_file=True) + (
+        f" and {len(names) - 8} more" if len(names) > 8 else "")
+    return (f"Edited on disk after this kernel imported it: {shown}. If this cell used it without "
+            "reloading, it ran the OLD code. Run importlib.reload(<module>) (and re-import any names "
+            "taken from it), or call again with reset=true to start from fresh imports.")
+
+
 def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
@@ -740,10 +828,10 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_code_output
     from tools.ansi_strip import strip_ansi
     def clean(text: str) -> str:
-        return redact_sensitive_text(strip_ansi(text), code_file=True)
+        return redact_code_output(strip_ansi(text))
     if status in ("timeout", "interrupted"):
         # No safe way to interrupt one cell in place: kill the kernel, report the loss, respawn next call.
         _REGISTRY.discard(key, kernel)
@@ -773,6 +861,9 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
             f'— page it with read_file(path="{cell_spill}", offset=...) instead of re-running. '
             "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
         )
+    stale_warning = stale_modules_warning(payload)
+    if stale_warning:
+        result["warning"] = " ".join(filter(None, [result.get("warning"), stale_warning]))
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")
@@ -807,6 +898,7 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
+    session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
@@ -817,7 +909,8 @@ def execute_in_session_kernel(
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -831,11 +924,13 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool) -> str:
+              is_interrupted, exec_start: float, state_reset: bool,
+              session_id: str | None = None, turn_id: str | None = None,
+              conversation_id: str | None = None) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(task_id, session_id, turn_id, conversation_id)
     with kernel.lock:
         try:
             if kernel.proc is None:

@@ -31,7 +31,7 @@ _CONTEXT_ACTOR = {"kind": "system", "id": "room-control"}
 # member; a failure notice never does (its text is machine-written, not addressed to anyone).
 SCHEDULED_POST_PREFIX = "cron:"
 SCHEDULED_NOTICE_PREFIX = "cron-notice:"
-ROUTING_MODES = ("everyone", "lead")
+ROUTING_MODES = ("everyone", "lead", "auto")
 _EMPTY_CONTEXT = {"purpose": "", "notes": "", "routing": "everyone", "lead_member_id": ""}
 
 
@@ -47,7 +47,7 @@ def validate_context(purpose: Any, notes: Any, routing: Any = "everyone", lead_m
     if len(notes.encode("utf-8")) > MAX_NOTES_BYTES:
         raise hosted_rooms.HostedRoomError(f"notes must be at most {MAX_NOTES_BYTES} bytes")
     if routing not in ROUTING_MODES:
-        raise hosted_rooms.HostedRoomError("routing must be 'everyone' or 'lead'")
+        raise hosted_rooms.HostedRoomError("routing must be 'everyone', 'lead' or 'auto'")
     if routing == "lead" and not lead_member_id.strip():
         raise hosted_rooms.HostedRoomError("lead routing needs a lead_member_id")
     return {"purpose": purpose, "notes": notes, "routing": routing,
@@ -78,6 +78,20 @@ def room_context(db_path: DbPath, *, room_id: Any, before_seq: int | None = None
     room_id = hosted_rooms._room_id(room_id)
     with closing(hosted_rooms._read_connection(db_path)) as conn:
         return _latest_context(conn, room_id, before_seq)
+
+
+def groups_state_result(
+        db_path: DbPath, room: Mapping[str, Any], service: Any) -> dict[str, Any]:
+    """``groups.state``'s answer for a room both backends read the same way: the room, and for a live room
+    its context and (with a room service) its driver status. ``change_events``: this process's change
+    watcher pushes ``groups.changed`` when the room moves (``change_watcher._groups_sig``), so a client's
+    poll is only a backstop. A forwarding backend strips it: the owner's pushes don't reach its clients."""
+    result: dict[str, Any] = {"room": room, "change_events": True}
+    if room.get("disbanded_at") is None:
+        result["context"] = room_context(db_path, room_id=room["room_id"])
+        if service is not None:
+            result["driver_status"] = service.status(str(room["room_id"]))
+    return result
 
 
 def set_room_context(

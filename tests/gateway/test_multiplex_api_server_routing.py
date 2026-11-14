@@ -96,7 +96,7 @@ class TestApiServerProfileResolution:
         )
 
 
-_UNKNOWN = {"error": "Unknown or unconfigured profile"}
+_UNKNOWN = {"error": "Unknown or unconfigured profile", "code": "profile_unknown"}
 _NOT_SERVED = "profile_not_served"
 
 

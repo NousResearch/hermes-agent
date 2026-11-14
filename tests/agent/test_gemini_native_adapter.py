@@ -977,3 +977,123 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
     assert [c.choices[0].finish_reason for c in finishes] == ["stop"]  # CONTINUATION is not the end
     assert "".join(c.choices[0].delta.content or "" for c in chunks) == "part one part two"
     assert (finishes[0].usage.prompt_tokens, finishes[0].usage.initial_prompt_tokens) == (32968, 100)
+
+
+def _blocking_client(monkeypatch, payload):
+    """Real GeminiNativeClient over a transport that answers HTTP 200 with ``payload`` (unary and SSE)."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    class _Stream:
+        status_code, headers = 200, {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_text(self):
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return DummyResponse(payload=payload)
+
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            return _Stream()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    return GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_prompt_block_reason_is_terminal_content_policy_error(monkeypatch, stream):
+    # Google answers a blocked prompt with HTTP 200, promptFeedback.blockReason and no candidates.
+    from agent.error_classifier import FailoverReason, classify_api_error
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {"promptTokenCount": 7}}
+    client = _blocking_client(monkeypatch, payload)
+    kwargs = {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "hi"}], "stream": stream}
+    with pytest.raises(GeminiAPIError) as excinfo:
+        result = client.chat.completions.create(**kwargs)
+        list(result) if stream else None
+    assert "blockReason=PROHIBITED_CONTENT" in str(excinfo.value)
+    verdict = classify_api_error(excinfo.value, provider="gemini", model="gemini-2.5-flash")
+    assert (verdict.reason, verdict.retryable, verdict.should_fallback) == (FailoverReason.content_policy_blocked, False, True)
+
+
+def test_prompt_block_surfaces_vertex_block_reason_message(monkeypatch):
+    # Vertex explains the block in promptFeedback.blockReasonMessage; the user sees that, not canned text.
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "MODEL_ARMOR", "blockReasonMessage": "Blocked by Model Armor policy X."}}
+    client = _blocking_client(monkeypatch, payload)
+    with pytest.raises(GeminiAPIError, match=r"blockReason=MODEL_ARMOR\): Blocked by Model Armor policy X\."):
+        client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+
+
+def test_prompt_feedback_without_block_reason_keeps_empty_turn(monkeypatch):
+    client = _blocking_client(monkeypatch, {"promptFeedback": {"safetyRatings": []}})
+    out = client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+    assert out.choices[0].finish_reason == "stop"
+
+
+def test_truncated_or_blocked_reply_with_a_call_reports_mapped_reason_not_tool_calls():
+    """#144949: a MAX_TOKENS/SAFETY candidate carrying a functionCall must report length/content_filter,
+    so the turn loop's truncation/refusal branches run instead of executing the truncated or blocked call."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    def gemini(parts, finish_reason):
+        return translate_gemini_response(
+            {"candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": finish_reason, "index": 0}]},
+            model="gemini-2.5-flash",
+        )
+
+    for raw, mapped in [("MAX_TOKENS", "length"), ("SAFETY", "content_filter")]:
+        response = gemini([{"functionCall": {"name": "write_file", "args": {"path": "/tmp/x", "content": "side effect\n"}}}], raw)
+        assert response.choices[0].finish_reason == mapped, raw
+
+    # control: a clean STOP reply with a call still reports tool_calls
+    response = gemini([{"functionCall": {"name": "write_file", "args": {"path": "/tmp/x", "content": "y\n"}}}], "STOP")
+    assert response.choices[0].finish_reason == "tool_calls"
+
+
+def test_stream_finish_maps_reason_when_a_call_is_present():
+    """#144949, streaming side: the finish chunk maps MAX_TOKENS/SAFETY even when the event carried a functionCall."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    def event(parts, finish_reason):
+        return {"candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": finish_reason, "index": 0}]}
+
+    for raw, mapped in [("MAX_TOKENS", "length"), ("SAFETY", "content_filter")]:
+        chunks = translate_stream_event(
+            event([{"functionCall": {"name": "search", "args": {"q": "abc"}}}], raw),
+            model="gemini-2.5-flash",
+            tool_call_indices={},
+        )
+        assert chunks[-1].choices[0].finish_reason == mapped, raw
+
+    # control: STOP with a call still finishes as tool_calls
+    chunks = translate_stream_event(
+        event([{"functionCall": {"name": "search", "args": {"q": "abc"}}}], "STOP"),
+        model="gemini-2.5-flash",
+        tool_call_indices={},
+    )
+    assert chunks[-1].choices[0].finish_reason == "tool_calls"
+
+
+@pytest.mark.parametrize(("raw", "mapped"), [("MAX_TOKENS", "length"), ("SAFETY", "content_filter"), ("STOP", "tool_calls")])
+def test_stream_finish_in_a_later_event_than_the_call_still_maps_the_reason(raw, mapped):
+    """The functionCall streams in one event and finishReason arrives in a later, part-less event."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    first = translate_stream_event(_fc_event("search", {"q": "abc"}), model="gemini-2.5-flash", tool_call_indices=slots)
+    assert first and all(c.choices[0].finish_reason is None for c in first)
+    last = translate_stream_event({"candidates": [{"content": {"parts": []}, "finishReason": raw}]},
+                                  model="gemini-2.5-flash", tool_call_indices=slots)
+    assert last[-1].choices[0].finish_reason == mapped

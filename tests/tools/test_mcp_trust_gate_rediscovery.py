@@ -111,6 +111,21 @@ def test_reconnect_discovery_of_registered_server_refreshes_read_only_hint():
     assert task._registered_tool_names == ["mcp_srv_sync"]
 
 
+def test_reconnect_omitted_tool_does_not_reuse_cached_read_only_hint():
+    """A reconnect can omit a tool while Hermes still exposes its registered handler."""
+    task = _install(_server())
+    new = _session(read_only=False)
+    new.list_tools.return_value = SimpleNamespace(
+        tools=[SimpleNamespace(name="other", annotations={"readOnlyHint": True})], nextCursor=None)
+    with _recycled_wake_rediscovers(task, new):
+        result, asked = _call(answer="decline")
+    assert task._registered_tool_names == ["mcp_srv_sync"]
+    assert handlers._tool_is_read_only("srv", "sync") is False
+    assert len(asked) == 1 and "UNTRUSTED server 'srv'" in asked[0]
+    assert "NOT run" in result["error"]
+    new.call_tool.assert_not_awaited()
+
+
 def test_recycled_wake_that_turns_the_tool_write_capable_asks_and_deny_blocks():
     task = _install(_server())
     new = _session(read_only=False)

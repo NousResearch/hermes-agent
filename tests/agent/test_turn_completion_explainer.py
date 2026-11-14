@@ -394,18 +394,42 @@ def test_classify_persistence_error_receipt_timeout_is_not_disk_or_lock():
 
 
 def test_explanation_persistence_receipt_transport_never_blames_disk_or_lock():
-    """The operator-facing text must say what actually happened: the gateway did not
-    confirm the write within the budget, the transcript is NOT on disk, re-send after
-    the writer clears — no disk-space advice, no 'another process holds the database'."""
+    """The operator-facing text must say what actually happened and nothing more: the
+    gateway did not confirm the write (busy or unreachable), the outcome is unknown — a
+    lost ACK can still have committed — so the copy confirms nothing in either direction
+    and never sends the operator hunting disk or locks (gate t_0b006df6 YELLOW-2)."""
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "receipt_transport"
     )
     lower = out.lower()
-    assert "not saved" in lower
+    assert "confirm" in lower
     assert "busy" in lower
     assert "send your message again" in lower
+    # Never overclaim in either direction: the outcome is unknown once sent.
+    assert "not saved" not in lower
+    assert "nothing was lost" not in lower
     for wrong in ("disk", "drive", "space", "holding the database", "free some"):
         assert wrong not in lower, wrong
+
+
+def test_every_classifier_cause_has_an_explainer_cause_key_and_catalog_row():
+    """Drift guard (gate t_0b006df6 YELLOW-3): ``_PERSISTENCE_CAUSES`` is derived from
+    ``PERSISTENCE_ERROR_CAUSES``, so the two sets cannot disagree — but a new cause still
+    needs its ``explainer.persistence.<cause>`` row in the English catalog, or it silently
+    renders the generic disk/lock copy. Enumerate the derived set against the catalog."""
+    from pathlib import Path
+
+    import hermes_yaml as yaml
+
+    from agent.turn_explainers import _PERSISTENCE_CAUSES
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+
+    assert _PERSISTENCE_CAUSES == frozenset(PERSISTENCE_ERROR_CAUSES) - {"unknown"}
+    en_path = Path(__file__).resolve().parents[2] / "locales" / "en.yaml"
+    catalog = yaml.safe_load(en_path.read_text(encoding="utf-8"))
+    rows = catalog["explainer"]["persistence"]
+    missing = {cause for cause in _PERSISTENCE_CAUSES if cause not in rows}
+    assert not missing, f"causes without explainer copy: {sorted(missing)}"
 
 
 def test_receipt_budget_never_shorter_than_server_write_patience():
@@ -413,11 +437,13 @@ def test_receipt_budget_never_shorter_than_server_write_patience():
     gateway applies a receipt as a transaction that legitimately waits sibling writers
     for up to _TRANSCRIPT_WRITE_PATIENCE_S, so a shorter client budget always loses the
     race and reports a healthy-but-busy store as a dead one. Sourced from the same
-    constant (drift guard); a longer budget would only make the failure slow, so equal."""
+    constant (drift guard); a longer budget would only make the failure slow, so equal
+    — the "not above" half pins it (gate t_0b006df6 YELLOW-1, mutant M6)."""
     from agent.runtime_session_store import RECEIPT_BUDGET_S
     from hermes_state import SessionDB
 
     assert RECEIPT_BUDGET_S >= SessionDB._TRANSCRIPT_WRITE_PATIENCE_S
+    assert RECEIPT_BUDGET_S <= SessionDB._TRANSCRIPT_WRITE_PATIENCE_S
 
 
 def test_persistence_error_causes_tuple_matches_classifier():

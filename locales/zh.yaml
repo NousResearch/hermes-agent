@@ -3574,7 +3574,7 @@ explainer:
     fts_index: "本回合已停止，因为会话搜索索引（FTS5）已损坏且无法分离，因此这条消息未保存。消息存储本身没有损坏：不要运行恢复工具或还原备份。请运行 `hermes {profile_arg}doctor --fix`（或重启 Hermes，它会在打开时修复索引），然后重新发送你的消息。"
     disk: "Hermes 无法将此对话保存到磁盘，为避免丢失你的消息已停止。磁盘可能已满：请释放一些空间（或修复 {home}/state.db 的权限），然后重新发送你的消息。"
     default: "Hermes 无法保存此对话，为避免丢失你的消息已停止。可能的原因：磁盘空间不足，或另一个 Hermes 进程正占用数据库。请关闭其他 Hermes 窗口，运行 `hermes {profile_arg}doctor` 检查存储，然后重新发送你的消息。"
-    receipt_transport: "Hermes 无法确认这条消息已保存：会话存储正被其他写入占用，未能及时应答，因此这条消息没有保存，也没有丢失任何内容。请等对方那一轮结束后重新发送；如果仍然失败，请运行 `hermes {profile_arg}doctor` 检查存储。"
+    receipt_transport: "Hermes 无法确认这条消息已保存（网关正忙或不可达），它可能没有到达存储。请等对方那一轮结束后重新发送；如果仍然失败，请运行 `hermes {profile_arg}doctor` 检查存储。"
   file_mutation:
     header: "⚠️ 文件修改校验器：本回合有 {count} 处文件编辑失败，无论上方措辞如何暗示。请运行 `git status` 或 `read_file` 确认实际落地的内容。"
     entry: "  • `{path}`——[{tool}] {preview}"

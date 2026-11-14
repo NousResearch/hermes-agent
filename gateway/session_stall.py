@@ -12,6 +12,8 @@ import math
 import time
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 
 def should_emit_session_stall_notification(
     *, timeout_seconds: float, idle_seconds: Optional[float], has_pending_inbound: bool,
@@ -39,9 +41,7 @@ def format_session_stall_notification(idle_seconds: float) -> str:
 
     See #72016.
     """
-    mins = max(1, int(idle_seconds // 60))
-    return (f"⚠️ I seem to be stuck (no activity for {mins} min). Send /stop to cancel the current "
-            "task, or /new to start a fresh conversation.")
+    return t("gateway.progress.stall_notice", minutes=max(1, int(idle_seconds // 60)))
 
 
 def _finite_float(value: Any) -> Optional[float]:

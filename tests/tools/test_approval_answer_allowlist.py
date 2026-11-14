@@ -22,6 +22,7 @@ import tools.approval as approval_module
 from tools import approval_context
 from tools.approval import check_all_command_guards
 from tools.terminal_tool import set_approval_callback
+from tests.waiting import wait_until
 
 
 DANGEROUS = "rm -rf /tmp/approval-allowlist-testdir"
@@ -51,10 +52,6 @@ def _clean_approval_env(monkeypatch):
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-    )
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
     approval_module._pending.clear()
@@ -139,8 +136,7 @@ def test_alias_of_once_does_not_approve_an_identical_coalesced_call(monkeypatch)
     try:
         leader = threading.Thread(target=lambda: results.update(leader=_gateway_guard(key)))
         leader.start()
-        while not prompts:
-            threading.Event().wait(0.01)
+        wait_until(lambda: prompts, timeout=10, what="the leader's prompt")
         follower = threading.Thread(target=lambda: results.update(follower=_gateway_guard(key)))
         follower.start()
         leader.join(20)

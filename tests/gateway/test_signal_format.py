@@ -7,10 +7,7 @@ false-positive regressions that caused spurious italics in production.
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.signal import SignalAdapter
-from gateway.platforms.signal_format import markdown_to_signal
-
+from plugins.platforms.signal.signal_format import markdown_to_signal
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -20,16 +17,13 @@ def _m2s(text: str):
     """Shorthand: return (plain_text, styles)."""
     return markdown_to_signal(text)
 
-
 def _style_types(styles: list[str]) -> list[str]:
     """Extract just the STYLE part from '0:4:BOLD' strings."""
     return [s.rsplit(":", 1)[1] for s in styles]
 
-
 def _find_style(styles: list[str], style_type: str) -> list[str]:
     """Return only styles matching a given type."""
     return [s for s in styles if s.endswith(f":{style_type}")]
-
 
 # ===========================================================================
 # Basic formatting
@@ -44,13 +38,11 @@ class TestMarkdownToSignalBasic:
         assert len(styles) == 1
         assert styles[0].endswith(":BOLD")
 
-
     def test_italic_single_asterisk(self):
         text, styles = _m2s("hello *world*")
         assert text == "hello world"
         assert len(styles) == 1
         assert styles[0].endswith(":ITALIC")
-
 
     def test_strikethrough(self):
         text, styles = _m2s("hello ~~world~~")
@@ -63,7 +55,6 @@ class TestMarkdownToSignalBasic:
         assert text == "run ls -la now"
         assert len(styles) == 1
         assert styles[0].endswith(":MONOSPACE")
-
 
 # ===========================================================================
 # Italic false-positive regressions
@@ -81,9 +72,7 @@ class TestItalicFalsePositives:
         assert text == "the config_file is ready"
         assert _find_style(styles, "ITALIC") == []
 
-
     # --- Bullet lists (second fix) ---
-
 
     def test_hyphen_bullet_list_uses_signal_safe_bullets(self):
         """Signal does not render Markdown list markers; normalize them."""
@@ -92,7 +81,6 @@ class TestItalicFalsePositives:
         assert text == "• item one\n• item two"
         assert styles == []
 
-
     def test_bullet_list_file_paths(self):
         """Real-world case that triggered the bug."""
         md = (
@@ -100,16 +88,14 @@ class TestItalicFalsePositives:
             "* tools/file_tools.py — file operations\n"
             "* tools/web_tools.py — web operations"
         )
-        text, styles = _m2s(md)
+        _text, styles = _m2s(md)
         assert _find_style(styles, "ITALIC") == []
-
 
     # --- Cross-line spans (DOTALL removal) ---
 
-
     def test_underscore_italic_no_cross_line(self):
         """_foo\\nbar_ must NOT match as italic (no DOTALL)."""
-        text, styles = _m2s("_foo\nbar_")
+        _text, styles = _m2s("_foo\nbar_")
         assert _find_style(styles, "ITALIC") == []
 
     def test_star_italic_multiline_response(self):
@@ -121,11 +107,10 @@ class TestItalicFalsePositives:
             "* tools/web_tools.py — web search/extract\n\n"
             "Everything looks good."
         )
-        text, styles = _m2s(md)
+        _text, styles = _m2s(md)
         assert _find_style(styles, "ITALIC") == []
 
     # --- Legitimate italic still works ---
-
 
     def test_multiple_italic_same_line(self):
         text, styles = _m2s("*foo* and *bar* ok")
@@ -136,7 +121,6 @@ class TestItalicFalsePositives:
         text, styles = _m2s("*word*")
         assert text == "word"
         assert len(_find_style(styles, "ITALIC")) == 1
-
 
 # ===========================================================================
 # Style position accuracy
@@ -160,7 +144,6 @@ class TestStylePositions:
         assert len(styles) == 1
         assert self._extract(text, styles[0]) == "world"
 
-
 # ===========================================================================
 # Edge cases
 # ===========================================================================
@@ -171,17 +154,15 @@ class TestEdgeCases:
     def test_bold_inside_bullet(self):
         """Bold inside a bullet list item."""
         md = "* **important** item\n* normal item"
-        text, styles = _m2s(md)
+        _text, styles = _m2s(md)
         assert len(_find_style(styles, "BOLD")) == 1
         assert _find_style(styles, "ITALIC") == []
 
-
     def test_lone_asterisk(self):
         """A single * with no pair should not cause issues."""
-        text, styles = _m2s("5 * 3 = 15")
+        text, _styles = _m2s("5 * 3 = 15")
         # Should not crash; any italic match would be a false positive
         assert "5" in text and "15" in text
-
 
 # ===========================================================================
 # signal-markdown-strip-patch: core conversion pipeline
@@ -189,17 +170,16 @@ class TestEdgeCases:
 
 class TestMarkdownStripPatch:
     """Tests for the original signal-markdown-strip-patch.
-    
+
     Covers: fenced code blocks with language tags, links preserved,
     headings converted to bold, multiple headings, UTF-16 correctness
     for multi-byte characters, and marker stripping completeness.
     """
 
-
     def test_fenced_code_block_multiline(self):
         """Multi-line code blocks preserve all lines."""
         md = "```\nline1\nline2\nline3\n```"
-        text, styles = _m2s(md)
+        text, _styles = _m2s(md)
         assert "line1" in text
         assert "line2" in text
         assert "line3" in text
@@ -208,7 +188,7 @@ class TestMarkdownStripPatch:
     def test_links_preserved(self):
         """[text](url) links are kept as-is — Signal auto-linkifies."""
         md = "Check [this link](https://example.com) for details"
-        text, styles = _m2s(md)
+        text, _styles = _m2s(md)
         # Links should pass through — either as markdown or just preserved
         assert "https://example.com" in text
 
@@ -218,7 +198,6 @@ class TestMarkdownStripPatch:
         assert text == "Main Title"
         assert len(styles) == 1
         assert styles[0].endswith(":BOLD")
-
 
     def test_multiple_headings(self):
         """Multiple headings each become separate bold spans."""
@@ -233,21 +212,164 @@ class TestMarkdownStripPatch:
         # ## at end might remain if not at line start — that's ok
         # The important thing is styled markers are stripped
 
-
 # ===========================================================================
 # signal-streaming-patch: SUPPORTS_MESSAGE_EDITING and send() behavior
 # ===========================================================================
 
-class TestSignalStreamingPatch:
-    """Tests for signal-streaming-patch: cursor suppression and edit support.
-    
-    These verify the adapter-level properties that prevent the streaming
-    cursor from leaking into Signal messages.
-    """
+class TestTableRealignment:
+    """GFM pipe tables are re-aligned to a fixed monospace width and wrapped in a
+    single MONOSPACE style range, per the Signal table-rendering feature request."""
 
-    def test_signal_does_not_support_editing(self, monkeypatch):
-        """SignalAdapter.SUPPORTS_MESSAGE_EDITING must be False."""
-        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
-        assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
+    @staticmethod
+    def _u16_slice(text: str, style: str) -> str:
+        start, length = (int(p) for p in style.split(":")[:2])
+        u16 = text.encode("utf-16-le")
+        return u16[start * 2 : (start + length) * 2].decode("utf-16-le")
 
+    def test_wide_char_table_becomes_one_aligned_monospace_block(self):
+        """Cells with CJK/emoji (2 display cells, 1-2 UTF-16 units) still produce pipes that line up
+        by display width, one MONOSPACE range covering exactly the block, and correct UTF-16 offsets
+        for styles after it."""
+        from wcwidth import wcswidth
+
+        text, styles = _m2s("| 名前 | Score |\n|---|---|\n| 東京 | 🚀 |\n| Bob | 1 |\n\n**tail**")
+        (mono,) = _find_style(styles, "MONOSPACE")
+        block = self._u16_slice(text, mono)
+        assert text == block + "\n\ntail"
+        rows = block.split("\n")
+        assert len(rows) == 4 and all(wcswidth(row) == wcswidth(rows[0]) for row in rows)
+        assert self._u16_slice(text, _find_style(styles, "BOLD")[0]) == "tail"
+
+    def test_fenced_pipe_table_is_code_and_later_code_range_survives_realignment(self):
+        """A pipe table inside ``` is code and must not be realigned or double-styled; a table's
+        padding changes its length, and a code block after it still maps to its own text."""
+        text, styles = _m2s("| Name | Age |\n|---|---|\n| Alice | 30 |\n\n```\n| a | b |\n|---|---|\n| 1 | 22 |\n```")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
+        assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
+        assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
+# ===========================================================================
+# Code protection against restyling & command alteration (#146848)
+# ===========================================================================
+
+class TestCodeProtection:
+    """Commands and text inside fenced code blocks and inline code spans must
+    never have formatting markers (*, _, ~, #) stripped or restyled."""
+
+    def test_fenced_code_preserves_wildcards_and_asterisks(self):
+        """rm -rf /srv/*/cache/* in fenced code must not be italicized or stripped."""
+        md = "```\nrm -rf /srv/*/cache/*\n```"
+        text, styles = _m2s(md)
+        assert text == "rm -rf /srv/*/cache/*"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "ITALIC") == []
+
+    def test_fenced_code_preserves_underscores(self):
+        """find . -name *_old_* -delete must not have _ stripped as italic."""
+        md = "```\nfind . -name *_old_* -delete\n```"
+        text, styles = _m2s(md)
+        assert text == "find . -name *_old_* -delete"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "ITALIC") == []
+
+    def test_fenced_code_preserves_tildes(self):
+        """chmod -R 777 ~~/backup~~ must not become strikethrough."""
+        md = "```\nchmod -R 777 ~~/backup~~\n```"
+        text, styles = _m2s(md)
+        assert text == "chmod -R 777 ~~/backup~~"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "STRIKETHROUGH") == []
+
+    def test_fenced_code_preserves_comments(self):
+        """Comments starting with # in code blocks must not become bold headings."""
+        md = "```python\n# This is a comment\nx = 1\n```"
+        text, styles = _m2s(md)
+        assert text == "# This is a comment\nx = 1"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "BOLD") == []
+
+    def test_heading_preceding_code_block_preserves_both_ranges(self):
+        """A heading before a code block must retain both heading BOLD and code block MONOSPACE."""
+        md = "# Heading\n```\nmy_code_block\n```"
+        text, styles = _m2s(md)
+        assert text == "Heading\nmy_code_block"
+        bold = _find_style(styles, "BOLD")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(bold) == 1
+        assert len(mono) == 1
+        assert bold[0] == "0:7:BOLD"
+        assert mono[0] == "8:13:MONOSPACE"
+
+    def test_inline_code_preserves_wildcards_and_tildes(self):
+        """Inline code spans must not have internal * or ~ restyled."""
+        md = "Execute `rm -rf /srv/*/cache/*` and `chmod -R 777 ~~/backup~~`"
+        text, styles = _m2s(md)
+        assert text == "Execute rm -rf /srv/*/cache/* and chmod -R 777 ~~/backup~~"
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        assert _find_style(styles, "ITALIC") == []
+        assert _find_style(styles, "STRIKETHROUGH") == []
+
+
+_APPROVAL_COMMANDS = [
+    "rm -rf /srv/*/cache/*",
+    "find . -name *_old_* -delete",
+    "chmod -R 777 ~~/backup~~",
+    "cp __init__.py **/pkg/",
+    "# comment *line*\necho _x_ `y`",
+]
+
+
+@pytest.mark.parametrize("command", _APPROVAL_COMMANDS)
+def test_fenced_command_round_trips_amid_styled_prose(command):
+    """An approval prompt's fenced command reads byte-identical, and the prose
+    around it (heading, bold, italic) is still styled outside the fence."""
+    md = f"## Approve?\n```bash\n{command}\n```\nThis is **dangerous** and _final_."
+    text, styles = _m2s(md)
+    mono = _find_style(styles, "MONOSPACE")
+    assert len(mono) == 1
+    start, length, _ = mono[0].split(":")
+    assert text[int(start) : int(start) + int(length)] == command
+    assert text == f"Approve?\n{command}\nThis is dangerous and final."
+    assert len(_find_style(styles, "BOLD")) == 2
+    assert len(_find_style(styles, "ITALIC")) == 1
+
+
+@pytest.mark.parametrize("command", [
+    "echo " + "`" * 3 + " ; rm -rf /tmp/*/x*",
+    "printf '" + "`" * 3 + "' && rm -rf ~~/home~~",
+    "a " + "`" * 4 + " b **c** _d_",
+    "echo " + "`" * 3 + " ; echo " + "`" * 3,
+    "printf '" + "`" * 3 + "x" + "`" * 3 + "' && rm -rf /srv/*/c*",
+])
+def test_command_with_a_backtick_run_round_trips_inside_its_longer_fence(command):
+    """code_fence() wraps a command holding ``` in a longer fence; the ``` inside must not close it."""
+    from gateway.platforms.base_exec_approval import code_fence
+
+    fence = code_fence(command)
+    md = f"Approve?\n{fence}\n{command}\n{fence}\nThis is **dangerous**."
+    text, styles = _m2s(md)
+    mono = _find_style(styles, "MONOSPACE")
+    assert len(mono) == 1
+    start, length, _ = mono[0].split(":")
+    assert text[int(start) : int(start) + int(length)] == command
+    assert text == f"Approve?\n{command}\nThis is dangerous."
+
+
+def test_backtick_run_kept_in_a_longer_fence_does_not_pair_with_a_later_fence():
+    """A ``` kept inside one block must not open a new block with the next fence in the message."""
+    from gateway.platforms.base_exec_approval import code_fence
+
+    command = "echo " + "`" * 3 + " x"
+    fence = code_fence(command)
+    text, styles = _m2s(f"{fence}\n{command}\n{fence}\nThen **this**:\n```\nlater\n```")
+    assert text == f"{command}\nThen this:\nlater"
+    spans = [m.split(":") for m in _find_style(styles, "MONOSPACE")]
+    assert [text[int(s) : int(s) + int(n)] for s, n, _ in spans] == [command, "later"]

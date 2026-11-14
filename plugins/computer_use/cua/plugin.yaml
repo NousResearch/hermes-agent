@@ -1,0 +1,6 @@
+name: cua
+description: >-
+  cua-driver (built-in) — background computer use on macOS, Windows and Linux; does not steal the cursor
+  or focus. Default when computer_use.backend is unset.
+version: 1.0.0
+author: Nous Research

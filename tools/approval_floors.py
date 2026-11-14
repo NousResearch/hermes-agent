@@ -7,15 +7,17 @@ allowlist runs after. Session state stays in ``tools.approval`` and is read
 through it at call time.
 """
 
-import contextlib
 import fnmatch
 import logging
 import re
+import shlex
 import time
 import uuid
 from tools import approval_context as _ctx
+from tools.approval_ansi_c import expand_ansi_c_quotes
+from utils import unlink_files_older_than
 from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _command_detection_variants)
+    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
 
 logger = logging.getLogger("tools.approval")
 
@@ -34,7 +36,7 @@ def _match_user_deny_rule(command: str) -> str | None:
     globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _deny_command_variants(command):
         candidate = command_variant.lower().strip()
         for pattern in globs:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
@@ -58,20 +60,20 @@ def _save_blocked_payload(command: str) -> str | None:
     of two, and is strictly safer than the hint-only path: the file goes through
     the normal execution pipeline (including the referenced-script content guard)
     and nothing runs here. Returns the path, or None on any failure (hint falls
-    back to write_file)."""
+    back to write_file). Never in a hosted scope: the command is the tenant's, and a host path
+    would mean nothing inside its sandbox."""
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("tool_host_artifacts"):
+        return None
     try:
         from hermes_constants import get_hermes_home
         script_dir = get_hermes_home() / "cache" / "blocked-scripts"
         script_dir.mkdir(parents=True, exist_ok=True)
         # Opportunistic cleanup: blocked payloads older than 7 days.
-        cutoff = time.time() - 7 * 86400
-        for old in script_dir.glob("blocked-*.sh"):
-            with contextlib.suppress(OSError):
-                if old.stat().st_mtime < cutoff:
-                    old.unlink()
+        unlink_files_older_than(script_dir, "blocked-*.sh", 7 * 86400)
         path = script_dir / f"blocked-{int(time.time())}-{uuid.uuid4().hex[:8]}.sh"
         path.write_text(
-            "#!/bin/bash\n"
+            "#!/usr/bin/env bash\n"
             "# Auto-saved by Hermes: this command exceeded the inline command\n"
             "# parser limit and was blocked from direct execution. Review it,\n"
             f"# then run it via: bash {path}\n" + command + ("" if command.endswith("\n") else "\n"),
@@ -141,6 +143,43 @@ _SHELL_CONTROL_CHARS = frozenset("\n\r;&|<>`$()")
 _REINTERPRETED_ARGUMENT_RE = re.compile(r"(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)")
 
 
+# Bash builtins that evaluate an operand as an array subscript / arithmetic expression, re-expanding `$(...)` and
+# backticks the outer shell kept literal inside single quotes (`test -v 'a[$(cmd)]'`, `[[ x -eq 'a[$(cmd)]' ]]`,
+# `printf -v`, `unset`, `read`, `declare`, `local`, `let`). Value: an option that must also be present, or None.
+_SUBSCRIPT_EVALUATING_BUILTINS = {
+    "test": "-v", "[": "-v", "[[": None, "printf": "-v",
+    "unset": None, "read": None, "declare": None, "typeset": None, "local": None, "let": None,
+}
+_ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_SUBSCRIPT_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[.*\]\+?=")  # a[...]=v also evaluates the subscript
+_PREFIX_WORDS = frozenset(("builtin", "command", "time", "!"))
+
+
+def _evaluates_quoted_subscript(command: str) -> bool:
+    # Dequote like bash does, so `'test' '-v'`, `t"es"t`, `\test` cannot dodge the table.
+    try:
+        words = shlex.split(command.replace("\\\n", ""), posix=True)  # bash joins line continuations first
+    except ValueError:
+        return True
+    while words:
+        word = words[0]
+        if _SUBSCRIPT_ASSIGNMENT_RE.match(word):
+            return True
+        if word in _PREFIX_WORDS:
+            words = words[1:]
+            while word in ("builtin", "command", "time") and words and words[0].startswith("-"):
+                words = words[1:]  # builtin --, command -p, time -p
+        elif _ASSIGNMENT_WORD_RE.match(word):
+            words = words[1:]
+        else:
+            break
+    if not words or words[0] not in _SUBSCRIPT_EVALUATING_BUILTINS:
+        return False
+    required = _SUBSCRIPT_EVALUATING_BUILTINS[words[0]]
+    # printf -vNAME; a glob (-?, -[v]) expands to -v when such a file exists in the cwd
+    return required is None or any(w.startswith(required) or fnmatch.fnmatchcase(required, w) for w in words[1:])
+
+
 def _has_allowlist_shell_operator(command: str) -> bool:
     """Return True when a command is too compound for the allowlist shortcut.
     Quote-aware: metacharacters inside quotes or behind a backslash are literal
@@ -148,10 +187,14 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     disqualifying: ``$`` or backtick inside DOUBLE quotes (expansion stays
     active), and any quoted/escaped control character when the command also
     carries a ``-c``/``-e``/``--command``/``--eval``-style option that would
-    hand the quoted text to another interpreter."""
-    command = command or ""
+    hand the quoted text to another interpreter, or is a builtin that
+    evaluates an operand as an array subscript (``test -v``, ``[[``, ...),
+    or contains an unquoted ``${``/``$[`` whose subscript/offset re-expands it."""
+    command = expand_ansi_c_quotes(command or "")  # $'-v' / $"-v" -> '-v' / "-v", so quote tracking matches bash
     quote = None  # None | "'" | '"'
     has_reinterpretable = False
+    param_expansion = False  # unquoted ${...} / $[...] re-expand quoted text in subscripts/offsets
+    test_v_mode = _evaluates_quoted_subscript(command)
     i = 0
     n = len(command)
     while i < n:
@@ -176,29 +219,40 @@ def _has_allowlist_shell_operator(command: str) -> bool:
             # stays simple, matching the historical `\$\(` behavior).
             if i + 1 < n and command[i + 1] == "(":
                 return True
+            if i + 1 < n and command[i + 1] in "{[":
+                param_expansion = True
+        elif ch == "{":
+            param_expansion = True  # brace expansion: test {-v,} 'a[$(cmd)]'
         elif ch in _SHELL_CONTROL_CHARS and ch not in "()":
             return True
         i += 1
     # An unterminated quote means we can't reason about the command shape.
     if quote is not None:
         return True
+    if (test_v_mode or param_expansion) and has_reinterpretable:
+        return True
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
-def _command_matches_permanent_allowlist(command: str) -> bool:
-    """True when command_allowlist holds this exact command text or a matching
-    glob. Permanent approvals historically store dangerous-pattern keys such as
+def _matching_permanent_allowlist_entry(command: str) -> str | None:
+    """The command_allowlist entry matching this exact command text or as a glob, or None.
+    Permanent approvals historically store dangerous-pattern keys such as
     ``recursive delete``; manual entries are command text, possibly with
     shell-style wildcards like ``podman *``."""
     from tools import approval as _a
     command = (command or "").strip()
     if not command or _has_allowlist_shell_operator(command):
-        return False
+        return None
     with _a._lock:
-        patterns = tuple(_a._permanent_approved)
+        patterns = tuple(_a._permanent_set())
     for pattern in patterns:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
         if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")
                                                and fnmatch.fnmatchcase(command, pattern))):
-            return True
-    return False
+            return pattern
+    return None
+
+
+def _command_matches_permanent_allowlist(command: str) -> bool:
+    """True when command_allowlist holds this exact command text or a matching glob."""
+    return _matching_permanent_allowlist_entry(command) is not None

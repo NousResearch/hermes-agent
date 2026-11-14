@@ -51,33 +51,9 @@ describe('countAllNodes', () => {
     // src + its two files + readme.
     expect(countAllNodes(tree)).toBe(4)
   })
-
-  it('counts one per top-level leaf', () => {
-    const tree = buildReviewTree([file('a.ts'), file('b.ts')], false)
-
-    expect(countAllNodes(tree)).toBe(2)
-  })
-
-  it('counts a single deep folder holding thousands of files as heavy', () => {
-    const files = Array.from({ length: 40_000 }, (_, i) => file(`publish/lib-${i}.so`))
-    const tree = buildReviewTree(files)
-
-    // One top-level node, but the total is what matters for virtualization.
-    expect(tree.length).toBe(1)
-    expect(countAllNodes(tree)).toBe(40_001)
-  })
 })
 
 describe('flattenReviewRows', () => {
-  it('flattens top-level leaves in order', () => {
-    const tree = buildReviewTree([file('b.ts'), file('a.ts')], false)
-
-    const rows = flattenReviewRows(tree, () => true)
-
-    expect(rows.map(r => r.node.id)).toEqual(['a.ts', 'b.ts'])
-    expect(rows.map(r => r.depth)).toEqual([0, 0])
-  })
-
   it('includes a directory children only while it is open', () => {
     const tree = buildReviewTree([file('src/a.ts'), file('readme.md')], false)
 

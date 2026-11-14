@@ -5,6 +5,23 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+def inherit_creator_origin(
+    conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
+    created_at: int,
+) -> None:
+    """Copy durable origin inside creation's transaction, never adding dependencies."""
+    if not creator_task_id:
+        return
+    from hermes_cli.kanban_db import _inherit_notify_subs
+
+    conn.execute(
+        "UPDATE tasks SET session_id = COALESCE(session_id, "
+        "(SELECT session_id FROM tasks WHERE id = ?)) WHERE id = ?",
+        (creator_task_id, task_id),
+    )
+    _inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
+
+
 def initial_task_state(
     conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str,
     triage: bool, tenant: Optional[str],
@@ -164,7 +181,7 @@ def _insert_decomposed_child(
     ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
     """
     from hermes_cli.kanban_db import (
-        _new_task_id, _canonical_assignee, _append_event, _inherit_notify_subs,
+        _new_task_id, _canonical_assignee, _append_event,
     )
 
     root_ws_kind = root_row["workspace_kind"] or "scratch"
@@ -193,5 +210,5 @@ def _insert_decomposed_child(
     _append_event(
         conn, new_id, "created", {"by": author or "decomposer", "from_decompose_of": root_id},
     )
-    _inherit_notify_subs(conn, new_id, (root_id,), created_at=now)
+    inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id

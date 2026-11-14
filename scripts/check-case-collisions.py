@@ -66,7 +66,7 @@ def main() -> int:
         print(f"::error::cannot enter {args.root}: {exc}")
         return 2
 
-    proc = subprocess.run(["git", "ls-files", "-z"], capture_output=True)
+    proc = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=False)
     if proc.returncode != 0:
         msg = proc.stderr.decode("utf-8", errors="replace").strip()
         print(f"::error::git ls-files failed in {args.root}: {msg}")

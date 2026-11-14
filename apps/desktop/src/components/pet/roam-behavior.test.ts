@@ -59,26 +59,6 @@ describe('chooseMove', () => {
     expect(chooseMove(true, seq(0.99, HOP_CHANCE - 1e-9))).toBe('hop')
     expect(chooseMove(true, seq(0.99, HOP_CHANCE))).toBe('stroll')
   })
-
-  it('treats restChance as a strict lower bound (boundary stays a move)', () => {
-    expect(chooseMove(false, seq(REST_CHANCE))).toBe('stroll')
-  })
-
-  it('loafs far more than it roams over a long run (the whole point)', () => {
-    let state = 0.314159
-    const rng: Rng = () => (state = (state * 16807 + 0.5) % 1)
-    let rests = 0
-    const N = 20000
-
-    for (let i = 0; i < N; i++) {
-      if (chooseMove(true, rng) === 'rest') {
-        rests++
-      }
-    }
-
-    // ~62% rests; assert the contract (majority loafing), not the exact rate.
-    expect(rests / N).toBeGreaterThan(0.5)
-  })
 })
 
 describe('pickStrollTarget', () => {

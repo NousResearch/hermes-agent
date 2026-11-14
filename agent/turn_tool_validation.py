@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
+from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
+                                          normalize_provider_tool_call_ids)
+from agent.turn_failure_copy import site_copy, stamp_failure
+from hermes_constants import FINISH_REASON_LENGTH
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -31,7 +34,7 @@ class ToolValidationVerdict:
     ones run."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     mixed_invalid_batch: bool
 
 
@@ -50,24 +53,49 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
-def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
+def _route_deferred_call(agent, tc) -> bool:
+    """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
+    the executor's scope check, schema probe and hooks run on it as on a model-written one."""
+    from agent.tool_executor import _canonical_tool_name, _tool_search_scoped_names
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    # A legacy alias (``process``) names a deferred tool too, and hints still spell it that way.
+    name = _canonical_tool_name(tc.function.name)
+    if TOOL_CALL_NAME not in agent.valid_tool_names or name not in _tool_search_scoped_names(agent):
+        return False
+    args = tc.function.arguments or "{}"
+    if isinstance(args, str):
+        try:
+            args = json.loads(args.strip() or "{}")
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(args, dict):
+        return False
+    tc.function.name = TOOL_CALL_NAME
+    tc.function.arguments = json.dumps({"calls": [{"name": name, "arguments": args}]}, ensure_ascii=False)
+    agent._vprint(f"{agent.log_prefix}🔧 Routed deferred tool '{name}' through '{TOOL_CALL_NAME}'",
+                  force=True, diagnostic=True)
+    return True
+
+
+def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
     This path never reaches finalize_turn, so persist here."""
     close_interrupted_tool_sequence(messages, final_response)
     agent._persist_session(messages, conversation_history)
-    return {
+    return stamp_failure({
         "final_response": final_response,
         "messages": messages,
         "api_calls": api_call_count,
         "completed": False,
         "partial": True,
         "error": final_response,
-    }
+    }, "truncated", True)
 
 
 def validate_tool_calls(
-    agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
+    agent: Any, assistant_message: Any, finish_reason: str, *, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, effective_task_id: Any,
 ) -> ToolValidationVerdict:
     """Validate ``assistant_message.tool_calls`` in place (ids uniquified, names
@@ -80,20 +108,42 @@ def validate_tool_calls(
     tool_calls = assistant_message.tool_calls
     valid_names = agent.valid_tool_names
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolValidationVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ToolValidationVerdict:
         return ToolValidationVerdict(action=action, result=result, mixed_invalid_batch=_mixed_invalid_batch)
 
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
-    # pre-API sanitizer keeps only the first call/result per id.
-    agent._uniquify_tool_call_ids(tool_calls)
+    # pre-API sanitizer keeps only the first call/result per id, and the desktop
+    # binds each tool card to its call id. Some providers name every call
+    # "call_0", so an id already used earlier in the session counts as taken.
+    taken = {
+        coalesce_tool_call_id(tc)
+        for msg in messages if msg.get("role") == "assistant"
+        for tc in msg.get("tool_calls") or ()
+    }
+    agent._uniquify_tool_call_ids(tool_calls, taken=taken)
+    normalize_provider_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).
+    repaired_ids = set()
     for tc in tool_calls:
         if tc.function.name not in valid_names:
+            if _route_deferred_call(agent, tc):
+                repaired_ids.add(id(tc))
+                continue
             repaired = agent._repair_tool_call(tc.function.name)
             if repaired:
-                print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",
+                              force=True, diagnostic=True)
                 tc.function.name = repaired
+                repaired_ids.add(id(tc))
+    # Signed-thinking turns replay the native sidecar blocks, not tool_calls: every rename must reach them.
+    if repaired_ids and (provider_data := getattr(assistant_message, "provider_data", None)):
+        from agent.tool_call_batches import replace_native_tool_blocks
+        replace_native_tool_blocks(provider_data, {coalesce_tool_call_id(tc): [tc] for tc in tool_calls
+                                                   if id(tc) in repaired_ids})
+    # Counted here, before any exit or normalization, so every emitted call is seen once as the model sent it.
+    from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
+    record_tool_call_quality(agent, tool_calls, repaired_ids)
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid
     # ones; voiding the turn discards real work. Strikes advance only when a
@@ -116,7 +166,7 @@ def validate_tool_calls(
 
         if agent._invalid_tool_retries >= 3:
             agent._flush_status_buffer()
-            agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
+            agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True, diagnostic=True)
             agent._invalid_tool_retries = 0
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count,
@@ -171,13 +221,18 @@ def validate_tool_calls(
             agent._vprint(
                 f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
                 f"(finish_reason={finish_reason!r}) — refusing to execute.",
-                force=True,
+                force=True, diagnostic=True,
             )
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
+            # Blame the output cap only when the model reported one; otherwise the args
+            # were cut by a stream break or a router rewriting finish_reason (#91717).
+            _copy = (
+                site_copy("truncated") if finish_reason == FINISH_REASON_LENGTH
+                else site_copy("truncated_unreported")
+            )
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count,
-                "Response truncated due to output length limit",
+                agent, messages, conversation_history, api_call_count, _copy,
             ))
 
         agent._invalid_json_retries += 1

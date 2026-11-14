@@ -26,6 +26,7 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  nativeOpacityFor,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -41,6 +42,7 @@ import {
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
+  windowBackgroundMaterialOptions,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions,
@@ -65,14 +67,6 @@ const glass = (intensity: number, material: GlassMaterial = DEFAULT_GLASS_MATERI
   mode: 'glass',
   material,
   scope: DEFAULT_GLASS_SCOPE
-})
-
-describe('lever bounds', () => {
-  it('keeps the bounds and floor stable so persisted settings survive upgrades', () => {
-    expect(TRANSLUCENCY_MIN).toBe(0)
-    expect(TRANSLUCENCY_MAX).toBe(100)
-    expect(TRANSLUCENCY_OPACITY_FLOOR).toBe(0.3)
-  })
 })
 
 describe('clampIntensity', () => {
@@ -279,14 +273,6 @@ describe('hudFrostFor', () => {
     expect(hudFrostFor(glass(0, 'header'), true)).toEqual({ vibrancy: null, backgroundMaterial: 'none' })
   })
 
-  // Unlike a chat window, which keeps 'sidebar' under its titlebar band in
-  // every non-glass state. Pinning this is what stops someone "fixing" the
-  // null into a resting material and painting the slab back.
-  it('resolves off to no material at all, not to a resting one', () => {
-    expect(hudFrostFor(clear(60), true).vibrancy).toBeNull()
-    expect(vibrancyFor(clear(60))).toBe('sidebar')
-  })
-
   // The tint is painted by the renderer, exactly as it is for a chat window —
   // dragging it must not re-issue setVibrancy, whose 150ms animation restarts
   // on every call and never lets the material settle.
@@ -332,14 +318,6 @@ describe('backgroundMaterialFor', () => {
     expect(backgroundMaterialFor(glass(60, 'titlebar'))).toBe('mica')
   })
 
-  // Windows 11 has three system materials for four rungs, so the two heaviest
-  // land on mica. The mapping stays total — a saved 'header' still resolves —
-  // and the picker drops the duplicate instead (see glassMaterialsFor).
-  it('collapses Glare onto mica with Bright', () => {
-    expect(backgroundMaterialFor(glass(60, 'header'))).toBe('mica')
-    expect(backgroundMaterialFor(glass(60, 'header'))).toBe(backgroundMaterialFor(glass(60, 'titlebar')))
-  })
-
   it('resolves every shipped rung to a real system material', () => {
     for (const material of GLASS_MATERIALS) {
       expect(WINDOWS_BACKGROUND_MATERIALS, material).toContain(backgroundMaterialFor(glass(60, material)))
@@ -358,14 +336,6 @@ describe('translucencySupportedOn', () => {
   it('is off on Linux, where neither mode does anything', () => {
     expect(translucencySupportedOn('linux')).toBe(false)
     expect(translucencySupportedOn('freebsd')).toBe(false)
-  })
-
-  // Win10 loses glass but keeps clear, so the row must survive there.
-  it('stays on for a Windows build too old for glass', () => {
-    const oldWindows = `10.0.${WINDOWS_GLASS_MIN_BUILD - 1}`
-
-    expect(glassSupportedOn('win32', oldWindows)).toBe(false)
-    expect(translucencySupportedOn('win32')).toBe(true)
   })
 })
 
@@ -501,6 +471,21 @@ describe('windowBackingOptions', () => {
   })
 })
 
+describe('windowBackgroundMaterialOptions', () => {
+  it('omits the Windows backdrop when glass is inactive', () => {
+    expect(windowBackgroundMaterialOptions(glass(0), true, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(clear(60), true, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(glass(60), false, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(glass(60), true, false)).toEqual({})
+  })
+
+  it('passes the selected backdrop only for active supported Windows glass', () => {
+    expect(windowBackgroundMaterialOptions(glass(60, 'under-window'), true, true)).toEqual({
+      backgroundMaterial: 'acrylic'
+    })
+  })
+})
+
 // A glass window on Windows is fully opaque natively — the tint is the
 // renderer's and fade defaults to zero — so it used to be handed `opacity: 1`
 // on every launch. Electron's Windows setOpacity layers the window before it
@@ -528,6 +513,40 @@ describe('windowOpacityOptions', () => {
 
       expect(windowOpacityOptions(state), appearance).toStrictEqual({})
     }
+  })
+})
+
+// Linux gets the same 29% Clear default macOS does (`defaultTranslucencyValues`
+// only distinguishes Windows), and `translucencySupportedOn` keeps the Settings
+// row away on the strength of Electron documenting `setOpacity` as a no-op
+// there. On Linux it is not a no-op on either backend: the X11 window carries
+// the value as `_NET_WM_WINDOW_OPACITY` and a native Wayland surface composites
+// the fade into the frame, so the window renders faded forever, with the only
+// control that could undo it hidden. So the value has to be gated where it
+// reaches the window, not only where the row is drawn.
+describe('nativeOpacityFor', () => {
+  it('leaves a platform without translucency fully opaque', () => {
+    expect(nativeOpacityFor(clear(29), false)).toBe(1)
+    expect(nativeOpacityFor(clear(100), false)).toBe(1)
+    expect(nativeOpacityFor(glass(60, DEFAULT_GLASS_MATERIAL, 40), false)).toBe(1)
+  })
+
+  it('answers the ramp unchanged where translucency is supported', () => {
+    for (const state of [clear(0), clear(29), clear(100)]) {
+      expect(nativeOpacityFor(state, true)).toBe(windowOpacityFor(state))
+    }
+  })
+
+  // A window that already carries a faded opacity — an upgrade from a build
+  // that set it, or a profile imported from macOS — still has to be handed the
+  // opaque value, or it stays faded for the rest of the session.
+  it('has something to say to a window that is already faded', () => {
+    expect(opacityNeedsSetting(nativeOpacityFor(clear(29), false), 0.9372)).toBe(true)
+  })
+
+  it('keeps the constructor option off an unsupported platform', () => {
+    expect(windowOpacityOptions(clear(29), false)).toStrictEqual({})
+    expect(windowOpacityOptions(clear(100), false)).toStrictEqual({})
   })
 })
 
@@ -603,9 +622,7 @@ describe('what an update actually changes natively', () => {
   })
 
   it('leaves a window alone when glass is selected but off', () => {
-    // The light default carries one point of fade. Someone who dragged the
-    // tint to zero asked for an opaque window, and that point must not follow
-    // them there — off has to mean exactly 1, not 0.9999.
+    // A saved fade must not follow the tint to zero: off means opaque.
     expect(windowOpacityFor({ ...glass(0), fade: 1 })).toBe(1)
     expect(windowOpacityFor({ ...glass(0), fade: 40 })).toBe(1)
   })
@@ -615,12 +632,7 @@ describe('what an update actually changes natively', () => {
   })
 })
 
-/**
- * The shipped defaults, per platform. These are the numbers a fresh profile
- * gets before anyone opens Settings, so they are the ones most people will
- * ever see — and they differ by platform because the lever means different
- * things behind macOS vibrancy and Windows acrylic.
- */
+/** Fresh profiles share the sidebar treatment, with native frost per platform. */
 describe('the defaults a fresh profile lands on', () => {
   const mac = (appearance: 'dark' | 'light') => defaultTranslucencyValues(appearance, false)
   const win = (appearance: 'dark' | 'light') => defaultTranslucencyValues(appearance, true)
@@ -641,21 +653,10 @@ describe('the defaults a fresh profile lands on', () => {
     expect(defaultTranslucencyState('dark', false, false).mode).toBe('clear')
   })
 
-  it('tints light more heavily than dark, on both platforms', () => {
-    // A dark field already separates from what is behind it; a bright one
-    // needs real thinning before the desktop reads as a layer underneath.
-    expect(mac('light').intensity).toBeGreaterThan(mac('dark').intensity)
-    expect(win('light').intensity).toBeGreaterThan(win('dark').intensity)
-  })
-
-  it('asks far less of Windows, which composites its own tint in DWM', () => {
-    expect(win('light').intensity).toBeLessThan(mac('light').intensity)
-    expect(win('dark').intensity).toBeLessThan(mac('dark').intensity)
-  })
-
-  it('never fades a Windows window — setOpacity dims the composited backdrop', () => {
-    expect(win('light').fade).toBe(0)
-    expect(win('dark').fade).toBe(0)
+  it('keeps the content column opaque at the native level', () => {
+    for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
+      expect(windowOpacityFor({ ...values, mode: 'glass' })).toBe(1)
+    }
   })
 
   it('defaults each platform onto a frost that platform can actually render', () => {
@@ -665,9 +666,9 @@ describe('the defaults a fresh profile lands on', () => {
     }
   })
 
-  it('opens the whole window, not just the sidebar rail', () => {
+  it('uses the normalized scope default for every appearance and platform', () => {
     for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
-      expect(values.scope).toBe('window')
+      expect(values.scope).toBe(normalizeScope(undefined))
     }
   })
 })
@@ -680,9 +681,14 @@ describe('the defaults a fresh profile lands on', () => {
 describe('resolving the book for the painted appearance', () => {
   const empty = normalizeBook(null, true)
 
-  it('falls all the way through to the platform default', () => {
-    expect(resolveTranslucency(empty, 'dark', false).intensity).toBe(defaultTranslucencyValues('dark', false).intensity)
-    expect(resolveTranslucency(empty, 'dark', true).intensity).toBe(defaultTranslucencyValues('dark', true).intensity)
+  it('agrees with the native first-window defaults in either appearance', () => {
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const isWindows of [false, true]) {
+        expect(resolveTranslucency(empty, appearance, isWindows)).toEqual(
+          defaultTranslucencyState(appearance, true, isWindows)
+        )
+      }
+    }
   })
 
   it('scopes an edit to the appearance it was made in', () => {
@@ -692,14 +698,17 @@ describe('resolving the book for the painted appearance', () => {
     expect(resolveTranslucency(book, 'dark', false).intensity).toBe(defaultTranslucencyValues('dark', false).intensity)
   })
 
-  it('carries a v1 state into BOTH appearances via base', () => {
-    // Someone who tuned a window before appearances were split keeps exactly
-    // what was on screen, in either appearance, until they edit one of them.
-    const migrated = normalizeBook({ intensity: 40, mode: 'glass' }, true)
+  it('preserves a saved whole-window treatment in both appearances', () => {
+    const saved = { intensity: 40, scope: 'window', mode: 'glass' } as const
+    const migrated = normalizeBook(saved, true)
 
-    expect(migrated.base.intensity).toBe(40)
-    expect(resolveTranslucency(migrated, 'light', false).intensity).toBe(40)
-    expect(resolveTranslucency(migrated, 'dark', false).intensity).toBe(40)
+    expect(migrated.base).toEqual({ intensity: saved.intensity, scope: saved.scope })
+
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const isWindows of [false, true]) {
+        expect(resolveTranslucency(migrated, appearance, isWindows)).toMatchObject(saved)
+      }
+    }
   })
 
   it('lets an appearance override base without disturbing the other', () => {

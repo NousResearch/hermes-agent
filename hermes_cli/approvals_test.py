@@ -32,7 +32,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     carries ``verdict``, ``exit_code``, ``rule``, ``detail`` and ``normalized_variants`` (the
     de-obfuscated forms the detectors actually evaluated).
     """
-    import tools.approval as approval
+    from tools import approval
     from tools import approval_context, approval_detection, approval_floors
     # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
     # would see (load is read-only).

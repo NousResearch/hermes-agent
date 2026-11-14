@@ -163,7 +163,7 @@ TTS 设置从 OpenClaw 配置的**两个**位置读取，优先级如下：
 | `HEARTBEAT.md` | `archive/workspace/HEARTBEAT.md` | 使用 cron 作业执行周期性任务 |
 | `BOOTSTRAP.md` | `archive/workspace/BOOTSTRAP.md` | 使用上下文文件或 skills |
 | Cron 作业 | `archive/cron-config.json` | 通过 `hermes cron create` 重建 |
-| 插件 | `archive/plugins-config.json` | 参见 [插件指南](/user-guide/features/hooks) |
+| 插件 | `archive/plugins-config.json` | 参见 [插件指南](../user-guide/features/hooks.md) |
 | Hooks/webhooks | `archive/hooks-config.json` | 使用 `hermes webhook` 或 gateway hooks |
 | 记忆后端 | `archive/memory-backend-config.json` | 通过 `hermes honcho` 配置 |
 | Skills 注册表 | `archive/skills-registry-config.json` | 使用 `hermes skills config` |

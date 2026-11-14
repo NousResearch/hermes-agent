@@ -10,7 +10,7 @@ import math
 import os
 import shlex
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
@@ -28,17 +28,27 @@ class DaytonaEnvironment(BaseEnvironment):
     is wired to sandbox.stop() for interrupts. Shell timeout wrapper kept (SDK timeout unreliable).
     """
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
 
     def __init__(self, image: str, cwd: str = "/home/daytona", timeout: int = 60, cpu: int = 1,
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
-        ensure_lazy_dep("terminal.daytona")
-        from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
+        ensure_lazy_dep("daytona")
+        from daytona import (Daytona, CreateSandboxFromImageParams, DaytonaConfig, DaytonaError, Resources,
+                             SandboxState)
+        from agent.secret_scope import get_secret, serves_routed_profile
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
-        self._daytona = Daytona()
+        # With no key the SDK falls back to os.environ and the cwd .env: another profile's account.
+        api_key = get_secret("DAYTONA_API_KEY")
+        if not api_key and serves_routed_profile():
+            raise ValueError("DAYTONA_API_KEY is not set for this profile: add it to this profile's .env "
+                             "(or its secret source). Another profile's Daytona key is never used.")
+        self._daytona = Daytona(DaytonaConfig(api_key=api_key))
         self._sandbox = None
         self._lock = threading.Lock()
 
@@ -91,7 +101,11 @@ class DaytonaEnvironment(BaseEnvironment):
         self.init_session()
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
-        self._sandbox.process.exec(quoted_mkdir_command([str(Path(remote_path).parent)]))
+        """Upload a single file via Daytona SDK."""
+        # remote_path is a POSIX path on the sandbox; never run it through the
+        # host's Path (Windows would mangle the separators into backslashes).
+        parent = str(PurePosixPath(remote_path).parent)
+        self._sandbox.process.exec(quoted_mkdir_command([parent]))
         self._sandbox.fs.upload_file(host_path, remote_path)
 
     def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:
@@ -110,8 +124,10 @@ class DaytonaEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a tar archive."""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         # PID-suffixed remote temp path avoids collisions if sync_back runs concurrently.
-        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
-        self._sandbox.process.exec(f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}")
+        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
+        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
+        self._sandbox.process.exec(
+            f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(rel_base)}")
         self._sandbox.fs.download_file(remote_tar, str(dest))
         with contextlib.suppress(Exception):  # best-effort cleanup
             self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
@@ -134,14 +150,44 @@ class DaytonaEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None):
         sandbox, lock = self._sandbox, self._lock
+        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
+        # has taken ownership of (opened + unlinked) the staged stdin file.
+        state = {"cancelled": False, "staged": None, "dispatched": False}
+
+        def scrub_staged():  # caller holds ``lock``
+            if state["staged"] and not state["dispatched"]:
+                # Uploaded but never dispatched: nothing else will unlink it.
+                # Once dispatched the user shell rm's it before running cmd.
+                with contextlib.suppress(Exception):
+                    sandbox.fs.delete_file(state["staged"])
+                state["staged"] = None
 
         def cancel():
-            with lock, contextlib.suppress(Exception):
-                sandbox.stop()
-
-        shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(cmd_string)}"
+            with lock:
+                state["cancelled"] = True
+                scrub_staged()
+                with contextlib.suppress(Exception):
+                    sandbox.stop()
 
         def exec_fn() -> tuple[str, int]:
+            command = cmd_string
+            if stdin_data:  # empty stdin == no stdin, as on base (heredoc skipped it)
+                with lock:
+                    if state["cancelled"]:
+                        return ("", 130)
+                remote_stdin = self._staged_stdin_path()
+                sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
+                with lock:
+                    state["staged"] = remote_stdin
+                sandbox.fs.set_file_permissions(remote_stdin, mode="600")
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
+            shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
+            with lock:
+                if state["cancelled"]:
+                    # cancel() may have run mid-upload, before ``staged`` was set.
+                    scrub_staged()
+                    return ("", 130)
+                state["dispatched"] = True
             response = sandbox.process.exec(shell_cmd, timeout=timeout)
             return (response.result or "", response.exit_code)
 

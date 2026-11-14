@@ -80,7 +80,7 @@ STATE_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def state_aliases_for(state: "PetState | str") -> tuple[str, ...]:
+def state_aliases_for(state: PetState | str) -> tuple[str, ...]:
     """Return accepted row-name aliases for *state* (always non-empty)."""
     value = state.value if isinstance(state, PetState) else str(state)
     return STATE_ALIASES.get(value) or (value,)
@@ -95,7 +95,7 @@ def state_rows_for_grid(row_count: int | None) -> list[str]:
     return CODEX_STATE_ROWS if rows >= len(CODEX_STATE_ROWS) else LEGACY_STATE_ROWS
 
 
-def state_row_index(state: "PetState | str", row_count: int | None = None) -> int:
+def state_row_index(state: PetState | str, row_count: int | None = None) -> int:
     """Return the spritesheet row index for *state* (clamped, never raises)."""
     rows = state_rows_for_grid(row_count)
     return next((rows.index(name) for name in state_aliases_for(state) if name in rows), 0)  # 0 = idle row

@@ -1,0 +1,118 @@
+"""Codex Responses recovery rungs: stale encrypted-reasoning strip and the replay verdict reset."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from agent.error_classifier import classify_api_error
+from agent.route_verdicts import route_visit
+from agent.turn_retry_state import TurnRetryState
+
+logger = logging.getLogger(__name__)
+
+
+def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
+    """401 ``token_expired`` from the Codex backend (#88510). It rejects a stale replayed
+    ``encrypted_content`` blob with this auth signature, so a persisted session loops on "sign
+    in again" while a fresh session on the same bearer works. The caller treats it like
+    ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
+    if getattr(api_error, "status_code", None) != 401:
+        return False
+    reason = agent._extract_api_error_context(api_error).get("reason")
+    return isinstance(reason, str) and reason.strip().lower() == "token_expired"
+
+
+def reset_codex_reasoning_replay(agent: Any) -> None:
+    """The replay verdict belongs to the route that earned it: a route change starts the new route
+    with replay on (#61552). Called through ``route_verdicts.reset_route_verdicts``."""
+    agent._codex_reasoning_replay_enabled = True
+    agent._codex_reasoning_replay_rejected = False
+
+
+def _recover_stale_codex_reasoning(
+    agent: Any, _retry: TurnRetryState, messages: list[dict[str, Any]], api_messages: Any,
+) -> bool:
+    """Stale ``codex_reasoning_items`` blob rejected by the provider: strip cached items (mutates
+    persisted ``messages``) and retry once. The first rung drops only the replayed blobs not stamped by
+    exactly this endpoint+model (it consumes its own precondition, so it cannot loop); a repeat goes on
+    to strip every item. The first full strip keeps replay on, since blobs the
+    route mints from now on are sealed with its current key; a repeat rejection means the route
+    cannot round-trip its own blobs, so replay is disabled until the route changes."""
+    if (
+        _retry.invalid_encrypted_content_retry_visit == route_visit(agent)
+        or agent.api_mode != "codex_responses"
+        or not bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+        or not any(
+            isinstance(_m, dict)
+            and _m.get("role") == "assistant"
+            and isinstance(_m.get("codex_reasoning_items"), list)
+            and _m.get("codex_reasoning_items")
+            for _m in messages
+        )
+    ):
+        return False
+    from agent.turn_recovery import _vlines  # facade owns the verbose printer; late import breaks the cycle
+
+    transport = agent._get_transport()
+    if transport is not None and (removed := transport.drop_unverified_replay(messages, api_messages)):
+        _vlines(agent, f"⚠️  Encrypted reasoning replay was rejected — dropped {removed} item(s) minted elsewhere, retrying...")
+        return True
+    _retry.invalid_encrypted_content_retry_visit = route_visit(agent)
+    keep_replay = not getattr(agent, "_codex_reasoning_replay_rejected", False)
+    agent._codex_reasoning_replay_rejected = True
+    replay_stats = agent._disable_codex_reasoning_replay(messages, keep_replay=keep_replay)
+    # The retry is rebuilt from the request copy; with replay kept on it would resend the stale blob.
+    for _m in api_messages if isinstance(api_messages, list) else []:
+        if isinstance(_m, dict):
+            _m.pop("codex_reasoning_items", None)
+    action = "stripped stale" if keep_replay else "disabled replay on this route and stripped"
+    _vlines(
+        agent,
+        f"⚠️  Encrypted reasoning replay was rejected by the provider — "
+        f"{action} {replay_stats['items']} item(s) from {replay_stats['messages']} message(s), retrying...",
+    )
+    logger.warning(
+        "%sInvalid encrypted reasoning recovery: %s %d items from %d messages",
+        agent.log_prefix, action, replay_stats["items"], replay_stats["messages"],
+    )
+    return True
+
+
+def _codex_soft_failure_error(response: Any) -> dict[str, Any]:
+    """``response.error`` of a Codex ``failed``/``cancelled`` Response as ``{"code", "message"}``
+    (the SDK types it as ``ResponseError``; the raw-SSE assembler keeps the dict); ``{}`` when absent."""
+    error_obj = getattr(response, "error", None)
+    if not error_obj:
+        return {}
+    if isinstance(error_obj, dict):
+        fields = error_obj
+    elif hasattr(error_obj, "code") or hasattr(error_obj, "message"):
+        fields = {"code": getattr(error_obj, "code", None), "message": getattr(error_obj, "message", None)}
+    else:
+        fields = {"message": str(error_obj)}
+    return {k: v for k, v in fields.items() if isinstance(v, str) and v.strip()}
+
+
+class _CodexSoftFailure(Exception):
+    """A Codex HTTP-200 ``status=failed`` Response reshaped so ``classify_api_error`` and
+    ``extract_api_error_context`` read ``response.error`` exactly like an SDK error body."""
+
+    def __init__(self, error: dict[str, Any]) -> None:
+        super().__init__(error.get("message") or "")
+        self.body = {"error": error}
+
+
+def classify_codex_soft_failure(agent: Any, response: Any) -> tuple[Any, dict[str, Any]]:
+    """``(classified, error_context)`` for a Codex ``failed``/``cancelled`` Response, or
+    ``(None, {})`` when it is not one. The SDK never raises on these HTTP-200 soft failures,
+    so this is the only place their quota/billing/auth semantics reach the credential pool."""
+    if agent.api_mode != "codex_responses":
+        return None, {}
+    if str(getattr(response, "status", "") or "").strip().lower() not in {"failed", "cancelled"}:
+        return None, {}
+    exc = _CodexSoftFailure(_codex_soft_failure_error(response))
+    classified = classify_api_error(
+        exc, provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+        base_url=str(getattr(agent, "base_url", "") or ""), api_key=getattr(agent, "api_key", None),
+    )
+    return classified, agent._extract_api_error_context(exc)

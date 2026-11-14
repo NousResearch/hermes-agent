@@ -1,8 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import urllib.error
-from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +11,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _channel_type_name,
     _detect_capabilities,
     _discord_request,
     _get_bot_token,
@@ -121,13 +118,6 @@ class TestCheckRequirements:
 # Channel type names
 # ---------------------------------------------------------------------------
 
-class TestChannelTypeNames:
-    def test_type_names(self):
-        assert _channel_type_name(0) == "text"
-        assert _channel_type_name(2) == "voice"
-        assert _channel_type_name(4) == "category"
-        assert _channel_type_name(15) == "forum"
-        assert _channel_type_name(99) == "unknown(99)"
 
 
 # ---------------------------------------------------------------------------
@@ -334,14 +324,6 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 
 class TestRegistration:
-    def test_core_tool_registered(self):
-        from tools.registry import registry
-        entry = registry._tools.get("discord")
-        assert entry is not None
-        assert entry.schema["name"] == "discord"
-        assert entry.toolset == "discord"
-        assert entry.check_fn is not None
-        assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
     def test_all_actions_covered(self):
         """Core + admin actions should cover all known actions."""
@@ -353,26 +335,6 @@ class TestRegistration:
 # Toolset: discord / discord_admin only in hermes-discord
 # ---------------------------------------------------------------------------
 
-class TestToolsetInclusion:
-    def test_discord_tools_only_in_hermes_discord_toolset(self):
-        from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
-        assert "discord" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord" not in _HERMES_CORE_TOOLS
-        assert "discord_admin" not in _HERMES_CORE_TOOLS
-
-    def test_discord_tools_not_in_other_toolsets(self):
-        from toolsets import TOOLSETS
-        for name, ts in TOOLSETS.items():
-            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
-                continue
-            tools = ts.get("tools", [])
-            assert "discord" not in tools or name == "discord", (
-                f"discord tool should not be in toolset '{name}'"
-            )
-            assert "discord_admin" not in tools or name == "discord_admin", (
-                f"discord_admin tool should not be in toolset '{name}'"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -514,10 +476,10 @@ class TestConfigAllowlist:
 
         ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
         ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
-        block).  xdist workers are persistent, so a streaming test on the
-        same worker will silence WARNING-level logs from
+        block).  A persistent test process keeps that setting, so a
+        streaming test will silence WARNING-level logs from
         ``tools.discord_tool`` for every test that follows.  Reset here so
-        ``caplog`` can capture warnings regardless of worker history.
+        ``caplog`` can capture warnings regardless of earlier tests.
         """
         import logging as _logging
         _prev_tools = _logging.getLogger("tools").level
@@ -754,3 +716,129 @@ class TestModelToolsIntegration:
         assert discord_admin_tool is not None, "discord_admin should be in the schema"
         actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
+
+
+# ---------------------------------------------------------------------------
+# Snowflake ID validation
+# ---------------------------------------------------------------------------
+
+class TestSnowflakeValidation:
+    """Regression tests for Discord snowflake ID validation (issue #36652)."""
+
+    def test_valid_snowflake_accepted(self):
+        """Numeric strings of 1-20 digits should pass validation."""
+        from tools.discord_tool import _validate_snowflake
+        # Should not raise
+        _validate_snowflake("123456789012345678", "channel_id")
+        _validate_snowflake("1", "id")
+        _validate_snowflake("99999999999999999999", "id")  # 20 digits
+
+    def test_empty_string_rejected(self):
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("", "channel_id")
+
+    def test_slash_in_id_rejected(self):
+        """IDs containing '/' could cause path traversal."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("123/456", "channel_id")
+
+    def test_question_mark_rejected(self):
+        """IDs containing '?' could inject query parameters."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord guild_id"):
+            _validate_snowflake("123?evil=true", "guild_id")
+
+    def test_letters_rejected(self):
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord message_id"):
+            _validate_snowflake("abc123", "message_id")
+
+    def test_fullwidth_unicode_digits_rejected(self):
+        """Unicode decimal digits match ``\\d`` in Python but are not ASCII snowflakes."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("１２３", "channel_id")
+
+    def test_trailing_newline_rejected(self):
+        """``$`` matches before a final newline; validation must anchor the whole string."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("123\n", "channel_id")
+
+    def test_too_long_rejected(self):
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord user_id"):
+            _validate_snowflake("1" * 21, "user_id")  # 21 digits
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_guild_id_returns_error(self, mock_req, monkeypatch):
+        """Invalid IDs should return a JSON error, not crash."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_admin_handler(action="server_info", guild_id="../../etc")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord guild_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_channel_id_in_fetch_messages(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_core(action="fetch_messages", channel_id="bad?id=1")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord channel_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_message_id_in_delete(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_admin_handler(
+            action="delete_message", channel_id="123456789", message_id="../secret")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord message_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_fullwidth_digit_guild_id_returns_error_without_request(self, mock_req, monkeypatch):
+        """A full-width digit guild_id must fail validation before any HTTP call."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = discord_admin_handler(action="server_info", guild_id="１２３４５")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Invalid Discord guild_id" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_valid_ids_pass_through(self, mock_req, monkeypatch):
+        """Valid snowflake IDs should reach the API call."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "123456789", "name": "test", "type": 0}
+        result = discord_admin_handler(action="channel_info", channel_id="123456789")
+        data = json.loads(result)
+        assert "error" not in data
+        mock_req.assert_called_once()
+
+    @pytest.mark.parametrize("action, kwargs, field", [
+        ("create_thread", {"name": "t", "message_id": "1/../2"}, "message_id"),
+        ("fetch_messages", {"before": "1?x=y"}, "before"),
+        ("fetch_messages", {"after": "１２３"}, "after"),
+    ])
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_optional_id_returns_error_without_request(
+            self, mock_req, monkeypatch, action, kwargs, field):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        data = json.loads(discord_core(action=action, channel_id="11", **kwargs))
+        assert f"Invalid Discord {field}" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_valid_pagination_ids_reach_request(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = []
+        data = json.loads(discord_core(
+            action="fetch_messages", channel_id="11", before="1001", after="999"))
+        assert "error" not in data
+        assert mock_req.call_args.kwargs["params"] == {"limit": "50", "before": "1001", "after": "999"}

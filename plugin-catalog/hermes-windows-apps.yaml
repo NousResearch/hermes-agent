@@ -1,0 +1,40 @@
+name: hermes-windows-apps
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 05a01102d3c0b43a345a94ed8b0f56317692136b
+subdir: windows-apps
+description: >-
+  Answer "what is installed on this Windows machine": the software inventory behind
+  Apps & Features, swept straight from the four Uninstall registry keys (the machine's
+  64-bit and 32-bit views plus the user's), so a program is found even when the Settings
+  page hides it - a per-user install that never shows on the machine page came from the
+  user view on the writing machine. Each row carries version, publisher, size in MB,
+  install date and which view it lives in; the same DisplayName in two views is a 32/64-bit
+  dual install, marked instead of listed twice. Entries the publisher asked to hide
+  (runtime packages, update rollups) are filtered out unless asked for. Details one
+  program with every field its publisher wrote and a reading of the uninstall command
+  (MSI product code, setup executable, appx, script) so the next step is known before
+  anything is run; the install folder is checked against disk. Use it for "what did that
+  installer actually register", for inventory before a cleanup, and for "which of the two
+  installs does uninstalling remove". Read-only: registry keys are enumerated and
+  uninstall strings are reported, never run; no network, no file writes, no elevation.
+  The sweep is pure registry - 102 entries in seven milliseconds on the writing machine,
+  the whole table in ten, no PowerShell, no WMI. The plugin declares no Python
+  dependencies. Windows only. Disclosure - the tools report program names, versions,
+  publishers, sizes, install folders and uninstall commands, and what is hidden from
+  Apps & Features, to the model; treat the output like the machine's own Apps & Features
+  page.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-apps
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_app_table
+  - win_app_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

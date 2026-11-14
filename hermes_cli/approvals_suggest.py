@@ -92,7 +92,9 @@ def default_db_path() -> Path:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_state_holders import read_only_db_uri
+    return connect_tracked(read_only_db_uri(db_path), uri=True, tracking_path=db_path)
 
 
 def _fetch_rows(cur) -> Iterator[tuple]:
@@ -222,14 +224,26 @@ def build_proposals(
     itself (the same key an interactive ``[a]lways`` answer persists) for compound commands where no
     safe glob can be derived.
     """
+    from agent.redact import redact_sensitive_text
+
     existing = existing or set()
     by_pattern: dict[tuple[str, str], Proposal] = {}
 
     for command, description in records:
         if is_unsafe_class(description):
             continue
-        normalized = normalize_command(command)
-        glob = derive_glob(normalized)
+        # Commands mined from past tool calls can embed credentials (URL userinfo,
+        # env assignments, bearer tokens). Examples are echoed to the operator, so
+        # mask them like every other display boundary — classification above
+        # still sees the raw command. The glob is derived from the raw command:
+        # a redacted `***` inside a persisted pattern would be three fnmatch
+        # wildcards, so when redaction touches the tokens the glob embeds, the
+        # command is proposed under its class key instead.
+        raw = normalize_command(command)
+        normalized = redact_sensitive_text(raw, force=True)
+        glob = derive_glob(raw)
+        if glob is not None and derive_glob(normalized) != glob:
+            glob = None
         pattern, kind = (glob, "glob") if glob is not None else (description, "class")
         if pattern in existing:
             continue

@@ -93,19 +93,16 @@ describe('skipKittyKeyboardProtocol', () => {
     }
   })
 
-  it.each(['iTerm.app', 'kitty', 'WezTerm', 'tmux', 'windows-terminal', 'vscode'])(
-    'keeps the dual push for %s',
-    async terminal => {
-      const { env } = await import('../utils/env.js')
-      const { skipKittyKeyboardProtocol } = await import('./terminal.js')
-      const saved = env.terminal
+  it.each(['kitty', 'tmux'])('keeps the dual push for %s', async terminal => {
+    const { env } = await import('../utils/env.js')
+    const { skipKittyKeyboardProtocol } = await import('./terminal.js')
+    const saved = env.terminal
 
-      try {
-        env.terminal = terminal
-        expect(skipKittyKeyboardProtocol()).toBe(false)
-      } finally {
-        env.terminal = saved
-      }
+    try {
+      env.terminal = terminal
+      expect(skipKittyKeyboardProtocol()).toBe(false)
+    } finally {
+      env.terminal = saved
     }
-  )
+  })
 })

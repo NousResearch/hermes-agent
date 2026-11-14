@@ -1,0 +1,47 @@
+name: plugin_foundry
+title: Plugin Foundry
+repo: https://github.com/dolepee/hermes-plugin-foundry
+sha: 9345a56954d219f923a05712a7a68e44df5099a2
+description: >-
+  Turn a narrow plugin request into a native Hermes plugin: manifest, entry
+  point, tool, SQLite state, tests, static scan and catalog draft. Two
+  archetypes only: a SQLite folder watcher and a JSON API poller, each with one
+  tool. The folder-watcher parser accepts one explicit supported file type or
+  complete dotted suffix and refuses unsupported, composite, conflicting or
+  ambiguous requests. A trailing period is removed only at request end or
+  before validated supported follow-up instructions. Sentence boundaries are
+  detected before a capitalised token or complete instruction verb, but that
+  detection alone does not permit removal; other prose fails closed, and
+  abbreviations without a sentence start stay inside the instruction. Writes
+  stay under the Foundry data root,
+  generated tests run in a minimal environment, and paths outside the root
+  need a pre-tool approval.
+  Provides pre_tool_call and post_approval_response hooks plus the public
+  tool_execution middleware for trusted call IDs. Foundry itself makes no
+  network requests. Installing or cataloguing generated code is a separate
+  human step; nothing is auto-merged.
+maintainer: dolepee
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.5"
+docs_url: https://github.com/dolepee/hermes-plugin-foundry/blob/9345a56954d219f923a05712a7a68e44df5099a2/README.md
+platforms: []
+known_issues:
+  - "Declared runtime floor is Hermes >=0.23.0. The public plugin API at 0.21.5 was audited, but runtime and approval acceptance is only recorded on v0.23."
+  - "Supports only the two documented archetypes: a SQLite folder watcher and a JSON API poller."
+  - "The watcher parser intentionally rejects ambiguous or unsupported file-type prose rather than guessing. Use one explicit type, for example CSV files; arbitrary sentence wording is not supported."
+  - "Generated code is not installed, published or catalogued automatically. A human must review and install it."
+capabilities:
+  provides_tools:
+    - foundry_plan
+    - foundry_build
+    - foundry_test
+    - foundry_list
+    - foundry_catalog
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware:
+    - tool_execution
+  requires_env: []

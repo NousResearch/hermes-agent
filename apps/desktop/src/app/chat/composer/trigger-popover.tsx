@@ -45,7 +45,7 @@ function rowKind(item: Unstable_TriggerItem, isSlash: boolean): string {
 
 const ROW_CLASS = [
   'relative flex w-full cursor-default select-none items-center gap-2 rounded-md px-2 py-1 text-left',
-  'outline-hidden transition-colors hover:bg-(--ui-bg-tertiary)',
+  'focus-visible:outline-hidden data-[highlighted]:outline-hidden transition-colors hover:bg-(--ui-bg-tertiary)',
   'data-[highlighted]:bg-(--ui-bg-tertiary) data-[highlighted]:text-foreground'
 ].join(' ')
 
@@ -200,13 +200,7 @@ export function ComposerTriggerPopover({
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
-              <Tip
-                className="max-w-[calc(100vw-2rem)] wrap-anywhere"
-                collisionPadding={16}
-                delayDuration={400}
-                label={kind === '/' ? description : undefined}
-                sideOffset={4}
-              >
+              <Tip delayDuration={400} label={kind === '/' ? description : undefined} placement="row" sideOffset={4}>
                 <button
                   className={ROW_CLASS}
                   data-highlighted={active ? '' : undefined}

@@ -1,0 +1,20 @@
+name: webly
+title: Webly
+repo: https://github.com/Webly-AI/webly-plugin
+sha: e952ff954b23a2ea564e784e9807cc274fa9ba8b
+subdir: hermes
+description: "Publish a website, or share files and folders, at a live *.webly.site URL from Hermes Agent with no account, then sign in to claim it, edit it, and publish drafts the person approves through the hosted Webly MCP server (Streamable HTTP). Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — MCP tool calls go to api.webly.ai/v1/mcp, sending WEBLY_API_KEY as a bearer header when it is set, and the webly server is marked untrusted so Hermes asks before each Webly MCP tool that changes something. The bundled webly skill runs a local Node.js 20+ helper (scripts/webly.mjs) through the shell: it uploads only the files and folders the person asks to publish or share to api.webly.ai (sites are public unless password-protected), runs the project's npm/pnpm/yarn install and build first when the folder has a build script, opens the browser for sign-in and claim, and keeps its anonymous-site token and optional OAuth sign-in in ~/.webly (mode 0600). Its doctor command reads ~/.claude.json, ~/.claude/settings.json and ~/.codex/config.toml only to see whether a webly MCP server is configured there. Publishing, deleting and replacing sites through that helper are gated by skill instructions, not by Hermes approvals. The catalog copy has no update check."
+maintainer: Webly
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.14.5"
+docs_url: https://github.com/Webly-AI/webly-plugin/tree/main/hermes#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "The Webly MCP tools need a sign-in, because a portable mcp.json cannot request OAuth: set WEBLY_API_KEY (a wb_ key from the Webly dashboard), or run `hermes mcp add webly --url https://api.webly.ai/v1/mcp --auth oauth` then `hermes mcp login webly`. Publishing without an account works without either."

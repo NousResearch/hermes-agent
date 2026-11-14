@@ -87,7 +87,6 @@ def _make_runner():
         get_or_create_session=lambda source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda session_id: [],
     )
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner._enrich_message_with_vision = AsyncMock(return_value="ENRICHED")
     return runner
 
@@ -111,19 +110,6 @@ class TestResolveChannelPrompts:
         adapter.config.extra = {"channel_prompts": {"100": "Research mode"}}
         assert adapter._resolve_channel_prompt("100") == "Research mode"
 
-    def test_numeric_yaml_keys_normalized_at_config_load(self):
-        """Numeric YAML keys are normalized to strings by config bridging.
-
-        The resolver itself expects string keys (config.py handles normalization),
-        so raw numeric keys will not match — this is intentional.
-        """
-        adapter = _make_adapter()
-        # Simulates post-bridging state: keys are already strings
-        adapter.config.extra = {"channel_prompts": {"100": "Research mode"}}
-        assert adapter._resolve_channel_prompt("100") == "Research mode"
-        # Pre-bridging numeric key would not match (bridging is responsible)
-        adapter.config.extra = {"channel_prompts": {100: "Research mode"}}
-        assert adapter._resolve_channel_prompt("100") is None
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,11 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
-import { $connection } from '@/store/session'
+import { $notifications } from '@/store/notifications'
+import { $connection, $messagingSessions, $selectedStoredSessionId } from '@/store/session'
+
+import { droppedFileInlineRefs } from '../composer/inline-refs'
+import { LARGE_PASTE_MAX_BYTES } from '../composer/large-paste'
 
 import {
   attachmentPreviewDataUrl,
@@ -10,6 +14,8 @@ import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
   partitionDroppedFiles,
+  resolveImageAttachmentPreview,
+  stageDroppedFilePath,
   useComposerActions
 } from './use-composer-actions'
 
@@ -77,6 +83,57 @@ describe('partitionDroppedFiles', () => {
   it('returns empty groups for an empty drop', () => {
     expect(partitionDroppedFiles([])).toEqual({ inAppRefs: [], osDrops: [] })
   })
+
+  it('routes a local non-image OS drop to inline refs; keeps images, remote, and cross-filesystem drops staged', () => {
+    // #52427: when the gateway shares this machine's filesystem, an OS drop's
+    // original path resolves on the backend as-is, so it stays an inline
+    // @file: ref — no staged copy, no lost path semantics. Only drops the
+    // backend cannot resolve keep the upload pipeline.
+    const finderPdf = osDrop('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
+    const screenshot = osDrop('/var/folders/shot.png')
+    const pathless = { file: new File(['x'], 'notes.txt'), path: '' }
+
+    const local = partitionDroppedFiles([finderPdf, screenshot, pathless], {
+      backendCwd: '/Users/mahmoud/projects/app',
+      remote: false,
+      terminalBackend: 'local'
+    })
+
+    expect(local.inAppRefs).toEqual([finderPdf])
+    expect(local.osDrops).toEqual([screenshot, pathless])
+
+    // Remote gateway: this machine's paths never resolve there.
+    const remote = partitionDroppedFiles([finderPdf], {
+      backendCwd: '/home/gateway/app',
+      remote: true,
+      terminalBackend: 'local'
+    })
+
+    expect(remote).toEqual({ inAppRefs: [], osDrops: [finderPdf] })
+
+    // Local connection but a container backend: the host path would dangle
+    // inside the sandbox (#76577).
+    const docker = partitionDroppedFiles([finderPdf], {
+      backendCwd: '/workspace',
+      remote: false,
+      terminalBackend: 'docker'
+    })
+
+    expect(docker.osDrops).toEqual([finderPdf])
+
+    // Local connection, POSIX backend cwd, Windows host path (#15317).
+    const wsl = partitionDroppedFiles([osDrop('C:\\Users\\al\\Downloads\\report.txt')], {
+      backendCwd: '/home/gateway/app',
+      remote: false,
+      terminalBackend: 'local'
+    })
+
+    expect(wsl.osDrops).toHaveLength(1)
+  })
+
+  it('stages every OS drop when no staging context is given', () => {
+    expect(partitionDroppedFiles([osDrop('/abs/a.pdf')]).osDrops).toHaveLength(1)
+  })
 })
 
 // Minimal DataTransfer stand-in. A real OS drop populates BOTH `items` (which
@@ -87,9 +144,14 @@ interface StubEntry {
   isDirectory: boolean
 }
 
-function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { _pathByFile: Map<File, string> } {
+function stubTransfer(
+  entries: StubEntry[],
+  internalRaw = '',
+  uriList = ''
+): DataTransfer & { _pathByFile: Map<File, string> } {
   const files = entries.map(entry => new File(['x'], entry.path.split('/').pop() || 'f'))
-  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path]))
+  // A virtual shortcut File (browser link drag on Windows) has a name but no path.
+  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path.includes('/') ? entries[i].path : '']))
 
   const items: Record<number | string, unknown> = { length: entries.length }
   entries.forEach((entry, i) => {
@@ -101,7 +163,7 @@ function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { 
   })
 
   return {
-    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : ''),
+    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : mime === 'text/uri-list' ? uriList : ''),
     files: {
       length: files.length,
       item: (i: number) => files[i] ?? null
@@ -172,6 +234,53 @@ describe('extractDroppedFiles', () => {
     expect(inAppRefs.map(entry => entry.path)).toEqual(['/abs/src'])
     expect(inAppRefs[0]?.isDirectory).toBe(true)
     expect(osDrops.map(entry => entry.path)).toEqual(['/abs/notes.txt'])
+  })
+
+  it('turns a browser link drag into an @url chip instead of failing on the virtual .url stub', () => {
+    // Dragging a link out of a browser on Windows lands as `text/uri-list` plus a
+    // path-less `<title>.url` shortcut File. That stub used to reach the upload
+    // pipeline and toast "Could not attach agent-wiki.url".
+    const transfer = stubTransfer(
+      [{ path: 'agent-wiki.url', isDirectory: false }],
+      '',
+      'https://example.com/wiki/agent?x=1\r\n'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ path: '', url: 'https://example.com/wiki/agent?x=1' }])
+    expect(partitionDroppedFiles(result).osDrops).toEqual([])
+    expect(droppedFileInlineRefs(result, '/w')).toEqual(['@url:https://example.com/wiki/agent?x=1'])
+  })
+
+  it('keeps a path-less image dragged off a web page as an upload, not a link chip', () => {
+    const transfer = stubTransfer(
+      [{ path: 'logo.png', isDirectory: false }],
+      '',
+      'https://example.com/logo.png'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.file).toBeInstanceOf(File)
+    expect(result[0]?.url).toBeUndefined()
+  })
+
+  // The browser Webapp has no host path for a dropped folder: report it, never drop it silently.
+  it('keeps a path-less dropped folder on the attach pipeline, where it is reported', async () => {
+    const transfer = stubTransfer([{ path: 'my-repo', isDirectory: true }])
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ file: expect.any(File), isDirectory: true, path: '' }])
+    expect(partitionDroppedFiles(result).osDrops).toHaveLength(1)
+    await expect(stageDroppedFilePath(result[0]!)).rejects.toThrow("Folders can't be attached by dropping them")
   })
 
   it('does not duplicate a folder that appears in both items and files', () => {
@@ -255,6 +364,48 @@ describe('useComposerActions native image drops', () => {
     vi.clearAllMocks()
   })
 
+  it('does not attach a screenshot when its draft changes during native image saving', async () => {
+    let finishSave!: (path: string) => void
+
+    const saveImageBuffer = vi.fn(
+      () =>
+        new Promise<string>(resolve => {
+          finishSave = resolve
+        })
+    )
+
+    const add = vi.fn()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    let current = true
+
+    const pending = result.current.attachImageBlob(
+      new Blob([new Uint8Array([1])], { type: 'image/png' }),
+      () => current
+    )
+
+    await vi.waitFor(() => expect(saveImageBuffer).toHaveBeenCalledOnce())
+    current = false
+    finishSave('/test/screenshot.png')
+    expect(await pending).toBe(false)
+    expect(add).not.toHaveBeenCalled()
+  })
+
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
     const transientPath =
       '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'
@@ -309,18 +460,188 @@ describe('useComposerActions native image drops', () => {
 
     expect(attached).toBe(true)
     expect(saveImageBuffer).toHaveBeenCalledWith(expect.any(Uint8Array), '.png', 'Screen Shot 2026-08-11.png')
-    expect(readFileDataUrl).toHaveBeenCalledWith(durablePath)
-    expect(readFileDataUrl).not.toHaveBeenCalledWith(transientPath)
-    // The bounded-preview pipeline no longer retains the full-resolution data
-    // URL on the attachment (`previewUrl`); the durable path is the authority
-    // and the display thumbnail resolves asynchronously. What matters here is
-    // that the attachment is keyed to the DURABLE path, not the transient one.
+    // The in-hand blob backs the chip preview (object URL — #63682), so the
+    // durable path is never base64-read over IPC either.
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    // The attachment is keyed to the DURABLE path, not the transient one.
     expect(add).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'image',
         path: durablePath
       })
     )
+  })
+})
+
+describe('useComposerActions generated paste title metadata', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  it('marks only a Hermes-generated large paste with a bounded title preview', async () => {
+    const savePastedText = vi.fn(async () => '/tmp/composer-pastes/pasted-content.txt')
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    const pasted = `Database migration incident\n${'x'.repeat(1_500)}`
+    await expect(result.current.attachPastedText(pasted)).resolves.toBe(true)
+
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'file',
+        path: '/tmp/composer-pastes/pasted-content.txt',
+        refText: '@file:/tmp/composer-pastes/pasted-content.txt',
+        titlePreview: pasted.slice(0, 1_000)
+      })
+    )
+  })
+})
+
+describe('useComposerActions large paste in a messaging-platform chat', () => {
+  afterEach(() => {
+    $messagingSessions.set([])
+    $selectedStoredSessionId.set(null)
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  // The gateway refuses a file attach for a session that is not a local one, so a paste
+  // turned into a file there could never be sent. It stays inline, like a typed message.
+  const pasteInto = (storedSessionId?: null | string) => {
+    const savePastedText = vi.fn(async () => '/tmp/composer-pastes/pasted-content.txt')
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+    $messagingSessions.set([{ id: 'tg-1', source: 'telegram' }] as never)
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: 'runtime-1',
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        },
+        ...(storedSessionId === undefined ? {} : { storedSessionId })
+      })
+    )
+
+    return { add, result, savePastedText }
+  }
+
+  it('leaves the paste inline and writes no file', async () => {
+    const { add, result, savePastedText } = pasteInto('tg-1')
+
+    await expect(result.current.attachPastedText('x'.repeat(4_000))).resolves.toBe(false)
+
+    expect(savePastedText).not.toHaveBeenCalled()
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('drops a paste over the save cap after the error toast instead of inlining it', async () => {
+    const { add, result, savePastedText } = pasteInto('tg-1')
+
+    // Two UTF-8 bytes per character: the cap counts bytes, not string length.
+    await expect(result.current.attachPastedText('é'.repeat(LARGE_PASTE_MAX_BYTES / 2 + 1))).resolves.toBe(true)
+
+    expect(savePastedText).not.toHaveBeenCalled()
+    expect(add).not.toHaveBeenCalled()
+    expect($notifications.get().at(-1)).toMatchObject({ kind: 'error', message: expect.stringContaining('too large') })
+  })
+
+  it('uses the selected chat when the main composer names none', async () => {
+    $selectedStoredSessionId.set('tg-1')
+    const { add, result, savePastedText } = pasteInto()
+
+    await expect(result.current.attachPastedText('x'.repeat(4_000))).resolves.toBe(false)
+
+    expect(savePastedText).not.toHaveBeenCalled()
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('does not borrow the selected chat for a composer with no stored chat', async () => {
+    $selectedStoredSessionId.set('tg-1')
+    const { add, result } = pasteInto(null)
+
+    await expect(result.current.attachPastedText('x'.repeat(4_000))).resolves.toBe(true)
+
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ kind: 'file' }))
+  })
+
+  it('still attaches the paste in any other chat', async () => {
+    const { add, result } = pasteInto('desktop-1')
+
+    await expect(result.current.attachPastedText('x'.repeat(4_000))).resolves.toBe(true)
+
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ kind: 'file' }))
+  })
+})
+
+describe('useComposerActions oversized paste rejection', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  const renderWithSave = (savePastedText: () => Promise<string>) => {
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    return { add, result }
+  }
+
+  it('consumes a paste the main process rejects for size instead of inlining it', async () => {
+    const { add, result } = renderWithSave(async () => {
+      throw new Error(
+        "Error invoking remote method 'hermes:savePastedText': Error: savePastedText: text is too large (70000000 bytes; limit 67108864)."
+      )
+    })
+
+    await expect(result.current.attachPastedText('x'.repeat(2_000))).resolves.toBe(true)
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('still falls back to inline insertion on an ordinary write failure', async () => {
+    const { add, result } = renderWithSave(async () => {
+      throw new Error("Error invoking remote method 'hermes:savePastedText': Error: EACCES: permission denied")
+    })
+
+    await expect(result.current.attachPastedText('x'.repeat(2_000))).resolves.toBe(false)
+    expect(add).not.toHaveBeenCalled()
   })
 })
 
@@ -667,5 +988,51 @@ describe('attachImagePath thumbnail separation', () => {
 
     expect(attachment?.previewUrl).toBe('data:text/plain;base64,aGVsbG8=')
     expect(attachment?.thumbnailUrl).toBeUndefined()
+  })
+})
+
+describe('resolveImageAttachmentPreview', () => {
+  const LOCAL_PREVIEW = 'data:image/png;base64,bG9jYWw='
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    $connection.set(null)
+  })
+
+  it('uses an object URL for an in-hand File/Blob (OS Explorer drop) and skips IPC base64', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+    const createObjectURL = vi.fn(() => 'blob:hermes-preview-1')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
+
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'Lattice.png', { type: 'image/png' })
+    const preview = await resolveImageAttachmentPreview('C:\\Users\\Administrator\\Desktop\\Lattice.png', file)
+
+    expect(preview).toBe('blob:hermes-preview-1')
+    expect(createObjectURL).toHaveBeenCalledWith(file)
+    // The freeze path: never base64-load the dropped image over IPC.
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('falls back to IPC data-URL preview when only a path is available (paperclip)', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(resolveImageAttachmentPreview('/Users/me/Pictures/pic.png')).resolves.toBe(LOCAL_PREVIEW)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/Pictures/pic.png')
+  })
+
+  it('ignores an empty Blob and falls back to the path preview', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    const empty = new Blob([])
+
+    await expect(resolveImageAttachmentPreview('/tmp/shot.png', empty)).resolves.toBe(LOCAL_PREVIEW)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/shot.png')
   })
 })

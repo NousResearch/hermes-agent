@@ -228,7 +228,7 @@ curl http://localhost:8000/health
 
 **Readiness check** (wait for model loaded):
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 until curl -f http://localhost:8000/health; do
     echo "Waiting for vLLM to be ready..."
     sleep 5

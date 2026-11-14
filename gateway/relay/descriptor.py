@@ -4,7 +4,7 @@ The connector hands one to the gateway's ``RelayAdapter`` at handshake: which
 platform it fronts and which capabilities to advertise to the stream consumer
 (char limit, draft streaming, edit/threading, markdown dialect, length unit), so
 one adapter serves every platform without per-platform branching. Schema evolution
-is additive-only, gated by ``contract_version`` (docs/relay-connector-contract.md).
+is additive-only, gated by ``contract_version`` (website/docs/developer-guide/relay-connector-contract.md).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class CapabilityDescriptor:
         return json.dumps(asdict(self), sort_keys=True, ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, data: str) -> "CapabilityDescriptor":
+    def from_json(cls, data: str) -> CapabilityDescriptor:
         """Deserialize a handshake JSON string; unknown keys ignored, missing keys default.
 
         Trust-boundary normalization (malformed input never breaks the handshake):

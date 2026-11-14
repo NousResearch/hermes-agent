@@ -47,7 +47,7 @@ def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
         "agent.auxiliary_client._read_main_model",
         return_value="claude-sonnet-4-6",
     ):
-        adapter_patch, fake_client = _install_anthropic_adapter_mocks()
+        adapter_patch, _fake_client = _install_anthropic_adapter_mocks()
         with adapter_patch:
             client, model = _try_custom_endpoint()
 

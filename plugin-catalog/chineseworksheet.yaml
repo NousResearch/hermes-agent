@@ -1,0 +1,22 @@
+name: chineseworksheet
+title: ChineseWorkSheet
+repo: https://github.com/AbigailDavised/chineseworksheet-mcp
+sha: d38ce03ab34acbe50724f011c7fa8c635db462a2
+version: "1.0.0"
+description: "Printable Chinese handwriting worksheet grid geometry calculator (Tian Zi Ge, Mi Zi Ge, Jiu Gong Ge, Hui Zi Ge on A4/Letter), official Ministry of Education Hanzi stroke order rules, HSK 3.0 vocabulary difficulty analyzer (HSK 1 to 7-9 / CEFR), Mandarin Pinyin tone mark converter, and Kangxi 214 radicals decomposition through ChineseWorkSheet's official MCP server (Streamable HTTP at https://chineseworksheet.com/api/mcp, no sign-in, no keys in config). Bundles the chineseworksheet workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chineseworksheet.com/api/mcp with only the Chinese worksheet or linguistic query arguments. All 6 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: ChineseWorkSheet
+tier: community
+category: tools
+docs_url: https://chineseworksheet.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/chineseworksheet-mcp/d38ce03ab34acbe50724f011c7fa8c635db462a2/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/chineseworksheet-mcp/d38ce03ab34acbe50724f011c7fa8c635db462a2/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/chineseworksheet-mcp/d38ce03ab34acbe50724f011c7fa8c635db462a2/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

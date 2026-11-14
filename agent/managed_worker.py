@@ -157,6 +157,31 @@ class WorkerChannel:
             self.stream.flush()
 
 
+# While a turn runs, the worker tells the owner its agent is still active this often: a quiet
+# tool sends no other frame, and the owner's restart wait reads frame silence as a wedged turn.
+ACTIVITY_FRAME_SECONDS = 30
+ACTIVITY_FRAME = {'type': 'activity'}
+
+
+def forward_activity(agent, channel, done, interval=ACTIVITY_FRAME_SECONDS):
+    """Send ``ACTIVITY_FRAME`` each ``interval`` in which the agent itself recorded activity
+    (``_touch_activity``: tool-loop and provider-wait heartbeats), until ``done`` is set. A wedged
+    agent stops touching, so its frames stop too; nothing here is user-visible."""
+    while not done.wait(interval):
+        idle = agent.get_activity_summary().get('seconds_since_activity')
+        if idle is not None and idle < interval:
+            try:
+                channel.send(ACTIVITY_FRAME['type'])
+            except (OSError, ValueError):
+                return  # the channel closed under a finishing turn
+
+
+def wants_activity_frames(frame):
+    """An owner that consumes ``ACTIVITY_FRAME`` says so in the hydrated request; an older owner
+    rejects unknown frames, so it never receives one."""
+    return json.loads(frame['policy'].get('request_json') or '{}').get('activity_frames_v1') is True
+
+
 _INTERRUPTED = object()
 # The owner's control pipe closing under a live worker means the owner died (a closing owner
 # signals the worker itself). The agent is interrupted at once; cooperative tools get this long.
@@ -211,6 +236,7 @@ class WorkerControls:
         self.agent = None
         self.stopped = threading.Event()
         self.finish = threading.Event()
+        self.turn_done = threading.Event()  # ends forward_activity
         self.clarifications = {}
         self.lock = threading.Lock()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
@@ -421,6 +447,10 @@ def execute(frame, channel):
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
+            if wants_activity_frames(frame):
+                from agent.memory_provider import spawn_context_thread
+                spawn_context_thread(forward_activity, name='managed-activity',
+                                     args=(agent, channel, controls.turn_done)).start()
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
@@ -440,6 +470,7 @@ def execute(frame, channel):
             # Most failed results name no provider or model; the owner's error card needs the agent's.
             result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
                       **run_worker_turns(agent, frame, history)}
+            controls.turn_done.set()
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)
@@ -457,6 +488,7 @@ def execute(frame, channel):
             store.finish()
             channel.send('finished')
     finally:
+        controls.turn_done.set()
         unregister_gateway_notify(frame['route'])
         if agent is not None:
             retire_agent(agent)

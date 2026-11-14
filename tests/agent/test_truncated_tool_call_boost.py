@@ -1,12 +1,13 @@
 """Truncation retries must send a larger output budget than the failed request (#72770),
 without exceeding the model's known output limit (#79715)."""
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from agent.turn_iteration_prep import apply_retry_restarts
 from agent.turn_retry_state import TurnRetryState
-from agent.turn_truncation import _retry_truncated_tool_call
+from agent.turn_truncation import _Trunc, _retry_truncated_tool_call
 
 
 def _agent(max_tokens, requested_cap, **extra):
@@ -69,3 +70,28 @@ def test_boost_clamped_to_known_model_output_limit(site):
 
 def test_small_explicit_max_tokens_ladder_still_capped_at_floor():
     assert _tool_call_budgets(_agent(4096, None)) == [8192, 16384, 32768, 32768]
+
+
+@pytest.mark.parametrize("is_stub", [False, True])
+def test_give_up_is_logged_to_agent_log(caplog, is_stub):
+    """The fifth truncated tool call ends the turn without finalize_turn: agent.log must still
+    say so (#105771)."""
+    agent = _agent(
+        None, 32768, session_id="sess-105771", log_prefix="", provider="openrouter",
+        _flush_status_buffer=lambda: None, _vprint=lambda *a, **k: None,
+        _cleanup_task_resources=lambda task_id: None,
+    )
+    agent._ephemeral_max_output_tokens = 65536
+    st = SimpleNamespace(
+        agent=agent, truncated_tool_call_retries=4, is_stub=is_stub, messages=[],
+        effective_task_id="task", response=SimpleNamespace(_clean_eof=False),
+    )
+    st.end_turn = lambda final_response, **kwargs: "return"
+    with caplog.at_level("ERROR", logger="agent.conversation_loop"):
+        assert _retry_truncated_tool_call(cast(_Trunc, st), {}) == "return"
+    [record] = [r for r in caplog.records if "giving up" in r.getMessage()]
+    message = record.getMessage()
+    assert "after 4 retries" in message
+    assert f"stream_stub={is_stub}" in message
+    assert "max_output_tokens=65536" in message
+    assert "session=sess-105771" in message

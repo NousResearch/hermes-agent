@@ -235,15 +235,36 @@ def _is_compacted_message(db, message_id) -> bool:
     return _is_compacted_state(_get_message_storage_state(db, message_id))
 
 
+def _redact_tool_calls(tool_calls: Any) -> Any:
+    """Strictly redact each call's ``function.arguments`` (field-wise, so the JSON shape survives)."""
+    if not isinstance(tool_calls, list):
+        return redact_derived_text(tool_calls) if isinstance(tool_calls, str) else tool_calls
+    out = []
+    for call in tool_calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+            call = {**call, "function": {**fn, "arguments": redact_derived_text(fn["arguments"])}}
+        out.append(call)
+    return out
+
+
 def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
-                   max_content_len: Optional[int] = None) -> dict[str, Any]:
-    """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
+                   max_content_len: Optional[int] = None, derived: bool = False) -> dict[str, Any]:
+    """Slim a message row; keeps ``content`` even when empty (tool-call-only turns).
+
+    ``derived`` marks rows surfaced by a discovery query rather than an explicit
+    ``session_id`` read: those resurface across sessions, so they get the same
+    strict redaction as compaction summaries (#113165)."""
     content = m.get("content")
     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
         from tools.ansi_strip import strip_ansi
         content = strip_ansi(content)
+    if derived and isinstance(content, str):
+        content = redact_derived_text(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
     entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
+    if derived and entry.get("tool_calls"):
+        entry["tool_calls"] = _redact_tool_calls(entry["tool_calls"])
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
@@ -298,7 +319,7 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     title = redact_derived_text(session_meta.get("title") or title_query)
     # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
     def shape(key, fallback, anchor=None, max_content_len=1200):
-        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
+        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len, derived=True)
                 for m in (view.get(key) or fallback)]
     return {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
@@ -324,7 +345,7 @@ def _discover_payload(db, query: str, detail: str, results: list, **extra) -> st
 
 
 def _bookend(view: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    return [_shape_message(m, max_content_len=1200) for m in (view.get(key) or [])
+    return [_shape_message(m, max_content_len=1200, derived=True) for m in (view.get(key) or [])
             if not _is_compaction_summary(m.get("content", ""))]
 
 
@@ -346,7 +367,7 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         matched_role=match_info.get("role"), match_message_id=msg_id,
         snippet=redact_derived_text(match_info.get("snippet")),
         bookend_start=_bookend(view, "bookend_start") if full else [],
-        messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000)
+        messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000, derived=True)
                   for m in (view.get("window") or []) if full or m.get("id") == msg_id],
         bookend_end=_bookend(view, "bookend_end") if full else [],
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),

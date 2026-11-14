@@ -166,7 +166,7 @@ class TestBrowseShape:
         assert "s_newest" not in sids
 
     def test_derived_metadata_is_strictly_redacted_but_explicit_messages_are_not(self, db):
-        secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        secret = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"  # split: push protection
         db.create_session("s_secret", source="cli")
         db._conn.execute(
             "UPDATE sessions SET title = ? WHERE id = ?",

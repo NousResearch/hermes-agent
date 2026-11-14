@@ -1239,6 +1239,24 @@ ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 // All windows return to default throttling once the work settles.
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 
+// Idle-cost dial for low-spec machines. The UI already ships motion-reduce
+// styles, but by default they only apply when the OS accessibility toggle is
+// on, so an idle window still ran the sidebar's infinite animations
+// (arc-border rows, braille spinner, the "Running" shimmer, the blinking decode
+// cursor) and held the renderer near 20% CPU with WindowServer above 40% on
+// macOS. Setting HERMES_DESKTOP_REDUCED_MOTION=1 when building forces the
+// media feature for every renderer — 0 running animations, renderer ~0%, static
+// styling intact. Baked at build time because Electron reads command-line
+// switches before any window exists, and a Finder launch carries no shell env.
+// Unset, '0' or 'off' leaves the OS preference authoritative (default).
+const FORCED_REDUCED_MOTION = /^(1|true|on|force)$/i.test(
+  (process.env.HERMES_DESKTOP_REDUCED_MOTION ?? '').trim(),
+)
+
+if (FORCED_REDUCED_MOTION) {
+  app.commandLine.appendSwitch('force-prefers-reduced-motion')
+}
+
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
 // Runtime identity comes only from the baked artifact stamp. Dev runs have none.

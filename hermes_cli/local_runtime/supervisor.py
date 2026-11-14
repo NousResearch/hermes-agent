@@ -215,7 +215,10 @@ class LlamaServerSupervisor:
         exe = self.binary
         key_path = api_key_path()
         try:
-            key_on_disk = key_path.read_text(encoding="utf-8-sig").strip() == self.api_key
+            # llama-server reads each line of the file verbatim (no BOM/whitespace strip), so the
+            # file is used only when its bytes ARE the key; a hand-edited copy (CRLF, BOM, spaces)
+            # falls back to argv rather than locking every client out with 401.
+            key_on_disk = key_path.read_bytes() in {self.api_key.encode(), self.api_key.encode() + b"\n"}
         except OSError:
             key_on_disk = False  # persistence failed earlier: nothing on disk to point at
         # The file keeps the key out of argv (visible to `ps`) and out of the spawn line below.

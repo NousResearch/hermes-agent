@@ -126,3 +126,32 @@ def test_spawn_log_masks_user_supplied_inline_api_key(tmp_path, monkeypatch):
         assert inline not in _log_text(sup)
     finally:
         sup.stop()
+
+
+@pytest.mark.parametrize("decorate", [
+    lambda k: k + "\r\n",          # CRLF from a Windows editor
+    lambda k: "\ufeff" + k,         # BOM
+    lambda k: " " + k,              # stray leading space
+])
+def test_spawn_uses_argv_when_key_file_bytes_differ_from_the_key(tmp_path, monkeypatch, decorate):
+    """llama-server takes each line of the key file verbatim, so a hand-edited copy that only
+    matches after stripping must not be handed over (every client would get 401)."""
+    sup, commands = _make_supervisor(tmp_path, monkeypatch, "--api-key-file FNAME")
+    try:
+        supervisor.api_key_path().write_text(decorate(sup.api_key), encoding="utf-8", newline="")
+        sup._spawn()
+        cmd = commands[0]
+        assert "--api-key-file" not in cmd
+        assert cmd[cmd.index("--api-key") + 1] == sup.api_key
+    finally:
+        sup.stop()
+
+
+def test_spawn_uses_key_file_with_a_single_trailing_newline(tmp_path, monkeypatch):
+    sup, commands = _make_supervisor(tmp_path, monkeypatch, "--api-key-file FNAME")
+    try:
+        supervisor.api_key_path().write_text(sup.api_key + "\n", encoding="utf-8", newline="")
+        sup._spawn()
+        assert "--api-key-file" in commands[0]
+    finally:
+        sup.stop()

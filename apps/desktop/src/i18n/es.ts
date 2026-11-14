@@ -3754,8 +3754,12 @@ export const esOverrides = {
       thisMonth: 'Este mes'
     },
     statusDivider: {
+      attention: 'Requiere atención',
       working: 'En progreso',
-      done: 'Completado'
+      idle: 'Inactivo hoy',
+      idleRecent: 'Inactivo 1–2 días',
+      idleDays: 'Inactivo 3–6 días',
+      idleWeek: 'Inactivo 7+ días'
     },
     markAllRead: 'Marcar todo como leído'
   },

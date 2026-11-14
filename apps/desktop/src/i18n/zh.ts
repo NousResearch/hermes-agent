@@ -3221,8 +3221,12 @@ export const zhOverrides = {
       thisMonth: '本月'
     },
     statusDivider: {
+      attention: '需要关注',
       working: '进行中',
-      done: '已完成'
+      idle: '今天空闲',
+      idleRecent: '空闲 1–2 天',
+      idleDays: '空闲 3–6 天',
+      idleWeek: '空闲 7 天以上'
     },
     markAllRead: '全部标记为已读'
   },

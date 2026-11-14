@@ -1,7 +1,7 @@
 import type { useSensors } from '@dnd-kit/core'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
@@ -9,16 +9,18 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { useI18n } from '@/i18n'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
 import {
   groupEntriesByRecency,
   groupEntriesByStatus,
   hideCollapsedGroupRows,
+  listGroupDefaultOpen,
   type SidebarListRow,
   toSessionRows
 } from '@/lib/session-date-groups'
-import { sessionBucketLabel } from '@/lib/time'
+import { MINUTE, nominalDayStart, sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $sidebarListGroupIds,
@@ -29,7 +31,7 @@ import {
 } from '@/store/layout'
 import type { AgentProfileRoute } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionDotStateById } from '@/store/session-dot-state'
 
 import { SIDEBAR_FOCUS_VISIBLE, SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -252,7 +254,26 @@ export function SidebarSessionsSection({
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
-  const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
+
+  const isListGroupOpen = useCallback(
+    (key: string) => nodeOpen[listGroupNodeId(key)] ?? listGroupDefaultOpen(key),
+    [nodeOpen]
+  )
+
+  // Status grouping ages idle sessions by nominal day, so it only needs a new
+  // clock when the day rolls over; a same-day tick keeps the old value and
+  // re-renders nothing.
+  const [statusNowMs, setStatusNowMs] = useState(Date.now)
+
+  useViewedInterval(
+    () => {
+      const now = Date.now()
+
+      setStatusNowMs(prev => (nominalDayStart(prev) === nominalDayStart(now) ? prev : now))
+    },
+    MINUTE,
+    grouping === 'status'
+  )
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0 || group.mode === 'profile'))
   // A defined project list is itself content (even an empty project should
@@ -352,7 +373,7 @@ export function SidebarSessionsSection({
   const dividerToggle = useMemo(
     () => ({
       ariaLabel: (label: string, open: boolean) => t.sidebar.projects.toggle(label, !open),
-      onToggle: (key: string) => toggleWorkspaceNodeCollapsed(listGroupNodeId(key)),
+      onToggle: (key: string) => toggleWorkspaceNodeCollapsed(listGroupNodeId(key), listGroupDefaultOpen(key)),
       open: isListGroupOpen
     }),
     [isListGroupOpen, t]
@@ -371,6 +392,7 @@ export function SidebarSessionsSection({
       return (
         <SidebarDateDivider
           action={action}
+          count={'count' in row ? row.count : undefined}
           key={row.key}
           label={label}
           toggle={{
@@ -434,13 +456,14 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
-              statusDividerLabels
+              entry => dotStates[entry.session.id] ?? 'idle',
+              statusDividerLabels,
+              statusNowMs
             )
           : toSessionRows(displayEntries)
 
     return manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
-  }, [grouping, displayEntries, dotStates, manualOrderIds, statusDividerLabels])
+  }, [grouping, displayEntries, dotStates, manualOrderIds, statusDividerLabels, statusNowMs])
 
   // Closed date/status buckets keep their divider and drop the sessions under
   // it. Same array when nothing is collapsed so the virtualizer's rows ref

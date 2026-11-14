@@ -3766,8 +3766,12 @@ export const deOverrides = {
       thisMonth: 'Diesen Monat früher'
     },
     statusDivider: {
+      attention: 'Handlungsbedarf',
       working: 'In Arbeit',
-      done: 'Erledigt'
+      idle: 'Heute inaktiv',
+      idleRecent: 'Inaktiv 1–2 Tage',
+      idleDays: 'Inaktiv 3–6 Tage',
+      idleWeek: 'Inaktiv 7+ Tage'
     },
     markAllRead: 'Alle als gelesen markieren'
   },

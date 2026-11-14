@@ -3773,8 +3773,12 @@ export const frOverrides = {
       thisMonth: 'Plus tôt ce mois'
     },
     statusDivider: {
+      attention: 'Attention requise',
       working: 'En cours',
-      done: 'Terminées'
+      idle: 'Inactives aujourd’hui',
+      idleRecent: 'Inactives 1–2 jours',
+      idleDays: 'Inactives 3–6 jours',
+      idleWeek: 'Inactives 7+ jours'
     },
     markAllRead: 'Tout marquer comme lu'
   },

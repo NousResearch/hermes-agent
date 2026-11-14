@@ -5,10 +5,13 @@ import { getGlobalModelOptions } from '@/hermes'
 
 import {
   catalogProviderMatches,
+  currentCatalogId,
   customDefaultSupersedesPick,
   moaPickRemoved,
   modelOptionsQueryKey,
-  requestModelOptions
+  requestModelOptions,
+  sameOllamaModel,
+  sameSessionModel
 } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
@@ -16,6 +19,80 @@ const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: vi.fn(() => Promise.resolve(globalOptions))
 }))
+
+describe('sameOllamaModel', () => {
+  it('folds the :cloud tag only for ollama-family providers', () => {
+    expect(sameOllamaModel('ollama-cloud', 'glm-5.3-flash', 'glm-5.3-flash:cloud')).toBe(true)
+    expect(sameOllamaModel('ollama', 'beam', 'Beam:Cloud')).toBe(true)
+    expect(sameOllamaModel('ollama-cloud', 'glm-5.3', 'glm-5.3-flash')).toBe(false)
+    expect(sameOllamaModel('anthropic', 'claude-opus-4-6', 'claude-opus-4-6:cloud')).toBe(false)
+  })
+
+  it('never treats an absent id as a model', () => {
+    expect(sameOllamaModel('ollama-cloud', '', '')).toBe(false)
+    expect(sameOllamaModel('ollama-cloud', '', 'glm-5.3-flash')).toBe(false)
+    expect(sameOllamaModel('ollama-cloud', 'glm-5.3-flash', '')).toBe(false)
+  })
+
+  it('keeps the real hyphenated ollama cloud tag distinct', () => {
+    expect(sameOllamaModel('ollama-cloud', 'qwen3-coder:480b-cloud', 'qwen3-coder:480b')).toBe(false)
+  })
+})
+
+describe('currentCatalogId', () => {
+  it('names the bare catalog row for a :cloud pick', () => {
+    expect(currentCatalogId('ollama-cloud', ['glm-5.3-flash'], 'glm-5.3-flash:cloud', ['glm-5.3-flash'])).toBe(
+      'glm-5.3-flash'
+    )
+  })
+
+  it('prefers an exact id over a folded one', () => {
+    const catalog = ['glm-5.3-flash', 'glm-5.3-flash:cloud']
+
+    expect(currentCatalogId('ollama-cloud', ['glm-5.3-flash:cloud'], 'glm-5.3-flash:cloud', catalog)).toBe(
+      'glm-5.3-flash:cloud'
+    )
+  })
+
+  it('does not fold a row when the catalog lists the pick under its own name', () => {
+    const catalog = ['glm-5.3-flash', 'glm-5.3-flash:cloud']
+
+    expect(currentCatalogId('ollama-cloud', ['glm-5.3-flash'], 'glm-5.3-flash:cloud', catalog)).toBeNull()
+  })
+
+  it('never folds across providers', () => {
+    expect(currentCatalogId('openrouter', ['glm-5.3-flash'], 'glm-5.3-flash:cloud', ['glm-5.3-flash'])).toBeNull()
+  })
+
+  it('keeps openrouter-style suffix ids distinct', () => {
+    expect(currentCatalogId('openrouter', ['x:free'], 'x', ['x:free'])).toBeNull()
+  })
+
+  it('resolves a fast sibling through the family', () => {
+    expect(currentCatalogId('ollama-cloud', ['glm-5.3-flash', 'glm-5.3-flash-fast'], 'glm-5.3-flash:cloud', [])).toBe(
+      'glm-5.3-flash'
+    )
+  })
+
+  it('returns null for an empty pick or a null fast sibling', () => {
+    expect(currentCatalogId('ollama-cloud', ['glm-5.3-flash'], '', ['glm-5.3-flash'])).toBeNull()
+    expect(currentCatalogId('ollama-cloud', ['glm-5.3-flash', null], 'glm-5.3-flash:cloud', [])).toBe('glm-5.3-flash')
+  })
+})
+
+describe('sameSessionModel', () => {
+  it('matches the row id, its fast sibling, and the ollama :cloud spelling', () => {
+    expect(sameSessionModel('nous', 'glm-5.3-flash', 'glm-5.3-flash')).toBe(true)
+    expect(sameSessionModel('nous', 'glm-5.3-flash-fast', 'glm-5.3-flash')).toBe(true)
+    expect(sameSessionModel('ollama-cloud', 'glm-5.3-flash:cloud', 'glm-5.3-flash')).toBe(true)
+    expect(sameSessionModel('nous', 'glm-5.3-flash:cloud', 'glm-5.3-flash')).toBe(false)
+  })
+
+  it('never matches an absent model', () => {
+    expect(sameSessionModel('ollama-cloud', '', 'glm-5.3-flash')).toBe(false)
+    expect(sameSessionModel('ollama-cloud', 'glm-5.3-flash', '')).toBe(false)
+  })
+})
 
 describe('requestModelOptions', () => {
   afterEach(() => {

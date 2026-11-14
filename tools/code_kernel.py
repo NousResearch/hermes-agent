@@ -817,10 +817,10 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_code_output
     from tools.ansi_strip import strip_ansi
     def clean(text: str) -> str:
-        return redact_sensitive_text(strip_ansi(text), code_file=True)
+        return redact_code_output(strip_ansi(text))
     if status in ("timeout", "interrupted"):
         # No safe way to interrupt one cell in place: kill the kernel, report the loss, respawn next call.
         _REGISTRY.discard(key, kernel)

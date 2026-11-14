@@ -83,6 +83,10 @@ FRONTMOST = ("osascript -e 'tell application \"System Events\" to get name of fi
     # osacompile builds an applet from the same `-e` / `-l` program.
     'osacompile -o /tmp/C.app -e \'tell app "Keynote" to close front document saving no\'',
     'osacompile -l JavaScript -o /tmp/C.scpt -e \'Application("Keynote").documents.length\'',
+    # ANSI-C quoting in the executable name: bash and zsh decode it to osascript.
+    "$'\\157sascript' -e 'tell application \"Keynote\" to close front document saving no'",
+    "$'\\x6fsascript' -e 'tell application \"Keynote\" to quit'",
+    "osa$'s'cript -e 'tell application \"Keynote\" to quit'",
 ])
 def test_risky_program_is_flagged(command):
     assert detect_dangerous_command(command)[1] == RISKY, command
@@ -108,6 +112,9 @@ def test_risky_program_is_flagged(command):
     'osascript -e "$SCRIPT"',
     'osascript -e "tell app \\"$APP\\" to get name"',
     'osascript <<EOF\ntell app "$APP" to get name\nEOF',
+    # Quotes in an unquoted heredoc body are literal: an apostrophe does not stop expansion.
+    "osascript <<EOF\n-- don't alter layout\n$SCRIPT\nEOF",
+    "osascript <<EOF\nget name of me -- it's me\n`cat /tmp/x.applescript`\nEOF",
     "X=osascript; $X -e 'quit'",
     "$(which osascript) -e 'quit'",
     # Interpreters the detector already knows (bun/deno) carry osascript like python/node do.
@@ -137,6 +144,8 @@ def test_unreviewable_program_is_flagged(command):
     # A read-only heredoc whose body merely contains the word in prose, and an explicit AppleScript `-l`.
     "osascript <<'EOF'\nget name of me\nEOF",
     "osascript -l AppleScript -e 'get name of me'",
+    # An escaped `$` in an unquoted heredoc body stays literal.
+    "osascript <<EOF\nget \"costs \\$5\" -- it's literal\nEOF",
     # An ordinary line continuation between arguments is not a script operand.
     "osascript \\\n  -e 'get name of me'",
     "osascript -e 'get name of me (* who *)' -e 'get \u00ac\nname of me'",

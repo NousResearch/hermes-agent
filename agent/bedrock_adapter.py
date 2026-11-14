@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.errors import EmptyStreamError
+from agent.tool_history_as_text import tool_history_for_request
 
 logger = logging.getLogger(__name__)
 
@@ -1363,6 +1364,8 @@ def call_converse(
     from agent.prompt_caching import is_one_shot_request
     client = _get_bedrock_runtime_client(region, model)
     # Auxiliary-only entry point: a one-shot's cachePoint is a write no later call reads.
+    # Converse rejects toolUse/toolResult without toolConfig: a tools-free aux request sends that history as text.
+    messages = tool_history_for_request(messages, bool(tools) and _model_supports_tool_use(model))
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config,
                                    prompt_cache=not is_one_shot_request(messages, tools))
     try:

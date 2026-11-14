@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
@@ -12,14 +12,13 @@ def inherit_creator_origin(
     """Copy durable origin inside creation's transaction, never adding dependencies."""
     if not creator_task_id:
         return
-    from hermes_cli.kanban_db import _inherit_notify_subs
 
     conn.execute(
         "UPDATE tasks SET session_id = COALESCE(session_id, "
         "(SELECT session_id FROM tasks WHERE id = ?)) WHERE id = ?",
         (creator_task_id, task_id),
     )
-    _inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
+    inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
 
 
 def initial_task_state(
@@ -212,3 +211,44 @@ def _insert_decomposed_child(
     )
     inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id
+
+
+def inherit_notify_subs(
+    conn: sqlite3.Connection, child_id: str, parents: Iterable[str], *,
+    created_at: Optional[int] = None,
+) -> None:
+    """Copy parents' notify subscriptions to a child, cursor caught up to the
+    child's current event so a late ``link_tasks`` never replays history.
+
+    Single owner of inheritance (create_task, link_tasks, decompose). It must
+    copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
+    completions wake a fresh group session instead of the originating DM.
+
+    Omitting columns here silently degrades routing: a DM-originated child completion falls back to
+    chat_type='group' and wakes a fresh group-scoped session instead of the originating DM (issue #73030).
+    """
+    from hermes_cli.kanban_notification_owner import sync_task_notification_owner
+    if sync_task_notification_owner(conn, child_id):
+        return
+    parent_ids = tuple(dict.fromkeys(p for p in parents if p))
+    if not parent_ids:
+        return
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (child_id,),
+    ).fetchone()
+    cursor = int(row["cursor"] if row is not None else 0)
+    placeholders = ",".join("?" * len(parent_ids))
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
+             chat_type, notifier_profile, delivery_mode, delivery_metadata,
+             created_at, last_event_id, last_delivered_event_id)
+        SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
+               COALESCE(chat_type, 'dm'), notifier_profile,
+               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?, ?
+          FROM kanban_notify_subs
+         WHERE task_id IN ({placeholders})
+        """,
+        (child_id, int(created_at if created_at is not None else time.time()), cursor, cursor, *parent_ids),
+    )

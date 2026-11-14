@@ -38,7 +38,16 @@ def deepseek_only_home(tmp_path, monkeypatch):
     return home
 
 
-def test_unset_provider_lists_the_route_the_resolver_picks(deepseek_only_home):
+@pytest.mark.parametrize("provider_line", ["", "  provider: auto\n", "  provider: ''\n"])
+def test_unset_provider_lists_the_route_the_resolver_picks(deepseek_only_home, provider_line):
+    line = _listing_first_line(deepseek_only_home, f"model:\n{provider_line}  default: deepseek-v4-flash\n")
+    assert line.lower() == "current: `deepseek-v4-flash` on deepseek", line
+
+
+def test_env_requested_provider_is_named_over_auto_detect(deepseek_only_home, monkeypatch):
+    """``HERMES_INFERENCE_PROVIDER`` picks the turn's provider even when another key would auto-detect."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-not-real")
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "deepseek")
     line = _listing_first_line(deepseek_only_home, "model:\n  default: deepseek-v4-flash\n")
     assert line.lower() == "current: `deepseek-v4-flash` on deepseek", line
 

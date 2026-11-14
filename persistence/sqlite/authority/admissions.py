@@ -181,6 +181,11 @@ class SQLiteAdmissionRepository:
         with refused():
             return _record(store.get_session_admission(self._store.holder(), admission_id=admission_id))
 
+    def latest_admission(self, *, session_id: str, payload_marker: str) -> AdmissionRecord | None:
+        with refused():
+            return _record(store.latest_session_admission(self._store.holder(), session_id=session_id,
+                                                          payload_marker=payload_marker))
+
     def settled_result(self, *, admission_id: str, epoch: int | None = None,
                        generation: int | None = None) -> AdmissionResult | None:
         if (epoch is None) != (generation is None):

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.message_sanitization import _sanitize_messages_surrogates, neutralize_local_template_tokens
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -198,6 +198,7 @@ def assemble_api_request(
     # Strip lone surrogates (U+D800-U+DFFF) that some Ollama-served models emit;
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
+    neutralize_local_template_tokens(api_messages, agent)
 
     _empty_retry_suffix = add_empty_response_retry_hint(agent, api_messages)
 

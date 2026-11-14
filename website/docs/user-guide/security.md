@@ -912,6 +912,10 @@ Both go through the normal approval flow like every other dangerous pattern.
 Earlier releases bundled the external tirith scanner here. It was removed;
 upgrading drops the `security.tirith_*` settings and enables nothing in its place.
 
+### Chat-Template Tokens on Self-Hosted Models
+
+Self-hosted servers (llama.cpp, vLLM, Ollama, LM Studio) parse chat-template control tokens such as `<|im_start|>`, `<|eot_id|>`, `[INST]` or `<start_of_turn>` even when they appear in plain message text. A web page or file containing them can forge a whole new user or system turn. When the model endpoint is a `custom`/`lmstudio` provider or a local/LAN address, Hermes rewrites those tokens in user messages and tool results to look-alike brackets (`‹|im_start|›`, `［INST］`) in the request it sends. The model can still read them, but they are no longer role boundaries. Your system prompt, the model's own replies and the saved transcript are not changed. Requests to named cloud providers are sent unchanged.
+
 ### Context File Injection Protection
 
 Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injection before being included in the system prompt. The scanner checks for:

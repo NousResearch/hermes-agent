@@ -176,7 +176,8 @@ DEFAULT_CONFIG = {
         "parallel_tool_call_guidance": True,
         # Toolchain probe: surfaces Python/pip/uv/PEP-668 state in the system prompt only when
         # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
-        # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).
+        # uv); zero tokens when clean. Skipped for docker/modal/ssh backends, whose own live
+        # sandbox probe this switch also turns off (#131409).
         "environment_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,

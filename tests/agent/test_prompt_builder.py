@@ -772,6 +772,29 @@ class TestEnvironmentHints:
         for leaked in ("User:", "Home:", "Working directory:", "alice", "/srv/secret"):
             assert leaked not in hint
 
+    def test_environment_probe_off_skips_backend_probe(self, monkeypatch):
+        """THE BUG (#131409): ``agent.environment_probe: false`` only gated the tools/env_probe
+        line — the system-prompt backend probe still built and force-removed a
+        ``prompt-backend-probe`` container (and ran the orphan reaper via
+        ``_build_docker_env``) on every fresh process against the shared Docker
+        daemon. Off, no sandbox is created and nothing is cached."""
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool_backends as _tt
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+        created = []
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: created.append(kw))
+
+        hints = _pb.build_environment_hints(probe_backend=False)
+        assert created == []
+        assert _pb._BACKEND_PROBE_CACHE == {}
+        # The backend block still renders, and says why the sandbox state is unknown.
+        assert "Terminal backend: docker" in hints
+        assert "Backend probing is turned off" in hints
+        assert "didn't respond" not in hints
+        assert "probe directly with a terminal call" in hints
+
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.
 

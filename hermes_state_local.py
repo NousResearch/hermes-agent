@@ -195,6 +195,22 @@ def release_receipts(conn, owners):
                      [(POLICY_PREFIX + owner, LEGACY_PREFIX + owner) for owner in owners])
 
 
+def reclaim_stranded_policies(conn):
+    """Drop a creation receipt nothing routes to any more: no session of its key id and none of
+    its current physical target. Retirement already deletes a policy with the target it names
+    (:func:`retire_local_receipts`), so this only reaches rows an older release stranded — a
+    policy whose conversation was deleted row-by-row, or one whose target was removed before
+    retirement knew about it. A malformed receipt names nothing and no delete may touch it (an
+    unrelated delete leaves such a row exactly as it was), so only a well-shaped receipt goes."""
+    conn.execute(
+        "DELETE FROM state_meta WHERE key GLOB ?"
+        " AND CASE WHEN json_valid(value) THEN json_type(value, '$.entry') END = 'object'"
+        " AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id=substr(state_meta.key, ?))"
+        " AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id ="
+        "  CASE WHEN json_valid(state_meta.value) THEN json_extract(state_meta.value, '$.entry.session_id') END)",
+        (POLICY_PREFIX + '*', len(POLICY_PREFIX) + 1))
+
+
 def handoff_head(db, session_id):
     """``(local owner or None, row)`` a ``/handoff`` of *session_id* moves: the conversation the user
     is looking at. A local conversation continues from its receipt's current target (its latest
@@ -265,7 +281,6 @@ def _title_follows_head(conn, owner, head):
         return
     conn.execute('UPDATE sessions SET title=NULL WHERE id IN (?,?)', (owner, head))
     conn.execute('UPDATE sessions SET title=?, title_source=?, hidden=? WHERE id=?', (*row, head))
-
 
 def local_lineage_owner(conn, session_id):
     """The creation id whose receipt lineage holds physical segment *session_id* (a reset or

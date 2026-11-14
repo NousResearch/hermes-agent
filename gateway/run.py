@@ -4341,10 +4341,9 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
     return home / "sessions"
 
 
-def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
-    """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
-    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
-    SessionDB — SQLite connections are thread-bound.
+def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None, *, startup: bool = False) -> None:
+    """Stale-session auto-archive, auto-prune and incremental space reclaim for ONE profile's state.db
+    (never a full VACUUM: see ``gateway.run_housekeeping_state_db``). Gated by sessions.min_interval_hours.
 
     Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
@@ -4352,26 +4351,8 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
     or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
     gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
-    from hermes_cli.config import load_config as _load_full_config
-    from hermes_state_registry import acquire, release_or_close
-    _sess_cfg = (_load_full_config().get("sessions") or {})
-    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
-        return
-    _adb = acquire()
-    try:
-        if _sess_cfg.get("auto_archive", False):
-            _adb.maybe_auto_archive(
-                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
-                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
-        if _sess_cfg.get("auto_prune", False):
-            _adb.maybe_auto_prune_and_vacuum(
-                retention_days=int(_sess_cfg.get("retention_days", 90)),
-                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
-                vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                sessions_dir=_profile_sessions_dir(launch))
-    finally:
-        release_or_close(_adb)
+    from gateway.run_housekeeping_state_db import housekeeping_state_db_maintenance
+    housekeeping_state_db_maintenance(launch, startup=startup)
 
 
 def _housekeeping_deferred_fts_retry() -> None:

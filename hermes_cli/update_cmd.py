@@ -1032,7 +1032,23 @@ def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> N
     if ancestry.returncode == 1:
         _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=target_sha)
         return
-    print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
+    # A stash can exit 0 and leave a tracked path modified. That is not
+    # divergence: HEAD is an ancestor, so park the leftover and retry once.
+    parked = "untouched"
+    if ancestry.returncode == 0:
+        from hermes_cli.update_cmd_stash import _park_tracked_leftover_for_ff
+
+        parked = _park_tracked_leftover_for_ff(git_cmd)
+        if parked == "retry":
+            merge_result = _git_run(git_cmd, ["merge", "--ff-only", target_sha])
+            if merge_result.returncode == 0:
+                return
+    if parked == "untouched":
+        print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
+    elif parked == "retry":
+        print("✗ Fast-forward failed again after the tracked leftover was parked.")
+    else:
+        print("✗ Fast-forward failed; a tracked leftover is still dirty after it was stashed.")
     detail = (merge_result.stderr or merge_result.stdout or "").strip()
     if detail:
         print(f"  {detail}")
@@ -1043,7 +1059,10 @@ def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> N
         ancestry_detail = (ancestry.stderr or ancestry.stdout or "").strip()
         if ancestry_detail:
             print(f"  {ancestry_detail}")
-    print("  Resolve the Git error and re-run `hermes update`; no reset was attempted.")
+    if parked == "untouched":
+        print("  Resolve the Git error and re-run `hermes update`; no reset was attempted.")
+    else:
+        print("  Resolve the Git error and re-run `hermes update`.")
     from hermes_cli.update_receipt import git_output_stop_class
 
     # The shared classifier: an index.lock that EXISTS is another git's; "Permission denied" on it is not.

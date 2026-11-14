@@ -1411,6 +1411,11 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         if not self._claim_active_session("cli"):
             return
 
+        # Collapsed pastes are copy-paste input, not backups: expire them at startup so a user who
+        # never pastes again doesn't keep last session's text on disk (paste_retention_minutes).
+        from hermes_cli import paste_store
+        paste_store.maybe_sweep_pastes(config=getattr(self, "config", None), home=_hermes_home)
+
         self._tui_print_startup()
         self._tui_init_run_state()
         kb = self._tui_build_key_bindings()

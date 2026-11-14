@@ -42,11 +42,12 @@ def _(rid, params: dict) -> dict:
     line_count = text.count("\n") + 1
     # The shared owner's legacy fallback serves secondary profiles too: write under the ticket's home.
     from tui_gateway.ws_legacy_fallback import connection_profile_home
-    paste_dir = Path(connection_profile_home() or _hermes_home) / "pastes"
-    paste_dir.mkdir(parents=True, exist_ok=True)
-    from datetime import datetime
-    paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
-    paste_file.write_text(text, encoding="utf-8")
+    from hermes_cli import paste_store
+    from pathlib import Path
+    home = Path(connection_profile_home() or _hermes_home)
+    paste_file = paste_store.write_paste(text, _paste_counter, home=home)
+    # Paste payloads expire (paste_retention_minutes); this keeps a long-lived surface bounded.
+    paste_store.maybe_sweep_pastes(home=home)
     placeholder = f"[Pasted text #{_paste_counter}: {line_count} lines \u2192 {paste_file}]"
     return _ok(rid, {"placeholder": placeholder, "path": str(paste_file), "lines": line_count})
 

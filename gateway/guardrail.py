@@ -54,6 +54,7 @@ core change is inert until the operator opts in:
 - HERMES_GATEWAY_GUARDRAIL_HOLD_REPLY default "" (silent hold)
 - HERMES_GATEWAY_GUARDRAIL_OWNER_CHAT default "" (no alert)
 - HERMES_GATEWAY_GUARDRAIL_DEBOUNCE_S default 600
+- HERMES_GATEWAY_GUARDRAIL_LOG        default ~/.hermes/logs/gateway-guardrail.log
 
 Known limitation (review I4, informational): self-initiated traffic
 (routing wake ticks, synthetic self-messages) is not universally
@@ -74,9 +75,14 @@ from pathlib import Path
 
 logger = logging.getLogger("hermes.gateway.guardrail")
 
-_LOG_PATH = Path(
-    os.environ.get("HERMES_GATEWAY_GUARDRAIL_LOG",
-                   os.path.expanduser("~/.hermes/logs/gateway-guardrail.log")))
+def _log_path() -> Path:
+    # Resolved per call, not at import: the log override must honour env set
+    # (or patched by tests) after this module is imported; production env is
+    # fixed at process start, so behaviour there is unchanged.
+    return Path(os.environ.get(
+        "HERMES_GATEWAY_GUARDRAIL_LOG",
+        os.path.expanduser("~/.hermes/logs/gateway-guardrail.log")))
+
 _STATE_PATH = Path(os.path.expanduser(
     "~/.hermes/logs/gateway-guardrail-alerts.json"))
 MAX_TEXT_CHARS = 4000
@@ -128,8 +134,9 @@ def _post(url: str, payload: dict, headers: dict, timeout: float) -> dict:
 def _log(record: dict) -> None:
     record["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
-        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _LOG_PATH.open("a", encoding="utf-8") as handle:
+        path = _log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=True) + "\n")
     except OSError:
         logger.warning("guardrail: log write failed", exc_info=True)

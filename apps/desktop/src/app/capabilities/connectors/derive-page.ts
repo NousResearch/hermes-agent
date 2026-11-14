@@ -41,7 +41,14 @@ function byStateThenName(a: ConnectorCardModel, b: ConnectorCardModel): number {
 export function cardMatchesQuery(card: ConnectorCardModel, query: string): boolean {
   const needle = query.trim().toLowerCase()
 
-  return needle.length === 0 || card.slug.toLowerCase().includes(needle) || card.name.toLowerCase().includes(needle)
+  return (
+    needle.length === 0 ||
+    card.slug.toLowerCase().includes(needle) ||
+    card.name.toLowerCase().includes(needle) ||
+    (card.originalName ?? '').toLowerCase().includes(needle) ||
+    (card.description ?? '').toLowerCase().includes(needle) ||
+    (card.search ?? '').includes(needle)
+  )
 }
 
 function groupCards(cards: readonly ConnectorCardModel[]): ConnectorGroupModel[] {

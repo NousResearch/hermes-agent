@@ -92,3 +92,25 @@ def test_single_profile_run_keeps_its_env_key(tmp_path, monkeypatch, submit):
 
     assert submit(module, monkeypatch) == "handle"
     assert constructed == ["shell"] and signed == ["shell"]
+
+
+@pytest.mark.parametrize("submit", [_submit_image, _submit_video], ids=["image", "video"])
+def test_rotated_key_replaces_the_profiles_client(tmp_path, monkeypatch, submit):
+    """A key rotation rebuilds the profile's client in place: the cache holds one entry per
+    profile, not one per key ever seen."""
+    from tools import fal_common
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(fal_common, "_direct_clients", {}, raising=False)
+    module, constructed, signed = _recording_fal_client({"fal-key-old": "old", "fal-key-new": "new"})
+
+    monkeypatch.setenv("FAL_KEY", "fal-key-old")
+    submit(module, monkeypatch)
+    monkeypatch.setenv("FAL_KEY", "fal-key-new")
+    submit(module, monkeypatch)
+    submit(module, monkeypatch)
+
+    assert signed == ["old", "new", "new"]
+    assert constructed == ["old", "new"]
+    assert len(fal_common._direct_clients) == 1

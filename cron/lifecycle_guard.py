@@ -854,8 +854,10 @@ def _kill_targets_pid(args: list[str], pid: int) -> bool:
             continue
         if _is_pid_operand(arg, pid, group=signal_given):
             return True
-        # A signal ends option parsing for `-N`, and so does the first PID operand: in
-        # `kill 99 -N` the `-N` is a process-group target.
+        if not arg.startswith("-"):
+            # The first operand ends option parsing: every later word is a target, so in
+            # `kill 99 -N` the `-N` is a process group and `kill 99 -s 0 N` still signals N.
+            return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
         signal_given = True
         position += 1
     return False

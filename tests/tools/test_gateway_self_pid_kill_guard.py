@@ -43,6 +43,7 @@ def run(tmp_path, monkeypatch):
     "kill -USR1 {pid}", "kill -9 " + "1" * 5000 + " {pid}", "kill 00{pid}",
     # A PID operand ends option parsing, so a later `-N` is a group target; unlisted value options.
     "kill {other} -{pid}", "kill {other} -- {pid}",
+    "kill {other} -s 0 {pid}", "kill {other} -n 0 {pid}", "kill {other} -l {pid}",
     "powershell -c 'Stop-Process -ErrorAction Stop -Id {pid}'", "Stop-Process -ea SilentlyContinue {pid}",
 ])
 def test_literal_gateway_pid_kill_is_blocked(run, command):
@@ -61,7 +62,7 @@ def test_referenced_script_killing_gateway_pid_is_blocked(run, tmp_path):
     "kill -l {pid}", "kill -0 {pid}", "kill -s 0 {pid}", "kill -s {pid} {other}",
     "taskkill /S remotehost /PID {pid}",
     # A leading `-N` with no signal before it is a signal number, not a target.
-    "kill -{pid} {other}", "kill +{other}", "kill -9 -{other}", "kill -- -{other}",
+    "kill -{pid} {other}", "kill +{other}", "kill -9 -{other}", "kill -- -{other}", "kill {other} -{other}",
     "Stop-Process {other} -Force", "Stop-Process -Id:{other}", "Stop-Process -Id 1, {other}",
     "Stop-Process -Name {pid}", "Stop-Process -Name:{pid} -Force", "taskkill /PID:{other}",
     "eval echo {pid}", "echo `date` {pid}", "powershell -c 'Get-Process -Id {pid}'",

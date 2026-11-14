@@ -57,7 +57,7 @@ def _spawn_holder(adir, base_url=PLAN_A, hold=1.2, wait=5.0):
         text=True,
     )
     line = proc.stdout.readline().strip()
-    assert line == "HELD", f"holder failed to start: {{line!r}}".format(line=line)
+    assert line == "HELD", f"holder failed to start: {line!r}"
     return proc
 
 
@@ -163,7 +163,7 @@ def test_event_loop_stays_responsive_while_contending(admission_dir):
                 holder.kill()
                 holder.wait()
     assert elapsed >= 1.0
-    assert ticks >= 10, f"event loop starved during contended wait (only {{ticks}} ticks)".format(ticks=ticks)
+    assert ticks >= 10, f"event loop starved during contended wait (only {ticks} ticks)"
 
 
 # ------------------------------------------------------- cross-thread + re-entry
@@ -324,7 +324,7 @@ def _relay_with_stub_stream(admission_dir, monkeypatch, stream):
 
 
 def test_aux_relay_holds_slot_across_stream_consumption(admission_dir, monkeypatch):
-    import agent.auxiliary_client as ac  # noqa: F401
+    import agent.auxiliary_client as ac
     states = []
     stream = _LazyPlanStream(probe=lambda i: states.append(slots_free(admission_dir)))
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
@@ -336,7 +336,7 @@ def test_aux_relay_holds_slot_across_stream_consumption(admission_dir, monkeypat
 
 
 def test_aux_relay_complete_object_releases_before_return(admission_dir, monkeypatch):
-    import agent.auxiliary_client as ac  # noqa: F401
+    import agent.auxiliary_client as ac
     complete = types.SimpleNamespace(choices=[])
     out = _relay_with_stub_stream(admission_dir, monkeypatch, complete)
     assert out is complete  # raw object back, not a proxy
@@ -344,7 +344,7 @@ def test_aux_relay_complete_object_releases_before_return(admission_dir, monkeyp
 
 
 def test_aux_relay_close_releases_and_delegates(admission_dir, monkeypatch):
-    import agent.auxiliary_client as ac  # noqa: F401
+    import agent.auxiliary_client as ac
     stream = _LazyPlanStream()
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
     assert not stream.closed
@@ -354,7 +354,7 @@ def test_aux_relay_close_releases_and_delegates(admission_dir, monkeypatch):
 
 
 def test_aux_relay_error_mid_consume_releases(admission_dir, monkeypatch):
-    import agent.auxiliary_client as ac  # noqa: F401
+    import agent.auxiliary_client as ac
     states = []
     stream = _LazyPlanStream(probe=lambda i: states.append(slots_free(admission_dir)), fail_on=2)
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
@@ -371,7 +371,7 @@ def test_aux_relay_error_mid_consume_releases(admission_dir, monkeypatch):
 # registry-based nesting makes release thread-agnostic; this test pins it.
 
 def test_stranger_thread_close_does_not_poison_opener(admission_dir, monkeypatch):
-    import agent.auxiliary_client as ac  # noqa: F401
+    import agent.auxiliary_client as ac
 
     stream = _LazyPlanStream()
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)

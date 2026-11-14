@@ -968,6 +968,14 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
     if a["timezone"] is not None:
         # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
         updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
+    # Schedule before grace: the grace check must judge the schedule this update sets.
+    if a["schedule"] is not None:
+        parsed_schedule = parse_schedule(a["schedule"])
+        updates["schedule"] = parsed_schedule
+        updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
+        if job.get("state") != "paused":
+            updates["state"] = "scheduled"
+            updates["enabled"] = True
     if a["grace_minutes"] is not None:
         # '' / null clears the override; 0 is a real value ("never catch up") and passes through.
         updates["grace_minutes"] = (
@@ -977,13 +985,6 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
             kind = (_pick(updates, job, "schedule") or {}).get("kind")
             if kind != "cron":
                 return "grace_minutes only applies to cron schedules."
-    if a["schedule"] is not None:
-        parsed_schedule = parse_schedule(a["schedule"])
-        updates["schedule"] = parsed_schedule
-        updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
-        if job.get("state") != "paused":
-            updates["state"] = "scheduled"
-            updates["enabled"] = True
     return None
 
 

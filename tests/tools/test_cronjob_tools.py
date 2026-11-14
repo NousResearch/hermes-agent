@@ -875,3 +875,26 @@ class TestScheduleKnobToolSurface:
             action="create", prompt="x", schedule="every 2h", grace_minutes=30))
         assert created["success"] is False
         assert "grace_minutes" in created["error"]
+
+    def test_switching_to_cron_and_setting_grace_in_one_update(self):
+        """The grace check must judge the schedule this same update sets, not the stored one."""
+        created = json.loads(cronjob(action="create", prompt="x", schedule="every 2h"))
+
+        updated = json.loads(cronjob(
+            action="update", job_id=created["job_id"], schedule="0 9 * * *", grace_minutes=30))
+        assert updated["success"] is True, updated
+        job = self._stored()
+        assert job["schedule"]["kind"] == "cron"
+        assert job["grace_minutes"] == 30
+
+    def test_switching_away_from_cron_while_setting_grace_is_still_an_error(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="0 9 * * *", grace_minutes=30))
+
+        updated = json.loads(cronjob(
+            action="update", job_id=created["job_id"], schedule="every 2h", grace_minutes=15))
+        assert updated["success"] is False
+        assert "grace_minutes" in updated["error"]
+        job = self._stored()
+        assert job["schedule"]["kind"] == "cron"
+        assert job["grace_minutes"] == 30

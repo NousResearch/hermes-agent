@@ -2086,10 +2086,10 @@ def _rederive_repeat_for_schedule_change(
 
 def _apply_schedule_update(updated: dict[str, Any], updates: dict[str, Any], job_id: str) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
+    if isinstance(updated["schedule"], str):
+        updated["schedule"] = parse_schedule(updated["schedule"])
     updated_schedule = updated["schedule"]
-    if isinstance(updated_schedule, str):
-        updated_schedule = parse_schedule(updated_schedule)
-        updated["schedule"] = updated_schedule
+    jobs_time.drop_cron_only_knobs(updated, updates)
     updated["schedule_display"] = updates.get(
         "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
     if updated.get("state") != "paused":
@@ -2141,7 +2141,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         if {"timezone", "grace_minutes"}.intersection(updates):
             validate_schedule_knobs(
                 updated.get("schedule") or {}, updated.get("timezone"),
-                updated.get("grace_minutes"))
+                updated.get("grace_minutes") if "grace_minutes" in updates else None)
             jobs_time.prune_inherited_knobs(updated)
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)

@@ -5248,6 +5248,7 @@ export const frOverrides = {
       skillActivity: {
         loading: 'Chargement du skill',
         loaded: 'Skill chargé',
+        unchanged: 'Skill inchangé',
         loadFailed: 'Échec du chargement du skill',
         readingResource: 'Lecture de la ressource du skill',
         readResource: 'Ressource du skill lue',

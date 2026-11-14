@@ -4634,6 +4634,7 @@ export const en: Translations = {
       skillActivity: {
         loading: 'Loading skill',
         loaded: 'Loaded skill',
+        unchanged: 'Skill unchanged',
         loadFailed: 'Failed to load skill',
         readingResource: 'Reading skill resource',
         readResource: 'Read skill resource',

@@ -423,8 +423,10 @@ def test_update_hook_migrates_when_unblocked_and_only_warns_when_blocked(fleet, 
     fleet.services.update({"coder": ("systemd", False), "default": ("systemd", False)})
     fleet.pids.update({"coder": 4101}); fleet.ops.clear()
     (fleet.root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
-    gm.maybe_auto_migrate_after_update()
+    warning = gm.maybe_auto_migrate_after_update()
     out = capsys.readouterr().out
+    assert warning and warning in out
+    assert "TELEGRAM_BOT_TOKEN" in warning and "default-token" not in warning
     assert gm.MIGRATE_COMMAND in out and "profile_routes" in out
     assert fleet.ops == [] and _config_flag(fleet.root) is None
 

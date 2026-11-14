@@ -35,16 +35,15 @@ export function receiptDirectory(hermesHome: string): string {
 }
 
 /**
- * This run's own stop, read from the receipt the update wrote.
+ * Read the completed receipt that belongs to this hand-off.
  *
  * `correlation_id` is the hand-off `run_id` (the launcher exports it as
  * `HERMES_UPDATE_CORRELATION_ID`), so a receipt left behind by an earlier run
  * cannot explain this one. A record still `running` keeps `finished_at` null and
  * never matches — the same rule the hand-off script applies before it trusts an
- * outcome. Anything missing or unexpected returns null and the caller keeps its
- * generic text: the dialog must never invent a stop it cannot prove.
+ * outcome. Missing or unexpected data leaves the hand-off's own message in place.
  */
-export function readStoppedRun(hermesHome: string, correlationId: string | null): UpdateStop | null {
+function readFinishedRun(hermesHome: string, correlationId: string | null): Record<string, unknown> | null {
   if (!correlationId) {
     return null // no run identity: a receipt on disk cannot be attributed to this result
   }
@@ -65,15 +64,33 @@ export function readStoppedRun(hermesHome: string, correlationId: string | null)
     return null // still running: its stop is not written yet
   }
 
-  const outcome: string = typeof parsed.outcome === 'string' ? parsed.outcome : ''
+  return parsed
+}
+
+export function readStoppedRun(hermesHome: string, correlationId: string | null): UpdateStop | null {
+  const receipt = readFinishedRun(hermesHome, correlationId)
+  const outcome = receipt?.outcome
 
   if (outcome !== 'failed' && outcome !== 'refused') {
     return null
   }
 
-  const stopClass: string = typeof parsed.stop_class === 'string' ? parsed.stop_class : ''
+  const stopClass = typeof receipt.stop_class === 'string' ? receipt.stop_class : ''
 
   return STOP_CLASS_TOKEN.test(stopClass) ? { stopClass, outcome } : null
+}
+
+/** A successful update may still owe a manual gateway migration. */
+export function readGatewayMigrationBlocker(hermesHome: string, correlationId: string | null): string | null {
+  const receipt = readFinishedRun(hermesHome, correlationId)
+
+  if ((receipt?.outcome !== 'success' && receipt?.outcome !== 'partial') || !Array.isArray(receipt.followups)) {
+    return null
+  }
+
+  const blocker = receipt.followups.find(item => item?.step === 'gateway_migration' && typeof item.reason === 'string')
+
+  return blocker?.reason.trim() || null
 }
 
 /**

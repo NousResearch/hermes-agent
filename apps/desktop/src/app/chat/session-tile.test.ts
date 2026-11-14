@@ -174,7 +174,7 @@ describe('startUnrestoredTileTitleBackfill (#94167)', () => {
 
     $gatewayState.set('open')
     await vi.waitFor(() => expect(lookup).toHaveBeenCalledTimes(1))
-    expect(lookup).toHaveBeenCalledWith('old-chat', ownerRoute)
+    expect(lookup).toHaveBeenCalledWith('old-chat', ownerRoute, { passive: true })
     expect($sessions.get().find(row => row.id === 'old-chat')?.title).toBe('Quarterly review')
 
     // One-shot: a later reconnect does not re-probe.
@@ -219,7 +219,10 @@ describe('startUnrestoredTileTitleBackfill retires dead tiles (#125678)', () => 
     $gatewayState.set('open')
 
     await vi.waitFor(() => expect($sessionTiles.get()).toEqual([]))
-    expect(get.mock.calls.map(call => call[1])).toEqual(['default', 'writer'])
+    expect(get.mock.calls).toEqual([
+      ['dead-chat', 'default', { passive: true }],
+      ['dead-chat', 'writer', { passive: true }]
+    ])
     expect(window.localStorage.getItem('hermes.desktop.sessionTiles.v2') ?? '').not.toContain('dead-chat')
     reopenLastClosedTile()
     expect($sessionTiles.get()).toEqual([])

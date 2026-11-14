@@ -38,6 +38,7 @@ interface RosterContentProps {
   renderGroupChatSection: ReturnType<typeof rosterSectionRenderers>['renderGroupChatSection']
   renderGatewaySection: ReturnType<typeof rosterSectionRenderers>['renderGatewaySection']
   renderUserSections: ReturnType<typeof rosterSectionRenderers>['renderUserSections']
+  renderEmptyUserSections: ReturnType<typeof rosterSectionRenderers>['renderEmptyUserSections']
   renderHiddenGatewaySection: ReturnType<typeof rosterSectionRenderers>['renderHiddenGatewaySection']
 }
 
@@ -69,6 +70,7 @@ export function renderRosterContent({
   renderGroupChatSection,
   renderGatewaySection,
   renderUserSections,
+  renderEmptyUserSections,
   renderHiddenGatewaySection
 }: RosterContentProps) {
   return (
@@ -132,7 +134,8 @@ export function renderRosterContent({
             {showGatewaySections
               ? [
                   sortedGroupRows.length ? renderGroupChatSection() : null,
-                  ...gatewaySections.sections.map(renderGatewaySection)
+                  ...gatewaySections.sections.map(renderGatewaySection),
+                  ...renderEmptyUserSections()
                 ].filter(Boolean)
               : renderUserSections(rosterRows)}
             {showHiddenSection ? (

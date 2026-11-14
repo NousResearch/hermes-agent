@@ -985,6 +985,16 @@ platform:
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
   shared:
+    vault_code:
+      title: "🔐 Bestätigungscode für {site}"
+      body: "{site} verlangt einen Einmalcode (SMS oder E-Mail). Drücke die Schaltfläche und gib ihn im geöffneten Formular ein: Er wird direkt in die Seite eingetragen und nie hier gepostet."
+      button: "Code eingeben"
+      modal_title: "Code für {site}"
+      input_label: "Einmalcode"
+      submitted: "Code gesendet; er wird in die Seite eingetragen."
+      ended: "Diese Code-Anfrage ist beendet; es wurde nichts eingetragen."
+      not_author: "Nur die Person, die diese Anfrage gestartet hat, kann den Code eingeben."
+      submitted_footer: "✓ Code gesendet"
     response_as_file: "📎 Lange Antwort: Der vollständige Text ist angehängt."
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
@@ -1046,16 +1056,6 @@ platform:
       clarify_already_answered: "Diese Abfrage wurde bereits beantwortet~"
       answered_by: "Beantwortet von {user}: {choice}"
       awaiting_typed: "Warte auf eingegebene Antwort von {user}…"
-    vault_code:
-      title: "🔐 Bestätigungscode für {site}"
-      body: "{site} verlangt einen Einmalcode (SMS oder E-Mail). Drücke die Schaltfläche und gib ihn im geöffneten Formular ein: Er wird direkt in die Seite eingetragen und nie hier gepostet."
-      button: "Code eingeben"
-      modal_title: "Code für {site}"
-      input_label: "Einmalcode"
-      submitted: "Code gesendet; er wird in die Seite eingetragen."
-      ended: "Diese Code-Anfrage ist beendet; es wurde nichts eingetragen."
-      not_author: "Nur die Person, die diese Anfrage gestartet hat, kann den Code eingeben."
-      submitted_footer: "✓ Code gesendet"
     picker:
       title: "⚙ Modellkonfiguration"
       select_provider: "Aktuelles Modell: `{model}`\nAnbieter: {provider}\n\nWählen Sie einen Anbieter:"

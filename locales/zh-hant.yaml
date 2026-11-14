@@ -985,6 +985,16 @@ platform:
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
   shared:
+    vault_code:
+      title: "🔐 {site} 的驗證碼"
+      body: "{site} 要求輸入一次性驗證碼（簡訊或電子郵件）。按下按鈕，在彈出的表單裡輸入：驗證碼會直接填進網頁，不會發到這裡。"
+      button: "輸入驗證碼"
+      modal_title: "{site} 的驗證碼"
+      input_label: "一次性驗證碼"
+      submitted: "驗證碼已送出，正在填入網頁。"
+      ended: "這個驗證碼請求已結束，沒有填入任何內容。"
+      not_author: "只有發起這次請求的人可以輸入驗證碼。"
+      submitted_footer: "✓ 驗證碼已送出"
     response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
@@ -1046,16 +1056,6 @@ platform:
       clarify_already_answered: "這個提示已回答過～"
       answered_by: "{user} 的回答：{choice}"
       awaiting_typed: "等待 {user} 輸入回覆…"
-    vault_code:
-      title: "🔐 {site} 的驗證碼"
-      body: "{site} 要求輸入一次性驗證碼（簡訊或電子郵件）。按下按鈕，在彈出的表單裡輸入：驗證碼會直接填進網頁，不會發到這裡。"
-      button: "輸入驗證碼"
-      modal_title: "{site} 的驗證碼"
-      input_label: "一次性驗證碼"
-      submitted: "驗證碼已送出，正在填入網頁。"
-      ended: "這個驗證碼請求已結束，沒有填入任何內容。"
-      not_author: "只有發起這次請求的人可以輸入驗證碼。"
-      submitted_footer: "✓ 驗證碼已送出"
     picker:
       title: "⚙ 模型設定"
       select_provider: "目前模型：`{model}`\n提供方：{provider}\n\n請選擇提供方："

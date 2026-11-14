@@ -52,9 +52,10 @@ _RESTARTED: dict = {"units": set(), "labels": set(), "pids": set()}
 #: The replay environment of each paused bare gateway's home, built at the commit point: built after
 #: the move, it would import the new tree's modules into this process.
 _REPLAY_ENVS: dict[str, dict] = {}
-#: Gateways the pause left running with their restart pending (live work past the wait): the fleet
-#: restart in this process does not wait on them a second time.
-_LEFT_PENDING: set[int] = set()
+#: Gateways the pause left running with their restart pending (live work past the wait), pid ->
+#: native start time: the fleet restart does not wait on them a second time. The token carries the
+#: same pairs (``left_pending``) to the completion process, which restores them (``adopt_left_pending``).
+_LEFT_PENDING: dict[int, int] = {}
 
 _STOP_TIMEOUT_S = 120.0
 _READY_TIMEOUT_S = 30.0
@@ -536,7 +537,9 @@ def _leave_running(token: dict, entries: list[dict]) -> None:
             _escalate_wedged_gateway(entry["pid"])
             continue  # stopped: the rollback restarts it like any other paused entry
         report_restart_left_pending(_names([entry]), home, supervised=bool(entry.get("kind")))
-        _LEFT_PENDING.add(int(entry["pid"]))
+        if entry.get("ct") is not None:
+            _LEFT_PENDING[int(entry["pid"])] = entry["ct"]
+            token["left_pending"] = [[pid, ct] for pid, ct in _LEFT_PENDING.items()]
         pids = {str(entry["pid"])}
         token["posix_units"] = [u for u in token.get("posix_units") or [] if str(u.get("pid")) not in pids]
         token["unmapped"] = [u for u in token.get("unmapped") or [] if str(u.get("pid")) not in pids]
@@ -776,9 +779,26 @@ def resume_paused_set(token: dict) -> None:
     token["posix_stopped"] = False
 
 
-def left_pending() -> set[int]:
-    """Gateways this run's pause left running with their restart pending."""
+def left_pending() -> dict[int, int]:
+    """Gateways this run's pause left running with their restart pending: pid -> start time."""
     return _LEFT_PENDING
+
+
+def is_left_pending(pid: int) -> bool:
+    """*pid* is the very process the pause left running (same start time), not a recycled PID."""
+    from gateway.status import get_process_start_time
+    born = _LEFT_PENDING.get(pid)
+    return born is not None and get_process_start_time(pid) == born
+
+
+def adopt_left_pending(token: dict | None) -> None:
+    """Restore the pause's left-pending gateways in the completion process (a fresh interpreter),
+    so its fleet restart does not wait on the same busy gateway a second time. A pair whose process
+    is gone or whose PID now belongs to another process (start time differs) is dropped."""
+    from gateway.status import get_process_start_time
+    for pid, ct in (token or {}).get("left_pending") or []:
+        if ct is not None and get_process_start_time(int(pid)) == ct:
+            _LEFT_PENDING[int(pid)] = ct
 
 
 def already_restarted() -> dict:

@@ -129,6 +129,7 @@ def transition(tmp_path):
     )
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
+    (package / "update_cmd_posix_pause.py").write_text("adopt_left_pending = lambda token: None\n")
     (package / "update_inventory.py").write_text(
         "from types import SimpleNamespace\nRuntimeRecord = UpdatePlan = SimpleNamespace\n"
     )

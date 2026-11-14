@@ -131,28 +131,34 @@ def drain_progress_reporter(home: Optional[Path] = None, *, budget_s: float,
     return _tick
 
 
-def restart_left_pending(pid: int, home: Optional[Path] = None) -> bool:
-    """True when gateway *pid* outlived the wait still holding the restart SIGUSR1 asked for: alive,
-    reachable by that signal (one that could not be sent asked nothing) and not provably wedged (a
-    dead loop is not live work; its caller keeps the bounded escalation). Such a gateway restarts
-    itself at its first idle moment, so nothing may stop it on the wait's account."""
+def restart_left_pending(pid: int, home: Optional[Path] = None, *, start_time: Optional[int]) -> bool:
+    """True when gateway *pid* outlived the wait still holding the restart SIGUSR1 asked for: the
+    same process (``start_time``, read when it was signalled: a PID recycled during a 30-minute wait
+    is someone else, who asked nothing), reachable by that signal (one that could not be sent asked
+    nothing) and not provably wedged (a dead loop is not live work; its caller keeps the bounded
+    escalation). Such a gateway restarts itself at its first idle moment, so nothing may stop it on
+    the wait's account. An unknown start time proves no identity: not pending."""
     import os
     import signal
-    if not hasattr(signal, "SIGUSR1") or pid <= 0:
+    if not hasattr(signal, "SIGUSR1") or pid <= 0 or start_time is None:
         return False
     try:
         # Signal 0 probes, and fails exactly where SIGUSR1 could not have been delivered.
         os.kill(pid, 0)  # windows-footgun: ok — POSIX only (SIGUSR1-guarded above)
     except OSError:
         return False
+    from gateway.status import get_process_start_time
+    if get_process_start_time(pid) != start_time:
+        return False
     from hermes_cli.gateway import GATEWAY_LOOP_WEDGED, probe_gateway_loop_liveness
     return probe_gateway_loop_liveness(pid, home=home) != GATEWAY_LOOP_WEDGED
 
 
-def leave_restart_pending(pid: int, label: str, home: Optional[Path] = None, *, supervised: bool = True) -> bool:
+def leave_restart_pending(pid: int, label: str, home: Optional[Path] = None, *, start_time: Optional[int],
+                          supervised: bool = True) -> bool:
     """When :func:`restart_left_pending` holds, say so (:func:`report_restart_left_pending`) and return
     True: the caller must not stop, kill or force-restart *pid*."""
-    if not restart_left_pending(pid, home):
+    if not restart_left_pending(pid, home, start_time=start_time):
         return False
     report_restart_left_pending(label, home, supervised=supervised)
     return True

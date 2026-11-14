@@ -264,7 +264,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # approval gate instead (build_write_approval_paths).
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
-        (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
+        *((name,) for name in HOME_CREDENTIAL_FILES),
     )
     # Secret material under HERMES_HOME, on the active profile, every sibling profile
     # and the global root: overwriting the root .env leaks credentials across every profile that
@@ -289,7 +289,11 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
-# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+# Home-root single-file credential stores. Also hidden by the dashboard Files API (hermes_cli.web_routers.files).
+HOME_CREDENTIAL_FILES = (".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
+
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles)
+# and hidden by the dashboard Files API.
 HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
 
 

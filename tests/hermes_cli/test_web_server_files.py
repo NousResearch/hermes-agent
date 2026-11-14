@@ -734,6 +734,44 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
 
 
 
+def test_home_credential_stores_hidden_and_unreadable(local_files_client):
+    """#95311/#98161: the default managed root is $HOME, so the OS/CLI credential
+    stores file_safety guards (~/.netrc, ~/.npmrc, ~/.ssh/, ~/.config/gh/, ...)
+    must be neither listed nor readable through the Files API."""
+    client, home = local_files_client
+    (home / "notes.txt").write_text("safe")
+    stores = [
+        ".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC",
+        ".ssh/id_custom", ".aws/config", ".gnupg/private-keys-v1.d/k.key",
+        ".kube/config", ".docker/config.json", ".azure/msal_token_cache.json",
+        ".config/gh/hosts.yml", ".config/gcloud/credentials.db",
+    ]
+    for rel in stores:
+        path = home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("secret")
+
+    names = [e["name"] for e in client.get("/api/files", params={"path": str(home)}).json()["entries"]]
+    assert "notes.txt" in names
+    for hidden in (".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC", ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"):
+        assert hidden not in names, hidden
+    config_names = [e["name"] for e in client.get("/api/files", params={"path": str(home / ".config")}).json()["entries"]]
+    assert "gh" not in config_names and "gcloud" not in config_names
+
+    for rel in stores:
+        resp = client.get("/api/files/read", params={"path": str(home / rel)})
+        assert resp.status_code == 403, (rel, resp.status_code)
+
+
+def test_credential_dir_sequence_needs_consecutive_components(local_files_client):
+    """``.config/gh`` is a two-component tree: an unrelated ``gh`` dir elsewhere stays browsable."""
+    client, home = local_files_client
+    (home / "projects" / "gh").mkdir(parents=True)
+    (home / "projects" / "gh" / "readme.md").write_text("ok")
+    resp = client.get("/api/files/read", params={"path": str(home / "projects" / "gh" / "readme.md")})
+    assert resp.status_code == 200
+
+
 def test_other_credential_store_basenames_blocked(forced_files_client):
     """Regression: the managed-files guard must cover the same credential
     basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and

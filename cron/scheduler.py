@@ -4387,9 +4387,25 @@ from cron.scheduler_preflight import (
 )
 
 
+_SCHEDULER_ENTRY_USAGE = """usage: python -m cron.scheduler --tick
+       python -m cron.scheduler --external-worker-file PATH --ack-file PATH
+
+  --tick                  run one scheduler tick now (the gateway's ticker code path)
+  --external-worker-file  run the gateway's fire worker for one job (gateway-internal)
+  -h, --help              show this message
+
+A bare or unknown invocation prints this message and exits non-zero instead of running a tick:
+`--help` used to fire every due job (#152710)."""
+
+
 # `python -m cron.scheduler` entry: MUST stay below the split-module imports so the worker /
 # tick paths see every name they need.
 if __name__ == "__main__":
+    # `--help` wins over every other mode (#152710): it must not boot the worker (which may relaunch
+    # the process before the payload is even read) and it must not run a tick.
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print(_SCHEDULER_ENTRY_USAGE)
+        raise SystemExit(0)
     if "--external-worker-file" in sys.argv:
         finish_worker_boot()  # may relaunch: before the payload is read and the ack published
         import argparse
@@ -4414,4 +4430,12 @@ if __name__ == "__main__":
     from hermes_agent.compat import install as _install_compat
 
     _install_compat()
+    # Manual invocation (#152710). Never fall through to a tick by accident: `--help` used to run
+    # every due job on whatever home it found, and an unknown argument did the same. The gateway
+    # still launches the worker path above with `--external-worker-file`; a hand-run tick is now
+    # explicit.
+    _entry_args = sys.argv[1:]
+    if _entry_args != ["--tick"]:
+        print(_SCHEDULER_ENTRY_USAGE, file=sys.stderr)
+        raise SystemExit(2)
     tick(verbose=True, headless=True)

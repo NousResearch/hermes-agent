@@ -208,7 +208,6 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
 def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
     import tools.browser_vault_tool  # registers the real handler
-    from agent.plugin_session_fork import current_turn_origin
     from model_tools import _approval_observability, _CallIds
     from tools.registry import registry
 
@@ -217,13 +216,13 @@ def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
                                  and _preview_is_default_vault_target(agent, task_id)):
         args = {**args, "target": "preview"}
     # A plugin may override browser_vault: give its handler (and the approval prompts it raises)
-    # the same session/turn identity the registry path in model_tools._execute_tool binds.
+    # the same session/turn identity the registry path in model_tools._execute_tool binds. No
+    # turn_origin: a plugin fork never holds an inline tool (plugin_session_fork.fork_tool_allowlist).
     ids = tool_hook_ids(agent, ctx.effective_task_id, ctx.tool_call_id)
-    extra = {"turn_origin": origin} if (origin := current_turn_origin()) is not None else {}
     with _approval_observability(_CallIds(**ids)):
         return registry.dispatch("browser_vault", args, task_id=ctx.effective_task_id,
                                  session_id=ids["session_id"], conversation_id=ids["conversation_id"],
-                                 preview_callback=getattr(agent, "drive_preview_callback", None), **extra)
+                                 preview_callback=getattr(agent, "drive_preview_callback", None))
 
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:

@@ -31,3 +31,11 @@ def test_override_handler_sees_session_and_approval_identity(monkeypatch):
     assert (seen["bound_turn"], seen["bound_session"], seen["bound_call"]) == ("turn-1", "sess-1", "call-1")
     # The binding is scoped to the call.
     assert approval_context._approval_turn_id.get() == ""
+
+
+def test_plugin_fork_never_holds_browser_vault():
+    # Why the executor forwards no turn_origin: only a plugin fork's worker sets one, and its
+    # allowlist drops every pre-registry (inline) tool, browser_vault included.
+    from agent.plugin_session_fork import fork_tool_allowlist
+
+    assert "browser_vault" not in fork_tool_allowlist(["browser_vault", "my_plugin_tool"])

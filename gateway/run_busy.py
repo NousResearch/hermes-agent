@@ -1290,9 +1290,10 @@ class GatewayBusySessionMixin:
 
     def _command_turn_admitted(self, event: MessageEvent, session_key: str) -> bool:
         """Whether *event*, a turn a slash command produced, goes to the authority's FIFO. Text that is
-        still a command, an internal event, an executing admission and a turn carrying a one-turn
-        model (``/moa``, which would otherwise land on whichever admitted turn runs next) stay
-        in-process, as without an authority."""
+        still a command, an internal event, an executing admission and a turn while a session-level
+        one-turn model is armed (``/model --once``, which would otherwise land on whichever admitted
+        turn runs next) stay in-process, as without an authority. A messaging ``/moa`` commits its
+        preset on its own row instead (``session_moa_turn``)."""
         from gateway.session_authorities import active_authority
         from gateway.session_ingress import executing_admission
         if active_authority(self) is None or executing_admission.get() or event.internal or event.get_command():

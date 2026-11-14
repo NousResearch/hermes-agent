@@ -1423,6 +1423,8 @@ class GatewayInboundMixin(
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            from gateway.session_moa_turn import arm_admitted_moa
+            arm_admitted_moa(self, _quick_key, event)  # restored by the finally below
             # Fail-open plugin consume inside the claimed slot (#129958); once per message.
             if not is_internal:
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)

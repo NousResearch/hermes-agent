@@ -288,9 +288,9 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
         except Exception:
             _policy_block = None
         if _policy_block is not None:
-            cached_results[position] = _result_entry(
-                url, _policy_block.get("message") or "Blocked by website policy"
-            )
+            entry = _result_entry(url, _policy_block.get("message") or "Blocked by website policy")
+            entry["blocked_by_policy"] = {k: _policy_block[k] for k in ("host", "rule", "source")}
+            cached_results[position] = entry
             continue
         hit = extract_cache_get(url, format=format, provider=provider.name)
         if hit is not None and not await _cached_final_url_allowed(hit, url):

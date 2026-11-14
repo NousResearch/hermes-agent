@@ -3128,7 +3128,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, browser navigation, and any tool that accesses URLs.
+When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_extract` (including redirect targets), browser navigation, and any tool that fetches a URL. `web_search` takes a query rather than a URL and does not filter its result list.
 
 Domain rules support:
 - Exact domains: `admin.example.com`

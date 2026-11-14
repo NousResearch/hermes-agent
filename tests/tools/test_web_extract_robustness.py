@@ -72,6 +72,7 @@ def test_policy_blocked_url_is_refused_not_fetched(tmp_path, monkeypatch):
         "Blocked by website policy: 'blocked.example' matched rule 'blocked.example' from config"
     )
     assert results[0]["content"] == ""
+    assert results[0]["blocked_by_policy"] == {"host": "blocked.example", "rule": "blocked.example", "source": "config"}
     assert results[1] == allowed_page
     # Fail-closed: the blocked URL never reached the vendor batch.
     assert dispatch.await_count == 1

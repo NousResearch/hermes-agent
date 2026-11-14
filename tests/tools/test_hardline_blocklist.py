@@ -450,6 +450,10 @@ def test_true_positive_shapes_stay_hardline_blocked(command):
     "ls; eval 'shutdown -h now'",
     "bash -c \"eval 'rm -rf /'\"",
     "eval \"eval 'mkfs.ext4 /dev/sda1'\"",
+    "echo $(eval 'reboot') done",
+    "echo `eval 'reboot'` done",
+    "echo $(eval \"eval 'reboot'\") done",
+    'x=$(eval "rm -rf /")',
 ])
 def test_eval_payload_reaches_hardline_floor(command):
     is_hl, desc = detect_hardline_command(command)
@@ -462,6 +466,11 @@ def test_eval_payload_reaches_hardline_floor(command):
     "eval \"echo 'rm -rf / is fatal'\"",
     "echo eval rm -rf /",
     "eval 'ls -la'",
+    # A nested eval ends at its substitution's closer; the outer command's
+    # quoted arguments are data, not eval code.
+    "echo $(eval 'printf ready') '(reboot)'",
+    "echo `eval 'printf ready'` '(reboot)'",
+    "(eval 'printf ready') '(reboot)'",
 ])
 def test_eval_payload_data_is_not_hardline(command):
     assert detect_hardline_command(command) == (False, None)

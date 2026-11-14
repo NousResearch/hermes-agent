@@ -1283,7 +1283,9 @@ def _eval_payloads(command: str):
         for start, _, word in _iter_shell_command_word_spans(segment):
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "eval":
                 continue
-            tokens = _shell_segment_tokens(segment, start)
+            # Bound to eval's own command: a `$(eval …)` / backtick nested in an outer command ends at
+            # its closing `)`/`` ` ``, so the outer command's arguments are not eval code.
+            tokens = _shell_segment_tokens(_shell_command_segment(segment, start), 0)
             payload = _eval_payload(tokens[1:]) if tokens else None
             if payload:
                 yield payload

@@ -599,6 +599,47 @@ def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str
     return result
 
 
+def _plugins_one_level_down(target: Path) -> list[tuple[str, Path]]:
+    """``(key, directory)`` of the plugins discovery registers directly under *target*. A directory with
+    no manifest of its own is read as a category, so they are keyed ``<target>/<subfolder>``."""
+    root = target.resolve()
+    return sorted((entry[5], Path(str(entry[4]))) for entry in _pc()._discover_all_plugins()
+                  if entry[4] and Path(str(entry[4])).resolve().parent == root)
+
+
+def _settle_installed_plugin(console, target: Path, manifest: dict, name: str,
+                             enable: Optional[bool]) -> tuple[Path, dict, str, Optional[bool], bool]:
+    """``(target, manifest, name, enable, enableable)`` for the plugin an install actually placed.
+
+    A tree with no manifest of its own is read by discovery as a category: a plugin one level down is
+    registered as ``<repo>/<subfolder>``. That key, never the repo name, is what enable, the consent
+    questions and the closing hint have to name. One such plugin stands in for the tree. None or several
+    leave nothing to enable (*enable* comes back False), and the keys that exist are named."""
+    if _pc()._looks_like_plugin_dir(target):
+        return target, manifest, name, enable, True
+    nested = _plugins_one_level_down(target)
+    if len(nested) == 1:
+        name, target = nested[0]
+        console.print(f"[dim]The plugin sits in a subfolder of this repository: {name}.[/dim]")
+        return target, _pc()._read_manifest(target), name, enable, True
+    console.print(
+        f"[yellow]Warning:[/yellow] {name} doesn't contain plugin.yaml, "
+        f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
+    console.print(
+        f"[dim]It holds {len(nested)} plugins: {', '.join(key for key, _ in nested)}. "
+        f"Enable the ones you want with `hermes plugins enable <name>`.[/dim]" if nested
+        else "[dim]Nothing here can be turned on.[/dim]")
+    return target, manifest, name, False, False
+
+
+def _say_not_enabled(console, name: str, enableable: bool) -> None:
+    """The closing "installed but not enabled" hint, kept for a name ``hermes plugins enable`` accepts."""
+    if enableable:
+        console.print(
+            f"[dim]Plugin installed but not enabled. "
+            f"Run `hermes plugins enable {name}` to activate.[/dim]")
+
+
 def _announce_source(identifier: str, console, *, brief: bool) -> tuple[Optional[Any], str]:
     """``(catalog entry or None, install identifier)``, printing where the install comes from: the
     catalog pin (plus the entry's description unless *brief*) or the custom-source warning."""
@@ -675,10 +716,8 @@ def cmd_install(
             _install, catalog_name=entry.name if entry is not None else None, identifier=identifier)
     except _pc().PluginOperationError as e:
         _pc()._fail(console, f"[red]{'Blocked' if isinstance(e, _pc().PluginScanBlocked) else 'Error'}:[/red] {e}")
-    if not _pc()._looks_like_plugin_dir(target):
-        console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
-            f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
+    target, installed_manifest, installed_name, enable, enableable = _settle_installed_plugin(
+        console, target, installed_manifest, installed_name, enable)
     _prompt_plugin_env_vars(installed_manifest, console)
 
     from pm.workspace import enabled_plugin_dirs
@@ -745,9 +784,7 @@ def cmd_install(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
     else:
-        console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+        _say_not_enabled(console, installed_name, enableable)
 
     from hermes_cli.plugin_provider_requests import requires_auth_notice
     if notice := requires_auth_notice(installed_manifest):

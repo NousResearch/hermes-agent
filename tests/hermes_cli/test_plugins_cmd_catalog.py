@@ -699,3 +699,73 @@ def test_brief_install_prints_the_pin_and_outcome_and_a_restart_hint_only_for_a_
     assert not any(isinstance(p, Panel) for p in printed)
     assert "maintained by" not in text and "Cloning" not in text
     assert ("Restart the gateway" in text) is bool(gateway_pid)
+
+
+def _repo_with_the_plugin_in_a_subfolder(tmp_path: Path, plugins: tuple = ("my-plugin",)) -> Path:
+    """A repo whose root is not a plugin: each plugin sits one level down, beside the repo's docs."""
+    repo = tmp_path / "hermes-nested"
+    repo.mkdir()
+    (repo / "README.md").write_text("# docs\n")
+    for name in plugins:
+        (repo / name).mkdir()
+        (repo / name / "plugin.yaml").write_text(f"name: {name}\nversion: 1.0.0\ndescription: d\n")
+        (repo / name / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    sp.run(["git", "init", "-q"], cwd=repo, check=True, env=_GIT_ENV)
+    _commit(repo, "v1")
+    return repo
+
+
+def _capture_console(monkeypatch) -> list:
+    printed: list = []
+    monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda self, *a, **k: printed.extend(a)})())
+    return printed
+
+
+def test_install_enables_the_key_of_a_plugin_kept_in_a_subfolder(world, tmp_path, monkeypatch):
+    """Discovery reads a manifest-less install directory as a category, so a plugin one level down is
+    registered as ``<repo>/<subfolder>``. ``--enable`` has to write that key: the repo name matches
+    nothing, and the install said "enabled" while the plugin stayed off."""
+    from hermes_cli import plugins_cmd_install as pci
+    printed = _capture_console(monkeypatch)
+    repo = _repo_with_the_plugin_in_a_subfolder(tmp_path)
+    asked_about: list = []
+    consent = pci._install_plugin_python_deps
+    monkeypatch.setattr(pci, "_install_plugin_python_deps", lambda manifest, target, *a, **k: (
+        asked_about.append((manifest.get("name"), target.name)), consent(manifest, target, *a, **k))[1])
+
+    pc.cmd_install(repo.as_uri(), enable=True, yes_deps=True)
+
+    enabled = pc._get_enabled_set()
+    assert "hermes-nested/my-plugin" in enabled
+    assert "hermes-nested" not in enabled
+    assert "Plugin [bold]hermes-nested/my-plugin[/bold] enabled" in "\n".join(map(str, printed))
+    # The dependency consent reads the plugin's own declaration, not the repo around it.
+    assert asked_about == [("my-plugin", "my-plugin")]
+
+
+def test_install_hint_names_a_key_that_enable_accepts(world, tmp_path, monkeypatch):
+    """Without ``--enable`` the install ends on "Run `hermes plugins enable <name>`". For a plugin kept in a
+    subfolder that name was the repo's, which ``hermes plugins enable`` answers with "No plugin named"."""
+    printed = _capture_console(monkeypatch)
+    repo = _repo_with_the_plugin_in_a_subfolder(tmp_path)
+
+    pc.cmd_install(repo.as_uri(), enable=False)
+
+    text = "\n".join(map(str, printed))
+    assert "hermes plugins enable hermes-nested/my-plugin" in text
+    assert pc._resolve_plugin_key("hermes-nested") is None  # the name the hint used to give
+    assert pc._resolve_plugin_key("hermes-nested/my-plugin") == "hermes-nested/my-plugin"
+
+
+def test_install_enables_nothing_when_the_repo_holds_several_plugins(world, tmp_path, monkeypatch):
+    """Two plugins one level down: there is no single key to enable, so nothing is written and the
+    install names the keys instead of reporting the repo as enabled."""
+    printed = _capture_console(monkeypatch)
+    repo = _repo_with_the_plugin_in_a_subfolder(tmp_path, plugins=("alpha", "beta"))
+
+    pc.cmd_install(repo.as_uri(), enable=True, yes_deps=True)
+
+    text = "\n".join(map(str, printed))
+    assert not {"hermes-nested", "hermes-nested/alpha", "hermes-nested/beta"} & pc._get_enabled_set()
+    assert "enabled." not in text
+    assert "hermes-nested/alpha" in text and "hermes-nested/beta" in text

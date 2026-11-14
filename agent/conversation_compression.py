@@ -2255,35 +2255,6 @@ def _replace_message_content(message: dict, content: Any) -> None:
 # Compaction re-injects the todo list verbatim but prunes skills to markers, so
 # couple them: tell the model to reload pruned skills BEFORE acting on tasks.
 # Lives after TODO_INJECTION_HEADER so it strips with the snapshot next time.
-_PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
-
-
-def _pruned_skill_reload_notice(compressed: list) -> str:
-    """Reload notice for skills whose bodies were pruned, or ``""``.
-    Scans ``[SKILL_PRUNED: ...]`` markers in the post-compression transcript; first-seen order, deduplicated,
-    capped at ``_MAX_PRUNED_SKILL_MARKERS``."""
-    from agent.context_compressor import _MAX_PRUNED_SKILL_MARKERS, _extract_pruned_skill_names
-    names: list = []
-    for message in compressed:
-        if not isinstance(message, dict):
-            continue
-        for name in _extract_pruned_skill_names(_message_text(message)):
-            if name not in names:
-                names.append(name)
-    del names[_MAX_PRUNED_SKILL_MARKERS:]
-    if not names:
-        return ""
-    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
-    return (
-        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
-        "The task list above crossed the compression boundary verbatim, but "
-        "the skill instructions that governed it were pruned. Before "
-        f"executing any preserved task that depends on these skills, reload "
-        f"them first: {calls}. After reloading, re-check that each pending "
-        "task is still justified — findings recorded before the boundary may have invalidated it."
-    )
-
-
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     """Fold the human anchor into an existing user-role scaffolding turn.
     Used only when any insertion would create consecutive user turns. Anchor text leads, scaffolding follows,
@@ -2973,7 +2944,12 @@ def _run_summary_dispatch(
 
 def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
     """Strip stale todo snapshots from ``compressed`` and fold the live one in (in place)."""
+    from agent.conversation_compression_skill_prune import _pruned_skill_reload_notice, _strip_stale_reload_notice
+
     todo_snapshot = agent._todo_store.format_for_injection()
+    # A standalone reload notice from an earlier boundary is stale now: strip it
+    # unconditionally (store authority says nothing about it) so notices never stack.
+    _strip_stale_reload_notice(agent, compressed)
     # Non-empty store (even all done) is authoritative: drop the old snapshot. A
     # truly empty store may be un-rehydrated post-compaction: keep the snapshot.
     _todo_has_items = getattr(agent._todo_store, "has_items", None)
@@ -3043,6 +3019,18 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 merged = True
         if not merged:
             compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+    else:
+        # sys-e18z77: a pruned-skill imperative with no todo snapshot still needs its policy pointer —
+        # emit the notice as its own flagged row (same standalone pattern as the todo snapshot above:
+        # merging into a scaffolding tail would upgrade it to real-user evidence, #69292) so reload
+        # guidance reaches the model on todo-free sessions.
+        _reload_notice = _pruned_skill_reload_notice(compressed, with_todo=False)
+        if _reload_notice:
+            # Always a flagged standalone row: welding it into a user tail (real or scaffolding)
+            # would lose the synthetic marker through _merge_consecutive_users and make the notice
+            # permanent human-provenance text (#69292); the replay user-merge pass already
+            # handles adjacency without upgrading provenance.
+            compressed.append({"role": "user", "content": _reload_notice, "_pruned_skill_notice_synthetic": True})
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

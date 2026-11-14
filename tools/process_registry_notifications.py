@@ -19,7 +19,7 @@ class ProcessNotificationBatch:
 
     def _live(self, registry) -> list:
         return [(event, text) for event, text in self.notifications
-                if not registry.is_completion_consumed(event.get("session_id", ""))]
+                if not registry.is_completion_notice_retired(event.get("session_id", ""))]
 
     def render(self, registry) -> str | None:
         messages = [text for _event, text in self._live(registry)]
@@ -582,6 +582,15 @@ def format_process_notification(evt: dict) -> str | None:
         # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
         _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
+    # Spawn age and supersession stamp the header so a lane can tell a fresh result from one
+    # surfacing long after spawn or already re-run past. Stamped after the sentence's period so
+    # every existing "[IMPORTANT: ... (exit code N)." prefix consumer keeps matching.
+    # Age is measured at render time: a checkpoint-recovered notice replayed hours later
+    # intentionally shows the large age.
+    _stamp = (f" Started {_format_age(time.time() - float(evt['started_at']))} ago."
+              if evt.get("started_at") else "")
+    if evt.get("superseded_by"):
+        _stamp += f" SUPERSEDED by {evt['superseded_by']}."
     return (
-        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
+        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).{_stamp}\n"
         f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")

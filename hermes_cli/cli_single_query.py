@@ -275,6 +275,9 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                     _follow_up,
                     owns_event=getattr(cli, "_owns_process_notification", None),
                     linger_budget=quiet_notify_linger_seconds(),
+                    # A receipt block in this run's answer suppresses late clean-completion wakes
+                    # so the harvested receipt is not displaced (sys-hyfnad).
+                    final_answer=result.get("final_response", ""),
                 )
             finally:
                 cli._quiet_notify_linger_done = True

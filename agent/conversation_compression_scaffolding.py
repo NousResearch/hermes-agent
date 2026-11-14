@@ -23,8 +23,8 @@ def _message_text(message: Any) -> str:
 
 
 _SYNTHETIC_USER_FLAGS = (
-    "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
-    "_dropped_toolcall_nudge",
+    "_todo_snapshot_synthetic", "_pruned_skill_notice_synthetic", "_empty_recovery_synthetic",
+    "_verification_stop_synthetic", "_pre_verify_synthetic", "_dropped_toolcall_nudge",
 )
 
 

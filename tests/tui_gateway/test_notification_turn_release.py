@@ -94,7 +94,8 @@ def test_a_loop_wakeup_whose_send_cannot_start_hands_the_turn_back(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no free worker")))
     ticks: list = []
     mgr = SimpleNamespace(abandon_tick=lambda: ticks.append("abandoned"),
-                          complete_tick=lambda text: ticks.append("completed") or {})
+                          complete_tick=lambda text: ticks.append("completed") or {},
+                          record_slash_noop=lambda progressed: {})
     session = _claimed_session()
 
     server._notif_slash_loop_tick("rid", "sid", session, mgr, "/skill go")

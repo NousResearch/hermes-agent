@@ -2416,6 +2416,84 @@ gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/u
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::
 
+## Host contract
+
+How the host actually runs plugin code: threading, schema semantics, the hook surface, and lifecycle.
+Per-hook signatures live in the [Hook reference](#hook-reference) and the
+[Event Hooks reference](../../user-guide/features/hooks.md#plugin-hooks); injected session context
+(`task_id`, `session_id`, `platform`, ...) is the `**kwargs` contract in
+[Step 4](#step-4-write-the-tool-handlers).
+
+### Handler threading (sync vs async)
+
+- **Sync handlers run inline** on the dispatch thread (`tools/registry.py::dispatch`).
+- **Async handlers** (`is_async=True`) are bridged by the dispatcher through `_run_async()`
+  (`model_tools.py`): when the calling thread already has a running event loop — the gateway, the
+  TUI/Desktop server, any async caller — the coroutine is run on a fresh **executor thread** with its
+  own private loop and the result is waited on there.
+- **The `asyncio.run` deadlock rule:** never call `asyncio.run()` inside a handler, directly or via a
+  library. Under the gateway the surrounding thread already has a running loop, where `asyncio.run()`
+  raises `RuntimeError: asyncio.run() cannot be called from a running event loop`; an ad-hoc nested
+  loop can also hang against the host loop waiting on the same resources. Opt into the host bridge
+  instead: register the handler `async` (`is_async=True`), or use the `_run_async()` pattern (fresh
+  thread, fresh loop, cancellable) for sync call sites.
+- Hook callbacks follow the same rule: `invoke_hook()` bridges async callbacks through a helper
+  thread; async fire sites use `ainvoke_hook()`, which awaits on the live loop. Hot-path hooks are
+  bounded by `plugins.hook_callback_timeout` (default 30s) and a timed-out callback is abandoned, not
+  joined: `pre_tool_call` fails closed (block directive), other bounded hooks fail open.
+
+### Tool schema: advice, not enforcement
+
+The `parameters` schema you register is handed to the provider. Between the model's tool call and
+your handler the host applies one conservative, schema-guided type coercion pass
+(`tools/arg_coercion.py` repairs string-typed values — `"42"` where you declared `"integer"` becomes
+`42`, `"true"` becomes `True`, JSON-encoded strings are parsed — and keeps the original whenever a
+repair is not unambiguous), but it does **not enforce or reject** anything. The dispatcher
+`json.loads` the arguments (malformed JSON degrades to `{}`) and forwards the dict, filtering
+injected context kwargs by your signature. Strict-mode providers approximate the schema; others omit
+optional keys or add extras. Validate inside
+the handler and return error JSON for bad input (see
+[Common mistakes](#common-mistakes)). Return values *are* checked: handlers must return a JSON
+**string** — other result types are normalized or surfaced as a `tool_result_contract` error.
+
+### Hook kinds
+
+The complete registered surface is `VALID_HOOKS` in `hermes_cli/plugins.py` (source of truth; it also
+defines the response surface shell hooks may answer). Registering a name outside that set is logged
+as a warning at registration — the callback is still stored but never fires. Every kind at build
+HEAD:
+
+| Kind | Hooks | Return value |
+|------|-------|--------------|
+| Policy (can veto/mutate) | `pre_tool_call`, `pre_verify`, `pre_gateway_dispatch`, `pre_transcription` | directive dict (block / continue / skip / rewrite / mutated fields); anything else = allow |
+| Policy, currently ignored | `pre_command` | ignored in v1 |
+| Transform | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `transform_api_error_classification` | replacement value; merge rules per hook in the [hook reference](../../user-guide/features/hooks.md#plugin-hooks) |
+| Context injection | `pre_llm_call` | `{"context": ...}` injected into the current turn |
+| Turn / API observers | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call` | ignored (payloads carry `turn_id` / `api_request_id` / `task_id` / `session_id` correlation fields) |
+| Streaming observers | `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_room_member_activity` | ignored; queued off the token path, payloads immutable |
+| Session lifecycle | `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_session_delete`, `post_compaction`, `agent_loop_stopped`, `on_skill_lifecycle` | ignored |
+| Gateway boundary | `gateway_platform_event`, `post_gateway_admission` | ignored; normalized envelopes only, never raw SDK or adapter handles |
+| Approval / human input | `pre_approval_request`, `post_approval_response`, `on_human_input_request`, `on_human_input_resolved` | ignored (veto happens via `pre_tool_call`) |
+| Subagents | `subagent_start`, `subagent_stop` | ignored |
+| Kanban observers | `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked`, `on_kanban_worker_spawned`, `on_kanban_worker_exited`, `on_kanban_worker_stale_claim`, `on_kanban_task_updated`, `on_kanban_dispatch_tick` | ignored; fire after the board DB commit — `claimed` in the dispatcher process, the rest in the worker |
+
+All callbacks should accept `**kwargs` — payload fields grow additively. A crashing callback is
+logged and skipped; other plugins and the agent continue normally.
+
+### Lifecycle, settings, and reconnect
+
+- **Settings saves and toggles** (`plugins.entries.<id>.*`, the `hermes plugins` UI, Desktop) are read
+  at plugin discovery; the interactive UI says it plainly — *changes take effect on next session*.
+- **Mid-run activation:** installs and enables force a rescan. Hooks, gateway commands, and platform
+  handlers rewire live; tools and prompt sections apply from the **next session**, and a plugin's MCP
+  servers connect only on `mcp.reload` or next session — see
+  [Mid-run plugin loading](#mid-run-plugin-loading-what-activates-now-vs-next-session).
+- **No un-wire:** disabling a plugin never tears down already-wired adapters in a running process;
+  live connections keep the old handlers until the gateway restarts.
+- **Reconnect:** the host owns adapter connections (trust gates, circuit breaker, reconnect). A
+  factory re-registered by a forced rescan is hoisted into the *existing* client — the connection is
+  not dropped and re-established. Restarting the gateway is the only way to reload a plugin's code.
+
 ## Specialized plugin types
 
 Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.

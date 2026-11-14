@@ -40,6 +40,7 @@ from tools.process_registry_env_scope import ProcessEnvScopeMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
+from tools.process_registry_completion_notice import ProcessCompletionNoticeMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
@@ -677,7 +678,8 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin):
+class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin,
+                  ProcessOwnershipMixin, ProcessEnvScopeMixin, ProcessCompletionNoticeMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -709,11 +711,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
-        # Sessions merely *observed* exited via poll(). poll() is read-only and must NOT
-        # mark consumed (a status check would suppress the watcher's autonomous delivery
-        # turn), but the CLI has the poll result inline in the same turn, so
-        # drain_notifications() skips these to avoid a duplicate [SYSTEM: ...];
-        # gateway/tui watchers deliberately ignore this set.
+        # Sessions whose exit receipt was handed to the agent inline by poll() (the result
+        # carried the exit fields), or explicitly retired. The pending completion notice
+        # is redundant — re-injecting it forced a no-op acknowledgement turn after the
+        # work was already reconciled. Watchers gate on ``is_completion_notice_retired``,
+        # so this retires the gateway/tui delivery turn too; a poll of a *running* (or
+        # still-finalizing) session is read-only and retires nothing.
+        self._notice_retired: set = set()
+        # Sessions merely *observed* exited via poll(). Kept for the CLI same-turn drain
+        # dedup (drain_notifications() skips these to avoid a duplicate [SYSTEM: ...]).
         # See #8228.
         self._poll_observed: set = set()
         # Global watch-match circuit breaker across all sessions.
@@ -1578,6 +1584,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
+            _superseded = self._superseded_by(session)
             notification = {
                 "type": "completion",
                 "session_id": session.id,
@@ -1593,6 +1600,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
+                **({"superseded_by": _superseded} if _superseded else {}),
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
@@ -1648,10 +1656,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         reader = session._reader_thread
         return (session._reader_finish_requested.is_set() and not session._completion_event.is_set()
                 and reader is not None and reader.is_alive())
-
-    def is_completion_consumed(self, session_id: str) -> bool:
-        """True once wait/log/kill/acked poll consumed it; keyed by the full id, never a short prefix."""
-        return session_id in self._completion_consumed
 
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on
@@ -1757,17 +1761,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _oneshot_completion_wait_seconds() -> float:
         """Linger (s) for one-shot exits with pending notify_on_complete processes; 0 disables."""
         return ProcessRegistry._config_seconds("oneshot_completion_wait_seconds", 600.0)
-
-    def _drain_should_skip(self, session_id: str, *, skip_poll_observed: bool = True) -> bool:
-        """Skip a completion the CLI agent already has this turn — consumed via wait/log
-        or observed inline via poll(). Gateway/tui watchers check only
-        ``is_completion_consumed`` so a read-only poll never suppresses their turn.
-
-        Skips when the agent has either truly consumed the output (wait/log → ``_completion_consumed``) or
-        observed the exit inline via poll() (``_poll_observed``). In both cases the CLI agent already has
-        the result this turn, so injecting a [SYSTEM: ...] completion would be a duplicate (#8228).
-        """
-        return session_id in self._completion_consumed or (skip_poll_observed and session_id in self._poll_observed)
 
     @staticmethod
     def _surface_child_process_notifications() -> bool:
@@ -2009,9 +2002,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             result.update(self._exit_fields(session))
             # Read-only unless acknowledged: _poll_observed is CLI inline dedup only; a plain status check must
             # not suppress the watcher's autonomous turn (#10156), an acknowledged handled result must (#94455).
-            # A preview taken before the reader's final drain is partial and must not suppress the completion.
+            # An exited non-finalizing poll also retires the pending notice: the exit receipt is
+            # now in the agent's tool result, so the watcher must not inject a stale [IMPORTANT:
+            # ...] turn after the work was reconciled inline. A preview taken before the reader's
+            # final drain is partial: still read-only.
             if not finalizing:
                 self._poll_observed.add(session.id)
+                self.retire_completion_notice(session.id)
                 if acknowledge:
                     self._completion_consumed.add(session.id)
         if session.detached and not session.output_log:
@@ -2564,6 +2561,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
+        self._notice_retired &= tracked
 
 
 

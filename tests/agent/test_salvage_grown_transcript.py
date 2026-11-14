@@ -66,7 +66,7 @@ def test_salvage_drops_todo_only_as_last_resort():
 
 def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
     """7a16840add couples the reload notice into the snapshot — it survives."""
-    from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+    from agent.conversation_compression_skill_prune import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
 
     notice = (
         f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"

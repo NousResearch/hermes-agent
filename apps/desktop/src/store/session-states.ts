@@ -1785,9 +1785,50 @@ export function knownOwnerForSession(sessionId: null | string | undefined, rows 
   return sessionOwnerByRuntimeId.get(sessionId) ?? durable
 }
 
-// Session-scoped REST reads (detail / messages / timeline) resolve their
-// connection pin through the SAME owner ladder as RPC dispatch (#125372).
-setSessionOwnerResolver(knownOwnerForSession)
+// A runtime owner proves routing, not persistence. File endpoints only accept
+// persisted sessions. Keep canonical stored ids (including closed/unlisted
+// artifacts) intact, but reject a known live-only identity until it is bound.
+function sessionFileStoredId(id: string): string | null {
+  // Closed persisted identities are as authoritative as open tile identities.
+  if (getSessionOwnerHint(id) || ownerLookupSessionRows().some(row => row.id === id)) {
+    return id
+  }
+
+  const stored = storedSessionIdForRuntimeId(id)
+
+  if (stored) {
+    return stored
+  }
+
+  return $sessionStates.get()[id] || sessionOwnerByRuntimeId.has(id) || $activeSessionId.get() === id ? null : id
+}
+
+// Use the already admitted stored identity without remapping it through stale
+// runtime state. Keep the original runtime key for its proven connection pin.
+function sessionFileOwner(id: string, storedId: string): SessionOwnerScope {
+  const durable =
+    sessionTileOwner(storedId) ?? getSessionOwnerHint(storedId) ?? knownSessionOwner(ownerLookupSessionRows(), storedId)
+
+  const durableProfiles = typeof durable === 'string' ? [durable] : [durable?.profile, durable?.targetProfile]
+
+  if (isSessionOwnerRoute(durable)) {
+    return durable
+  }
+
+  const runtime = sessionOwnerByRuntimeId.get(id)
+  const runtimeProfile = typeof runtime === 'string' ? runtime : runtime?.targetProfile || runtime?.profile
+  const profiles = durableProfiles.filter(Boolean).map(profile => profile!.trim())
+
+  if (runtimeProfile && profiles.length && !profiles.includes(runtimeProfile.trim())) {
+    throw new Error('The session file owner conflicts with the persisted session profile')
+  }
+
+  return runtime ?? durable
+}
+
+// Keep the shared RPC/read ladder unchanged; downloads additionally admit a
+// persisted identity and retain the original runtime's exact owner evidence.
+setSessionOwnerResolver(knownOwnerForSession, sessionFileStoredId, sessionFileOwner)
 
 /** The profile whose chat is on screen — the rail's scope.
  *

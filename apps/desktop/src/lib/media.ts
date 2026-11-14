@@ -1,6 +1,13 @@
 import { fileUrlToNativePath, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } from '@/api/client'
+import {
+  capabilityScoped,
+  hermesApi,
+  type OwnerScope,
+  sessionFileDownloadOrigin,
+  sessionFileOwnerScope,
+  type SessionReadOwnerRoute
+} from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
@@ -452,13 +459,44 @@ export async function downloadGatewayMediaFile(
   }
 
   const conn = $connection.get()
-  const owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
+  let owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
+  let sessionId = origin.sessionId
+
+  if (sessionId) {
+    const resolved = sessionFileDownloadOrigin(sessionId)
+    const route: SessionReadOwnerRoute | null | undefined =
+      typeof resolved.owner === 'string' ? { profile: resolved.owner } : resolved.owner
+    const profile = route?.targetProfile || route?.profile
+    const explicitProfiles = [origin.owner?.profile, origin.profile].filter(Boolean)
+
+    if (
+      (profile && explicitProfiles.some(value => value !== profile && value !== route?.profile)) ||
+      (route?.connectionId && origin.owner?.connectionId && route.connectionId !== origin.owner.connectionId) ||
+      (!profile && origin.owner?.profile && origin.profile && origin.owner.profile !== origin.profile)
+    ) {
+      throw new Error('File session owner conflict; reopen the chat and retry')
+    }
+
+    if (profile) {
+      // An absent connection is a proven legacy profile-pool route, NOT the
+      // foreground connection. Keep exact pins (including local) verbatim.
+      owner = { connectionId: route?.connectionId ?? origin.owner?.connectionId, profile }
+    } else if (!origin.owner?.profile && !origin.profile) {
+      throw new Error('The file session owner could not be resolved; reopen the chat and retry')
+    } else {
+      // Unlisted artifacts can carry a caller-proven origin. Never use the
+      // window profile as proof, even when only the connection was explicit.
+      owner = { ...owner, profile: origin.owner?.profile || origin.profile }
+    }
+
+    sessionId = resolved.sessionId
+  }
 
   return window.hermesDesktop.saveGatewayFile({
     ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
     path,
     ...(owner.profile ? { profile: owner.profile } : {}),
-    ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
+    ...(sessionId ? { sessionId } : {}),
     suggestedName:
       origin.suggestedName ||
       mediaName(path).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {

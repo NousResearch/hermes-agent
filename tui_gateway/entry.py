@@ -331,8 +331,10 @@ def main():
 
 
 def _serve():
-    # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
+    # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it,
+    # and stray print() must be shunted to stderr so it cannot corrupt the protocol.
     server._stdio_is_rpc_channel = True
+    server._reserve_stdout_for_rpc()
     try:
         server.install_tui_message_injector()
     except Exception:

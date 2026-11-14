@@ -436,23 +436,24 @@ Hermes reads these from installed metadata without importing your code, so
 `hermes plugins capabilities` and the consent flow stay accurate for pip
 installs.
 
-### Use the user's Codex sign-in (core-made requests)
+### Use the user's provider sign-in (core-made requests)
 
-A plugin that needs the user's ChatGPT / Codex subscription (minting an OpenAI
-Realtime client secret, calling a Codex backend endpoint) must **not** read,
-refresh or rewrite `~/.codex/auth.json` or Hermes's `auth.json`. Codex refresh
-tokens are single-use: a plugin that refreshes on its own races Hermes's locked
-refresh, and the loser's rotation chain gets revoked, signing the user out.
-Ask Hermes to make the request instead. Hermes resolves the credential through
-its own refresh path, attaches `Authorization` itself and returns only the
-response. Your code never sees the token.
+A plugin that needs the user's subscription sign-in — ChatGPT / Codex, Grok / xAI,
+or any provider Hermes signs in to — must **not** read, refresh or rewrite the
+vendor's token file (`~/.codex/auth.json`) or Hermes's `auth.json`. Refresh tokens
+are single-use: a plugin that refreshes on its own races Hermes's locked refresh,
+and the loser's rotation chain gets revoked, signing the user out. Ask Hermes to
+make the request instead. Hermes resolves the credential through its own refresh
+path, attaches `Authorization` itself and returns only the response. Your code
+never sees the token.
 
-Declare the sign-in in `plugin.yaml`:
+Declare every sign-in the plugin uses in `plugin.yaml`:
 
 ```yaml
-name: live-voice
+name: provider-usage
 requires_auth:
   - openai-codex
+  - xai-oauth
 ```
 
 Then call the public helper. It is a plain function, so dashboard plugins
@@ -462,25 +463,26 @@ Then call the public helper. It is a plain function, so dashboard plugins
 ```python
 from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
 
-def mint_client_secret(session: dict) -> dict:
+def read_credits() -> dict:
     try:
         resp = credentialed_provider_request(
-            "openai-codex", "POST", "https://api.openai.com/v1/realtime/client_secrets",
-            json={"session": session}, timeout=15)
+            "xai-oauth", "GET", "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+            timeout=15)
     except ProviderNotSignedIn as exc:
         return {"ok": False, "error": str(exc)}  # tells the user how to sign in
     if resp.status != 200:
-        return {"ok": False, "error": f"client secret failed ({resp.status}): {resp.text[:300]}"}
+        return {"ok": False, "error": f"credits failed ({resp.status}): {resp.text[:300]}"}
     return {"ok": True, **resp.json()}
 ```
 
-This replaces a hand-rolled helper that read `~/.codex/auth.json`, POSTed to
-`auth.openai.com/oauth/token` when the token was near expiry and wrote the
-result back. Delete that code; there is no refresh step left for the plugin.
+This replaces a hand-rolled helper that read a vendor token file, POSTed to the
+provider's token endpoint when the token was near expiry and wrote the result
+back. Delete that code; there is no refresh step left for the plugin.
 
-`credentialed_provider_request(provider, method, url, *, json=None, headers=None, timeout=30.0)`
+`credentialed_provider_request(provider, method, url, *, json=None, content=None, headers=None, timeout=30.0)`
 returns a `ProviderResponse` (`status`, `headers`, `body`, `.text`, `.json()`).
-The rules:
+Send `json=` for a JSON body or `content=` for raw bytes (a gRPC-web frame, for
+example) with your own `Content-Type`; passing both is a `ValueError`. The rules:
 
 - **Declared plugins only.** The caller is the plugin whose file is on the call
   stack. Hermes finds it under the plugins directory and reads its
@@ -488,31 +490,47 @@ The rules:
   and code outside any installed plugin, gets `PermissionError`. Call the helper
   from your own function. Handing the bare helper to `run_in_executor` leaves no
   plugin frame on the stack, so the call is refused.
-- **Provider origins only.** For `openai-codex` the token is sent only to
-  `https://chatgpt.com` and `https://api.openai.com`. Any other URL raises
-  `PermissionError` before a request is made. A profile whose Codex credential
-  routes to a custom gateway is refused too, because that key belongs to the
-  gateway.
+- **Provider origins only.** Each sign-in carries its own allowlist: the token is
+  sent only there, and any other URL raises `PermissionError` before a request is
+  made. `openai-codex` today is `chatgpt.com` and `api.openai.com`; `xai-oauth` is
+  `cli-chat-proxy.grok.com`, `grok.com` and `api.x.ai`. A URL with embedded
+  `user:password@` is refused, and a profile whose credential routes to a custom
+  gateway is refused too, because that key belongs to the gateway.
 - **No redirects.** A 3xx response comes back as-is and is never followed, so
   the header cannot reach a third host.
-- **Profile-scoped.** The credential is the active profile's Codex sign-in, the
-  same one chat uses (`hermes auth add openai-codex`, or the Codex sign-in in the
-  desktop app). When there is none you get `ProviderNotSignedIn`, whose message
-  names the sign-in command.
-- Your own `headers` are sent too, except any that would replace the
-  `Authorization` (or account) headers Hermes attaches.
+- **Profile-scoped.** The credential is the active profile's sign-in for that
+  provider, the same one chat uses (`hermes auth add <provider>`, or the
+  provider's sign-in in the desktop app). When there is none you get
+  `ProviderNotSignedIn`, whose message names the sign-in command.
+- Your own `headers` are sent too, except `Authorization`, `Host` and
+  `Content-Length`, which Hermes sets from the credential, the URL and the body.
 
 `requires_auth` appears in `hermes plugins show <name>` and at install time, and
 a catalog re-pin that adds it asks the user before updating. Like capabilities,
 this is consent and visibility. It is **not a sandbox**: in-process plugin code
 can still read any file the user can, and reviewers reject plugins that do.
 
-**Usage panels:** don't call the usage endpoints yourself. Use
-`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`. It
-returns an `AccountUsageSnapshot` (plan, session/weekly windows with
-`used_percent` and `reset_at`) and never refreshes or rotates a credential.
-**Sign-out** belongs to Hermes, not to a plugin: point users at
-`hermes auth logout openai-codex` instead of deleting credential files.
+**Which providers, and adding one:** `credentialed_providers()` lists what a plugin can
+use today. The set is not a list in the helper: it is every provider in Hermes's own
+`PROVIDER_REGISTRY` (the data behind `hermes model`), because the allowlist is that
+provider's own API host — where Hermes already sends that credential for inference — plus
+any account host on another domain listed in `_EXTRA_HOSTS`. OAuth providers and API-key
+providers both qualify, so **a provider Hermes officially supports needs no setup at all**.
+User-defined custom providers are out of scope. When a vendor's billing page lives
+somewhere else, that is a single `_EXTRA_HOSTS` entry; nothing else changes.
+
+**API keys are read-only.** A plugin calling an API-key provider is limited to `GET` and
+`HEAD`, so it can read a balance or a usage report but cannot spend the key. OAuth
+providers keep the method the plugin asks for, because some endpoints (minting an
+ephemeral client secret) are POSTs.
+
+**Usage panels:** if core already has a reader for the provider, use it —
+`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)` returns
+an `AccountUsageSnapshot` (plan, session/weekly windows with `used_percent` and
+`reset_at`) and never refreshes or rotates a credential. Where core has no reader
+yet, `credentialed_provider_request` is the supported way to read the endpoint
+yourself. **Sign-out** belongs to Hermes, not to a plugin: point users at
+`hermes auth logout <provider>` instead of deleting credential files.
 
 ### Use your own OAuth client (Google and other APIs)
 
@@ -627,7 +645,7 @@ this Hermes understands still loads with a warning.
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
-| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
+| `requires_auth` | list of str | Providers whose credential the plugin uses through Hermes (any official provider id; see `credentialed_providers()`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's provider sign-in](#use-the-users-provider-sign-in-core-made-requests). |
 | `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
 
 ```yaml

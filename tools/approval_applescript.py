@@ -114,7 +114,7 @@ def _classify(text: str) -> set[str]:
             # opens no quote), so only a backslash keeps a `$` or backtick from expanding.
             opaque = opaque or (not quoted and re.search(r"(?<!\\)(?:\\\\)*[$`]", body) is not None)
             program += "\n" + body
-        if opaque or _expands(args):
+        if opaque or _expands(_mask_redirect_targets(args)):
             found.add(OSASCRIPT_OPAQUE_DESCRIPTION)
         if jxa or _RISKY_RE.search(program) or _RISKY_RE.search(_strip_layout(program)):
             found.add(OSASCRIPT_RISKY_DESCRIPTION)
@@ -173,6 +173,35 @@ def _expands(raw: str) -> bool:
     """True when *raw* holds ``$`` or a backtick the shell expands (anything outside single quotes)."""
     from tools.approval_detection import _scan_shell
     return any(kind != "quote" and quote != "'" and raw[i] in "$`" for kind, i, _, quote in _scan_shell(raw))
+
+
+def _mask_redirect_targets(args: str) -> str:
+    """*args* with each output-redirect target that only expands parameters (``> "$HOME/x"``)
+    blanked: where the output goes does not change the program. A target holding ``$(...)`` or a
+    backtick runs a command and is kept, as is everything quoted (a ``>`` inside ``-e '...'``)."""
+    from tools.approval_detection import _scan_shell
+
+    steps = [(i, j, quote) for _, i, j, quote in _scan_shell(args)]
+    out = list(args)
+    k = 0
+    while k < len(steps):
+        i, _, quote = steps[k]
+        k += 1
+        if quote is not None or args[i] != ">":
+            continue
+        while k < len(steps) and steps[k][2] is None and args[steps[k][0]] in ">|&":
+            k += 1
+        while k < len(steps) and steps[k][2] is None and args[steps[k][0]] in " \t":
+            k += 1
+        first = k
+        while k < len(steps) and not (steps[k][2] is None and args[steps[k][0]] in " \t\n;&|<>()"):
+            k += 1
+        if first == k:
+            continue
+        start, end = steps[first][0], steps[k - 1][1]
+        if "$(" not in args[start:end] and "`" not in args[start:end]:
+            out[start:end] = " " * (end - start)
+    return "".join(out)
 
 
 def _osascript_program(args: str, value_options: tuple[str, ...]) -> tuple[str, bool, bool, tuple[str, bool, bool] | None]:

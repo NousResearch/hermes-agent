@@ -115,6 +115,9 @@ def test_risky_program_is_flagged(command):
     # Quotes in an unquoted heredoc body are literal: an apostrophe does not stop expansion.
     "osascript <<EOF\n-- don't alter layout\n$SCRIPT\nEOF",
     "osascript <<EOF\nget name of me -- it's me\n`cat /tmp/x.applescript`\nEOF",
+    # A redirect target that runs a command is still unreviewable.
+    "osascript -e 'get name of me' >\"$(cat /tmp/target)\"",
+    "osascript -e 'get name of me' > `cat /tmp/target`",
     "X=osascript; $X -e 'quit'",
     "$(which osascript) -e 'quit'",
     # Interpreters the detector already knows (bun/deno) carry osascript like python/node do.
@@ -146,6 +149,9 @@ def test_unreviewable_program_is_flagged(command):
     "osascript -l AppleScript -e 'get name of me'",
     # An escaped `$` in an unquoted heredoc body stays literal.
     "osascript <<EOF\nget \"costs \\$5\" -- it's literal\nEOF",
+    # Where the output of a literal read-only program goes does not change the program.
+    "osascript -e 'get name of me' > \"$HOME/name.txt\"",
+    "osascript -e 'get name of me' 2>>$TMPDIR/err.log",
     # An ordinary line continuation between arguments is not a script operand.
     "osascript \\\n  -e 'get name of me'",
     "osascript -e 'get name of me (* who *)' -e 'get \u00ac\nname of me'",

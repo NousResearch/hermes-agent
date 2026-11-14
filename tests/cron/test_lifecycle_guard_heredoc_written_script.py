@@ -52,3 +52,59 @@ def test_written_then_executed_harmless_body_stays_allowed(tmp_path):
     script = tmp_path / "build.sh"
     command = f"cat > {script} <<'EOF'\necho building\nEOF\nbash {script}"
     assert guard(command, cwd=str(tmp_path)) is False
+
+
+def _write(script, body, op=">"):
+    return f"cat {op} {script} <<'EOF'\n{body}EOF\n"
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "{w_life}bash {script}\n{w_ok}",
+        "{w_life}nohup bash {script} &\n{w_ok}",
+        "{a_life}{a_ok}bash {script}",
+        "{a_ok}{a_life}bash {script}",
+    ],
+)
+def test_every_body_written_to_a_path_is_scanned(tmp_path, shape):
+    """A later write to the same path must not hide an earlier lifecycle body: the script may run
+    between the writes, and ``>>`` keeps every appended body."""
+    script = tmp_path / "gw.sh"
+    command = shape.format(
+        script=script,
+        w_life=_write(script, BODY), w_ok=_write(script, "echo ok\n"),
+        a_life=_write(script, BODY, ">>"), a_ok=_write(script, "echo ok\n", ">>"),
+    )
+    assert guard(command, cwd=str(tmp_path)) is True
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        "systemd-run --user --on-active=300 /bin/bash -c '{script}'",
+        "nohup sh -c 'sleep 300; {script}' &",
+        "sh -c 'bash {script}'",
+        "su -c 'bash {script}'",
+        "env -S 'bash {script}'",
+        "bash -c \"sh -c 'bash {script}'\"",
+    ],
+)
+def test_written_script_run_from_nested_shell_payload_blocks(tmp_path, run):
+    script = tmp_path / "gw.sh"
+    command = _write(script, BODY) + f"chmod +x {script}\n" + run.format(script=script)
+    assert guard(command, cwd=str(tmp_path)) is True
+
+
+def test_nested_payload_running_harmless_written_script_stays_allowed(tmp_path):
+    script = tmp_path / "build.sh"
+    command = _write(script, "echo building\n") + f"sh -c 'bash {script}'"
+    assert guard(command, cwd=str(tmp_path)) is False
+
+
+def test_large_write_then_run_is_not_charged_twice(tmp_path):
+    """The body is a substring of the already-charged command: scanning it as the script must not
+    exhaust the line budget a second time."""
+    script = tmp_path / "big.sh"
+    body = "echo line\n" * 10_000
+    assert guard(_write(script, body) + f"bash {script}", cwd=str(tmp_path)) is False

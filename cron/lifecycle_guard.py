@@ -979,31 +979,33 @@ def _heredoc_write_targets(unit: str) -> Iterator[str]:
                 yield token
 
 
-def _heredoc_written_scripts(command: str, cwd: Optional[str]) -> dict[Path, str]:
-    """Map each path a heredoc in *command* writes to the body it writes. The file does not exist
-    yet when the guard runs, so a later ``bash P`` / ``systemd-run P`` in the same command can only
-    be scanned through the body text (#148561)."""
+def _collect_heredoc_written_scripts(
+    command: str, cwd: Optional[str], written: Optional[dict[Path, list[str]]],
+) -> dict[Path, list[str]]:
+    """Add every body a heredoc in *command* writes to a path to *written*. The file does not exist
+    yet when the guard runs, so a later ``bash P`` / ``systemd-run P`` can only be scanned through
+    the body text (#148561). EVERY body is kept, not the last: the script may run between two
+    writes (``>`` then run then overwrite) or hold several appended bodies (``>>``)."""
     from tools.shell_heredoc import iter_heredoc_bodies
 
-    written: dict[Path, str] = {}
+    written = {} if written is None else written
     for unit, body in iter_heredoc_bodies(command):
         for target in _heredoc_write_targets(unit):
             for path in _resolved_or_nothing(target, cwd):
-                written[_resolve_lenient(path)] = body
+                bodies = written.setdefault(_resolve_lenient(path), [])
+                if body not in bodies:
+                    bodies.append(body)
     return written
 
 
-def _walk_candidates(
-    command: str, walk_command: str, cwd: Optional[str], executed: bool,
-) -> tuple[list[tuple[Path, bool]], dict[Path, str]]:
-    """``(candidates, written)`` for the referenced-script walk: executed-view paths first, then
-    paths only mentioned in masked bodies, plus the heredoc bodies this command writes to a path.
-    A body the same command writes and then runs is that script's text: the file does not exist
-    yet at scan time (#148561). A body that is only written stays documentation (#88336)."""
+def _walk_candidates(command: str, walk_command: str, cwd: Optional[str], executed: bool) -> list[tuple[Path, bool]]:
+    """Referenced-script candidates: executed-view paths first, then paths only mentioned in masked
+    bodies. A heredoc body written to a candidate path is that script's text (see the walk); a body
+    that is only written stays documentation (#88336)."""
     candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
         candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
-    return candidates, (_heredoc_written_scripts(command, cwd) if candidates else {})
+    return candidates
 
 
 # --- referenced-script reading ----------------------------------------------------------------
@@ -1147,22 +1149,30 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    written: Optional[dict[Path, list[str]]] = None, charge: bool = True,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
-    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944)."""
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
+
+    *written* maps paths to the heredoc bodies written to them anywhere in the walk so far. It is
+    shared by every depth so a nested ``sh -c 'bash P'`` / ``systemd-run bash -c P`` payload still
+    resolves P to the body its parent wrote. ``charge=False`` is only for such a body: it is a
+    substring of text already charged, and each body is popped so it is scanned at most once."""
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
-    if not budget.charge_text(command):
+    if charge and not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
+    written = _collect_heredoc_written_scripts(command, cwd, written)
 
-    def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
+    def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, written=written,
+            charge=charge,
         )
 
     # The walks below keep the lenient masked view — NOT the stricter one `_direct_lifecycle_scan`
@@ -1184,11 +1194,9 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates, written = _walk_candidates(command, walk_command, cwd, executed)
-
-    for script_path, candidate_executed in candidates:
-        written_body = written.pop(_resolve_lenient(script_path), None)
-        if written_body and recurse(written_body, cwd, candidate_executed):
+    for script_path, candidate_executed in _walk_candidates(command, walk_command, cwd, executed):
+        written_bodies = written.pop(_resolve_lenient(script_path), None)
+        if written_bodies and recurse("\n".join(written_bodies), cwd, candidate_executed, charge=False):
             return True
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):

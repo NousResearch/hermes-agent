@@ -1066,7 +1066,10 @@ class TestSessionRowExistsBeforePreflightCompaction:
         """#71998 persistence: in-place ``archive_and_compact`` writes the current-turn user
         row BEFORE the prologue appends the ``pre_llm_call`` text part, and the crash persist
         identity-skips compacted dicts — the part must be pushed into that row, or a
-        resumed session replays a view the model never saw."""
+        resumed session replays a view the model never saw. The row is the text the flush
+        stores for the same parts (``[screenshot]`` for the image), never the base64."""
+        from agent.session_persistence import _durable_content
+
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-inplace-mm"
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
@@ -1081,9 +1084,9 @@ class TestSessionRowExistsBeforePreflightCompaction:
             assert agent._last_compaction_in_place is True
             live = ctx.messages[ctx.current_turn_user_idx]["content"]
             assert live == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
-            # Reload: the durable row carries the same parts the model saw.
+            # Reload: the durable row carries the parts the model saw, as the flush stores them.
             reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
-            assert reloaded[-1]["content"] == live
+            assert reloaded[-1]["content"] == _durable_content(live)
             assert reloaded[-1]["display_metadata"][TYPED_ASK] == "what is this"  # backfilled with the part
         finally:
             db.close()

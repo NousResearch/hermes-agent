@@ -107,6 +107,13 @@ def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker)
             return tuple(conn.execute("SELECT content, api_content FROM messages WHERE session_id=? AND role='user' "
                                       "ORDER BY id DESC LIMIT 1", (sid,)).fetchone())
 
+    def owns_its_row(msg):  # the live dict holds the rewritten row's digest, so its next flush does not adopt it
+        from agent.message_metadata import DB_ROW_SNAPSHOT
+        from agent.transcript_repair import transcript_row_snapshot
+        with db._read_ctx() as conn:
+            row = conn.execute("SELECT * FROM messages WHERE id=?", (msg['_row_id'],)).fetchone()
+        return msg.get(DB_ROW_SNAPSHOT) == transcript_row_snapshot(row)
+
     durable = {}
     for sid, sdb in (('direct', db), ('owned', store)):
         agent = types.SimpleNamespace(_session_db=sdb, session_id=sid, _session_persist_lock=threading.Lock(),
@@ -120,9 +127,9 @@ def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker)
                                                {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]}]
         sdb.append_messages_batch(sid, parts)
         _append_multimodal_context(agent, parts[0], '', 'PLUGIN CONTEXT', preflight_compressed=False)
-        durable[sid] = (sidecar, newest_user(sid)[0])
+        durable[sid] = (sidecar, newest_user(sid)[0], owns_its_row(parts[0]))
     assert durable['owned'] == durable['direct'] == (('question', 'question\n\nPLUGIN CONTEXT'),
-                                                     'look\n[screenshot]\nPLUGIN CONTEXT')
+                                                     'look\n[screenshot]\nPLUGIN CONTEXT', True)
     foreign = db.append_message('foreign', 'user', 'private')
     assert store.set_user_message_content('owned', foreign, 'overwritten') == 0
     assert store.set_message_api_content('owned', foreign, 'private', 'injected') == 0

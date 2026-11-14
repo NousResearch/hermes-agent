@@ -798,17 +798,22 @@ Source: `agent/prompt_caching.py`
 Reduces input token costs by ~75% on multi-turn conversations by caching the
 conversation prefix. Uses Anthropic's `cache_control` breakpoints.
 
-### Strategy: system_and_3
+### Strategy: static prefix, system prompt, last two messages
 
 Anthropic allows a maximum of 4 `cache_control` breakpoints per request. Hermes
-uses the "system_and_3" strategy:
+spends them as follows:
 
 ```
-Breakpoint 1: System prompt           (stable across all turns)
-Breakpoint 2: 3rd-to-last non-system message  ─┐
-Breakpoint 3: 2nd-to-last non-system message   ├─ Rolling window
-Breakpoint 4: Last non-system message          ─┘
+Breakpoint 1: static system prefix            (identical across turns and sessions)
+Breakpoint 2: end of the system prompt        (stable across all turns)
+Breakpoint 3: 2nd-to-last non-system message  ─┐ Rolling window
+Breakpoint 4: last non-system message          ─┘
 ```
+
+When the system prompt has no separable static prefix, it carries one breakpoint
+and the rolling window grows to the last 3 non-system messages. On native
+Anthropic routes that cache the tool definitions, the last tool carries the
+breakpoint that the end of the system prompt would otherwise take.
 
 ### How It Works
 
@@ -842,7 +847,7 @@ The marker is applied differently based on content type:
 
 3. **Compression cache interaction**: After compression, the cache is invalidated
    for the compressed region but the system prompt cache survives. The rolling
-   3-message window re-establishes caching within 1-2 turns.
+   message window re-establishes caching within 1-2 turns.
 
 4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
    sessions where the user takes breaks between turns.

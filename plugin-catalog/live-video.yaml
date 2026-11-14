@@ -1,13 +1,13 @@
 name: live-video
 repo: https://github.com/dacheah/hermes-live-video
-sha: 22db03270499e6c224cf1148d944f54ad3ba3d9e
+sha: 66c5479d0bdb3964375801d4e49990c83908ac05
 subdir: ""                  # the plugin is the repository root
 description: "Give Hermes eyes in a live voice conversation. Open a page on your phone, talk, and the agent answers in duplex voice while seeing the camera; ask to be told when something comes into view and the relay watches the frames for 90 seconds, verifies a sighting against the image before claiming it, and says it once. The six-action tool starts the relay, hands you the URL to open, and replays what a session saw. Disclosure — audio and camera frames stream from your browser to a relay this plugin starts on port 8098 (loopback by default; a LAN bind is opt-in and protected by a token minted per start), and from there to generativelanguage.googleapis.com (Gemini Live, which also answers watch checks) using GEMINI_API_KEY read from Hermes' secret scope; `start` spawns `node server.js` from the plugin's own directory as a background process, which spawns a Python frame-change tracker (numpy, Pillow, torch); the tool reads the relay's transcript.log and server.log back to the agent; watch verification spends the key's quota. No telemetry, and the key is never written to disk."
 maintainer: dacheah
 tier: community
 category: voice
 requires_hermes: ">=0.22.5"
-version: "1.3.6"
+version: "1.3.7"
 docs_url: https://github.com/dacheah/hermes-live-video#readme
 platforms:
   - linux

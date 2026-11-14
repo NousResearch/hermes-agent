@@ -350,6 +350,11 @@ def _resolve_char(pk: ParsedKey, base_char: str, ctrl: int, alt: int, shift: int
         if pk.base and chr(pk.base).isascii():
             base_char = chr(pk.base)
         lowered = base_char.lower()
+        if not lowered.isascii():
+            # Control bytes exist only for ASCII. Masking a non-ASCII codepoint names an
+            # unrelated key (Ctrl+м, U+043C, is 0x1C: Ctrl+\), and 'İ'.lower() is two
+            # characters, so without a reported base key there is nothing to resolve.
+            return None
         member = getattr(Keys, f"Control{lowered.upper()}", None) if lowered.isalpha() else None
         if member is None and lowered.isdigit():
             # Ctrl+0..9 have their own Keys members; they do not produce control

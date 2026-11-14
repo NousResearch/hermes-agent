@@ -250,6 +250,23 @@ def test_base_layout_key_keeps_shortcuts_working_off_latin(cp, base_cp, Keys):
     assert resolve(csi_u(cp, P.CTRL, base=base_cp), Keys) == plain
 
 
+def test_ctrl_never_masks_a_non_ascii_key_into_another_keys_control_byte(Keys):
+    """Control bytes exist only for ASCII: Ctrl+м (U+043C) masked to 0x1C is Ctrl+\\, a
+    chord nobody pressed. With no base key reported there is no answer to give."""
+    bound = []
+    for cp in range(0x80, 0x530):              # Latin-1 Supplement through Cyrillic
+        if not chr(cp).isprintable():
+            continue
+        for bits in (P.CTRL, P.CTRL | P.ALT, P.CTRL | P.SHIFT):
+            # CSI-u without alternate keys, modifyOtherKeys, and a lone second field,
+            # which the grammar reads as the shifted key, so no base is reported.
+            for seq in (csi_u(cp, bits), f"{E}[27;{bits + 1};{cp}~", f"{E}[{cp}:118;{bits + 1}u"):
+                got = resolve(seq, Keys)
+                if got is not None:
+                    bound.append((seq[1:], got))
+    assert bound == [], f"{len(bound)} non-ASCII Ctrl chords bound to a key, e.g. {bound[:4]}"
+
+
 # ---------------------------------------------------------------------------
 # Layouts, where the terminal reports nothing and we must not guess
 # ---------------------------------------------------------------------------

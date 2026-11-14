@@ -208,6 +208,7 @@ class GatewayBusySessionMixin:
         exhausted one). An accepted leftover /steer was already taken out of the agent's buffer, so it
         keeps its usual place ahead of that event instead of vanishing.
         """
+        self._collect_unread_steer(result, session_key)
         leftover_steer = (result.get("pending_steer") or "").strip()
         if leftover_steer:
             self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
@@ -215,12 +216,43 @@ class GatewayBusySessionMixin:
         adapter._pending_messages[session_key] = pending_event
         logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
 
+    def _turn_takes_steer(self, session_key: Optional[str], running_agent: Any) -> bool:
+        """Whether the turn running ``running_agent`` can still read a steer.
+
+        The agent reads its steer buffer for the last time in the turn finalizer, yet it stays in
+        the session slot until the stream is flushed and the slot released. Text steered in that
+        window is acknowledged and read by nobody (#66704): once the turn's result is in, the
+        caller queues the message as the next turn instead.
+        """
+        if not hasattr(running_agent, "steer"):
+            return False
+        state = self._peek_session_state(session_key) if session_key else None
+        ctx = state.turn.ctx if state is not None and state.turn.agent is running_agent else None
+        return ctx is None or ctx.result_holder[0] is None
+
+    def _collect_unread_steer(self, result: Any, session_key: Optional[str]) -> None:
+        """Move a steer accepted after the finalizer's last drain into ``result["pending_steer"]``.
+
+        ``_turn_takes_steer`` closes only once the result is in, so text steered between that
+        drain and the result still sits in the agent's buffer; behind the leftover the finalizer
+        handed back, it takes the same way into the post-turn drain.
+        """
+        state = self._peek_session_state(session_key) if result and session_key else None
+        ctx = state.turn.ctx if state is not None else None
+        if ctx is None or ctx.result_holder[0] is not result:
+            return
+        drain = getattr(ctx.agent_holder[0], "_drain_leftover_steer", None)
+        late = drain() if callable(drain) else None
+        if isinstance(late, str) and late.strip():
+            result["pending_steer"] = "\n".join(filter(None, [(result.get("pending_steer") or "").strip(), late]))
+
     def _merge_leftover_steer(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
         pending_event: Optional[MessageEvent], pending: Optional[str],
     ) -> tuple[Optional[MessageEvent], Optional[str]]:
         """Fold a leftover /steer (arrived after the last tool batch) into the post-turn drain:
         the next user turn when nothing else is pending, otherwise ahead of / behind it in the FIFO."""
+        self._collect_unread_steer(result, session_key)
         leftover_steer = (result.get("pending_steer") or "").strip() if result else None
         if leftover_steer:
             if not pending and not pending_event:
@@ -749,7 +781,7 @@ class GatewayBusySessionMixin:
             _steer_all_voice = bool(_steer_media_urls) and (
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
-            if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
+            if steer_text and (plain_text or _steer_all_voice) and agent_live and self._turn_takes_steer(session_key, running_agent):
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
@@ -1270,7 +1302,7 @@ class GatewayBusySessionMixin:
 
         if running_agent is _AGENT_PENDING_SENTINEL:
             return await _queue_fallback(t("gateway.steer.queued_starting"))
-        if not running_agent or not hasattr(running_agent, "steer"):
+        if not running_agent or not self._turn_takes_steer(quick_key, running_agent):
             return await _queue_fallback(t("gateway.steer.queued_no_agent"))
         try:
             accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))

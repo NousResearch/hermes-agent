@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: maven-bio
+connector_slug: maven-bio
+description: Read-only biopharma intelligence on drugs, trials, companies, deals, and source evidence.
+source: https://mavenbio.com/integrations/mcp
+
+# Maven Bio runs a remote MCP server with native OAuth 2.1 and Dynamic Client
+# Registration over Streamable HTTP. Registered clients use a loopback
+# redirect URI, which matches Hermes's local callback listener.
+transport:
+  type: http
+  url: https://mcp.mavenbio.com
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - maven bio
+    - mavenbio
+  hosts:
+    - mavenbio.com
+
+post_install: |
+  On first connection, Hermes opens a browser to sign in with your Maven Bio
+  account. After sign-in, restart your Hermes session so the Maven Bio tools load.
+  If sign-in takes longer than the install probe allows, finish it with:
+    hermes mcp login maven-bio
+
+  Install the maven-bio plugin for the bundled research workflow skills:
+    hermes plugins install maven-bio

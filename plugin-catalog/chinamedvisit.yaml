@@ -1,0 +1,22 @@
+name: chinamedvisit
+title: ChinaMedVisit
+repo: https://github.com/AbigailDavised/chinamedvisit-mcp
+sha: 95ac3a638798a9ff02447478128dfbf9311990ab
+version: "1.0.0"
+description: "China Top Tier-3A International Medical Center (IMC) procedure cost estimator, medical travel itinerary planner, and bilingual chief physician triage through ChinaMedVisit's official MCP server (Streamable HTTP at https://chinamedvisit.com/api/mcp, no sign-in, no keys in config). Benchmarks 50+ self-pay procedures (PET-CT, 3T MRI, painless endoscopy) with 70%-90% savings vs US cash rates. Bundles the chinamedvisit workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chinamedvisit.com/api/mcp with only clinical query arguments. All tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: ChinaMedVisit
+tier: community
+category: tools
+docs_url: https://chinamedvisit.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/chinamedvisit-mcp/95ac3a638798a9ff02447478128dfbf9311990ab/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/chinamedvisit-mcp/95ac3a638798a9ff02447478128dfbf9311990ab/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/chinamedvisit-mcp/95ac3a638798a9ff02447478128dfbf9311990ab/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -69,6 +69,20 @@ def test_fs_list_sorts_and_hides_noise(client, tmp_path):
     assert all(entry["name"] not in {".git", "node_modules"} for entry in entries)
 
 
+def test_fs_list_hides_credential_stores_on_ssh_backend(client, monkeypatch):
+    """The SSH listing hides the remote home's credential stores, as the local scan does."""
+    class FakeSshFs:
+        def list_dir(self, path, _hidden_names):
+            names = [".netrc", ".ssh", "notes.txt"] if path == "/home/dev" else ["id_rsa"]
+            return {"entries": [{"name": n, "path": f"{path}/{n}", "isDirectory": n == ".ssh"} for n in names]}
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    home = client.get("/api/fs/list", params={"path": "/home/dev", "profile": "remote-dev"}).json()
+    ssh_dir = client.get("/api/fs/list", params={"path": "/home/dev/.ssh", "profile": "remote-dev"}).json()
+    assert [entry["name"] for entry in home["entries"]] == ["notes.txt"]
+    assert ssh_dir["entries"] == []
+
+
 def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
     calls = []
 

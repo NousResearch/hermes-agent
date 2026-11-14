@@ -1110,9 +1110,12 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
         try:
-            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+            listing = await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
+        # Entry paths are the SSH host's own: hide its credential stores as the local scan does.
+        listing["entries"] = [e for e in listing["entries"] if not _is_sensitive_path(PurePosixPath(e["path"]))]
+        return listing
     target = _agent_fs_path(path, profile_home=_fs_profile_home(profile))
     _hosted_fs_read_guard(target, request)
     try:

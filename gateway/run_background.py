@@ -64,7 +64,6 @@ class GatewayBackgroundMixin:
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             service_tier = self._resolve_session_service_tier(source=source)
-            self._service_tier = service_tier
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, tier=service_tier)
 
             # Enrich the prompt with image descriptions (same as the main flow).

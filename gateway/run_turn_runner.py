@@ -1428,9 +1428,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             tier = _request_service_tier(api['settings'].get('model_options'))
             if tier is not _REQUEST_OPTION_MISSING:
                 service_tier = tier
-        # Display state only (`/fast` status): one runner serves concurrent turns of every profile, so
-        # this turn's agent reads its tier from turn_route, never back from the shared slot.
-        runner._reasoning_config, runner._service_tier = reasoning_config, service_tier
+        # The tier stays turn-local (turn_route): one runner serves concurrent turns of every profile.
+        runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs, tier=service_tier)
         agent, reused_cached_agent = self._resolve_turn_agent(

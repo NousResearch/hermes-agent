@@ -777,46 +777,101 @@ _KILL_LISTING_OPTIONS = frozenset({"-l", "-L", "--list", "--table"})
 _KILL_SIGNAL_VALUE_OPTIONS = frozenset({"-s", "-n", "--signal"})
 
 
+def _is_pid_operand(token: str, pid: int, *, group: bool = False) -> bool:
+    """*token* names *pid*: ``N``, ``+N``, or (when *group*) the process-group target ``-N`` — the
+    supervised gateway leads its own process group, so a group kill reaches it too."""
+    if token[:1] == "+" or (group and token[:1] == "-"):
+        token = token[1:]
+    return token.isascii() and token.isdecimal() and int(token) == pid
+
+
 def _kill_targets_pid(args: list[str], pid: int) -> bool:
     """Whether POSIX/procps ``kill`` with *args* signals literal *pid* (listings and signal-0 probes
-    send nothing)."""
+    send nothing). A ``-N`` is a signal number until a signal or ``--`` was given; after that it is
+    a process-group target."""
     position = 0
+    signal_given = False
     while position < len(args):
         arg = args[position]
         if arg == "--":
-            return any(token.isascii() and token.isdecimal() and int(token) == pid for token in args[position + 1:])
+            return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
         if arg in _KILL_LISTING_OPTIONS or arg in ("-0", "-s0", "-n0", "--signal=0"):
             return False
         if arg in _KILL_SIGNAL_VALUE_OPTIONS:
             if args[position + 1:position + 2] == ["0"]:
                 return False
+            signal_given = True
             position += 2
             continue
-        if arg.isascii() and arg.isdecimal() and int(arg) == pid:
+        if _is_pid_operand(arg, pid, group=signal_given):
             return True
+        if arg.startswith("-"):
+            signal_given = True
         position += 1
     return False
 
 
+_STOP_PROCESS_VALUE_PARAMS = frozenset({"-id", "-name", "-n", "-processname", "-inputobject"})
+
+
 def _windows_killer_targets_pid(name: str, args: list[str], pid: int) -> bool:
-    """``taskkill /PID n`` (local only: ``/S`` names another host) or ``Stop-Process -Id n``."""
+    """``taskkill /PID n`` (local only: ``/S`` names another host) or ``Stop-Process -Id n`` —
+    also ``/PID:n`` / ``-Id:n``, comma lists split across spaces, and Stop-Process's positional Id."""
+    # `-Id 1, 2` tokenizes as `1,` `2`: rejoin comma lists before reading values.
+    args = re.sub(r"\s*,\s*", ",", " ".join(args)).split()
     lowered = [arg.lower() for arg in args]
     if name == "taskkill" and "/s" in lowered:
         return False
     flags = ("/pid", "-pid") if name == "taskkill" else ("-id",)
-    for flag, value in zip(lowered, args[1:]):
-        if flag in flags and any(part.isascii() and part.isdecimal() and int(part) == pid for part in value.split(",")):
-            return True
-    return False
+    values: list[str] = []
+    position = 0
+    while position < len(args):
+        flag, colon, inline = lowered[position].partition(":")
+        if flag in flags:
+            values.append(inline if colon else (args[position + 1] if position + 1 < len(args) else ""))
+        elif name == "stop-process" and not lowered[position].startswith("-"):
+            values.append(args[position])  # first positional operand binds to -Id
+            break
+        if name == "stop-process" and flag in _STOP_PROCESS_VALUE_PARAMS and not colon:
+            position += 1
+        position += 1
+    return any(_is_pid_operand(part, pid) for value in values for part in value.split(","))
 
 
-def _targets_gateway_pid(command: str, gateway_pid: int) -> bool:
+# Wrappers whose payload is a command STRING run in the same PID namespace; their joined operands
+# are re-scanned for the literal-PID check.
+_PID_SCAN_STRING_RUNNERS = {"eval": None, "powershell": ("-c", "-command"), "pwsh": ("-c", "-command"),
+                            "cmd": ("/c", "/k")}
+
+
+def _string_runner_payload(name: str, args: list[str]) -> Optional[str]:
+    """Command text ``eval …`` / ``powershell -c …`` / ``cmd /c …`` hands to a parser, else None."""
+    flags = _PID_SCAN_STRING_RUNNERS[name]
+    if flags is None:
+        return " ".join(args)
+    lowered = [arg.lower() for arg in args]
+    return next((" ".join(args[i + 1:]) for i, flag in enumerate(lowered) if flag in flags), None)
+
+
+# Command-substitution bodies (backtick and `$(…)`, including inside double quotes) run as commands.
+# Matched on raw text, so a single-quoted literal over-blocks — harmless for a gateway-PID kill.
+_PID_SCAN_SUBSTITUTION_RE = re.compile(r"`([^`]*)`|\$\(([^()]*)\)")
+
+
+def _targets_gateway_pid(command: str, gateway_pid: int, *, depth: int = 0) -> bool:
     """An executed ``kill`` / ``taskkill`` / ``Stop-Process`` whose LITERAL PID operand is the gateway's
     own (#149944). Dynamic PIDs (``$(pgrep …)``, ``$PPID``) are not resolved. ``sh -c`` payloads and
-    referenced scripts reach this through the recursive walk."""
+    referenced scripts reach this through the recursive walk; ``eval`` / ``powershell -c`` / ``cmd /c``
+    payloads and command substitutions are re-scanned here."""
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    for segment in _iter_command_segments(strip_inert_heredoc_bodies(command)):
+    command = strip_inert_heredoc_bodies(command)
+    if depth < _MAX_REFERENCED_SCRIPT_DEPTH:
+        for match in _PID_SCAN_SUBSTITUTION_RE.finditer(command):
+            body = match.group(1) if match.group(1) is not None else match.group(2)
+            if _targets_gateway_pid(body, gateway_pid, depth=depth + 1):
+                return True
+    for segment in _iter_command_segments(command):
         offset = 0
         while offset < len(segment) and segment[offset] in _PID_SCAN_SYNTAX_PREFIXES:
             offset += 2 if segment[offset] == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
@@ -830,6 +885,10 @@ def _targets_gateway_pid(command: str, gateway_pid: int) -> bool:
             return True
         if name in ("taskkill", "stop-process") and _windows_killer_targets_pid(name, args, gateway_pid):
             return True
+        if name in _PID_SCAN_STRING_RUNNERS and depth < _MAX_REFERENCED_SCRIPT_DEPTH:
+            payload = _string_runner_payload(name, args)
+            if payload and _targets_gateway_pid(payload, gateway_pid, depth=depth + 1):
+                return True
     return False
 
 

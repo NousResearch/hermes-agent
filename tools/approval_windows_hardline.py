@@ -39,9 +39,9 @@ def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
         (win_cmdpos + r'format-volume' + _CMDLET_END, "format filesystem (Format-Volume)"),
         (win_cmdpos + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
         (win_cmdpos + r'clear-disk' + _CMDLET_END + _PS_NOT_WHATIF, "wipe disk (Clear-Disk)"),
-        # Recursive delete of a drive ROOT (`C:\`, `C:\*`, `C:/*.*`; a glued `>nul` or PowerShell `,` ends it). `C:\build`, `C:` (the drive's cwd)
+        # Recursive delete of a drive ROOT (`C:\`, `C:\*`, `C:/*.*`; a PowerShell/cmd `,` starts or ends it, as does a glued `>nul`). `C:\build`, `C:` (the drive's cwd)
         # and a literal PowerShell `-Include *.tmp` (only matching items; `*`, a list, `"*$x"`, cmd `/s`, after `--`/`#` still wipe) fall through.
         (win_cmdpos + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))' + _PS_INCLUDE_NARROWS +
-         r'[^\n;&|]*\s(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>,]))', "recursive delete of drive root"),
+         r'[^\n;&|]*[\s,](?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>,]))', "recursive delete of drive root"),
         (cmdpos + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(?:-[^\s]*\s+)*(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
     ]

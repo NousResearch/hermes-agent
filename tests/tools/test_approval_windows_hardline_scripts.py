@@ -189,3 +189,26 @@ def test_bare_cr_starts_a_new_powershell_statement(cmd):
 def test_quoted_cr_is_not_a_statement_break(cmd):
     assert not detect_hardline_command(cmd)[0], cmd
 
+
+# A drive root later in a PowerShell/cmd argument list is still deleted.
+@pytest.mark.parametrize("cmd", [
+    "Remove-Item -Recurse C:\\x,C:\\*",
+    "Remove-Item -Recurse -Path 'D:\\x','C:\\'",
+    'Remove-Item -Recurse -Path "D:/x","C:/"',
+    "Remove-Item -Recurse -Path D:/x, C:/*",
+    "rd /s /q D:\\x,C:\\",
+    "del /s /q D:\\x,C:\\*",
+])
+def test_drive_root_as_a_later_list_element_is_hardline(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "Remove-Item -Recurse C:/build,C:/Users",
+    "rd /s /q D:\\x,C:\\build",
+    "Remove-Item -Recurse -Include *.tmp D:/x,C:/",
+    "rm -rf x,C:/",
+])
+def test_later_list_element_below_the_root_stays_approvable(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+    assert detect_dangerous_command(cmd)[0], cmd

@@ -744,8 +744,6 @@ class TestTwoFactor:
         sha256_seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA"  # "1234567890" * 3.2 -> RFC 32-byte seed
         assert totp_now(sha256_seed + "|8|30|SHA256", at=59) == "46119246"
         assert totp_now("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ|6|60|SHA1", at=119) == totp_now("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", period=60, at=119)
-        with pytest.raises(VaultError):
-            normalize_otp_secret("otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1")
 
     def test_saved_authenticator_key_mints_codes_without_asking(self, store, monkeypatch):
         """The whole point: with a seed on the login, enter_code never prompts and the code never comes back."""

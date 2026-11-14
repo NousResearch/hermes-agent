@@ -1,7 +1,7 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import cached_property
 import contextlib
 import json
@@ -1001,10 +1001,33 @@ def route_launch_key(authority, policy, config):
     return launch_key(authority, policy)
 
 
+_POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy))
+
+
+def _adopt_stored_policy(data):
+    """A stored receipt's ``policy`` dict, limited to the fields THIS build defines.
+
+    A receipt is written by whatever build the session was created on: when a policy field is
+    added or dropped at a release boundary, every receipt from the other side carries (or lacks)
+    it, and constructing the dataclass verbatim answered ``TypeError`` -> ``storage_unavailable``
+    forever — the session unrecoverable and a cron delivery into it reported as a storage fault
+    (#151667). Adopting the shape an older build wrote is the same pattern as #140234; keys are
+    named in the log (never their values: a receipt's values hold credentials and routes), and a
+    genuinely incomplete receipt still refuses, because a missing required field raises below."""
+    if not isinstance(data, dict):
+        return data
+    unknown = sorted(set(data) - _POLICY_FIELDS)
+    if not unknown:
+        return data
+    logger.warning("restore_policy: adopting a stored receipt whose keys this build dropped: %s",
+                   ", ".join(unknown))
+    return {key: value for key, value in data.items() if key in _POLICY_FIELDS}
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
-        policy = LocalSessionPolicy(**data)
+        policy = LocalSessionPolicy(**_adopt_stored_policy(data))
         from gateway.session_a2a import is_forward_policy
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
         if ((not is_forward_policy(policy) and

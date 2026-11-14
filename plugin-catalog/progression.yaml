@@ -1,0 +1,29 @@
+name: progression
+repo: https://github.com/supa-thibaud/hermes-progression
+sha: e21330ffb26f788cb0d5f7d6c60983b9d6e84262
+title: Progression
+description: >-
+  Right-side Hermes Desktop panel showing, live, what the focused chat's agent
+  and its subagents are doing: the task in progress (with the tool running now),
+  subagents (queued, running, done, failed), the tasks up next and the done ones,
+  color-coded, with a completion % and an ETA (finish clock time) recomputed every
+  30 s to 10 min, plus other active chats. Fed by the agent's own todo tool
+  (todo.updated) and subagent.* events. /progression shows or hides it. English
+  and French UI. Disclosure: Desktop half inside the plugin SDK surface, read-only
+  gateway calls (subagent.list, session.active_list); the agent half only registers
+  the /progression command; no tools, hooks, middleware, env vars, network, shell
+  or files; keeps its panel state in its own desktop plugin storage.
+maintainer: thibaud.art
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "1.1.0"
+docs_url: https://github.com/supa-thibaud/hermes-progression#readme
+screenshots:
+  - https://raw.githubusercontent.com/supa-thibaud/hermes-progression/e21330ffb26f788cb0d5f7d6c60983b9d6e84262/assets/screenshot.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -25,6 +25,23 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 
+def delete_spans(text: str, spans: list) -> str:
+    """Delete ``spans`` from ``text``, merging overlapping/nested ones first so multi-pattern
+    matches over the same tag never double-delete adjacent text."""
+    if not spans:
+        return text
+    merged: list = []
+    for s, e in sorted(spans):
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    chars = list(text)
+    for start, end in reversed(merged):
+        del chars[start:end]
+    return "".join(chars)
+
+
 class MessageDeduplicator:
     """TTL-based message deduplication cache (``if dedup.is_duplicate(msg_id): return``)."""
 

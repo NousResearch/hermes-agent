@@ -1178,10 +1178,11 @@ from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
+from plugins.platforms.discord.adapter_recovery import DiscordRecoveryMixin, recovery_extra
 
 
 class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, DiscordReactionsMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordRecoveryMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1466,8 +1467,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
-                if adapter_self._missed_message_backfill_enabled():
-                    adapter_self._ensure_missed_message_backfill_task()
+                adapter_self._ensure_missed_message_backfill_task()  # stop replay, then opt-in backfill
 
             @self._client.event
             async def on_socket_event_type(event_type: str):
@@ -2366,68 +2366,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
-    def _missed_message_backfill_enabled(self) -> bool:
-        """Whether to reconcile Discord messages missed while the gateway was down."""
-        configured = self.config.extra.get("missed_message_backfill")
-        if isinstance(configured, dict) and "enabled" in configured:
-            value = configured["enabled"]
-            if isinstance(value, str):
-                return value.strip().lower() in ("true", "1", "yes", "on")
-            return bool(value)
-        raw = _scoped_gate_env("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
-        return str(raw).strip().lower() in ("true", "1", "yes", "on")
-
-    def _missed_message_backfill_channels(self) -> set[str]:
-        """Channels to scan for missed messages after reconnect: union of allowed and
-        free-response channels by default; ``channels: "*"`` scans every text channel."""
-        configured = self.config.extra.get("missed_message_backfill")
-        if isinstance(configured, dict) and "channels" in configured:
-            raw = configured.get("channels")
-            channels = self._gate_csv_set(raw)
-            # An explicit list (YAML list or JSON-list string, even empty) is authoritative — the
-            # operator disabled the scan; only the default "" string falls through to the env/default.
-            if channels or isinstance(_decode_json_list_literal(raw), list):
-                return channels
-        raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
-        if not raw.strip():
-            allowed = self._get_allowed_channels()
-            return allowed | self._discord_free_response_channels()
-        return self._gate_csv_set(raw)
-
-    def _missed_message_backfill_number(self, key: str, env_key: str, default, cast, lo, hi=None):
-        """Numeric ``missed_message_backfill.<key>`` (dict extra wins over env), clamped to [lo, hi]."""
-        configured = self.config.extra.get("missed_message_backfill")
-        raw = configured.get(key, default) if isinstance(configured, dict) else _scoped_gate_env(env_key, str(default))
-        try:
-            value = cast(raw)
-        except (TypeError, ValueError):
-            value = cast(default)
-        return max(lo, value) if hi is None else max(lo, min(value, hi))
-
-    def _missed_message_backfill_window_seconds(self) -> float:
-        return self._missed_message_backfill_number(
-            "window_seconds", "DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS", 21600, float, 60.0)
-
-    def _missed_message_backfill_limit(self) -> int:
-        return self._missed_message_backfill_number("limit", "DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT", 100, int, 1, 500)
-
-    def _missed_message_backfill_max_dispatches(self) -> int:
-        return self._missed_message_backfill_number(
-            "max_dispatches", "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", 10, int, 1, 100)
-
-    def _missed_message_backfill_max_attempts(self) -> int:
-        """Lifetime re-dispatch ceiling for ONE message, independent of completion state:
-        ``max_dispatches`` caps a scan, not a row, so without this any message whose completion
-        can never be recorded is re-run on every reconnect (#113631)."""
-        return self._missed_message_backfill_number(
-            "max_attempts", "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_ATTEMPTS", 3, int, 1, 100)
-
     def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
-        """Return the active recovery task, or start one when none is running."""
+        """Return the active reconnect-recovery task, or start one when none is running."""
         task = self._missed_message_backfill_task
         if task is not None and not task.done():
             return task
-        task = asyncio.create_task(self._run_missed_message_backfill())
+        task = asyncio.create_task(self._run_reconnect_recovery())
         self._missed_message_backfill_task = task
         runner = getattr(self, "gateway_runner", None)
         if runner is not None and getattr(runner, "_startup_restore_in_progress", False):
@@ -2515,8 +2459,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             and not self._discord_thread_require_mention()
         )
 
-    async def _dispatch_recovered_message(self, message: Any) -> bool:
-        """Run one recovered message through the live Discord ingress gates."""
+    async def _dispatch_recovered_message(self, message: Any, *, claim: bool = False) -> bool:
+        """Run one recovered message through the live Discord ingress gates (``claim``: own its dedup id)."""
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
@@ -2529,7 +2473,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 and not self._self_is_explicitly_mentioned(message)
             ):
                 return False
-        admitted, role_authorized = self._discord_message_admission(message, claim=False)
+        admitted, role_authorized = self._discord_message_admission(message, claim=claim)
         if not admitted:
             return False
         return await self._handle_message(message, role_authorized=role_authorized, recovered=True)
@@ -7145,9 +7089,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
-    backfill_cfg = discord_cfg.get("missed_message_backfill")
-    if isinstance(backfill_cfg, dict):
-        seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
+    seeded_extra.update(recovery_extra(discord_cfg))
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)

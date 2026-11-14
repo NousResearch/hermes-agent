@@ -435,7 +435,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
+from gateway.platforms.helpers import delete_spans, fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
@@ -1383,23 +1383,6 @@ def _blank_spans(text: str, spans: list) -> str:
     return ''.join(chars)
 
 
-def _delete_spans(text: str, spans: list) -> str:
-    """Delete ``spans`` from ``text``, merging overlapping/nested ones first so multi-pattern
-    matches over the same tag never double-delete adjacent text."""
-    if not spans:
-        return text
-    merged: list = []
-    for s, e in sorted(spans):
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    chars = list(text)
-    for start, end in reversed(merged):
-        del chars[start:end]
-    return "".join(chars)
-
-
 def _strip_media_tag_directives(text: str) -> str:
     """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers so they never render
     as text (backstop after ``extract_media``). Protected spans are mask-located only — tags
@@ -1411,7 +1394,7 @@ def _strip_media_tag_directives(text: str) -> str:
     if not text or not _has_media_directives(text):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
+    return delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -1853,6 +1836,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
         self._no_message_handler_logged: bool = False
+        self._admission_withdrawn = False  # a handler was removed: the shutdown drain
         self._reaction_handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
         self._platform_event_handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]] = None
@@ -2254,8 +2238,14 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return self._running
 
     def set_message_handler(self, handler: MessageHandler) -> None:
-        """Set the incoming-message handler (MessageEvent -> optional response str)."""
+        """Set the incoming-message handler (MessageEvent -> optional response str); ``None`` after a
+        handler is the shutdown drain withdrawing admission."""
+        self._admission_withdrawn = handler is None and (self._admission_withdrawn or self._message_handler is not None)
         self._message_handler = handler
+
+    def defer_refused_inbound(self, event: MessageEvent) -> None:
+        """The runner refused *event* only because it drains for a stop. An adapter that can give it a
+        turn after the restart records it here (Discord's stop replay); the default keeps the notice."""
 
     def set_platform_event_handler(
         self, handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]]) -> None:
@@ -3226,7 +3216,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if media:
             spans = _deliverable_tag_spans(cleaned)
             if spans:
-                cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
+                cleaned = re.sub(r'\n{3,}', '\n\n', delete_spans(cleaned, spans)).strip()
         return media, cleaned
 
     @staticmethod
@@ -3896,9 +3886,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
         if not self._message_handler:
-            # No handler = every inbound silently discarded on an adapter that still polls and sends;
-            # say so once per adapter (#102260).
-            if not getattr(self, "_no_message_handler_logged", False):
+            # Shutdown withdrew admission: name each dropped event, nothing replays it (#146858). Never
+            # installed: every inbound is discarded on a live adapter; say so once (#102260).
+            if getattr(self, "_admission_withdrawn", False):
+                logger.warning("[%s] Dropping inbound message %s at shutdown: admission was withdrawn (session %s)",
+                               self.name, event.message_id, self._event_session_key(event))
+            elif not getattr(self, "_no_message_handler_logged", False):
                 self._no_message_handler_logged = True
                 logger.error("[%s] Dropping inbound message: no gateway message handler is installed on this "
                              "adapter. The adapter is connected and can send, but every inbound message is "

@@ -1543,6 +1543,9 @@ DEFAULT_CONFIG = {
             "max_dispatches": 10,  # cap on recovered messages dispatched per reconnect
             "max_attempts": 3,  # lifetime re-dispatch cap for one message, whatever its outcome
         },
+        # After a planned stop (restart, SIGTERM), give a turn to Discord messages the stop refused or
+        # dropped, or that arrived while the gateway was down (window bounded to the stop, max 30 min).
+        "stop_replay": True,
         "reactions": True,  # add 👀/✅/❌ reactions to messages during processing
         # Gateway transport health probe: inspects the WebSocket's ready/open/heartbeat state (never
         # REST) as proof events still arrive. Any value 0 disables it.

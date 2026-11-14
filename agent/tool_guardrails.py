@@ -343,6 +343,19 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def reset_after_context_boundary(self) -> None:
+        """Clear the window evidence a committed compaction/prune/defrag invalidates: repeat-result
+        counts, the consecutive identical-call streak, and the batch-cycle history. Those describe tool
+        results that are no longer in the transcript, so the reload the boundary marker asks for is
+        progress, not a replay (#146217). Failure counts, ``_progress_since_failure``, an already
+        recorded halt and the per-turn loop caps survive: they describe calls, not the window."""
+        self._no_progress.clear()
+        self._identical_streak_sig = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        self._call_history.clear()
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
@@ -571,6 +584,15 @@ class ToolCallGuardrailController:
             return self._decide("block", code, tool_name, count, signature, cap=cap)
         setattr(self, count_attr, count + increment)
         return None
+
+
+def reset_after_context_boundary(agent: Any) -> None:
+    """``ToolCallGuardrailController.reset_after_context_boundary`` for the agent's live controller
+    (no-op when the agent has none, e.g. a minimal test engine). Call it beside every repeat-read
+    dedup reset: both describe the window a committed compaction/prune just rewrote."""
+    controller = getattr(agent, "_tool_guardrails", None)
+    if controller is not None:
+        controller.reset_after_context_boundary()
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

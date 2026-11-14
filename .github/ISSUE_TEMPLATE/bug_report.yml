@@ -60,7 +60,7 @@ body:
       multiple: true
       options:
         - CLI (interactive chat)
-        - Gateway (Telegram/Discord/Slack/WhatsApp)
+        - Gateway (messaging platforms, API server, and webhooks)
         - Setup / Installation
         - Tools (terminal, file ops, web, code execution, etc.)
         - Skills (skill loading, skill hub, skill guard)
@@ -82,6 +82,24 @@ body:
         - Discord
         - Slack
         - WhatsApp
+        - WhatsApp Cloud
+        - Signal
+        - Mattermost
+        - Matrix
+        - Home Assistant
+        - Email
+        - SMS
+        - DingTalk
+        - Feishu / Lark
+        - WeCom
+        - WeCom Callback
+        - Weixin
+        - BlueBubbles
+        - QQBot
+        - Yuanbao
+        - API Server
+        - Webhook
+        - Microsoft Graph Webhook
 
   - type: textarea
     id: debug-report

@@ -233,6 +233,21 @@ class TestTranscribeCommandSTT:
         assert result["success"] is True
         assert result["transcript"] == "stdout transcript"
 
+    def test_cmd_unsafe_value_is_an_error_result_not_an_exception(self, tmp_path):
+        """On Windows a placeholder value cmd.exe cannot quote is refused (#138361); the STT
+        runner must surface that as its error envelope instead of raising."""
+        import functools
+
+        from tools import transcription_command
+
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {"type": "command", "command": _python_emit_command("x") + " {language}"}
+        windows_render = functools.partial(transcription_command._render_command_stt_template, os_name="nt")
+        with patch.object(transcription_command, "_render_command_stt_template", windows_render):
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {}, language_override="en&x")
+        assert result["success"] is False
+        assert "cmd.exe" in result["error"]
+
 
     def test_language_defaults_to_en(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")

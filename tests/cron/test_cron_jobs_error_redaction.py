@@ -37,6 +37,23 @@ def test_failed_run_error_is_redacted_in_jobs_json(tmp_cron_dir):
     assert _KEY not in _jobs_json(tmp_cron_dir)
 
 
+def test_success_scrubs_preupgrade_sticky_failure(tmp_cron_dir):
+    """A successful run rewrites jobs.json but retains the previous failure (#118354)."""
+    from cron.jobs import save_jobs
+
+    job = create_job(prompt="watch prices", schedule="every 1h")
+    job["last_failure"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    save_jobs([job])  # Simulate a jobs.json record written before #155355.
+    assert _KEY in _jobs_json(tmp_cron_dir)
+
+    assert mark_job_run(job["id"], success=True) is True
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "ok"
+    assert "Key limit exceeded" in stored["last_failure"]["detail"]
+    assert _KEY not in stored["last_failure"]["detail"]
+    assert _KEY not in _jobs_json(tmp_cron_dir)
+
+
 def test_delivery_error_is_redacted_in_jobs_json(tmp_cron_dir):
     job = create_job(prompt="watch prices", schedule="every 1h")
     mark_job_run(job["id"], success=True, delivery_error=_PROVIDER_ERROR)

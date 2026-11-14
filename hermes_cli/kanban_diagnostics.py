@@ -140,13 +140,23 @@ def _error_snippet(last_err) -> str:
     return err_text[:500] + ("…" if len(err_text) > 500 else "") if err_text else ""
 
 
-def _active_hallucination_events(events: Iterable[Any], kind: str) -> list[Any]:
-    """Events of ``kind`` with no ``completed``/``edited`` event strictly after
-    them. Requires id-sorted (arrival-order) input, which the DB provides."""
+# Event kinds that resolve an active hallucination flag. A later completion or
+# edit is the default for a *blocked* completion (the card moved on by itself);
+# a comment is added for the advisory prose scan alone, whose flag is appended
+# by the completion it is about — see ``_rule_prose_phantom_refs``.
+_HALLUCINATION_CLEARING_KINDS: frozenset = frozenset({"completed", "edited"})
+_PROSE_CLEARING_KINDS: frozenset = _HALLUCINATION_CLEARING_KINDS | {"commented"}
+
+
+def _active_hallucination_events(
+    events: Iterable[Any], kind: str, *, clears: frozenset = _HALLUCINATION_CLEARING_KINDS,
+) -> list[Any]:
+    """Events of ``kind`` with no event in ``clears`` strictly after them.
+    Requires id-sorted (arrival-order) input, which the DB provides."""
     active: list[Any] = []
     for ev in events:
         k = _event_kind(ev)
-        if k in {"completed", "edited"}:
+        if k in clears:
             active.clear()
         elif k == kind:
             active.append(ev)
@@ -343,17 +353,33 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
 
 def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Advisory: the completion summary mentions ``t_<hex>`` ids that don't
-    resolve. Warning only; clears on a later clean completion."""
-    hits = _active_hallucination_events(events, "suspected_hallucinated_references")
+    resolve. Warning only; cleared by a comment, a later completion or an edit.
+
+    The flag is written *after* the completion commits, so the completion it is
+    about can never clear it — only a later event can. A comment is that event,
+    and it is the only acknowledgement a settled card has: ids that legitimately
+    live outside this board reach here too (the gate matrix's fixture card in its
+    throwaway board copy, a card created in a probe copy of the board), and
+    without a clearing comment every card whose summary quotes one of them would
+    keep this warning for good once it is done.
+    """
+    hits = _active_hallucination_events(
+        events, "suspected_hallucinated_references", clears=_PROSE_CLEARING_KINDS,
+    )
     if not hits:
         return []
+    actions = [DiagnosticAction(
+        kind="comment", label="Comment to acknowledge the ids", payload={}, suggested=True,
+    )]
+    actions += _generic_recovery_actions(task, running=_is_running(task))
     return [Diagnostic(
         kind="prose_phantom_refs", severity="warning",
         title="Completion summary references unknown task ids",
         detail="The completion summary mentions task ids that don't resolve in this board's database. "
                "The completion itself succeeded, but downstream consumers parsing the summary may be "
-               "pointed at cards that never existed.",
-        actions=_generic_recovery_actions(task, running=_is_running(task)),
+               "pointed at cards that never existed. Ids that legitimately live on another copy of the "
+               "board land here too; comment on the card to acknowledge them and clear this warning.",
+        actions=actions,
         first_seen_at=_event_ts(hits[0]), last_seen_at=_event_ts(hits[-1]), count=len(hits),
         data={"phantom_refs": _unique_payload_ids(hits, "phantom_refs")},
     )]

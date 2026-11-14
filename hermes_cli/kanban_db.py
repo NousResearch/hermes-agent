@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_db_prose import prose_task_ids
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
@@ -2567,15 +2568,9 @@ def _verify_created_cards(
     return verified, phantom
 
 
-# Matches ``kanban_create`` (12 hex) and ``_new_task_id`` (8 hex) ids; 8+ for forward compat.
-_TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
-
-
 def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
-    """``t_<hex>`` references in ``text`` that don't resolve to a task (deduped; advisory)."""
-    if not text:
-        return []
-    return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+    """``t_<hex>`` references in prose that don't resolve to a task (deduped; advisory)."""
+    return _missing_task_ids(conn, prose_task_ids(text))
 
 
 class HallucinatedCardsError(ValueError):

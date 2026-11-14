@@ -1,0 +1,22 @@
+name: hermes-regress
+version: "0.1.0"
+repo: https://github.com/harishkotra/hermes-regress
+sha: ddc0a2bcffb32ad8180590a36853cf790a79c101
+description: "Regression tests built from your own sessions. Capture is passive: every finished turn is written as a plain JSON case holding the prompt, the model, each tool call with its exact arguments and the output it returned. Replay a case through the real agent loop with every tool call vetoed at pre_tool_call and answered from the recording, so a model, provider or config change can be measured without side effects — /regress run --model X reports pass, drift, regressed and error per case, with markdown, JUnit XML and a hash-chained export bundle for CI. Fixtures match only on identical tool and arguments; a case whose tool plan cannot be reproduced is reported as a gap instead of being answered from the wrong recording, and a replay window that never reaches the hook is marked error and stops the run rather than executing live tools. Disclosure — writes captured cases under HERMES_HOME/plugin-data/hermes-regress/ (mode 0600) with the prompt, answer, tool arguments and tool results all passed through redaction first (provider keys, GitHub/Slack/AWS tokens, JWTs and inline password/token values become [REDACTED], counts recorded per case); keeps replay state in the same directory (armed.json plus an audit line per armed tool call in hook.log), scopes the replay veto to the single session that claims the armed case (the first turn whose message matches the recorded prompt, recorded from pre_llm_call), so an unclaimed window serves and blocks nobody and other chats and cron runs are never affected, and runs the local hermes CLI as a subprocess when you ask for a replay; no network calls of its own, no telemetry."
+maintainer: harishkotra
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/harishkotra/hermes-regress#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_commands:
+    - regress
+  provides_middleware: []
+  requires_env: []

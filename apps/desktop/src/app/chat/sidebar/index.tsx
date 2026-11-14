@@ -194,7 +194,7 @@ import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
-import { useServerSessionSearch } from './use-server-session-search'
+import { searchEmptyLabel, useServerSessionSearch } from './use-server-session-search'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -744,7 +744,7 @@ export function ChatSidebar({
     [isPinnedSession, filtersNarrow, sessionMatchesFilters]
   )
 
-  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope)
+  const { searchFailed, searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope)
 
   const searchResults = useMemo(
     () => mergeSearchResults(sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending),
@@ -1733,7 +1733,7 @@ export function ChatSidebar({
                     <SidebarSessionSkeletons />
                   ) : (
                     <div className="wrap-anywhere grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                      {s.noMatch(trimmedQuery)}
+                      {searchEmptyLabel(s, trimmedQuery, searchFailed)}
                     </div>
                   )
                 }

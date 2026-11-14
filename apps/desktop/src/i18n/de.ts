@@ -3677,6 +3677,7 @@ export const deOverrides = {
     searchPlaceholder: 'Sessions durchsuchen…',
     clearSearch: 'Suche löschen',
     noMatch: query => `Keine Sessions passen zu “${query}”.`,
+    searchFailed: 'Die Suche ist gerade nicht verfügbar. Versuche es gleich noch einmal.',
     results: 'Ergebnisse',
     pinned: 'Angepinnt',
     sessions: 'Sessions',

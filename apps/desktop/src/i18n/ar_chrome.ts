@@ -202,6 +202,7 @@ export const arChrome = {
     searchPlaceholder: 'البحث في الجلسات...',
     clearSearch: 'مسح البحث',
     noMatch: query => `لا توجد جلسات تطابق "${query}"`,
+    searchFailed: 'البحث غير متاح حاليًا. حاول مرة أخرى بعد قليل.',
     results: 'النتائج',
     pinned: 'المثبتة',
     sessions: 'الجلسات',

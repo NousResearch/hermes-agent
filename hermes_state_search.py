@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
-from hermes_state_errors import is_malformed_db_error
+from hermes_state_errors import is_malformed_db_error, is_transient_sqlite_error
 from hermes_state_common import (
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
@@ -1041,7 +1041,9 @@ class SessionSearchMixin:
         sql, params = self._fts_match_sql(table, match_query, order_by_sql, **kwargs)
         try:
             return [dict(row) for row in self._read_all(sql, params)]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_error(exc):
+                raise  # busy, not a tokenizer/syntax miss: falling back would report "no matches"
             if operational_debug:
                 logger.debug(operational_debug, exc_info=True)
             return None
@@ -1221,7 +1223,9 @@ class SessionSearchMixin:
             sql, params = self._fts_match_sql("messages_fts", query, **route)
             try:
                 matches = [dict(row) for row in self._read_all(sql, params)]
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                if is_transient_sqlite_error(exc):
+                    raise  # a busy store is "could not search", never "no matches"
                 return []  # FTS5 syntax error despite sanitization
             except sqlite3.DatabaseError as exc:
                 # Corruption parent class: detach the derived indexes and answer from
@@ -1243,6 +1247,8 @@ class SessionSearchMixin:
                 seen_ids = {m["id"] for m in matches}
                 matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
             except sqlite3.OperationalError as exc:
+                if is_transient_sqlite_error(exc):
+                    raise  # dropping the gap would pass a partial result off as complete
                 logger.debug("Unindexed-gap supplement skipped: %s", exc)
 
         # unicode61 puts no boundary between Latin and adjacent CJK ("修改youer服务端" is

@@ -2219,6 +2219,7 @@ export const jaOverrides = {
     searchPlaceholder: 'セッションを検索…',
     clearSearch: '検索をクリア',
     noMatch: query => `"${query}" に一致するセッションがありません。`,
+    searchFailed: '現在検索を利用できません。しばらくしてからもう一度お試しください。',
     results: '結果',
     pinned: 'ピン留め',
     sessions: 'セッション',

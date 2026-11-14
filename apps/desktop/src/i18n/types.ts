@@ -2835,6 +2835,7 @@ export interface Translations extends NoticeTranslations {
     searchPlaceholder: string
     clearSearch: string
     noMatch: (query: string) => string
+    searchFailed: string
     results: string
     pinned: string
     sessions: string

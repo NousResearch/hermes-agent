@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.shell_heredoc import strip_inert_heredoc_bodies
 
 logger = logging.getLogger("tools.approval")
 
@@ -373,6 +374,14 @@ def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
+    # A heredoc body that only feeds a data consumer is data: `cat > notes.md <<'EOF'` with a
+    # `reboot the board after the flash` line writes a note, it does not reboot, and the hardline
+    # tier has no approval that could let it through (#149601). The masking is the helper the
+    # terminal and cron guards already use, with `require_quoted_delimiter=False` because the floor
+    # asks what RUNS: plain expansion inside an unquoted body cannot execute anything. Shell and
+    # interpreter carriers, bodies carrying a `$(...)`/backtick substitution, bodies under a list
+    # operator, and everything after the terminator keep their text — `bash <<'EOF'` still hits.
+    command = strip_inert_heredoc_bodies(command, require_quoted_delimiter=False)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a

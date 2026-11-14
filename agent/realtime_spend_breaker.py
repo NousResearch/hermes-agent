@@ -75,6 +75,7 @@ _TIER0_CRITICAL_PREFIXES: tuple[str, ...] = (
     "chat247-",
     "nw-chat-",
     "newintra-",
+    "workos-",
     "medius-",
     "lager-",
     "2izii-",
@@ -275,15 +276,15 @@ def record_realtime_llm_call(
     out = max(0, int(output_tokens or 0))
     prompt = int(prompt_tokens or (uncached + cached))
     cluster_id = extract_vertex_cluster_id(request_id)
+    is_argon_live = (
+        str(source) != "log_tail"
+        and not str(session_id).startswith("log_tail")
+        and prompt > 55_000
+        and "argon" in (model or "").lower()
+    )
     cache_reset = (
         1
-        if (
-            str(source) != "log_tail"
-            and not str(session_id).startswith("log_tail")
-            and prompt > 55_000
-            and cached < 42_000
-            and "argon" in (model or "").lower()
-        )
+        if (is_argon_live and prompt > 110_000 and cached < 42_000 and uncached > 70_000)
         else 0
     )
     net_eur = compute_call_net_eur(
@@ -318,6 +319,29 @@ def record_realtime_llm_call(
     try:
         con = _connect()
         try:
+            if is_argon_live and not cache_reset:
+                prev_row = con.execute(
+                    """
+                    SELECT prompt_tokens, cached_in
+                    FROM llm_call_ledger
+                    WHERE session_id = ? AND ts >= ? AND request_id != ?
+                    ORDER BY ts DESC, id DESC LIMIT 1
+                    """,
+                    (row_info["session_id"], now - 1800.0, req_key),
+                ).fetchone()
+                if prev_row is not None:
+                    prev_prompt, prev_cached = int(prev_row[0] or 0), int(prev_row[1] or 0)
+                    if (
+                        prev_cached >= 42_000
+                        and cached < 42_000
+                        and prompt >= prev_prompt * 0.85
+                    ) or (
+                        prompt >= prev_prompt
+                        and prev_cached >= 35_000
+                        and (prev_cached - cached) >= 16_384
+                    ):
+                        cache_reset = 1
+                        row_info["cache_reset"] = 1
             with con:
                 con.execute(
                     """
@@ -380,7 +404,21 @@ def get_realtime_spend_summary(now: float | None = None) -> dict[str, Any]:
                 """,
                 (t_15m,),
             )
-            c15, eur15, u15, ca15, cr15 = cur.fetchone()
+            c15, eur15, u15, ca15, cr15_total = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT COALESCE(MAX(s_cr), 0)
+                FROM (
+                    SELECT COALESCE(SUM(cache_reset), 0) AS s_cr
+                    FROM llm_call_ledger
+                    WHERE ts >= ? AND source != 'log_tail'
+                    GROUP BY session_id
+                )
+                """,
+                (t_15m,),
+            )
+            cr15 = cur.fetchone()[0]
 
             cur.execute(
                 """
@@ -475,6 +513,7 @@ def get_realtime_spend_summary(now: float | None = None) -> dict[str, Any]:
         "net_eur_15m": round(eur15_f, 4),
         "cache_hit_pct_15m": hit15,
         "cache_resets_15m": int(cr15 or 0),
+        "cache_resets_15m_total": int(cr15_total or 0),
         "calls_1h": int(c1h or 0),
         "net_eur_1h": round(float(eur1h or 0.0), 4),
         "cache_hit_pct_1h": hit1h,

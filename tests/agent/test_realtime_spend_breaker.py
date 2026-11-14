@@ -194,6 +194,62 @@ def test_manual_ha_emergency_brake_override_blocks_non_interactive_only(tmp_path
     assert v_desktop["allowed"] is True
 
 
+def test_pruned_system_prompt_38k_floor_and_per_session_15m_reset_aggregation(tmp_path, monkeypatch):
+    db_file = tmp_path / "ai-spend-realtime.db"
+    status_file = tmp_path / "ai-cost-realtime-status.json"
+    monkeypatch.setenv("HERMES_AI_SPEND_DB_PATH", str(db_file))
+    monkeypatch.setenv("HERMES_AI_SPEND_STATUS_PATH", str(status_file))
+
+    # 4 separate desktop sessions hitting warm 38,273-token messages[0] cache on Turn 1/2
+    for idx in range(4):
+        row = rsb.record_realtime_llm_call(
+            session_id=f"desk_turn1_{idx}",
+            source="desktop",
+            provider="vertex",
+            model="google/gemini-4-argon",
+            prompt_tokens=72_394,
+            uncached_input_tokens=34_121,
+            cache_read_tokens=38_273,
+            output_tokens=400,
+            request_id=f"rid_turn1_{idx}",
+        )
+        assert row["cache_reset"] == 0
+
+    summary = rsb.get_realtime_spend_summary()
+    assert summary["cache_resets_15m"] == 0
+    assert summary["cache_resets_15m_total"] == 0
+
+    # Now desk_turn1_0 warms up to 145k cached, then suffers an intra-session floor reset to 38,273
+    r_warm = rsb.record_realtime_llm_call(
+        session_id="desk_turn1_0",
+        source="desktop",
+        provider="vertex",
+        model="google/gemini-4-argon",
+        prompt_tokens=150_000,
+        uncached_input_tokens=5_000,
+        cache_read_tokens=145_000,
+        output_tokens=400,
+        request_id="rid_warm_0",
+    )
+    assert r_warm["cache_reset"] == 0
+
+    r_drop = rsb.record_realtime_llm_call(
+        session_id="desk_turn1_0",
+        source="desktop",
+        provider="vertex",
+        model="google/gemini-4-argon",
+        prompt_tokens=165_000,
+        uncached_input_tokens=126_727,
+        cache_read_tokens=38_273,
+        output_tokens=400,
+        request_id="rid_drop_0",
+    )
+    assert r_drop["cache_reset"] == 1
+    summary2 = rsb.get_realtime_spend_summary()
+    assert summary2["cache_resets_15m"] == 1
+
+
+
 
 
 

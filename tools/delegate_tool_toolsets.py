@@ -74,15 +74,36 @@ def _blocked_toolsets_for_role(role: str) -> list[str]:
         name for name, defn in TOOLSETS.items() if defn.get("tools") and set(defn.get("tools", ())).issubset(blocked_names)
     )
 
+
+def _toolsets_grant_delegation(toolsets: list[str]) -> bool:
+    """Whether the named ceiling itself resolves to ``delegate_task``."""
+    return any("delegate_task" in resolve_toolset(name) for name in toolsets)
+
+
+def _parent_has_effective_tool(parent_agent, tool_name: str) -> bool:
+    """Whether the parent's resolved, disabled-subtracted surface contains *tool_name*."""
+    valid_tool_names = getattr(parent_agent, "valid_tool_names", None)
+    if isinstance(valid_tool_names, (set, frozenset, list, tuple)):
+        return tool_name in valid_tool_names
+    import model_tools
+    definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=getattr(parent_agent, "enabled_toolsets", None),
+        disabled_toolsets=getattr(parent_agent, "disabled_toolsets", None),
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    return any(item.get("function", {}).get("name") == tool_name for item in definitions)
+
+
 def _resolve_child_toolsets(
-    parent_agent, toolsets: Optional[list[str]], effective_role: str
+    parent_agent, toolsets: Optional[list[str]], effective_role: str, *, explicit_ceiling: bool = False,
 ) -> tuple[list[str], list[str]]:
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
     inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
     ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
-    expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
-    (role-granted, not inherited)."""
+    expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added for the
+    depth-derived path. Under an explicit ceiling they must receive that capability from the ceiling itself."""
     # enabled_toolsets=None means "all tools", so derive from loaded tool names.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
@@ -95,7 +116,10 @@ def _resolve_child_toolsets(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    if explicit_ceiling:
+        expanded_parent = _expand_parent_toolsets(parent_toolsets)
+        child_toolsets = [t for t in (toolsets or []) if t in expanded_parent]
+    elif toolsets:
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
         if _get_inherit_mcp_toolsets():
@@ -114,8 +138,14 @@ def _resolve_child_toolsets(
         [str(name) for name in raw_parent_disabled] if isinstance(raw_parent_disabled, (list, tuple, set)) else []
     )
     if effective_role == "orchestrator":
+        requested_toolsets = toolsets or []
+        if explicit_ceiling and not _toolsets_grant_delegation(requested_toolsets):
+            raise ValueError(
+                "Requested orchestrator role conflicts with allowed_toolsets: "
+                "the explicit ceiling does not grant delegate_task."
+            )
         inherited_disabled = [name for name in inherited_disabled if name != "delegation"]
-        if "delegation" not in child_toolsets:
+        if not _toolsets_grant_delegation(child_toolsets):
             child_toolsets.append("delegation")
     child_disabled_toolsets = list(
         dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])

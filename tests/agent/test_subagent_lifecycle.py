@@ -2,8 +2,9 @@
 
 import threading
 import time
+import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -85,11 +86,18 @@ def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     terminal = lifecycle.wait(handle, timeout_seconds=1)
     assert terminal.state is SubagentState.CANCELLED
     forged = handle.__class__(**{**handle.to_dict(), "capability": "forged"})
-    assert lifecycle.status(forged).state is SubagentState.UNKNOWN
-    assert lifecycle.result(forged).error_classification == "UNKNOWN_HANDLE"
+    forged_policy = handle.__class__(**{**handle.to_dict(), "role": "orchestrator"})
+    for candidate in (forged, forged_policy):
+        assert lifecycle.status(candidate).state is SubagentState.UNKNOWN
+        assert lifecycle.result(candidate).error_classification == "UNKNOWN_HANDLE"
+        assert lifecycle.cancel(candidate, reason="forged").unknown_handle
+        assert lifecycle.steer(candidate, "forged") is False
     other_parent = SimpleNamespace(session_id="different-parent")
     other_service = SubagentLifecycleService(lambda: other_parent)
     assert other_service.status(handle).state is SubagentState.UNKNOWN
+    assert other_service.result(handle).error_classification == "UNKNOWN_HANDLE"
+    assert other_service.cancel(handle, reason="foreign").unknown_handle
+    assert other_service.steer(handle, "foreign") is False
 
 
 def test_cancel_uses_explicit_hard_interrupt(lifecycle):
@@ -103,6 +111,37 @@ def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     assert "explicit user cancel" in record.agent.interrupt_message
     assert record.agent.tool_reason == "subagent cancellation requested"
     lifecycle.wait(handle, timeout_seconds=1)
+
+
+def test_terminal_result_is_bounded_then_expires(lifecycle, monkeypatch):
+    from agent.subagent_lifecycle import _REGISTRY, _TERMINAL_RETENTION_SECONDS
+
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_single_child",
+        lambda *_args, **_kwargs: {
+            "status": "completed",
+            "summary": "x" * 40_000,
+            "api_calls": 2,
+            "duration_seconds": 0.1,
+        },
+    )
+    handle = lifecycle.launch(SubagentLaunchRequest(goal="bounded result"))
+    assert lifecycle.wait(handle, timeout_seconds=1).state is SubagentState.SUCCEEDED
+    result = lifecycle.result(handle)
+    assert result.ready
+    assert 0 < len(result.summary) <= 32_000
+    assert "SUMMARY TRUNCATED" in result.summary
+    assert result.result_hash
+
+    with _REGISTRY.lock:
+        _REGISTRY.records[handle.subagent_id].completed_at = (
+            time.time() - _TERMINAL_RETENTION_SECONDS - 1
+        )
+    lifecycle.launch(SubagentLaunchRequest(goal="trigger cleanup"))
+    assert lifecycle.status(handle).state is SubagentState.UNKNOWN
+    reconnect = lifecycle.reconnect(handle)
+    assert not reconnect.connected
+    assert reconnect.diagnostic == "RECONNECT_UNAVAILABLE"
 
 
 
@@ -345,6 +384,145 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
     narrow = SubagentLifecycleService(lambda: SimpleNamespace(session_id="parent-narrow", enabled_toolsets=["file"]))
     with pytest.raises(SubagentLifecycleError, match="broaden"):
         narrow.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
+
+
+def test_explicit_leaf_toolset_ceiling_survives_orchestrator_config(monkeypatch):
+    import model_tools
+    from tools.registry import registry
+
+    tool_name = "lifecycle_policy_report"
+    toolset_name = "lifecycle-policy-report"
+    inherited_tool_name = "mcp__lifecycle_audit__read"
+    inherited_toolset_name = "mcp-lifecycle-audit"
+    registry.register(
+        name=tool_name,
+        toolset=toolset_name,
+        schema={"name": tool_name, "parameters": {"type": "object", "properties": {}}},
+        handler=lambda _args, **_kwargs: "report",
+    )
+    registry.register(
+        name=inherited_tool_name,
+        toolset=inherited_toolset_name,
+        schema={"name": inherited_tool_name, "parameters": {"type": "object", "properties": {}}},
+        handler=lambda _args, **_kwargs: "audit",
+    )
+    parent = MagicMock()
+    parent.session_id = "parent-policy"
+    parent.enabled_toolsets = [toolset_name, inherited_toolset_name, "delegation"]
+    parent.disabled_toolsets = []
+    parent._delegate_depth = 0
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+    parent._session_db = None
+    parent.platform = "cli"
+    parent.api_key = "fixture-key"
+    parent.base_url = "https://example.invalid/v1"
+    parent.provider = "custom"
+    parent.api_mode = "chat_completions"
+    parent.model = "parent-model"
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent.valid_tool_names = {tool_name, inherited_tool_name, "delegate_task"}
+
+    child = FakeChild("sa-policy")
+    child._session_db = None
+    builds = 0
+
+    def build_child(**kwargs):
+        nonlocal builds
+        builds += 1
+        child.enabled_toolsets = list(kwargs["enabled_toolsets"])
+        child.disabled_toolsets = list(kwargs["disabled_toolsets"])
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=child.enabled_toolsets,
+            disabled_toolsets=child.disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        child.valid_tool_names = {item["function"]["name"] for item in definitions}
+        return child
+
+    monkeypatch.setitem(sys.modules, "run_agent", SimpleNamespace(AIAgent=build_child))
+    delegation_config = {"max_spawn_depth": 3, "orchestrator_enabled": True}
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: delegation_config)
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_child_lifecycle",
+        lambda *_args, **_kwargs: {"status": "completed", "summary": "done"},
+    )
+
+    try:
+        service = SubagentLifecycleService(lambda: parent)
+        handle = service.launch(SubagentLaunchRequest(
+            goal="write a report",
+            role="leaf",
+            allowed_toolsets=(toolset_name,),
+        ))
+        assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+        assert child._delegate_role == "leaf"
+        assert child.valid_tool_names == {tool_name}
+        assert "delegate_task" not in child.valid_tool_names
+        assert handle.role == "leaf"
+        assert handle.effective_toolsets == (toolset_name,)
+        assert service.status(handle).handle.effective_toolsets == (toolset_name,)
+        assert service.result(handle).handle.effective_toolsets == (toolset_name,)
+
+        from hermes_cli.plugin_host_wire import decode, encode
+        wire_handle = decode(encode(handle))
+        assert service.status(wire_handle).handle.effective_toolsets == (toolset_name,)
+
+        with pytest.raises(SubagentLifecycleError, match="allowed_toolsets"):
+            service.launch(SubagentLaunchRequest(
+                goal="coordinate outside the ceiling",
+                role="orchestrator",
+                allowed_toolsets=(toolset_name,),
+            ))
+        assert builds == 1
+
+        orchestrator = service.launch(SubagentLaunchRequest(
+            goal="coordinate within the ceiling",
+            role="orchestrator",
+            allowed_toolsets=("delegation",),
+        ))
+        assert service.wait(orchestrator, timeout_seconds=2).state is SubagentState.SUCCEEDED
+        assert orchestrator.role == "orchestrator"
+        assert orchestrator.effective_toolsets == ("delegation",)
+        assert child.valid_tool_names == {"delegate_task"}
+        assert builds == 2
+
+        delegation_config["orchestrator_enabled"] = False
+        with pytest.raises(SubagentLifecycleError, match="orchestrator_enabled"):
+            service.launch(SubagentLaunchRequest(
+                goal="conflict with global policy",
+                role="orchestrator",
+                allowed_toolsets=("delegation",),
+            ))
+        assert builds == 2
+
+        delegation_config["orchestrator_enabled"] = True
+        parent.enabled_toolsets.append("hermes-cli")
+        parent.disabled_toolsets = ["delegation"]
+        parent.valid_tool_names.remove("delegate_task")
+        with pytest.raises(SubagentLifecycleError, match="broaden parent permissions"):
+            service.launch(SubagentLaunchRequest(
+                goal="conflict with parent policy",
+                role="orchestrator",
+                allowed_toolsets=("hermes-cli",),
+            ))
+        assert builds == 2
+
+        parent.enabled_toolsets.remove("hermes-cli")
+        parent.disabled_toolsets = []
+        parent.valid_tool_names.add("delegate_task")
+        inherited = service.launch(SubagentLaunchRequest(goal="inherit safely", role="leaf"))
+        assert service.wait(inherited, timeout_seconds=2).state is SubagentState.SUCCEEDED
+        assert inherited.role == "leaf"
+        assert inherited.effective_toolsets is None
+        assert child.valid_tool_names == {tool_name, inherited_tool_name}
+        assert "delegate_task" not in child.valid_tool_names
+    finally:
+        registry.deregister(tool_name)
+        registry.deregister(inherited_tool_name)
 
 
 def test_provider_is_plugin_facing_only():

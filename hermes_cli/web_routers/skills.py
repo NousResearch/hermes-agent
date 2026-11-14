@@ -97,18 +97,20 @@ def _clear_skills_prompt_cache() -> None:
 @hub_router.post("/api/skills/hub/install")
 async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = None):
     identifier = require(body.identifier, "identifier is required")
+    target_profile = body.profile or profile
     return spawn_profile_action(
-        body.profile or profile, ["skills", "install", identifier, "--yes"],
-        _hub_action_name("install", identifier), log_msg="Failed to spawn skills install",
+        target_profile, ["skills", "install", identifier, "--yes"],
+        _hub_action_name("install", identifier, target_profile), log_msg="Failed to spawn skills install",
         prefix="Failed to install skill")
 
 
 @hub_router.post("/api/skills/hub/uninstall")
 async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str] = None):
     name = require(body.name, "name is required")
+    target_profile = body.profile or profile
     return spawn_profile_action(
-        body.profile or profile, ["skills", "uninstall", name, "--yes"],
-        _hub_action_name("uninstall", name), log_msg="Failed to spawn skills uninstall",
+        target_profile, ["skills", "uninstall", name, "--yes"],
+        _hub_action_name("uninstall", name, target_profile), log_msg="Failed to spawn skills uninstall",
         prefix="Failed to uninstall skill")
 
 
@@ -287,46 +289,47 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     ident = require(identifier, "identifier is required")
 
     def _run():
-        import shutil as _shutil
-
-        from tools.skills_hub_install import quarantine_bundle
+        from tools.skills_hub_install import discard_quarantine, quarantine_bundle
         from tools.skills_guard import scan_skill, should_allow_install
 
-        meta, bundle = _resolve_hub_skill(ident, profile)
-        if not bundle:
-            return None
+        # Config scope, not _profile_scope: quarantine + scan resolve through get_hermes_home(),
+        # and holding _SKILLS_PROFILE_LOCK across the fetch would stall every dashboard request.
+        with _config_profile_scope(profile):
+            meta, bundle = _resolve_hub_skill(ident, profile)
+            if not bundle:
+                return None
 
-        if bundle.source == "official":
-            scan_source = "official"
-        else:
-            scan_source = (
-                getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or ident)
+            if bundle.source == "official":
+                scan_source = "official"
+            else:
+                scan_source = (
+                    getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or ident)
 
-        tier1 = None
-        q_path = quarantine_bundle(bundle)
-        try:
-            result = scan_skill(q_path, source=scan_source)
-            # Advisory SkillEvaluator Tier 1 second opinion: optional binary,
-            # never blocks, errors degrade to no data (same as the CLI installer).
+            tier1 = None
+            q_path = quarantine_bundle(bundle)
             try:
-                from tools.skillevaluator_scan import run_tier1_scan, tier1_advisory_enabled
-                if tier1_advisory_enabled():
-                    t1 = run_tier1_scan(q_path)
-                    if t1.available:
-                        tier1 = {
-                            "passed": t1.passed,
-                            "incomplete_checks": t1.incomplete_checks,
-                            "findings": [
-                                {
-                                    "check": f.check, "validator": f.validator,
-                                    "severity": f.severity, "message": f.message,
-                                    "file": f.file, "line": f.line,
-                                    "secrets_class": f.is_secrets_class}
-                                for f in t1.findings]}
-            except Exception:
-                _log.debug("Tier 1 advisory scan skipped", exc_info=True)
-        finally:
-            _shutil.rmtree(q_path, ignore_errors=True)
+                result = scan_skill(q_path, source=scan_source)
+                # Advisory SkillEvaluator Tier 1 second opinion: optional binary,
+                # never blocks, errors degrade to no data (same as the CLI installer).
+                try:
+                    from tools.skillevaluator_scan import run_tier1_scan, tier1_advisory_enabled
+                    if tier1_advisory_enabled():
+                        t1 = run_tier1_scan(q_path)
+                        if t1.available:
+                            tier1 = {
+                                "passed": t1.passed,
+                                "incomplete_checks": t1.incomplete_checks,
+                                "findings": [
+                                    {
+                                        "check": f.check, "validator": f.validator,
+                                        "severity": f.severity, "message": f.message,
+                                        "file": f.file, "line": f.line,
+                                        "secrets_class": f.is_secrets_class}
+                                    for f in t1.findings]}
+                except Exception:
+                    _log.debug("Tier 1 advisory scan skipped", exc_info=True)
+            finally:
+                discard_quarantine(q_path)
 
         # `allowed` may be None ("ask") for agent-created/dangerous gates.
         allowed, reason = should_allow_install(result, force=False)

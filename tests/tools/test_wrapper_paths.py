@@ -81,6 +81,11 @@ _WRAPPER_PATH_BYPASS = [
     "usr/bin/systemctl poweroff",
     "cd / && usr/bin/env -i reboot",
     "cd / && bin/rm -rf /",
+    "C:/Windows/System32/shutdown.exe /s",
+    "$HOME/bin/reboot",
+    # `sudo -k cmd` still runs cmd (only -K / -l / -v take no command).
+    "nice sudo -k reboot",
+    "sudo -k nice reboot",
 ]
 
 _WRAPPER_PREFIX_NOT_A_HARDLINE = [
@@ -133,6 +138,16 @@ _WRAPPER_PREFIX_NOT_A_HARDLINE = [
     "sudo -E echo rm -rf /",
     "sudo -H echo reboot",
     "timeout --preserve-status echo reboot",
+    # A path built from a $(...) substitution is an argument, not a path to the verb.
+    "ls $(pwd)/reboot",
+    'ls "$(pwd)"/reboot',
+    "mkdir -p $(pwd)/poweroff",
+    "cat $(pwd)/reboot.log",
+    "echo hi > $(pwd)/halt.txt",
+    "$CATALINA_HOME/bin/shutdown.sh",
+    # A script whose name only starts with the verb is not the verb.
+    "./bin/shutdown.sh",
+    "docker/reboot-workers.sh",
 ]
 
 @pytest.mark.parametrize("command", _WRAPPER_PATH_BYPASS)

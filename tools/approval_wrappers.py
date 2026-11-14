@@ -51,7 +51,8 @@ _WRAPPER_NUM_OPERAND = {
 # Lookup / query modes name a program without running it (`command -v reboot`, `ionice -p 1`).
 _WRAPPER_QUERY_OPTIONS = {
     "command": {"-v", "-V"}, "ionice": {"-p", "--pid", "--pgid", "--uid"},
-    "sudo": {"-l", "--list", "-v", "--validate", "-k", "-K", "--reset-timestamp", "--remove-timestamp"},
+    # `sudo -k cmd` / `--reset-timestamp cmd` still run cmd; only these modes take no command.
+    "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
 }
 
 # GNU timeout durations: optional `+`, decimal/exponent, hex integer, inf/infinity, one s/m/h/d
@@ -108,6 +109,14 @@ def _is_env_split_option(base: str, word: str) -> bool:
     return _short_bundle(base, word)[1] == "-S"
 
 
+def _timeout_duration_end(command: str, pos: int) -> int:
+    """`timeout -- 5 cmd`: `--` ends the options, but the duration positional still precedes the program."""
+    from tools.approval_detection import _read_shell_word
+
+    _, end, word = _read_shell_word(command, pos)
+    return end if _WRAPPER_DURATION_RE.fullmatch(word) else pos
+
+
 def _wrapper_prefix_end(command: str, start: int) -> int:
     """Offset where the real program after any leading wrappers begins (*start* when none)."""
     from tools.approval_detection import (
@@ -139,7 +148,7 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
         while True:  # this wrapper's options / assignments / leading positional
             ows, owe, oword = _read_shell_word(command, pos)
             if ows == owe or oword == "--":
-                pos = owe
+                pos = _timeout_duration_end(command, owe) if base == "timeout" else owe
                 break
             if oword.startswith("-") and oword != "-":
                 if _is_query_option(base, oword):

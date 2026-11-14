@@ -15,6 +15,8 @@ _RUNS_THE_VERB = [
     "timeout -s KILL .5s reboot",
     "timeout +5 reboot",
     "timeout +.5 reboot",
+    "timeout -- 5 reboot",
+    "timeout -s KILL -- 5 reboot",
     # A carrier exposed only once its payload is wrapper-peeled.
     "su -c \"xargs su -c 'nice reboot'\"",
     "xargs env -S 'nice reboot'",
@@ -42,6 +44,8 @@ _PRINTS_THE_VERB = [
     "env --split-string='echo' reboot",
     "env -iS echo reboot",
     "env -S '-S echo' reboot",
+    "timeout -- 5 echo reboot",
+    "timeout -- echo reboot",  # `echo` is not a duration: timeout errors out
 ]
 
 

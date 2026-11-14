@@ -28,7 +28,7 @@ def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugi
     monkeypatch.setattr(
         plugins_cmd,
         "_discover_all_plugins",
-        discover_all_plugins or (lambda: list(_PLUGIN_ROW)),
+        discover_all_plugins or (lambda *args, **kwargs: list(_PLUGIN_ROW)),
     )
     monkeypatch.setattr(plugins_cmd, "_get_current_context_engine", lambda: "compressor")
     monkeypatch.setattr(plugins_cmd, "_get_current_memory_provider", lambda: "")
@@ -160,7 +160,7 @@ def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
 
     calls = {"discover": 0}
 
-    def discover_all_plugins():
+    def discover_all_plugins(*_args, **_kwargs):
         calls["discover"] += 1
         return list(_PLUGIN_ROW)
 

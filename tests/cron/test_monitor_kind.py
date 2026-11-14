@@ -418,6 +418,38 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
 
 
+@pytest.mark.parametrize("gate_closed", ["echo '{\"wakeAgent\": false}'\n", "true\n"])
+def test_change_skipped_by_the_script_gate_stays_pending(hermes_env, monkeypatch, gate_closed):
+    """A change that arrives while the script gate skips the agent (``wakeAgent: false`` or empty
+    output) is still delivered on the next tick the gate opens, not consumed as seen (#154959)."""
+    from cron.jobs import create_job, get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    _write_script(hermes_env, "mon.sh", "echo 'state A'\n")
+    _write_script(hermes_env, "gate.sh", "echo go\n")
+    job = create_job(prompt="Summarize what changed", schedule="every 5m",
+                     monitor_script="mon.sh", script="gate.sh", deliver="local")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)
+    assert observed["agent_runs"] == 1
+
+    _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
+    _write_script(hermes_env, "gate.sh", gate_closed)
+    success, _doc, final, _error = run_job(get_job(job["id"]))
+    assert (success, final, observed["agent_runs"]) == (True, SILENT_MARKER, 1)
+
+    _write_script(hermes_env, "gate.sh", "echo go\n")
+    success, _doc, _final, _error = run_job(get_job(job["id"]))
+    assert success is True
+    assert observed["agent_runs"] == 2
+    assert "+state B" in observed["prompts"][1]
+
+    # Delivered once: the same output is now seen.
+    run_job(get_job(job["id"]))
+    assert observed["agent_runs"] == 2
+
+
 # ---------------------------------------------------------------------------
 # cronjob tool: API-layer wiring
 # ---------------------------------------------------------------------------

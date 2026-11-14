@@ -27,6 +27,10 @@ class DiscordRecoveryStore:
         self._initialized = False
         self._hermes_home = Path(hermes_home or get_hermes_home())
 
+    @property
+    def hermes_home(self) -> Path:
+        return self._hermes_home
+
     def path(self) -> Path:
         directory = self._hermes_home / "gateway"
         directory.mkdir(parents=True, exist_ok=True)

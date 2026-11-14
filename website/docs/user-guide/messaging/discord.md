@@ -386,6 +386,7 @@ discord:
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
     max_attempts: 3               # Lifetime re-dispatch cap per message
+  stop_replay: true               # Replay messages a planned stop refused or dropped (default: true)
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
@@ -597,6 +598,19 @@ discord:
 If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart. A message counts as answered once its turn delivered a final reply, whether or not that reply carried a Discord reply reference (`reply_to_mode: "off"`, streamed replies and media-only replies included).
 
 `max_dispatches` caps one scan; `max_attempts` (default 3) caps how many times a single message can ever be re-dispatched, so a message whose turn keeps failing is not re-run on every reconnect. `window_seconds` is always honoured: the per-channel scan cursor can narrow a scan but never reaches further back than the window.
+
+#### `discord.stop_replay`
+
+**Type:** boolean — **Default:** `true`
+
+A planned stop (`hermes gateway restart`, `systemctl reload`/SIGUSR1, SIGTERM) stops admitting new work before the Discord connection closes. Without this option, a message in that gap is lost: a message still in the short text-batch debounce is dropped, a message refused with the "not accepting new work" notice never gets a turn, and a message sent while the gateway is down is not redelivered by Discord. With this option on, Hermes records the stop window in `gateway/discord_stop_replay.json` under the profile's Hermes home and, after the next connect, sends each of those messages once through the same authorization, mention, channel and deduplication gates as a live message.
+
+The replay is bounded to the stop: it reads only messages created after admission was withdrawn (plus the messages the stop explicitly refused or dropped), skips every message that reached a session before the stop, dispatches at most 20 messages per start, and does nothing when the stop was more than 30 minutes before the next start (a message refused early in a long restart drain stays eligible: the bound counts from the stop, not from the refusal). History is read from the channels with recent bot activity and the `missed_message_backfill` channels. It does not need `missed_message_backfill`, and it does not cover a crash (no clean stop). Set `stop_replay: false` to turn it off.
+
+```yaml
+discord:
+  stop_replay: false
+```
 
 #### `group_sessions_per_user`
 

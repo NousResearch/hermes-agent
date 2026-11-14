@@ -64,6 +64,8 @@ async def admit_message(authority, event):
         if exc.reason == 'runtime_draining' and runner._draining:
             # A restart's after-turn wait or a stop refused it before commit: the same notice the
             # in-process path gives, not a turn error that offers a /retry into the drain (#152410).
+            from gateway.drain_control import defer_drain_refused
+            defer_drain_refused(runner, event)
             from agent.i18n import t
             return t('gateway.busy.drain_rejected_new_work', action=runner._status_action_gerund())
         if exc.reason == 'admission_conflict' and exc.field == ADMITTED_REQUEST_CONFLICT['field']:

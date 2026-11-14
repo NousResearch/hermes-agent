@@ -1534,8 +1534,7 @@ DEFAULT_CONFIG = {
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
         "history_backfill_limit": 50,
-        # Replay messages missed while offline, after reconnect/startup.
-        "missed_message_backfill": {
+        "missed_message_backfill": {  # replay messages missed while offline, after reconnect/startup
             "enabled": False,
             "channels": "",  # comma-separated channel IDs; empty uses free_response_channels
             "window_seconds": 21600,  # only inspect messages from the last 6 hours
@@ -1543,6 +1542,7 @@ DEFAULT_CONFIG = {
             "max_dispatches": 10,  # cap on recovered messages dispatched per reconnect
             "max_attempts": 3,  # lifetime re-dispatch cap for one message, whatever its outcome
         },
+        "stop_replay": True,  # replay what a planned stop refused/dropped; skipped if the stop is >30 min old
         "reactions": True,  # add 👀/✅/❌ reactions to messages during processing
         # Gateway transport health probe: inspects the WebSocket's ready/open/heartbeat state (never
         # REST) as proof events still arrive. Any value 0 disables it.

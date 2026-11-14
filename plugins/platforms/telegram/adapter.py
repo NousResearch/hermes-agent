@@ -206,8 +206,8 @@ from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, 
 from gateway.approval_actor import picker_refusal, update_prompt_refusal
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
-    proxy_target_hosts, telegram_verify)
+    SEED_FALLBACK_IPS, TelegramFallbackTransport, bot_api_urls, build_ptb_requests, discover_fallback_ips,
+    parse_fallback_ip_env, proxy_target_hosts, telegram_verify)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCooldownMixin, land_persisted_state
@@ -2936,11 +2936,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
-            custom_base_url = self.config.extra.get("base_url")
-            if custom_base_url:
-                builder = builder.base_url(custom_base_url)
-                builder = builder.base_file_url(self.config.extra.get("base_file_url", custom_base_url))
-                logger.info("[%s] Using custom Telegram base_url: %s", self.name, custom_base_url)
+            if custom_urls := bot_api_urls(self.config.extra):
+                builder = builder.base_url(custom_urls["base_url"]).base_file_url(custom_urls["base_file_url"])
+                logger.info("[%s] Using custom Telegram base_url: %s", self.name, custom_urls["base_url"])
             # Local-mode telegram-bot-api returns absolute server-side file paths; PTB needs local_mode=True
             # so download_*() reads from disk instead of a 404ing HTTP GET.
             if self.config.extra.get("local_mode"):

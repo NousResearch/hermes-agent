@@ -1268,6 +1268,12 @@ class TestSameLineageHiddenDisclosure:
         assert "s_lost" in sessions
         lost = next(s for s in hidden["sessions"] if s["session_id"] == "s_lost")
         assert lost["end_reason"] is None  # the tell-tale of the lost end-write
+        # The recovery the note recommends must work: a plain read of the disclosed id
+        # (scroll rejects anchors in the current lineage, so the note must not suggest it).
+        assert "around_message_id" not in hidden["note"]
+        read = json.loads(session_search(session_id="s_lost", db=db, current_session_id="s_cur"))
+        assert read["success"] is True and read["mode"] == "read"
+        assert any("zephyrwidgets" in m["content"] for m in read["messages"])
 
     def test_current_session_live_rows_not_disclosed_as_hidden(self, db):
         """The current session's own live rows are already in context —

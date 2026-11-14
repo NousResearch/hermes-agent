@@ -447,8 +447,8 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         **({"hidden_same_lineage": {"count": hidden_rows, "sessions": list(hidden_sessions.values()),
             "note": f"{hidden_rows} matching message(s) in {len(hidden_sessions)} same-lineage session(s) "
             "were hidden because they are still treated as live context (unended). This can be a gateway "
-            "session whose end-write was lost. To read one anyway, scroll it directly: "
-            "session_search(session_id=..., around_message_id=...)."}} if hidden_rows else {}),
+            "session whose end-write was lost. To read one anyway, pass only its session_id: "
+            "session_search(session_id=...)."}} if hidden_rows else {}),
         link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "

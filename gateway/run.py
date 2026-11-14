@@ -657,7 +657,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
     r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
-    r"incorrect\s+api\s+key", r"invalid\s+api\s+key", r"unexpected\s+status\s+\d{3}\b")
+    r"incorrect\s+api\s+key", r"invalid\s+api\s+key", r"unexpected\s+status\s+\d{3}\s+(?:[A-Za-z][\w' -]{0,40}|<unknown status code>):")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     + "|".join(_PROVIDER_ERROR_MARKERS + _CONNECTION_ERROR_MARKERS[:8] + (r"all\s+connection\s+attempts\s+failed",))

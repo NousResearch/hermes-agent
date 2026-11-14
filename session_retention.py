@@ -34,8 +34,9 @@ def emit_session_deleted(store_home, deleted_ids, *, reason, primary=None, sessi
         return
     try:
         from hermes_cli.lifecycle import invoke_hook
-        from hermes_constants import get_hermes_home, profile_name_for_home
-        from hermes_scope import push_state
+        from hermes_constants import (
+            get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
+        )
 
         home = os.path.abspath(os.fspath(store_home))
         profile = profile_name_for_home(home)
@@ -45,12 +46,13 @@ def emit_session_deleted(store_home, deleted_ids, *, reason, primary=None, sessi
         if sessions_dir is not None:
             payload["sessions_dir"] = str(sessions_dir)
         rebind = profile is not None and os.path.realpath(home) != os.path.realpath(get_hermes_home())
-        token = push_state(home=home) if rebind else None
+        # health: allow HX016 -- main's on_session_delete dispatch binds the store's whole profile, as it does at the pin
+        token = set_hermes_home_override(home) if rebind else None
         try:
             invoke_hook("on_session_delete", **payload)
         finally:
             if token is not None:
-                token.reset()
+                reset_hermes_home_override(token)
     except Exception:
         logger.warning("on_session_delete dispatch failed", exc_info=True)
 

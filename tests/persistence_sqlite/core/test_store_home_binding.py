@@ -1,4 +1,4 @@
-"""Work the SQLite backend runs under a store's own profile home (opening the store, the ``on_session_delete`` dispatch after a delete) binds that home alone: the caller's bound scope stays the caller's, so its secrets and terminal policy never move to the store's profile, and the home is restored afterwards."""
+"""Work the SQLite backend runs under a store's own profile home. Opening the store binds that home alone: the caller's bound scope stays the caller's, so its secrets and terminal policy never move to the store's profile, and the home is restored afterwards. The ``on_session_delete`` dispatch after a delete runs as main's does: under a bound local scope it binds the store's whole profile for the hook, so that profile's plugins see that profile, and the caller's scope and home come back afterwards."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def test_a_store_opening_under_its_own_home_keeps_the_callers_scope(caller_scope
     assert current_scope() == scope
 
 
-def test_the_delete_hook_runs_under_the_stores_home_and_keeps_the_callers_scope(caller_scope, monkeypatch):
+def test_the_delete_hook_runs_under_the_stores_whole_profile_and_restores_the_callers_scope(caller_scope, monkeypatch):
     caller_home, scope = caller_scope
     store_home = Path(os.environ["HERMES_HOME"]) / "profiles" / "coder"
     store_home.mkdir(parents=True, exist_ok=True)
@@ -55,5 +55,6 @@ def test_the_delete_hook_runs_under_the_stores_home_and_keeps_the_callers_scope(
     name, profile, home, during = seen[0]
     assert (name, profile) == ("on_session_delete", "coder")
     assert _same(home, store_home)
-    assert during == scope
+    assert during != scope and _same(during.agent, store_home)
+    assert current_scope() == scope
     assert _same(get_hermes_home(), caller_home)

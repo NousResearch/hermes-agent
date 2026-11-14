@@ -118,6 +118,38 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
     assert _head(world["plugins_dir"] / "cat-plugin") == world["sha2"]
 
 
+def test_update_repins_when_hermes_home_is_reached_through_a_symlink(world, tmp_path, monkeypatch):
+    """``HERMES_HOME`` behind a junction/symlink: callers reach a plugin dir RESOLVED
+    (``_sanitize_plugin_name``) while ``_plugins_dir()`` keeps the home's own spelling, so the
+    provenance lookup must compare both spellings — otherwise every catalog install reads as a Git
+    pin and both update surfaces answer the ``pinned to <sha>`` refusal (#152443)."""
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    assert entry is not None
+    target, _m, _name = cat.install_catalog_entry(entry, force=False)
+    link = tmp_path / "home-link"
+    link.symlink_to(world["plugins_dir"].parent, target_is_directory=True)
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: link / "plugins")
+
+    assert cat.catalog_install_record(link / "plugins" / "cat-plugin") is not None
+    assert cat.catalog_install_record(target) is not None
+
+    world["state"]["pin"] = world["sha2"]
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result.get("ok") is True, result
+    assert result["unchanged"] is False
+    assert _head(world["plugins_dir"] / "cat-plugin") == world["sha2"]
+
+
+def test_install_record_still_refuses_a_dir_outside_the_plugins_dir(world, tmp_path):
+    """Comparing resolved spellings must not adopt an unrelated directory that happens to be named
+    like an installed plugin and to sit beside the installer's metadata file."""
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    assert entry is not None
+    cat.install_catalog_entry(entry, force=False)
+    (tmp_path / "elsewhere" / "cat-plugin").mkdir(parents=True)
+    assert cat.catalog_install_record(tmp_path / "elsewhere" / "cat-plugin") is None
+
+
 def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
     world["state"]["removed"].append(
         pc_cat.RemovedEntry(name="cat-plugin", repo=world["repo"].as_uri(), reason="malware"))

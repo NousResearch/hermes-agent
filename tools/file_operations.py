@@ -371,7 +371,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # which the edit paths then write back. The file's own byte count travels beside it: output
         # INSIDE the fence decodes too, so only a read that matches it is ever handed to a writer.
         arg = self._escape_shell_arg(path)
-        segments, read_rc, result = self._fenced_read(f"base64 < {arg}", f"wc -c < {arg}")
+        segments, read_rc, result = self._fenced_read(
+            self._regular_only(arg, f"base64 < {arg}"), f"[ -f {arg} ] && wc -c < {arg}")
         garbled = ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
         if segments is None:
             # No fenced reply: the command never ran as written (a wrapper ``cd`` failed, the backend
@@ -392,10 +393,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return data, None
 
     @staticmethod
-    def _failed_read(path: str, payload: str, read_rc: int) -> ExecuteResult:
+    def _regular_only(arg: str, read_cmd: str) -> str:
+        """READ_CMD unless ARG exists as a non-regular file: ``< fifo`` blocks until the exec timeout
+        (a writer-less FIFO held patch for the full 180 s), so that case echoes the not-regular
+        sentinel and fails at once. A stat, so it costs no extra round trip on any backend."""
+        return f"if [ -e {arg} ] && [ ! -f {arg} ]; then echo {NOT_REGULAR_SENTINEL}; false; else {read_cmd}; fi"
+
+    @classmethod
+    def _failed_read(cls, path: str, payload: str, read_rc: int) -> ExecuteResult:
         """The backend's own diagnostic for a read that ran and failed, else a bare exit status."""
-        return ExecuteResult(stdout=_strip_terminal_fence_leaks(payload).strip() or f"{path}: exit {read_rc}",
-                             exit_code=read_rc)
+        text = _strip_terminal_fence_leaks(payload).strip()
+        if text == NOT_REGULAR_SENTINEL:
+            text = cls._not_regular_error(path).error
+        return ExecuteResult(stdout=text or f"{path}: exit {read_rc}", exit_code=read_rc)
 
     def _read_exact_bytes_hex(self, path: str) -> tuple[Optional[bytes], Optional[ExecuteResult]]:
         """``od`` fallback for a backend without ``base64``, fenced the same way.
@@ -406,7 +416,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         present in busybox; when it is missing too the caller gets a transport error, never a
         not-found."""
         arg = self._escape_shell_arg(path)
-        segments, read_rc, result = self._fenced_read(f"od -An -v -tx1 < {arg}", f"wc -c < {arg}")
+        segments, read_rc, result = self._fenced_read(
+            self._regular_only(arg, f"od -An -v -tx1 < {arg}"), f"[ -f {arg} ] && wc -c < {arg}")
         unavailable = ExecuteResult(
             stdout=f"{path}: this backend has neither base64 nor od, so a byte-exact read is unavailable",
             exit_code=1)
@@ -1617,7 +1628,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return PatchResult(error=denied)
         data, failed = self._read_exact_bytes(path)
         if data is None:
-            return PatchResult(error=failed.cwd_error or f"Failed to read file: {path}")
+            return PatchResult(error=failed.cwd_error or f"Failed to read file: {failed.stdout or path}")
         # Every line the replacement does not touch is written back, so read the exact bytes;
         # surrogateescape lets write_file restore any byte UTF-8 cannot decode (#79178).
         # Match and diff on BOM-stripped content (a phantom U+FEFF defeats an exact

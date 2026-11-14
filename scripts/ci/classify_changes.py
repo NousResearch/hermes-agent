@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Classify a PR's changed files into CI work lanes.
 
-Reads newline-separated changed paths on stdin and writes ``key=value``
+Reads changed paths on stdin, one file per line (a renamed file as
+``path<TAB>old path``), and writes ``key=value``
 booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 ``detect-changes`` composite action consumes them so steps gate on
 ``if: steps.changes.outputs.<lane> == 'true'``.
@@ -93,9 +94,13 @@ import os
 import subprocess
 import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from hermes_agent.compat.paths import current_path, original_path
+
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+# Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
+# key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html", "scripts/ci/desktop_build_cache.py"}
 # The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
 # change to the bridge or to the Python adapter that speaks its protocol
 # selects ``frontend``.
@@ -103,9 +108,14 @@ _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
 # Shift every package's tree (pnpm-workspace.yaml carries the overrides).
 _ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
+# The docker_meta lint step runs it; it is not an image input, so it builds no image.
+_DOCKER_LINT = "scripts/ci/lint_docker.sh"
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+# CI configuration outside .github/: workflows run their commands as just recipes
+# through this wrapper, so a change here can break any lane, as a workflow edit can.
+_CI_CONFIG_FILES = {"justfile", "scripts/hermes-python"}
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Published artifacts that live under website/ but that Python asserts about.
@@ -131,12 +141,16 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/gateway/test_control_socket_vectors.py (the public control-socket contract)
+    "apps/shared/src/node/control-socket.vectors.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
+    # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)
+    "plugins/AGENTS.md",
 }
 
 # Catalog entry data: read by the catalog tests and the Plugin Catalog CI
@@ -267,6 +281,7 @@ _DESKTOP_E2E_SHARED = (
 _UPDATE_PIPELINE = (
     "hermes_cli/main.py",  # cmd_update: lock, pre-update backup, receipt boundary
     "hermes_cli/main_dashboard.py",  # hangup protection + update.log mirror
+    "hermes_cli/main_web_build.py",  # completion's bytecode sweep and dropped-folder prune
     # Prefix: main_desktop.py (staged Desktop swap / rebuild in the tail) and the
     # main_desktop_* siblings it imports (macOS signing identity).
     "hermes_cli/main_desktop",
@@ -291,6 +306,8 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_launchd.py",
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
+    "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
@@ -347,11 +364,13 @@ _UPDATE_DEPENDENCIES = (
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
     "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
+    "pm/index_config.py",  # source_build's npmrc bridge (read_npmrc, user_npmrc, hermes_npmrc)
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/default_plugins.py",  # the update tail and boot bootstrap install catalog defaults
     "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
@@ -433,9 +452,11 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_state",
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_session_terminal_cwd_restart.py",
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_reset_paused_queue_notice.py",
         "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (
@@ -460,6 +481,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/subcommands/update",
         "hermes_cli/install_",
         "hermes_cli/_install_",
+        # The module-rename finder and its table: every update entry point installs it, and a move
+        # changes the table.
+        "hermes_agent/__init__.py",
+        "hermes_agent/compat/",
         "hermes_cli/main_install",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
@@ -527,13 +552,12 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
 def _with_package_inits(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Importing a/b/c.py runs a/__init__.py and a/b/__init__.py first, so a routed module
     routes the package inits above it. A shared hub's inits run whenever the hub is imported, so
-    they are routed too; only an init that is itself a hub stays out."""
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    inits = [f"{'/'.join(parts[:i])}/__init__.py"
+    they are routed too; only an init that is itself a hub stays out. A moved module also runs the
+    inits above where it lives now; each init is listed by its original path, as classify() reads it."""
+    inits = [original_path(f"{'/'.join(parts[:i])}/__init__.py")
              for p in (*paths, *sorted(_SHARED_HUBS)) if p.endswith(".py")
-             for parts in [p.split("/")[:-1]] for i in range(1, len(parts) + 1)]
-    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS
-                                          and os.path.isfile(os.path.join(root, i)))]))
+             for parts in [current_path(p).split("/")[:-1]] for i in range(1, len(parts) + 1)]
+    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS)]))
 
 
 for _lane in ("e2e_upgrade", "e2e_desktop_update"):
@@ -632,7 +656,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     ``run_e2e`` is the pull request's ``run-e2e`` label: it turns every slow
     lane on.
     """
-    files = [f.strip() for f in files if f.strip()]
+    files = [original_path(f.strip()) for f in files if f.strip()]
     catalog = any(_is_catalog_data(f) for f in files)
     code = [f for f in files if not _is_catalog_data(f)]
     python = any(not _py_irrelevant(f) for f in code)
@@ -645,7 +669,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     )
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
-    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) or f == _DOCKER_LINT for f in files)
     
     ret = {
         "python": python,
@@ -671,7 +695,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         inherited = classify(consumers)
         for lane in _FIXTURE_CONSUMER_LANES:
             ret[lane] = ret[lane] or inherited[lane]
-    if not files or any(f.startswith(".github/") for f in files):
+    if not files or any(f.startswith(".github/") or f in _CI_CONFIG_FILES for f in files):
         ret["python"] = True
         ret["python_prod"] = True
         ret["docker_meta"] = True
@@ -744,7 +768,8 @@ def pull_request_changed_files() -> list[str]:
     pr = _pull_request_number()
     if not repo or not pr:
         return []
-    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq", ".[].filename") or []
+    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq",
+                     ".[] | [.filename, .previous_filename // empty] | @tsv") or []
 
 
 def pull_request_labels() -> list[str]:
@@ -766,9 +791,26 @@ def pull_request_labels() -> list[str]:
     return [label["name"] for label in labels if isinstance(label, dict) and label.get("name")]
 
 
+# The compare API lists at most this many files and drops the rest without saying so.
+COMPARE_FILE_CAP = 300
+
+
+def changed_paths(lines: list[str]) -> list[str]:
+    """Paths from lines of ``path`` or ``path<TAB>old path``; ``[]`` (every lane runs) at the cap.
+
+    A rename counts under both names: a lane keyed on the old location still has to see a file move
+    away from it."""
+    lines = [line for line in lines if line.strip()]
+    if len(lines) >= COMPARE_FILE_CAP:
+        print(f"{len(lines)} changed files reached the compare API's {COMPARE_FILE_CAP}-file cap; "
+              "the list may be cut short, so every lane runs", file=sys.stderr)
+        return []
+    return [path for line in lines for path in line.split("\t") if path.strip()]
+
+
 def main() -> int:
-    files = sys.stdin.read().splitlines()
-    if not any(f.strip() for f in files):
+    lines = sys.stdin.read().splitlines()
+    if not any(f.strip() for f in lines):
         recovered = pull_request_changed_files()
         if recovered:
             print(
@@ -776,7 +818,8 @@ def main() -> int:
                 "path(s) from the pull request files endpoint",
                 file=sys.stderr,
             )
-            files = recovered
+            lines = recovered
+    files = changed_paths(lines)
     lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
     out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):

@@ -1,0 +1,23 @@
+name: iolite
+title: Iolite
+repo: https://github.com/KyaniteLabs/llm-3d-viz
+sha: b7127a7243875c3dbaaeccec30e9b8db11cfe4e7
+subdir: plugins/iolite-hermes
+description: "Pick an LLM that is smart enough, then cheapest, in one tool call. Set an intelligence floor or name an anchor model, and Iolite returns the few models on the cost x intelligence front, ranked toward cheaper, smarter or balanced. It answers from a catalog of 621 models bundled in the plugin, so a fresh install works offline with no setup. Adds three tools (iolite_shortlist, iolite_model, iolite_show), /iolite, a skill and a Hermes Desktop pane that plots the catalog in 3D and 2D and follows the agent's picks. Data and credits: Epoch AI ECI (CC BY), LMArena ratings (CC BY 4.0), LiteLLM prices (MIT); every answer names its sources, and catalog rows whose source names Artificial Analysis are refused. Disclosure — no network unless you set catalog_url (one https GET, no credentials added; plain http only with allow_http); a post_api_request hook records tokens per second and per-task tokens and model seconds (task ids hashed) on your machine only, never uploaded, off with measure_speed and measure_usage false; your last shortlist, your own prices and temporary .pane-*.receipt markers are kept in the plugin data directory; three local Desktop routes (/landscape, /my-prices, /pane-receipt) add no auth of their own and rely on the dashboard's loopback bind, so keep the dashboard on 127.0.0.1; no prompt text is sent to the pane; no secrets read; tool results stay in session history like any tool output."
+maintainer: KyaniteLabs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.5.1"
+docs_url: https://github.com/KyaniteLabs/llm-3d-viz/blob/b7127a7243875c3dbaaeccec30e9b8db11cfe4e7/plugins/iolite-hermes/README.md
+readme: true
+platforms: [linux]
+known_issues:
+  - "The three local Desktop routes add no auth of their own; if you expose the Hermes dashboard on a network interface they are exposed with it (they reveal your latest shortlist and accept saved prices). Keep the dashboard on loopback."
+  - "The Desktop pane starts off and the agent cannot switch it on; enable it in Capabilities -> Plugins."
+  - "Speed is measured on your own machine only and is not comparable across machines; models with no price or score are not plotted."
+capabilities:
+  provides_tools: [iolite_shortlist, iolite_model, iolite_show]
+  provides_hooks: [post_api_request]
+  provides_middleware: []
+  requires_env: []

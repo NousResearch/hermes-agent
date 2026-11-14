@@ -153,7 +153,7 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
 | **Git**              | With the `git-lfs` extension installed                                                        |
 | **Python 3.14** | Current development uses PM's pinned interpreter. The broader `>=3.11,<3.15` package metadata keeps old updaters working, not the current runtime on older Python. |
 | **Node.js** | Use the PM pin or a version accepted by root `package.json` engines |
-| **pnpm** | Exactly the root `package.json` `devEngines` pin; `source ./activate` provides it |
+| **pnpm** | Exactly the `pm/lock.json` pin; `source ./activate` provides it |
 
 ### PM developer environment
 
@@ -182,6 +182,32 @@ Run `hermes` for this checkout. Activation defines it as a function for this
 worktree, so it hides a global `hermes` alias and refuses outside the worktree.
 PM activation syncs tools and Python dependencies before adding them to the shell. It does
 not install JS workspaces or rewrite launchers and shell configuration. `deactivate` restores the prior shell environment and removes the function.
+
+### Developer commands (`just`) {#developer-commands}
+
+`just` with no arguments lists every developer command. Each recipe calls one
+script or tool in this repository, so the commands below also work without
+`just`. The lefthook pre-commit hook calls the same recipes.
+
+| Recipe | Runs |
+|---|---|
+| `just setup` | `setup-hermes.sh --runtime-only --test-environment` (PowerShell: `setup-hermes.ps1 -RuntimeOnly`) |
+| `just check` | `scripts/check`, every blocking lint check; `just check --only health` selects checks |
+| `just fix` | the pinned ruff with `--fix`, then `pnpm -r fix` |
+| `just test <paths>` | `scripts/run_tests.sh <paths>`; refuses to start without a path, even with flags |
+| `just test-all` | the full Python suite |
+| `just js-install`, `just check-js`, `just test-js` | `pnpm install --frozen-lockfile`, `pnpm -r check`, `pnpm -r test` (after building `@hermes/ink`) |
+| `just desktop`, `just tui` | the desktop and TUI dev servers |
+| `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
+| `just docs-generate`, `just docs-check` | regenerate the skill docs pages; then every docs check CI runs (committed pages match, links, diagrams) |
+| `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
+| `just check-repo-guards`, `just check-uv-lock` | the repo-guards history, contributor and supply-chain steps, and the `uv.lock` check, through `scripts/ci/local_step.sh` against the merge base with `origin/main` |
+| `just check-icons`, `just lint-docker`, `just check-plugin-catalog`, `just check-nix` | the committed-icons check, hadolint and shellcheck on the container inputs, the catalog validator, `nix flake check` |
+| `just test-catalog`, `just test-whatsapp-bridge`, `just test-rust` | the plugin-catalog tests, the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`), the bootstrap installer's `cargo test --lib` |
+
+Recipes that run Python go through `scripts/run-in-hermes-env`, so they work in
+a shell that was never activated. A new developer command is a script under
+`scripts/` plus a recipe that calls it; the recipe holds no logic.
 
 ### Manual development and test environment {#manual-development-and-test-environment}
 
@@ -224,23 +250,43 @@ than copying production credentials into the checkout.
 
 ### JavaScript workspaces and website
 
-From the repository root, run `pnpm install --frozen-lockfile` for the desktop,
-TUI, dashboard, and shared JS workspaces. Root `package.json` pins pnpm in
-`devEngines` (`source ./activate` provides that exact version). Hermes's builds and
-`hermes update` refuse any other pnpm version; a direct `pnpm install` does not check
-it. The root `preinstall` script refuses `npm install`. The website is a separate npm
-project:
+From the repository root, run `pnpm install --frozen-lockfile` (`just js-install`) for the desktop,
+TUI, dashboard, and shared JS workspaces. `pm/lock.json` pins pnpm
+(`source ./activate`, or `. .\activate.ps1` in PowerShell, provides that exact
+version). An install that runs lifecycle scripts refuses any other pnpm, a direct or
+filtered `pnpm install` included: the root `preinstall` script requires the
+`pm/lock.json` pnpm (and refuses `npm install`), and pnpm 10 and 11 also refuse the
+root `engines.pnpm` range. pnpm 12 skips the root `preinstall` under
+`--ignore-scripts`, `--lockfile-only` (which writes `pnpm-lock.yaml`) and `pnpm fetch`,
+so another pnpm 12 is not refused there; CI installs every changed lockfile with the
+pinned pnpm under `--frozen-lockfile`. The website is a separate npm project
+(`just docs-install`, `just docs-build`):
 
 ```bash
 npm ci --prefix website
 npm run build:fast --prefix website
 ```
 
+In the repository root and the JS workspace folders, npm refuses every command that
+installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,
+`--package-lock-only` or `--force`, `npm ci`, `update`, `dedupe`, `uninstall`,
+`link`): each of these folders has an `.npmrc` with `engine-strict=true`, and its
+`package.json` declares an `engines.npm` that no npm satisfies. `npm rebuild` and
+`npm pkg set` are not refused. An explicit `--engine-strict=false` overrides the
+refusal.
+
+`npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
+But `engine-strict` applies anywhere in the checkout: in these folders, and through
+the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
+
 Use a Node version accepted by the corresponding `package.json` engines.
 Native desktop dependencies can also require the platform build toolchain.
 
 Logos and icons are generated from `assets/nous-girl-*.svg` and
-`assets/backgrounds/`. `node scripts/generate-icons.mjs` renders them with the
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` (`just icons`) renders them with the
 Hermes runtime Python (`HERMES_PYTHON`, else `python` on PATH): Pillow and
 resvg-py are core dependencies. Do not commit generated PNG/ICO/ICNS outputs.
 
@@ -249,9 +295,12 @@ resvg-py are core dependencies. Do not commit generated PNG/ICO/ICNS outputs.
 Use the canonical runner on every host:
 
 ```bash
-scripts/run_tests.sh
-scripts/run_tests.sh tests/agent/ -v
+just test-all
+just test tests/agent/ -v
 ```
+
+Both recipes call `scripts/run_tests.sh`; `just test` refuses to start
+without a path, and `just test-all` runs the full suite.
 
 On Windows, run the script through Bash. When no local `.venv` or `venv`
 contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It

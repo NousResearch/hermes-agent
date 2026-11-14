@@ -10,6 +10,7 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -17,7 +18,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader
@@ -104,7 +105,7 @@ def _is_bundled(provider_dir: Path) -> bool:
 def _module_name(provider_dir: Path, name: str) -> str:
     """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
     if _is_bundled(provider_dir):
-        return f"plugins.memory.{name}"
+        return f"{__package__}.{name}"
     # Separate package trees, including relative imports, across homes/sources.
     digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
     return f"{_USER_NAMESPACE}.{name}__source_{digest}"
@@ -284,7 +285,7 @@ def _load_package(provider_dir: Path, name: str):
     (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
     return _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
-        parents=("plugins", "plugins.memory"),
+        parents=(__package__.rpartition(".")[0], __package__),
         logger=logger,
         synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
     )
@@ -337,6 +338,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
             return loaded()
         except Exception:
             pass
+    collector = None
     if hasattr(loaded, "register"):
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
         collector.collect(loaded.register, source=getattr(loaded, "__file__", None))
@@ -354,6 +356,8 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
         return collector.provider
 
     provider = _instantiate_subclass(loaded)
+    if collector is not None:
+        collector.provider = provider  # tool wrappers must gate the subclass fallback too
     if provider is None:
         logger.debug("Memory provider entry point '%s' loaded no provider", entry_point.name)
     return provider
@@ -371,6 +375,7 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     if mod is None:
         return None
 
+    collector = None
     if hasattr(mod, "register"):
         collector = _ProviderCollector(name, register_skills=register_skills)
         try:
@@ -390,7 +395,38 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
         if collector.provider:
             return collector.provider
 
-    return _instantiate_subclass(mod)
+    provider = _instantiate_subclass(mod)
+    if collector is not None:
+        collector.provider = provider  # ctx tools registered before subclass fallback still need a claim
+    return provider
+
+
+class _ClaimGatedHandler:
+    """A registry tool handler a memory provider's ``register(ctx)`` registered, refused for a caller
+    whose profile is not the one the collected provider instance is bound to (#147659).
+
+    A callable object, not a closure: ``__wrapped__`` keeps the plugin's handler visible to the
+    registry's ownership lookup and signature-based kwarg narrowing, which a closure defined here
+    would attribute to this module."""
+
+    def __init__(self, collector, name, handler, is_async):
+        self._collector, self._name, self.__wrapped__, self._is_async = collector, name, handler, is_async
+
+    def __call__(self, *args, **kwargs):
+        from agent.memory_caller_scope import refused_tool_message, serves_caller
+
+        provider = self._collector.provider
+        if provider is None or serves_caller(provider, f"tool {self._name}"):
+            return self.__wrapped__(*args, **kwargs)
+        from tools.registry import tool_error
+
+        refusal = tool_error(refused_tool_message(self._name))
+        if not self._is_async:
+            return refusal
+
+        async def _refused():
+            return refusal
+        return _refused()
 
 
 class _ProviderCollector:
@@ -445,6 +481,16 @@ class _ProviderCollector:
     def register_memory_provider(self, provider):
         self.provider = provider
 
+    def register_tool(self, name, toolset, schema, handler, *args, **kwargs):
+        """Forward to the real ``PluginContext.register_tool`` with the handler gated on this
+        provider's instance claim: a provider refused for the calling profile (another profile's
+        manager bound this same instance) must not answer through its registry tools either, or a
+        process-wide singleton serves the refused profile the owner's store (#147659)."""
+        # After handler: check_fn, requires_env, is_async (PluginContext.register_tool order).
+        is_async = kwargs.get("is_async", args[2] if len(args) > 2 else False)
+        return self.__getattr__("register_tool")(
+            name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
+
     def register_skill(self, *args, **kwargs):
         """Forward skills to the plugin registry, tracking qualified name + path so
         switching the active provider can retract the previous one's skills. Gated
@@ -494,6 +540,31 @@ class _ProviderCollector:
         return self._context
 
 
+@contextlib.contextmanager
+def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
+    """Yield a ``release()`` that disposes every registration provider ``name``'s loads made on the
+    active profile's plugin manager since the block began: hooks, tools, middleware and the rest
+    ``_ProviderCollector`` forwards (all in the manager's ownership ledger). For a one-shot load
+    whose plugin host is about to stop, so nothing is left proxying into a dead host; the
+    provider's next real load registers them again. A real load of the same provider on the same
+    profile inside the block loses its registrations too, until it next loads (they would
+    proxy into the stopped host anyway, unless it loaded in-process)."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    provider_dir = find_provider_dir(name)
+    key = provider_dir.name if provider_dir else name  # the collector's key (_load_provider_from_dir)
+    manager = get_plugin_manager()
+    with manager._discovery_lock:
+        before = {id(r) for r in manager._ownership_ledger.get(key, ())}
+
+    def release() -> None:
+        with manager._discovery_lock:
+            made = [r for r in manager._ownership_ledger.get(key, ()) if id(r) not in before]
+            manager._dispose_registrations(made)
+
+    yield release
+
+
 def _get_active_memory_provider() -> Optional[str]:
     """Active provider name from config.yaml (``memory.provider``), or None. Reads config only."""
     try:
@@ -502,6 +573,15 @@ def _get_active_memory_provider() -> Optional[str]:
         return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
+
+
+def active_memory_provider_commands() -> set[str]:
+    """The ``hermes <name>`` command the active memory provider registers, as a set: empty when none is
+    selected or it ships no ``cli.py`` (the file :func:`discover_plugin_cli_commands` imports).
+    Never raises (config read errors count as no provider)."""
+    name = _get_active_memory_provider()
+    provider_dir = find_provider_dir(name) if name else None
+    return {name} if provider_dir is not None and (provider_dir / "cli.py").exists() else set()
 
 
 def parked_provider_notice(name: str) -> Optional[str]:

@@ -38,6 +38,7 @@ try:
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
@@ -683,11 +684,27 @@ def _result_taken(result: dict) -> bool:
     return result.get("auth_code") is not None or result.get("error") is not None
 
 
+def _claim_result(result: dict, lock: threading.Lock, **values: Any) -> bool:
+    """Write *values* unless a terminal result is already there; True when this caller won. Atomic under
+    *lock*: callbacks are served on concurrent threads and race the paste reader."""
+    with lock:
+        if _result_taken(result):
+            return False
+        result.update(values)
+        return True
+
+
 def _make_callback_handler() -> tuple[type, dict]:
-    """Fresh ``(HandlerClass, result_dict)`` per flow so concurrent flows don't stomp on each other."""
+    """Fresh ``(HandlerClass, result_dict)`` per flow so concurrent flows don't stomp on each other. The
+    flow's writers share ``HandlerClass.result_lock``."""
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None, "iss": None}
 
     class _Handler(BaseHTTPRequestHandler):
+        result_lock = threading.Lock()
+        # Each connection has its own thread (_CallbackServer), so an idle browser preconnect never blocks
+        # the redirect; this only bounds how long a silent socket keeps its thread.
+        timeout = 60
+
         def do_GET(self) -> None:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             status = 200
@@ -695,11 +712,11 @@ def _make_callback_handler() -> tuple[type, dict]:
                 # Browsers follow the real /callback with queryless fetches (/favicon.ico); an unconditional
                 # update here wrote four Nones over the code before the 500 ms waiter poll saw it (#116278).
                 status, body = 404, "<h2>Not Found</h2>"
-            elif _result_taken(result):
+            elif not _claim_result(result, self.result_lock, auth_code=parsed["code"], state=parsed["state"],
+                                   error=parsed["error"], iss=parsed["iss"]):
                 # First terminal result (HTTP or paste) wins; a duplicate or refreshed callback never replaces it.
                 body = "<h2>Authorization already received</h2><p>You can close this tab and return to Hermes.</p>"
             else:
-                result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
                 body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
                         else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
             self.send_response(status)
@@ -716,10 +733,11 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
-def _paste_callback_reader(result: dict) -> None:
+def _paste_callback_reader(result: dict, lock: threading.Lock | None = None) -> None:
     """Read one stdin line as an OAuth redirect (full URL, bare query, or a ``_SKIP_TOKENS`` word that
     exits without auth) into *result*. Parse failures, EOF and interrupts are swallowed — best-effort
-    fallback racing the HTTP listener, which stays primary."""
+    fallback racing the HTTP listener, which stays primary. *lock* is the flow's handler ``result_lock``."""
+    lock = lock or threading.Lock()
     try:
         line = sys.stdin.readline()
     except (KeyboardInterrupt, OSError, ValueError):
@@ -728,7 +746,8 @@ def _paste_callback_reader(result: dict) -> None:
     if not line or _result_taken(result):
         return  # EOF / blank, or the HTTP listener already won
     if line.lower() in _SKIP_TOKENS:
-        result["error"] = _USER_SKIPPED_SENTINEL
+        if not _claim_result(result, lock, error=_USER_SKIPPED_SENTINEL):
+            return
         print(
             "  OAuth skipped. Run `hermes mcp login <server>` later to authenticate, "
             "or set ``enabled: false`` on that server in config.yaml to disable persistently.",
@@ -744,9 +763,9 @@ def _paste_callback_reader(result: dict) -> None:
     if not parsed["code"] and not parsed["error"]:
         print("  Pasted input did not contain ``code=`` or ``error=`` — ignoring.", file=sys.stderr)
         return
-    if _result_taken(result):  # one more race-check before writing
+    if not _claim_result(result, lock, auth_code=parsed["code"], state=parsed["state"], error=parsed["error"],
+                         iss=parsed["iss"]):
         return
-    result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
     if parsed["code"]:
         print("  Got authorization code from paste — completing flow.", file=sys.stderr)
 
@@ -824,12 +843,20 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_
     return _redirect_handler
 
 
+class _CallbackServer(ThreadingMixIn, HTTPServer):
+    """One thread per connection: a single-threaded server parked on an idle browser preconnect (Chrome
+    holds one ~60 s) delayed the redirect behind it, and a short read timeout instead dropped slow but
+    real clients (SSH-tunnelled callbacks). Daemon threads: ``server_close()`` never joins an idle one."""
+
+    daemon_threads = True
+
+
 def _start_callback_server(port: int, handler_cls: type) -> HTTPServer:
     """Bind the callback listener on *port*, adopting a parked reserved socket (closes the select→bind
     TOCTOU window). ``allow_reuse_address`` is set BEFORE binding (a no-op afterwards) so a lingering
     TIME_WAIT socket from a previous flow cannot block the next."""
     try:
-        server = HTTPServer(("127.0.0.1", port), handler_cls, bind_and_activate=False)
+        server = _CallbackServer(("127.0.0.1", port), handler_cls, bind_and_activate=False)
         reserved = _reserved_sockets.pop(port, None)
         if reserved is not None:
             server.socket.close()
@@ -862,6 +889,44 @@ def _callback_outcome(result: dict, cimd_url: str | None):
             "OAuth callback timed out — no authorization code received. Ensure you completed the browser authorization flow." + hint
         )
     return _authorization_code_result(result["auth_code"], result["state"], result.get("iss"))
+
+
+async def _close_callback_server(server: HTTPServer) -> None:
+    """``shutdown()`` then ``server_close()`` on a dedicated thread (off the shared MCP event loop), awaited
+    to the end even when cancelled: a cancel that skipped ``server_close()`` left the port bound and the
+    retry died with EADDRINUSE (#113771). A cancellation that arrives meanwhile is re-raised afterwards.
+    Not ``asyncio.to_thread``: that is a task of its own, which ``asyncio.run`` teardown cancels while it
+    still waits for an executor slot, so the listener was never closed."""
+    loop = asyncio.get_running_loop()
+    closed = loop.create_future()
+
+    def settle() -> None:
+        if not closed.done():
+            closed.set_result(None)
+
+    def close() -> None:
+        try:
+            try:
+                server.shutdown()
+            finally:
+                server.server_close()  # even when shutdown() failed: the port must be released
+        except Exception:
+            logger.debug("OAuth callback listener cleanup failed", exc_info=True)
+        finally:
+            try:  # always settle, or the waiter would wait forever
+                loop.call_soon_threadsafe(settle)
+            except RuntimeError:  # the loop already closed; nobody is waiting any more
+                pass
+
+    threading.Thread(target=close, daemon=True, name="mcp-oauth-cb-close").start()
+    cancelled: asyncio.CancelledError | None = None
+    while not closed.done():
+        try:
+            await asyncio.shield(closed)
+        except asyncio.CancelledError as exc:
+            cancelled = exc  # keep waiting: returning now would leave the port bound
+    if cancelled is not None:
+        raise cancelled
 
 
 def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0):
@@ -908,15 +973,14 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
                 "Type ``skip`` + Enter to continue without this server:",
                 file=sys.stderr, flush=True)
-            threading.Thread(target=_paste_callback_reader, args=(result,), daemon=True).start()
+            threading.Thread(target=_paste_callback_reader, args=(result, handler_cls.result_lock), daemon=True).start()
         elapsed = 0.0
         try:
             while elapsed < timeout and not _result_taken(result):
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
         finally:
-            server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
-            server.server_close()
+            await _close_callback_server(server)
         return _callback_outcome(result, cimd_url)
 
     return _wait

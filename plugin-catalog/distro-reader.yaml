@@ -1,0 +1,17 @@
+name: distro-reader
+title: Distro Reader
+repo: https://github.com/Distro-Media/hermes-plugin-distro-reader
+sha: 57bfa385e6dd9e1dc1d5230d0907c1c07d248ae7
+description: "Read independent news and content from Distro publications in Hermes through the public Distro Reader MCP server: search, feeds, full stories, archive research, visual article and book rendering, podcasts, payment information, and user-approved tips. Portable Agent Plugins v1 package with three workflow skills; public reading needs no account or API key. Disclosure — connects to Distro's hosted Reader MCP server (reader.distro.media); its distro_tip tool and bundled premium-access skill start x402 crypto payments (tips and premium story/book purchases) with the user's wallet, which the skill only does after the user approves the exact amount, asset and network; the server is declared untrusted so its write tools go through Hermes approval."
+maintainer: Distro-Media
+tier: community
+category: tools
+version: "1.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Distro-Media/hermes-plugin-distro-reader
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -152,7 +152,7 @@ def _export_on_gateway(connection, session_id, fmt, filename, redact):
         content = (connection.call("session.export", session_id=session_id, format=fmt,
                                    redact=redact) or {}).get("content")
     except GatewayClientError as e:
-        if not (isinstance(e, GatewayRPCError) and (e.code == -32601 or str(e) == "unknown_method")):
+        if not (isinstance(e, GatewayRPCError) and e.unknown_method):
             _print_save_refusal(e)
             return None
         _save_on_older_gateway(connection, session_id, fmt, filename, redact)
@@ -264,15 +264,13 @@ class CLISessionMixin:
         return buf.getvalue().rstrip("\n").splitlines()
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """Resolve a 1-indexed checkpoint number (or pass through a git hash)."""
+        """A 1-indexed checkpoint number or a hash (``tools/checkpoint_refs.py``, every surface's rule)."""
+        from tools.checkpoint_refs import resolve_checkpoint_ref
         try:
-            idx = int(ref) - 1
+            return resolve_checkpoint_ref(checkpoints, ref)
         except ValueError:
-            return ref
-        if 0 <= idx < len(checkpoints):
-            return checkpoints[idx]["hash"]
-        print(f"  {t('cli.session.invalid_checkpoint', count=len(checkpoints))}")
-        return None
+            print(f"  {t('cli.session.invalid_checkpoint', count=len(checkpoints))}")
+            return None
 
     def _show_status(self):
         """Show compact startup status line."""

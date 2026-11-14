@@ -8,17 +8,27 @@ and the dashboard `/chat` talk to — changes here have three consumers.
 
 ```
 hermes --tui
-  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
-       │                                  └─ AIAgent + tools + sessions
+  └─ Node (Ink)  ──WebSocket /api/ws, hermes-gateway-v1──  the profile's gateway owner
+       │  (URL + single-use ticket:                              ├─ session authority: sessions, AIAgent, tools
+       │   ui-tui/scripts/gateway_bootstrap.py)                  └─ tui_gateway handlers (non-session methods)
        └─ renders transcript, composer, prompts, activity
 ```
+
+Ink attaches to the profile's shared gateway owner (`hermes gateway run`, started on demand with
+its idle exit), never to a private child. `ui-tui/scripts/gateway_bootstrap.py` is a thin wrapper
+over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes gateway attach
+--json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the dashboard's `/chat`)
+dials another URL, and then negotiates the wire from that listener's ready frame.
 
 TypeScript owns the screen. Python owns sessions, tools, model calls, and slash-command logic.
 Never move agent behaviour into the renderer.
 
 ## Transport
 
-Newline-delimited JSON-RPC over stdio, peer-to-peer: client→server method calls, server→client
+Newline-delimited JSON-RPC frames over a WebSocket (`/api/ws`, `tui_gateway/ws.py`) or stdio
+(`tui_gateway/entry.py`), peer-to-peer. On the owner's ticketed socket, session methods (the
+`hermes-gateway-v1` `CANONICAL_METHODS` below) go to the session authority; other methods reach these
+handlers only with a full interactive grant (`ws_legacy_fallback.py`). Client→server method calls, server→client
 **requests** (the agent asking the user something: `approval`, `clarify`, `sudo`, `secret`, `vault.*`,
 `connection`, the desktop read/act bridges) and server→client `event` notifications. `tui_gateway/server.py`
 is the facade with the method/event catalog; methods live in `methods_*.py` siblings (`methods_config`,
@@ -51,6 +61,9 @@ parameter keys return `4001 invalid_params`. Reuse a standalone model only when 
 identical: shared method names can carry different snapshots, admission receipts and producer
 results. The same generator emits `CanonicalRpcMethods` and OpenRPC `x-canonical-methods` without
 widening `RpcMethods`. `tests/gateway/test_canonical_wire_contract.py` checks handler coverage.
+A method family whose names exist only at runtime (`plugin.<plugin_id>.<name>`) is one
+`canonical_namespace(...)` entry in `CANONICAL_NAMESPACES` instead: a pattern, a prefix, open params and the
+`runtime.describe` capability clients gate on (`CanonicalRpcNamespaces` / OpenRPC `x-canonical-namespaces`).
 New question for the user = `_ask("<method>", sid, params, timeout)` in the emitter, a handler in
 `apps/desktop/.../gateway-event/server-requests.ts` and `ui-tui/src/app/createServerRequestHandler.ts`,
 and a `server_request(...)` in `contracts/server_requests.py`.
@@ -116,7 +129,9 @@ on their existing poll and avoid updates when unchanged.
 existing transcript. Poll only the selected detail. Missing/finished/foreign
 children return an unavailable empty snapshot; no client-supplied path is opened.
 This is live-only, not persisted completion history. Invalid session/transport
-returns error 4001. `subagent.steer({session_id, subagent_id, text})` remains the
+returns error 4001. The child's stored rows (live or finished, polled from a cursor)
+are the canonical owner's `session.transcript` with `subagent_id`; list rows name the
+child's `child_session_id` on both transports. `subagent.steer({session_id, subagent_id, text})` remains the
 shared control: `status: queued` acknowledges acceptance, not delivery; final
 boundary races are reported by the existing runtime as `missed_steer`.
 `subagent.interrupt({session_id, subagent_id})` requires the same exact live
@@ -198,6 +213,8 @@ pnpm run lint      # eslint
 pnpm run fmt       # prettier
 pnpm test          # vitest
 ```
+
+From the repository root, `just tui` runs the same watch mode.
 
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A
 Python test that asserts about `package.json` / `.ts` sources will not run on a JS-only PR — keep

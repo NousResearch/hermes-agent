@@ -1,5 +1,13 @@
-"""Fresh membership checks for owner-held durable native inputs."""
+"""Author classification and fresh membership checks for owner-held durable native inputs."""
 import asyncio
+
+
+def is_automated_message(message) -> bool:
+    """True for bot- or webhook-authored messages. Discord only guarantees ``webhook_id`` on
+    webhook posts (the author object is the webhook's id/name/avatar, with ``bot`` optional), so
+    ``author.bot`` alone admits a flagless webhook as a person and bypasses DISCORD_ALLOW_BOTS."""
+    return bool(getattr(getattr(message, "author", None), "bot", False)
+                or isinstance(getattr(message, "webhook_id", None), int))
 
 
 class DiscordAuthorizationMixin:
@@ -8,10 +16,10 @@ class DiscordAuthorizationMixin:
         from gateway.config import Platform, PlatformConfig, load_gateway_config
         from discord import HTTPException
 
-        # Unlike ingress caches, recovery reads current transport-scoped policy, resolved like
-        # ingress: the same gate resolver over the Discord config the loader builds now. Env still
-        # wins, and outside multiplex the loader copies YAML allowed_roles into it once (first
-        # writer), so there a role removed from YAML is revoked at restart, as for ingress.
+        # Recovery reads current transport-scoped policy, resolved like ingress: the same gate
+        # resolver over the Discord config the loader builds now. An operator's env/.env value
+        # still wins; a YAML-bridged env copy is refreshed by that load, so a role removed from
+        # config.yaml is revoked at once, as for ingress (DiscordLiveGatesMixin).
         def policy():
             current = load_gateway_config().platforms.get(Platform.DISCORD) or PlatformConfig()
             raw = self._gate_raw('allowed_roles', 'DISCORD_ALLOWED_ROLES', config=current)

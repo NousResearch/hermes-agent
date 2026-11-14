@@ -200,7 +200,7 @@ export function CapabilityScopeSelector({
     <div
       className={cn(
         'flex min-w-0 items-center gap-2',
-        compact ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+        compact && 'flex-1'
       )}
     >
       {!compact && (

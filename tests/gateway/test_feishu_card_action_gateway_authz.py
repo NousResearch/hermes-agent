@@ -60,7 +60,8 @@ def _make_adapter(*, allowed=(), admins=()) -> FeishuAdapter:
     adapter._loop.is_closed = MagicMock(return_value=False)
     adapter._allowed_group_users = set(allowed)
     adapter._admins = set(admins)
-    adapter._approval_state[1] = {"session_key": "sess-1", "message_id": "msg-1", "chat_id": "oc_group"}
+    adapter._approval_state[1] = {"session_key": "sess-1", "message_id": "msg-1", "chat_id": "oc_group",
+                                  "request_id": "req-1"}
     adapter._update_prompt_state[2] = {"session_key": "sess-2", "message_id": "msg-2", "chat_id": "oc_group"}
     return adapter
 
@@ -174,11 +175,12 @@ class TestNoFeishuAllowlist:
                 1, "once", "Alice", open_id="ou_x", chat_id="oc_group", user_id="u_tenant",
             )
 
-        resolve.assert_called_once_with("sess-1", "once")
+        resolve.assert_called_once_with("sess-1", "once", request_id="req-1")
 
     @pytest.mark.asyncio
     async def test_non_approval_card_action_still_routes(self):
         adapter = _make_adapter()
+        adapter._default_group_policy = "open"  # admitted by the chat; only the approval gate is absent
         data = SimpleNamespace(event=SimpleNamespace(
             token="tok_other", context=SimpleNamespace(open_chat_id="oc_group"),
             operator=SimpleNamespace(open_id="ou_bystander"),
@@ -260,7 +262,7 @@ class TestFeishuAllowlistMatchesEveryOperatorId:
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
             await adapter._resolve_approval(1, "once", "Alice", open_id="ou_x", chat_id="oc_group", **click_ids)
 
-        resolve.assert_called_once_with("sess-1", "once")
+        resolve.assert_called_once_with("sess-1", "once", request_id="req-1")
 
     @pytest.mark.asyncio
     async def test_update_prompt_recheck_matches_tenant_user_id(self, tmp_path, monkeypatch):

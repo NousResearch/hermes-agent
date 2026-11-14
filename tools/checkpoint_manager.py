@@ -86,6 +86,8 @@ def _resolve_checkpoint_base() -> Path:
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
+# Commit-body line carrying a snapshot's exact take time (listings read only the subject).
+TAKEN_AT_TRAILER = "Hermes-Taken-At"
 _INDEXES_DIRNAME = "indexes"
 _PROJECTS_DIRNAME = "projects"
 _LEDGERS_DIRNAME = "ledgers"
@@ -1051,9 +1053,11 @@ class CheckpointManager:
         """Take a checkpoint if enabled and not already done this turn.
 
         Returns True if a checkpoint was taken, False otherwise.
-        Never raises — all errors are silently logged.
+        Never raises — all errors are silently logged. Never in a hosted scope: the working
+        directory is the agent's sandbox's, not this host's.
         """
-        if not self.enabled:
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not self.enabled or not host_feature_enabled("checkpoints"):
             return False
 
         abs_dir = str(_normalize_path(working_dir))
@@ -1266,6 +1270,9 @@ class CheckpointManager:
         ``failed_deletes`` listing paths that could not be removed.
         """
         from tools.checkpoint_pruning import PruneError, store_lock
+        from tools.hosted_tool_policy import host_feature_refusal
+        if refusal := host_feature_refusal("checkpoints", "Checkpoint restore"):
+            return {"success": False, "error": refusal}
 
         try:
             with store_lock(_resolve_checkpoint_base()):
@@ -1668,10 +1675,12 @@ class CheckpointManager:
                 line.strip() for line in reason.splitlines() if line.strip()
             ) + _uncaptured_note(nested_repos)
 
-        # Build commit (parent = current ref tip, if any).
-        commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]
+        # Build commit (parent = current ref tip, if any). The body's exact take time lets a whole-tree
+        # /rollback tell a turn after the snapshot from one before it in the same git second.
+        message = f"{reason}\n\n{TAKEN_AT_TRAILER}: {time.time():.6f}"
+        commit_args = ["commit-tree", tree_sha, "-m", message, "--no-gpg-sign"]
         if has_ref:
-            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", reason, "--no-gpg-sign"]
+            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", message, "--no-gpg-sign"]
         ok_commit, new_sha, err = _run_git(
             commit_args, store, working_dir,
             index_file=index_file,

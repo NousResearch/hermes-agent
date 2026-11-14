@@ -171,6 +171,13 @@ export const slashCmdCoreEn = {
     },
     rewind: {
       nothing: 'nothing to rewind to',
+      noPrevious: 'No previous message to edit.',
+      editNotSent: '↺ edit not sent: the session changed before the rewind, so nothing was removed (↑ recalls the text)',
+      editNotSentUnknown:
+        '↺ edit not sent: the session changed while the rewind was in flight, so it may have been applied; check that session (↑ recalls the text)',
+      cancelled: '↺ Rewind cancelled; nothing was removed.',
+      imagesKeptAsNotes: (count: number) =>
+        `${count} image${count === 1 ? '' : 's'} could not be re-attached: the gateway's files are not readable on this machine, so the image notes stay in the text`,
       unsupported: '/rewind needs the shared gateway (hermes serve)',
       done: (turn: string, count: string) => `rewound to prompt ${turn} (${count} messages removed)`,
       forked: (turn: string) => `forked from before prompt ${turn} — edit the prompt and press Enter to send`

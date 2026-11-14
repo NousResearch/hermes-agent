@@ -4,11 +4,11 @@ Usage: python -I -B scripts/tool_store_pins.py REPO STORE
 (on success prints the pinned Python major.minor)
 
 scripts/run_tests.sh asks this before sharing the account's tool store with a
-faked HOME. facts.json selects ONE entry per package, not one per version:
-provisioning a checkout with other pins re-points the account's own runtime at
-them and pulls the selection from under a concurrent run on the store's pins.
+faked HOME. facts.json selects ONE entry per package and keeps other checkouts'
+pins only as history: provisioning a checkout with other pins downloads into
+and re-records the account's live store under a concurrent run on its pins.
 So share only when every tool `pm install` would provision here (cmd_install's
-roots, defaults and the venv's deps) passes PM's own installed-at-the-pin lookup
+roots, developer tools, defaults and the venv's deps) passes PM's own installed-at-the-pin lookup
 without an exec-bit heal, and records the env this checkout's package code
 would record: a stale env makes `pm install` re-record the shared facts.json,
 and a missing or non-executable binary (setup-hermes.sh's uv copy included)
@@ -35,12 +35,13 @@ def main(repo: str, store: Path) -> int:
     from pm.package import StatePackage
     from pm.registry import tool_roots, walk
     from pm.store import current_target
+    from pm.testenv import developer_tools
 
     lock = Lockfile(Path(repo, "pm", "lock.json"))
     # Strict first: PM's lenient read would quarantine an unparsable file as .corrupt.
     Facts(store / "facts.json", strict=True)
     names, target = lock.names(), current_target()
-    for package in walk(tool_roots(names) + default_packages(names) + ["venv"]):
+    for package in walk(tool_roots(names) + developer_tools(names) + default_packages(names) + ["venv"]):
         if isinstance(package, StatePackage):
             continue
         location = _installed_location(package, lock, target, roots=(store,), heal=False)

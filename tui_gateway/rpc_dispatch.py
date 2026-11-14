@@ -35,6 +35,8 @@ def _handle_admitted_request(req: dict) -> dict | None:
         response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
+    except SessionNotOwned as exc:  # an off-turn transcript writer lost its idle-released chat: nothing written
+        return _session_not_owned_err(rid, exc)
     except ConfigBackendUnavailable as exc:
         # A SystemExit on purpose (readers must not fall back to defaults), so no ``except
         # Exception`` below catches it: this request still owes its caller one answer.
@@ -81,6 +83,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
                 try:
                     resp = _handle_admitted_request(req)
                 except Exception as exc:
+                    logger.exception("pool RPC handler failed for method=%r id=%r", normalized[1], req.get("id"))
                     resp = _err(req.get("id"), -32000, f"handler error: {exc}")
                 if resp is not None:
                     t.write(resp)

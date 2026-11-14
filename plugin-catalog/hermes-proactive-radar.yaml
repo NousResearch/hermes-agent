@@ -1,0 +1,35 @@
+name: hermes-proactive-radar
+repo: https://github.com/Naroh091/hermes-proactive-radar
+sha: 5dd9fbe198117735c01cc6a19131ad83e34df36d
+version: "0.3.1"
+screenshots:
+  - https://raw.githubusercontent.com/Naroh091/hermes-proactive-radar/5dd9fbe198117735c01cc6a19131ad83e34df36d/assets/panel.png
+title: Hermes Radar
+description: "Proactive assistant: follows your mail, calendar, GitHub, scheduled jobs and your own chats with the agent as long-lived tasks (trips, purchases, work items, commitments), does the legwork itself and writes to you first, on the gateway platform you choose, only when something is yours to decide. Sending email always asks; paying, booking, deploying and merging never run on their own. Disclosure — runs a scheduler task inside the gateway and delegates bounded work to 'hermes chat --oneshot' child processes (2 at a time, 100 a day by default) whose finished sessions it archives in the host session store; reaches mail and calendar only through the MCP servers or command-line tools you configure (gws, gog, the google-workspace skill's own script) and GitHub through gh, each started with a minimal environment; with Gmail push enabled, listens on 127.0.0.1:8666 (token + Google OIDC) and forwards to a host webhook route; reads the host session store (state.db), cron job outputs and the host memory provider; replies you send to its notices are passed to the chat agent with a task brief; `hermes radar setup` writes its MCP allowlist into config.yaml only after you type yes; model fallback needs the llm.provider_override / llm.model_override capabilities Hermes asks you to grant; stores tasks, bounded snippets, facts, a consent key and an audit log in HERMES_HOME/radar/ with retention limits; two optional secrets read through the host secret scope; installed disabled and in shadow mode; no telemetry."
+maintainer: Naroh091
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Naroh091/hermes-proactive-radar/blob/main/docs/onboarding.md
+capabilities:
+  provides_tools:
+    - radar_status
+    - radar_tasks
+    - radar_task
+    - radar_resolve
+    - radar_explain
+    - radar_list
+    - radar_inspect
+    - radar_propose
+    - radar_preference
+  provides_hooks:
+    - on_session_start
+    - post_llm_call
+    - subagent_stop
+    - post_compaction
+    - pre_gateway_dispatch
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+

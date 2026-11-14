@@ -29,6 +29,7 @@ from hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store,
     profile_path_is_private,
 )
+from hermes_constants import clear_named_profile_deleted
 from utils import rmtree_readonly
 
 
@@ -566,7 +567,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     A top-level owned directory, and an owned container (``_is_container``), is merged per
     authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
     shipped definitions merge by job id instead of replacing the file."""
-    from hermes_cli.config_backend import require_file_tooling
+    from hermes_cli.config_backend import drop_other_access, require_file_tooling
     require_file_tooling("Profile distribution install")
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
@@ -594,6 +595,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
             continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
+    drop_other_access(target / "config.yaml")  # copy2 carries the staged checkout's mode
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
@@ -626,6 +628,7 @@ def install_distribution(
 
         # Fresh install (or --force): config.yaml comes from the distribution. Roots the
         # payload does not ship are left alone either way, so --force keeps user skills.
+        clear_named_profile_deleted(plan.target_dir)
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:

@@ -30,7 +30,7 @@ from gateway.platforms._shared import (
 )
 from gateway.config import Platform, PlatformConfig
 from hermes_constants import hermes_home_key
-from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
+from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url, describe_proxy_error, env_proxy_for_redaction
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 
@@ -270,10 +270,29 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.info("SimpleX: auto-accepting contact request %s", _redact_id(str(contact_req_id)))
             await self._send_command(f"/accept {contact_req_id}")
 
+    def _may_receive_file(self, chat_item: dict) -> bool:
+        """/freceive makes the daemon fetch a sender-chosen XFTP file: only the gateway's explicit
+        True for the item's sender permits it. A missing or unrecognised chat item fails closed."""
+        chat_info = chat_item.get("chatInfo", {}) or {}
+        if chat_info.get("type") == "direct":
+            sender_id = chat_id = str((chat_info.get("contact", {}) or {}).get("contactId", ""))
+            return self._is_sender_authorized(sender_id, "dm", chat_id) is True
+        if chat_info.get("type") == "group":
+            group_id = str((chat_info.get("groupInfo", {}) or {}).get("groupId", ""))
+            if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
+                return False
+            chat_dir = (chat_item.get("chatItem", {}) or {}).get("chatDir", {}) or {}
+            sender_id = str((chat_dir.get("groupMember", {}) or {}).get("memberId", ""))
+            return self._is_sender_authorized(sender_id, "group", f"group:{group_id}") is True
+        return False
+
     async def _on_rcv_file_descr_ready(self, resp: dict) -> None:
         """XFTP files fire this before newChatItems; start the download now, the chat item arrives later."""
         rcv_file = resp.get("rcvFileTransfer", {}) or {}
         if (file_id := rcv_file.get("fileId") if isinstance(rcv_file, dict) else None) is not None:
+            if not self._may_receive_file(resp.get("chatItem", {}) or {}):
+                logger.debug("SimpleX: not receiving fileId=%s from an unauthorized sender", file_id)
+                return
             logger.debug("SimpleX: rcvFileDescrReady for fileId=%s — sending /freceive", file_id)
             await self._send_fire_and_forget(f"/freceive {file_id}")
 
@@ -368,7 +387,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 ext = Path(file_info["fileName"]).suffix.lower()
             # Voice notes typically arrive before the file finishes downloading; defer until
             # rcvFileComplete. /freceive gets no corrId reply, so awaiting one would block the loop.
-            if not file_path and _is_audio_ext(ext) and file_id is not None:
+            if not file_path and _is_audio_ext(ext) and file_id is not None and self._may_receive_file(chat_item):
                 logger.info("SimpleX: voice file %d not yet received, accepting transfer", file_id)
                 self._pending_file_transfers[file_id] = chat_item
                 await self._send_fire_and_forget(f"/freceive {file_id}")
@@ -665,7 +684,7 @@ async def _standalone_send(
             await asyncio.sleep(0.5)  # let the daemon process the command before closing
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
-        return send_error(f"SimpleX send failed: {e}")
+        return send_error(f"SimpleX send failed: {describe_proxy_error(e, env_proxy_for_redaction(ws_url)) or e}")  # websockets reads *_PROXY
 
 
 _SETUP_PROMPTS = (

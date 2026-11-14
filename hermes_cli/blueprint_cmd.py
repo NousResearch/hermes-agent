@@ -227,6 +227,15 @@ def handle_blueprint_command(
             f"Or just run /blueprint {blueprint.key} and I'll ask you for the values."
         )
 
+    # Slot values are user text interpolated into the stored prompt: the same prompt/deliver
+    # guards as the cronjob tool and the dashboard's blueprint instantiate.
+    from tools.cronjob_job_args import _normalize_deliver_param, _validate_bot_chat_deliver
+    from tools.cronjob_prompt_scan import _scan_cron_prompt
+    guard_error = _scan_cron_prompt(spec["prompt"]) or _validate_bot_chat_deliver(
+        _normalize_deliver_param(spec.get("deliver")))
+    if guard_error:
+        return BlueprintCommandResult(f"Can't set up '{blueprint.title}': {guard_error}")
+
     try:
         from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
         job = create_job_with_scheduler_registration(**spec)

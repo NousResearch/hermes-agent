@@ -1,0 +1,23 @@
+name: reset-rescue
+repo: https://github.com/bwoliveira/hermes-reset-rescue
+sha: 196656be1b781fb7a9f3ce6e346b35f2f4e3cc23
+description: "Redeems expiring OpenAI Codex rate-limit reset credits across every openai-codex account in the active Hermes profile's credential pool, with two Hermes one-shot cron attempts 10 and 4 minutes before expiry and success confirmed by backend readback. Includes opt-in early redemption at low weekly quota, per-account overrides, Hermes channel notices, a Desktop status-bar chip and popup, and dashboard settings. Account labels and domains are masked by default. Disclosure — reads every openai-codex row of the profile's credential pool with Hermes' read_credential_pool helper; in a named profile with no Codex rows of its own that helper falls back read-only to the root profile's accounts, so the plugin then redeems the root profile's credits. It holds each account's access token in memory only and sends it only to https://chatgpt.com (redirects refused) with Codex CLI client headers (User-Agent codex-cli, ChatGPT-Account-ID, x-openai-internal-codex-residency, the same headers Hermes' own usage fetcher sends) to list reset credits (/backend-api/wham/rate-limit-reset-credits), read usage (/backend-api/wham/usage) and consume credits (/backend-api/wham/rate-limit-reset-credits/consume); the consume POST spends an owned credit through a private, undocumented endpoint. An empty pool falls back to the active sign-in through credentialed_provider_request. On HTTP 401 it runs hermes auth refresh openai-codex <entry>, so Hermes may rotate and save that account's tokens; the plugin itself never reads or writes credential files or stores or logs tokens. Running hermes reset-rescue ensure, or turning on the Desktop status-bar chip (off by default; its first status check arms the jobs), writes five launcher scripts to <HERMES_HOME>/scripts/ and creates no-agent Hermes cron jobs (a recurring scan plus one-shot rescue, backup and reminder jobs per credit); these run the hermes CLI with the inherited environment minus approval-bypass variables. It sends notices with hermes send to notify_target or the home channel, keeps credential-free state under plugin-data/reset-rescue, and its dashboard settings write its own plugins.entries.reset-rescue.settings through Hermes' settings writer. Automatic redemption is on by default and can be turned off globally or per account (dry_run pauses spending); early redemption is off by default and manual redemption requires confirmation. Run hermes reset-rescue uninstall before removing the plugin to delete its jobs and scripts. It does not purchase credits or enable overage."
+maintainer: bwoliveira
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/bwoliveira/hermes-reset-rescue#readme
+version: "0.1.0"
+readme: true
+image: https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/art/hero.jpg
+screenshots:
+  - https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/screenshots/accounts-en-dark.png
+  - https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/screenshots/per-account-en-dark.png
+  - https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/screenshots/settings-en-dark.png
+platforms: [linux, macos]
+title: Reset Rescue
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

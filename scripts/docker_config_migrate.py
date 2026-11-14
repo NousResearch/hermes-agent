@@ -82,7 +82,7 @@ def main() -> int:
         f"backups: {backup_text}"
     )
     try:
-        migrate_config(interactive=False, quiet=False)
+        results = migrate_config(interactive=False, quiet=False) or {}
     except Exception:
         restored = _restore_backups(backups)
         if restored:
@@ -93,6 +93,12 @@ def main() -> int:
         raise
 
     post_ver, _ = check_config_version()
+    failed = results.get("failed_step")
+    if failed is not None:
+        # The steps before it stay; the next container start retries the rest.
+        print(f"[config-migrate] WARNING: migration stopped at v{failed}; kept {current_ver} -> {post_ver}",
+              file=sys.stderr)
+        return 0
     if post_ver < latest_ver:
         restored = _restore_backups(backups)
         restored_text = ", ".join(str(path) for path in restored) if restored else "none"

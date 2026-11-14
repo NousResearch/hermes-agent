@@ -129,7 +129,32 @@ fields; callers may initialize a provider without an agent or a session database
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
 | `agent_identity` | Active profile name, when available. |
+| `resumed` | `True` when an earlier turn of this session id ran (the agent continues a stored transcript: `--resume`, a gateway chat after a restart, a reopened Desktop/TUI session). `False` for a new session id: a subagent, a cron run, a fresh chat. A `/branch` child seeded with copied history is `True`. A mid-process `/resume` arrives through `on_session_switch()` instead. |
+| `message_count` | Messages already stored for this session id. On TUI/Desktop it can include the prompt being submitted, so a fresh chat may report `1` with `resumed` `False`. |
 | `agent_workspace`, `agent_context` | Runtime agent scope. `agent_workspace` is `hermes`; `agent_context` is `cron` for scheduler runs, `subagent` for `delegate_task` children, else `primary` — skip automatic writes for the non-primary values. |
+
+Read optional keys with `kwargs.get(...)`; older Hermes versions omit the newer ones (`resumed`,
+`message_count`).
+
+`on_turn_start(turn_number, message, **kwargs)` receives `model` (the turn's primary model id at
+turn start; `""` when unset, a preset name under mixture-of-agents) and the turn's author:
+`author_id`, `author_name`, `author_is_bot`. Declare only the keywords you need; the manager passes
+a provider only the ones its signature accepts.
+
+It also receives `previous_message`: the text of the person's last message before this turn, taken
+from the transcript Hermes holds (`""` on a first turn, or when that message was image-only). Known
+runtime rows in the user role are skipped (continue nudges, task-list snapshots, single
+background-process completion and watch-match notices, compaction summaries, mid-turn `/steer`
+messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`.
+On a turn with an image, Hermes appends recalled memory and plugin or gateway notes to the message as
+text; `previous_message` is the turn's own text, without them. It
+is best-effort: an image turn stored by an older Hermes, or one that repair or compaction later merged
+with another turn, still carries its plugin and gateway notes, and
+other runtime notices a gateway replays after a restart (a cron delivery, a process
+heartbeat, a watch-disabled or batched-completion notice) can still come through. A process
+that resumed a session (`hermes chat --resume`, a gateway after a restart) never ran the previous
+turn's end, so a provider that prepares recall in `queue_prefetch()` can redo that work from it, even
+when it stores no transcript of its own. Older Hermes omits it: read it with `kwargs.get`.
 
 Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
 or gateway backend can serve several sessions. If `cwd` is absent and directory
@@ -181,10 +206,11 @@ workspace; absent or empty cwd remains unpinned.
 | `on_profile_created(profile_name, hermes_home)` | A profile selecting your provider was created (a clone carries `memory.provider`), from the CLI, dashboard or Desktop | Per-profile state: a peer, a host entry |
 | `on_profile_renamed(old_name, new_name, hermes_home)` | That profile was renamed (`hermes_home` is the new directory) | Re-key state stored under the old name |
 
-The two profile hooks run on an uninitialized instance with that profile's home and its own `.env`
-secrets bound. A key that profile's `.env` lacks reads as unset: the caller's environment is never
-used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
-create/rename request on every surface, so do network work on a background thread.
+The two profile hooks run on an uninitialized instance with that profile's home and its own
+secrets bound: its `.env` plus its configured secret sources (1Password and the like). A key it
+lacks reads as unset: the caller's environment is never used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
+create/rename request on every surface, so do network work on a background thread. Under
+`plugins.isolation: host`, a plugin host started only for the hook is stopped when it returns.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
@@ -399,6 +425,9 @@ def write_config_fields(self, values: dict, hermes_home: str) -> None:
     ...
 ```
 
+Declaring `storage=STORAGE_PROVIDER` without `write_config_fields` makes a save return 501; a
+provider that fails to load returns 503; an unknown `storage` value shows no panel and refuses saves.
+
 ## Save Config
 
 ```python
@@ -500,7 +529,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
 
-- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's live manager already bound, on any host that serves several profiles, multiplexed or not, and logs `memory_provider_instance_shared`.
 - **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
 - **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
 

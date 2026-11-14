@@ -7,22 +7,60 @@ so it hits the same prefix cache, and runs under a dispatch-side tool whitelist.
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent.i18n import t
-from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
 _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
+# How long a turn bound with :func:`turn_waits_for_background_work` lets the session's running
+# background work finish before superseding it like a person's turn.
+_BACKGROUND_WORK_WAIT_SECONDS = 120.0
+_BACKGROUND_WORK_POLL_SECONDS = 0.1
+
+
+@dataclass
+class _TurnWait:
+    """One bound turn's wait: ``ends_wait`` ends it early once true (a person's input arrived for
+    the session, the gateway is draining); ``deadline`` is set by the turn's first wait and shared
+    by every later one (a cold /refine cancel, then the resident agent's first step)."""
+    ends_wait: Callable[[], bool]
+    deadline: Optional[float] = None
+
+
+# The bound turn's wait, or None for a turn that supersedes at once.
+_TURN_WAITS_FOR_BACKGROUND_WORK: contextvars.ContextVar[Optional[_TurnWait]] = contextvars.ContextVar(
+    "hermes_turn_waits_for_background_work", default=None)
+
+
+def _never() -> bool:
+    return False
+
+
+@contextmanager
+def turn_waits_for_background_work(ends_wait: Callable[[], bool] = _never) -> Iterator[None]:
+    """Bind around a turn no person asked for (a message a plugin injected): before it supersedes
+    the session's background review and plugin forks, the ones already running may finish, for up
+    to :data:`_BACKGROUND_WORK_WAIT_SECONDS` over the whole turn. ``ends_wait`` turning true ends
+    that wait at once (a person's input arrived behind the turn, the gateway drains). A person's
+    turn never binds it and supersedes them at once."""
+    token = _TURN_WAITS_FOR_BACKGROUND_WORK.set(_TurnWait(ends_wait))
+    try:
+        yield
+    finally:
+        _TURN_WAITS_FOR_BACKGROUND_WORK.reset(token)
 
 
 class _BackgroundReviewRun:
@@ -126,6 +164,34 @@ def _interrupt_background_review(
         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
 
 
+def _await_background_work(agent: Any, wait: _TurnWait) -> None:
+    """Let the session's running review and launched plugin forks finish, for up to
+    :data:`_BACKGROUND_WORK_WAIT_SECONDS` in all, counted from the turn's first wait. A deferred fork is not waited for (it waits for
+    machine idle, which no turn brings). The wait ends early once the session agent is interrupted
+    (a person stopped or overtook the turn) or ``ends_wait()`` is true (a person's input is queued
+    behind the turn or steered or redirected into it, the gateway drains)."""
+    from agent.plugin_session_fork import launched_fork_runs
+
+    with _optional_lock(agent, "_background_review_lock"):
+        review = getattr(agent, "_background_review_run", None)
+    pending = [run for run in (review, *launched_fork_runs(agent)) if run is not None]
+    if not pending:
+        return
+    logger.info("Turn waits for %d background task(s) of session %s before starting",
+                len(pending), getattr(agent, "session_id", None))
+    if wait.deadline is None:
+        wait.deadline = time.monotonic() + _BACKGROUND_WORK_WAIT_SECONDS
+    deadline, ends_wait = wait.deadline, wait.ends_wait
+    for run in pending:
+        while not run.request_done.wait(timeout=min(_BACKGROUND_WORK_POLL_SECONDS,
+                                                     max(0.0, deadline - time.monotonic()))):
+            if (time.monotonic() >= deadline or getattr(agent, "_interrupt_requested", False)
+                    or ends_wait()):
+                logger.info("Background work of session %s still running; the turn supersedes it",
+                            getattr(agent, "session_id", None))
+                return
+
+
 def cancel_background_review_for_live_turn(
     agent: Any,
     *,
@@ -147,7 +213,18 @@ def cancel_background_review_for_live_turn(
     the run-thread wait), so this is the only thing that ever sets its ``_interrupt_requested``. Pass
     a reason-appropriate ``message``/``tool_reason`` when the caller isn't the live-turn-preemption
     path so diagnostics describe the real cause.
+
+    Inside :func:`turn_waits_for_background_work` (a plugin-injected turn) the running work is
+    first given its bounded wait (:func:`_await_background_work`); whatever is still running after
+    it is cancelled here as for any turn.
     """
+    from agent.plugin_session_fork import interrupt_plugin_forks
+
+    if (wait := _TURN_WAITS_FOR_BACKGROUND_WORK.get()) is not None:
+        _await_background_work(agent, wait)
+    # Plugin session forks share the session id too: fenced and interrupted alongside the review,
+    # awaited under the same bounded deadline.
+    plugin_runs = interrupt_plugin_forks(agent, message=message, tool_reason=tool_reason)
     with _optional_lock(agent, "_background_review_lock"):
         run = getattr(agent, "_background_review_run", None)
         legacy_agent = getattr(agent, "_background_review_agent", None)
@@ -157,14 +234,13 @@ def cancel_background_review_for_live_turn(
     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
         _interrupt_background_review(review_agent, message=message, tool_reason=tool_reason)
-    if run is None:
-        return
-    if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
-        logger.warning(
-            "Background review did not acknowledge cancellation within %.1fs; proceeding (%s)",
-            _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
-            message,
-        )
+    deadline = time.monotonic() + _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS
+    for label, pending in [("Background review", run)] * (run is not None) + [("Plugin session fork", r) for r in plugin_runs]:
+        if not pending.request_done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            logger.warning(
+                "%s did not acknowledge cancellation within %.1fs; proceeding (%s)",
+                label, _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS, message,
+            )
 
 
 # Aux-model routing: by default ("auto") the fork runs on the MAIN model and replays the full
@@ -1017,6 +1093,8 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
+    # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
+    review_agent._inherited_conversation_id = conversation_id(agent)
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.

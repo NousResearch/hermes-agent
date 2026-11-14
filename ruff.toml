@@ -467,7 +467,6 @@ select = [
 
 [lint.per-file-ignores]
 "apps/desktop/electron/fixtures/**" = ["TID251"]
-"pm/**" = ["TID251"]
 "tests/pm/**" = ["TID251"]
 
 [lint.mccabe]

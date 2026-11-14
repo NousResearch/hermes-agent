@@ -1,0 +1,29 @@
+name: storage-utility
+repo: https://github.com/ShawnCRMer/hermes-tune-up
+sha: "af4172020a0430805d83fffbcbf5680ea98998f3"
+title: Tune-up
+description: "Keep Hermes fast, healthy and tidy from one Desktop panel. Clean up sorts the Hermes home into Safe to clean, Take a quick look and Kept safe on purpose, with plain-language answers to what is it, is it safe and can I undo; it reviews exact items before anything happens and reports the measured space recovered. It runs the maintenance Hermes ships but few people find (sessions prune with preview, pm gc, uv cache prune, checkpoints, worktree prune, session-database packing), finds folders Hermes created elsewhere from its own session history, and moves reviewable items to a restorable 30-day Trash. Checkup explains down or crash-looping Hermes services and stops leftover agent processes; Explore shows a size map with folder descriptions and duplicate finding; optional consented AI explanation via its own auxiliary task. Disclosure — Linux (systemd) and macOS (launchd); no network except an optional, consented AI explanation (folder totals and counts only) through Hermes's routing; reads home metadata, tool caches, session history, /proc process and open-file info, systemd unit settings, journal lines, crontab and git ls-files; on macOS instead the process table via psutil, Hermes's own processes.json and spawn ledger, Hermes LaunchAgent plists (label, program, KeepAlive, log path, HERMES_HOME/HOME only), the settings of every LaunchAgent and LaunchDaemon plist in ~/Library/LaunchAgents, /Library/LaunchAgents and /Library/LaunchDaemons without their environment entries (to see whether a job starts something from a project folder, kept local), launchctl print/list/print-disabled (state, PID, run count, last exit code only) and the last lines of a service's error log inside <Hermes home>/logs (never .env, auth.json, env files, start scripts, any other process's environment or other launchd environment entries); on user confirmation it permanently deletes chosen files in Hermes-created project folders and ~/.cache, ~/.npm and ~/.pnpm-store tool caches, moves other items to a restorable 30-day Trash, runs allow-listed hermes/uv/pnpm/git maintenance plus journalctl --vacuum-size and apt-get clean when root, starts/restarts/stops/disables Hermes systemd services or (macOS) starts/restarts Hermes LaunchAgents and boots out + disables a crash-looping one (plist kept), can write a Restart=always drop-in (Linux) and enable the disk-cleanup plugin, sends SIGTERM (then SIGKILL if it does not exit) to selected leftover processes, and briefly stops Hermes services to pack state.db (Linux; on macOS it shows the manual steps instead); non-Hermes child processes get only PATH, HOME and locale."
+maintainer: ShawnCRMer
+tier: community
+category: tools
+version: "0.8.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ShawnCRMer/hermes-tune-up#readme
+image: https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/home.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/clean-up-review.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/clean-up-done.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/take-a-look.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/explore.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/af4172020a0430805d83fffbcbf5680ea98998f3/docs/explorer-page.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Linux (systemd) and macOS (launchd) are tested; Windows is not supported yet. On macOS, Pack now shows manual steps instead of pausing Hermes, and files in project folders outside the Hermes home are listed but not offered for cleanup (macOS cannot show every open folder)."
+  - "Packing the session database pauses Hermes services for a few minutes; it asks first and restarts what it stopped."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

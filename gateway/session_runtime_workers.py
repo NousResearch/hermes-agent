@@ -23,6 +23,19 @@ def uncounted_runtime_work(runner):
             + sum(len(mutation_tasks(authority)) + len(side_agents(authority)) for authority in authorities))
 
 
+def managed_worker_units(authority):
+    """One ``active_work`` entry per live managed worker of *authority*: its session and its own process."""
+    return [{'kind': 'managed', 'session': sid, 'pid': (worker.worker or (worker.process.pid,))[0]}
+            for sid, worker in list(getattr(authority, '_managed_workers', {}).items()) if not worker.closed.is_set()]
+
+
+def uncounted_runtime_work_units(runner, pid):
+    """One ``active_work`` entry per unit ``uncounted_runtime_work`` counts. Managed workers are named
+    (``managed_worker_units``); the rest of that work carries only the gateway's *pid*."""
+    units = [unit for authority in all_authorities(runner) for unit in managed_worker_units(authority)]
+    return units + [{'kind': 'managed', 'pid': pid}] * max(0, uncounted_runtime_work(runner) - len(units))
+
+
 def side_agents(authority):
     """``(thread, holder)`` for each detached side agent (/bg, /btw, preview restart) whose thread
     has not unwound (``gateway/session_tui_side.py`` ``_spawn``). A stopped ``/btw`` whose fork

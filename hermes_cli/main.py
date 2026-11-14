@@ -15,7 +15,7 @@ Usage:
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 # A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
@@ -316,6 +316,7 @@ from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
 from hermes_cli.subcommands.curator import build_curator_parser
 from hermes_cli.subcommands.pets import build_pets_parser
+from hermes_cli.subcommands.clipboard import build_clipboard_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser, cmd_sessions_lazy
@@ -342,91 +343,9 @@ _startup_fast.ensure_project_root_on_path()
 # cache HERMES_HOME at import time. --profile/-p is pre-parsed from sys.argv,
 # HERMES_HOME set, and the flag stripped so argparse never sees it. Falls back
 # to ~/.hermes/active_profile for the sticky default.
-_PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
 # Set only when -p/--profile was on argv. Sticky active_profile must not count:
 # `hermes desktop` with no flag must not overwrite Desktop's stored profile.
 _explicit_cli_profile: str | None = None
-
-
-def _inside_mcp_add_args(argv: list, index: int) -> bool:
-    """True once argv reaches `hermes mcp add ... --args <command argv>`.
-
-    ``mcp add --args`` is command-argv passthrough. Flags after that point
-    belong to the child MCP command (for example Docker MCP Toolkit's
-    ``--profile``), not to Hermes' own profile selector.
-    """
-    try:
-        mcp_index = argv.index("mcp", 0, index)
-        argv.index("add", mcp_index + 1, index)
-    except ValueError:
-        return False
-    return True
-
-
-def _looks_like_hermes_invocation() -> bool:
-    """False when ``sys.argv`` belongs to a test runner rather than a ``hermes`` run.
-
-    pytest's own ``-p no:xdist`` reaches ``_scan_profile_flag`` through ``sys.argv`` at import
-    time; it must stay a silent skip, while a real ``hermes -p 'Work Bot'`` must fail loudly.
-    """
-    return "pytest" not in (sys.argv[0] or "")
-
-
-def _exit_invalid_profile_name(value: str) -> None:
-    from hermes_cli.profiles import _invalid_profile_name_error
-
-    print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
-    print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
-    sys.exit(2)
-
-
-def _looks_like_option_value(value: str) -> bool:
-    """A ``-p`` value that clearly belongs to some other tool (pytest's ``-p no:xdist``, a
-    third-party ``-p --flag``), never a mistyped profile name."""
-    return value.startswith("-") or ":" in value
-
-
-def _scan_profile_flag(argv: list) -> tuple:
-    """Find -p/--profile/--profile= in argv -> (name, tokens_consumed, index).
-
-    Historically the flag worked even after the subcommand (`hermes chat -p
-    coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
-    passthrough region. The value is normalised (strip + casefold, matching
-    ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
-    ``work``. A value that cannot be a profile name is rejected so
-    resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
-    only when the flag comes BEFORE the first subcommand token under a real
-    ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
-    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
-    ``--flag``) are always a silent skip.
-    """
-    from hermes_cli._parser import top_level_value_flag_sets
-
-    value_flags, optional_value_flags = top_level_value_flag_sets()
-    i = 0
-    saw_subcommand = False
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
-            break
-        if arg in {"--profile", "-p"} and i + 1 < len(argv):
-            raw = argv[i + 1]
-            value = raw.strip().casefold()
-            if re.match(_PROFILE_NAME_RE, value):
-                return value, 2, i
-            if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
-                _exit_invalid_profile_name(raw)
-            break
-        if arg.startswith("--profile="):
-            return arg.split("=", 1)[1].strip().casefold(), 1, i
-        takes_value = "=" not in arg and i + 1 < len(argv) and (
-            arg in value_flags
-            or (arg in optional_value_flags and not argv[i + 1].startswith("-"))
-        )
-        if not takes_value and not arg.startswith("-"):
-            saw_subcommand = True
-        i += 2 if takes_value else 1
-    return None, 0, None
 
 
 def _resolve_sudo_user_profile_env(name: str) -> str | None:
@@ -484,15 +403,19 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
     current profile, and it is the image's own CMD. Following the sticky ``active_profile`` there
     started that profile's named slot on every container boot: the one the boot reconciler just
     registered down, because a started named slot is a second gateway beside the multiplexer.
-    ``--no-supervise`` keeps the foreground run, which follows ``active_profile`` as before (#22502).
+    ``--no-supervise`` (or any abbreviation argparse accepts) keeps the foreground run, which follows
+    ``active_profile`` as before (#22502).
     """
     words = [a for a in argv if not a.startswith("-")]
-    if words[:2] != ["gateway", "run"] or "--no-supervise" in argv:
+    if words[:2] != ["gateway", "run"]:
         return False
     if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
         return False
     from hermes_cli.service_manager import _s6_running
-    return _s6_running()
+    if not _s6_running():
+        return False
+    from hermes_cli._parser import gateway_run_no_supervise  # the container boot's own decision
+    return not gateway_run_no_supervise(argv)
 
 
 def explicit_cli_profile() -> str | None:
@@ -509,7 +432,9 @@ def _apply_profile_override() -> None:
     global _explicit_cli_profile
     _explicit_cli_profile = None
     argv = sys.argv[1:]
-    profile_name, consume, profile_index = _scan_profile_flag(argv)
+    from hermes_cli._parser import scan_profile_flag
+
+    profile_name, consume, profile_index = scan_profile_flag(argv)
     from_sticky_profile = False
 
     # HERMES_HOME already set with no explicit flag: trust it only when it
@@ -2343,19 +2268,19 @@ def cmd_update(args):
 
 
 def _coalesce_session_name_args(argv: list) -> list:
-    """Join unquoted multi-word session names after -c/--continue and -r/--resume.
-
-    ``hermes -c Pokemon Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``; tokens
-    are collected until the next flag (``-*``) or known top-level subcommand.
-    """
+    """Join unquoted multi-word session names after -c/--continue and -r/--resume: ``hermes -c Pokemon
+    Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``, up to the next flag or known top-level subcommand."""
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve", "webapp",
-        "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
+        "desktop", "gui", "claw", "plugins", "security", "acp", "webhook", "peer",
         "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
+    if _SESSION_FLAGS.intersection(argv):  # the active memory provider registers ``hermes <name>``
+        from plugins.memory import active_memory_provider_commands
+        _SUBCOMMANDS |= active_memory_provider_commands()
 
     result = []
     i = 0
@@ -2364,7 +2289,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         if token in _SESSION_FLAGS:
             result.append(token)
             i += 1
-            # Collect subsequent non-flag, non-subcommand tokens as one name
             parts: list = []
             while (
                 i < len(argv)
@@ -2647,16 +2571,13 @@ def cmd_console(args):
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "codex-runtime", "completion",
-        "computer-use", "connectors",
+        "clipboard", "computer-use", "connectors",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
-        "send", "sessions", "setup",
+        "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
@@ -2719,10 +2640,8 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
 
 
 _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
-_AGENT_SUBCOMMANDS = {
-    "cron": ("cron_command", {"run", "tick"}),
-    "gateway": ("gateway_command", {"run"}),
-}
+_AGENT_SUBCOMMANDS = {"cron": ("cron_command", {"run", "tick"}), "gateway": ("gateway_command", {"run"}),
+                      "curator": ("curator_command", {"run"})}  # curator run fires post_curator_run
 
 
 def _is_tui_chat_launch(args) -> bool:
@@ -2744,7 +2663,7 @@ def _is_tui_chat_launch(args) -> bool:
 
 
 def _agent_subcommand_selected(args) -> bool:
-    """True for ``cron run/tick``, ``gateway run`` (see _AGENT_SUBCOMMANDS)."""
+    """True for ``cron run/tick``, ``gateway run``, ``curator run`` (see _AGENT_SUBCOMMANDS)."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     return bool(_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
 
@@ -3262,6 +3181,7 @@ def _build_cli_parser():
 
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
+    build_clipboard_parser(subparsers)
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)

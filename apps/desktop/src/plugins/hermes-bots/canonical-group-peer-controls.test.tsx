@@ -35,7 +35,8 @@ const recoveryAdvice = {
   ru: ['когда его компьютер будет отвечать', 'Не все боты'],
   fr: ['lorsque son ordinateur répondra', 'n’ont pas tous confirmé leur arrêt'],
   de: ['sobald sein Computer antwortet', 'haben noch nicht alle bestätigt'],
-  es: ['cuando su equipo responda', 'aún no han confirmado todos']
+  es: ['cuando su equipo responda', 'aún no han confirmado todos'],
+  it: ['quando il suo computer risponde', 'Non tutti i bot']
 }
 
 beforeEach(() => {
@@ -156,7 +157,8 @@ const stopAdvice = {
   zh: ['等待确认', '已请求停止'], 'zh-hant': ['等待確認', '已要求停止'],
   ar: ['تنتظر التأكيد', 'طُلب الإيقاف'], ru: ['ожидающие подтверждения', 'Остановка запрошена'],
   fr: ['en attente de confirmation', 'Arrêt demandé'], de: ['Bestätigung aussteht', 'Stopp angefordert'],
-  es: ['pendientes de confirmación', 'Parada solicitada']
+  es: ['pendientes de confirmación', 'Parada solicitada'],
+  it: ['in attesa di conferma', 'Arresto richiesto']
 }
 
 it.each(locales.flatMap(language => (['stopZero', 'stopMixed'] as const).map(response => ({ language, response }))))(

@@ -177,5 +177,30 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     memberRollbackFailed: (connection, bot) =>
       `Miembros no guardados, y el cambio ya hecho para ${bot} en ${connection} no se pudo deshacer: puede que ${connection} todavía lo tenga. El chat de grupo muestra lo último que informó ${connection}; vuelve a conectarlo y revisa los miembros.`,
     selectionElsewhere: connection => `Todos estos bots están en ${connection}. Añade un bot de esta conexión o cambia a ${connection} para crear un grupo con sus bots.`
+  },
+  it: {
+    gatewayPeer: (owner, local = false) =>
+      `Funziona su ${local ? 'questo dispositivo' : owner}, anche quando questo Desktop è chiuso. I bot sugli altri computer ricevono solo testo.`,
+    pickBots: max => `Scegli da 2 a ${max} bot.`,
+    gatewayMembership: 'I membri vengono salvati insieme a questa chat di gruppo sul computer che la gestisce.',
+    checkingPeers: 'Verifica che ogni computer di questa chat di gruppo sia pronto…',
+    peerCheckFailed: (connection, local = false) =>
+      `Impossibile controllare ${local ? 'questo dispositivo' : connection}. Verifica che Hermes sia in esecuzione lì, poi riprova.`,
+    ownerUpdateRequired: place =>
+      `Hermes su ${place} è troppo vecchio per eseguire le chat di gruppo. Aggiorna Hermes lì, poi riprova.`,
+    ownerCannotSeatPeers: place =>
+      `Hermes su ${place} non può ancora ospitare bot da altri computer. Aggiorna Hermes lì ed esegui il suo gateway (hermes gateway run), poi riprova.`,
+    peerRouteMissing: 'Il computer di un bot selezionato non è connesso. Riconnettilo, poi riprova.',
+    peerGatewayChanged: place =>
+      `${place} esegue ora un’installazione di Hermes diversa da quella da cui proviene questo bot. Riconnettilo, poi riprova.`,
+    groupsOffline: (connection, bot) => `${connection} è offline — riconnettiti per modificare i gruppi di ${bot}.`,
+    memberOffline: (connection, bot) => `${connection} è offline — riconnettiti per rimuovere ${bot}.`,
+    memberSaveFailed: (connection, bot) =>
+      `Membri non salvati: ${connection} non ha accettato la modifica per ${bot}. Nulla è stato cambiato; riprova quando è di nuovo raggiungibile.`,
+    memberRollbackFailed: (connection, bot) =>
+      `Membri non salvati, e la modifica già apportata a ${bot} su ${connection} non ha potuto essere annullata: ${connection} potrebbe averla ancora. La chat di gruppo mostra ciò che ${connection} ha riportato per ultimo; riconnettila e controlla i membri.`,
+    selectionElsewhere: connection =>
+      `Questi bot si trovano tutti su ${connection}. Aggiungi un bot da questa connessione oppure passa a ${connection} per creare un gruppo con i suoi bot.`
   }
+
 } satisfies Record<string, CrossGatewayGroupMessages>

@@ -1591,5 +1591,211 @@ export const CANONICAL_GROUP_LOCALES = {
     peerJoinConnect: '{name} aún no se ha unido: conéctate al equipo donde funciona y elige Reintentar.',
     peerStartWithout: 'Iniciar nuevo chat de grupo sin {name}',
     peerStartWithoutConfirm: 'Se crea un nuevo chat de grupo con los demás bots. El original solo termina cuando todos se unen y cada miembro original confirma la detención y la revocación de acceso. Si falla algún paso, se conservan ambos chats. Los mensajes anteriores no se copian. Usar esta acción de nuevo tras la creación genera otro chat de grupo.'
+  },
+  it: {
+    ...GROUP_REASON_LOCALES["it"],
+    roomStopped: 'Arresto richiesto',
+    roomDisbanded: 'Gruppo sciolto',
+    authorityLost: 'La proprietà del gruppo è cambiata',
+    workLimitReached: 'Limite di lavoro del gruppo raggiunto',
+    turnFailed: 'Turno non riuscito',
+    turnCancelled: 'Turno annullato',
+    turnDeferred: 'Turno rinviato',
+    turnNoAnswer: 'il bot non ha risposto in tempo',
+    memberUnavailable: 'Membro non disponibile',
+    members: 'Membri',
+    openGroup: 'Apri la chat di gruppo',
+    loadingGroup: 'Caricamento del gruppo…',
+    loadingGroups: 'Caricamento delle chat di gruppo…',
+    emptyGroups: 'Nessuna chat di gruppo trovata.',
+    driverUnavailable: 'Questa chat di gruppo non è disponibile. Aggiorna o riconnetti il gateway che la ospita.',
+    invalidLogCursor: 'Impossibile caricare più indietro lo storico di questa chat di gruppo.',
+    allowOnce: 'Consenti una volta',
+    deny: 'Nega',
+    discardUnknown: 'Scarta il turno',
+    discardWarning:
+      'Effetti collaterali potrebbero essersi già verificati. Scartarli non li annulla. Per un bot su un altro computer, Scarta attende che quel computer confermi l’arresto del turno o che non sia mai iniziato.',
+    discardStopPending:
+      '{name} non ha confermato l’arresto del proprio turno. Il turno è stato conservato. Riprova lo scarto quando il suo computer risponde.',
+    retryBusy: '{name} potrebbe stare ancora lavorando a questo turno. Riprova quando ha finito.',
+    discardPeerUnreachable:
+      'Il computer di {name} non risponde. Il turno è stato conservato. Riconnetti quel computer, poi riprova lo scarto.',
+    discardPeerUpdateRequired:
+      'Hermes sul computer di {name} è troppo vecchio per confermare che questo turno non sia mai iniziato. Il turno è stato conservato. Aggiorna Hermes su quel computer, poi riprova lo scarto.',
+    confirmDiscard: 'Conferma lo scarto',
+    unconfirmedSend:
+      'L’invio precedente non è confermato. Riprova il suo testo originale prima di inviare un altro messaggio.',
+    restoredPendingSend: 'È stato ripristinato un invio non confermato. Riprovalo prima di inviare un altro messaggio.',
+    groupMessage: 'Messaggio di gruppo',
+    attachFiles: 'Allega file',
+    removeAttachment: 'Rimuovi allegato',
+    uploadFailed: 'Caricamento non riuscito',
+    memberWorking: 'Al lavoro',
+    memberQueued: 'in coda',
+    groupWorking: 'Il gruppo sta lavorando…',
+    statusWorking: 'al lavoro',
+    statusStalled: 'nessun avanzamento da {time}',
+    statusReplied: 'ha risposto',
+    statusPassed: 'ha passato',
+    statusFailed: 'non riuscito',
+    statusCancelled: 'annullato',
+    statusUnavailable: 'non disponibile',
+    statusIdle: 'inattivo',
+    you: 'Tu',
+    roundOf: 'Giro {n} di {max}',
+    round: 'Giro {n}',
+    cycleWorking: 'Al lavoro: {names}',
+    cycleSettled: 'Concluso — nessuno aveva altro da dire',
+    cycleBounded: 'Limite di giri raggiunto',
+    cycleMessageCap: 'Limite di messaggi raggiunto',
+    cycleStopped: 'Arrestato',
+    typing: '{name} sta lavorando…',
+    typingTool: '{name} sta eseguendo {tool}…',
+    handoff: '{from} ha chiesto a {to}',
+    replyTo: 'Rispondi a {name}',
+    replyingTo: 'Stai rispondendo a {name}',
+    cancelReply: 'Annulla la risposta',
+    composerPlaceholder: 'Scrivi al gruppo — @menziona per assegnare',
+    groupDetails: 'Dettagli del gruppo',
+    stopGroup: 'Arresta il gruppo',
+    pendingApproval: '{name} chiede approvazione. Decidi tu.',
+    pendingRetry: 'Il turno di {name} non è finito. Riprovarlo?',
+    pendingDiscard: 'Scartare il turno di {name}? Il lavoro già fatto non verrà annullato.',
+    membersFixed: 'I membri si fissano alla creazione del gruppo.',
+    rowWorking: 'Al lavoro',
+    rowFailed: 'Un membro ha fallito',
+    rowNeedsYou: 'Ha bisogno di te',
+    lead: 'Responsabile',
+    roomSettings: 'Impostazioni della chat di gruppo',
+    purposeLabel: 'Scopo',
+    purposePlaceholder: 'A cosa serve questa chat di gruppo, in una riga',
+    notesLabel: 'Note condivise',
+    notesPlaceholder: 'Informazioni che ogni membro deve tenere a mente',
+    deliveryTarget: 'I job pianificati possono pubblicare qui con deliver:',
+    scheduledPost: 'Pianificato',
+    routingLabel: 'Chi risponde a un messaggio che non nomina nessuno',
+    routingEveryone: 'Rispondono tutti',
+    routingLead: 'Responsabile: {name}',
+    routingEveryoneHint: 'Ogni membro ha il suo turno, come ora.',
+    routingLeadHint:
+      'Il responsabile sceglie chi se ne occupa; le @menzioni e @everyone continuano ad andare direttamente a quei membri.',
+    leadBadge: 'Responsabile',
+    assignment: '{lead} l’ha assegnato a {names}',
+    assignmentFallback: '{lead} se ne sta occupando',
+    routedTo: 'Assegnato a {names}',
+    routedEveryone: 'Assegnato a tutti',
+    routedFallback: 'Impossibile scegliere chi risponde, quindi risponderanno tutti',
+    pausedAfter: 'In pausa dopo {count} messaggi',
+    continueDiscussion: 'Continua',
+    continued: 'Ripresa',
+    routingAuto: 'Scegli automaticamente chi risponde',
+    routingAutoHint:
+      'Una veloce chiamata al modello decide a chi è diretto un messaggio. Le @menzioni continuano ad andare direttamente alle persone che nomini.',
+    statusBlocked: 'Bloccato',
+    statusApprovals: '{count} in attesa di approvazione',
+    statusAttention: 'Richiede attenzione: {count}',
+    stopped:
+      'Arresto richiesto. I turni in attesa di conferma restano visibili; usa Riprova o Scarta dove vengono proposti.',
+    pendingActionUnconfirmed:
+      'Non abbiamo potuto confermare questa azione. Aggiorna la chat di gruppo per verificarne lo stato.',
+    sendRefused: 'Il gateway ha rifiutato questo messaggio. Modificalo e invialo di nuovo.',
+    sendStopped: 'Interrotto prima dell’invio. Il tuo messaggio è ancora qui.',
+    sendMaybe:
+      'Questo messaggio potrebbe essere già stato inviato. Riprova invia lo stesso messaggio; non verrà pubblicato due volte.',
+    sendSettledElsewhere:
+      'Un’altra finestra del Desktop ha già terminato con questo messaggio. Controlla la conversazione prima di inviarlo di nuovo.',
+    journalLoadFailed:
+      'Impossibile caricare i messaggi salvati. L’invio è in pausa affinché un messaggio salvato non venga mai inviato due volte.',
+    journalReload: 'Riprova il caricamento',
+    approvalAction: 'Azione',
+    approvalCommand: 'Comando',
+    approvalDetailsMissing: 'I dettagli dell’azione non sono disponibili. Verifica di nuovo prima di consentirla.',
+    checkingDriver: 'Verifica delle chat di gruppo su questa connessione…',
+    legacyRoom:
+      'Desktop gestiva lui questa chat di gruppo, quindi non può continuare su questo gateway. Avvia un nuovo gruppo con gli stessi bot: continua a funzionare anche con Desktop chiuso. I messaggi precedenti non vengono copiati.',
+    startGatewayGroup: 'Avvia nuovo gruppo',
+    createRefused: 'Il gateway non ha potuto creare questa chat di gruppo.',
+    createGroupSize: 'Una chat di gruppo ospitata su questo gateway richiede da due a sei bot.',
+    createOtherConnection:
+      'Una chat di gruppo ospitata su questo gateway può includere solo bot di questa connessione.',
+    createDuplicateMember:
+      'Una chat di gruppo ospitata su questo gateway richiede bot con profili e handle diversi; @all e @everyone sono riservati.',
+    createUncertain:
+      'Il gateway non ha risposto, quindi questa chat di gruppo potrebbe esistere già. Riprova per aprirla. Non verrà creata due volte.',
+    createEnded:
+      'Il gateway ha rifiutato questa chat di gruppo: potrebbe essere stata modificata o rimossa altrove. Riprova per avviarne una nuova.',
+    legacyRoomElsewhere:
+      'Questa chat di gruppo non può continuare qui: contiene bot su altri computer, e una chat di gruppo ospitata su questo gateway include solo bot di una connessione. Passa alla connessione dove funzionano quei bot e avvia lì un gruppo, oppure avvia una nuova chat di gruppo con bot di questa connessione. I messaggi precedenti non vengono copiati in un nuovo gruppo.',
+    otherConnections: 'Bot su altre connessioni: {connections}',
+    legacyRoomBlocked:
+      'Desktop gestiva lui questa chat di gruppo, quindi non può continuare su questo gateway, e questi bot non possono formare allo stato attuale una chat di gruppo ospitata su questo gateway (il motivo è sotto). Avvia una nuova chat di gruppo e scegli i suoi bot. I messaggi precedenti non vengono copiati.',
+    groupsUnsupported:
+      'Le chat di gruppo non si possono aprire qui: Hermes sul computer di questa connessione è troppo vecchio. Aggiorna Hermes su quel computer e riconnettiti, poi riprova. Non si perde nulla: i messaggi precedenti restano dove sono.',
+    groupDriverStopped:
+      'Le chat di gruppo non si possono aprire qui in questo momento: il gateway di questa connessione non sta eseguendo la gestione dei gruppi. Riavvia o aggiorna Hermes su quel computer, poi riprova. Non si perde nulla: i messaggi precedenti restano dove sono.',
+    groupsUnreachable:
+      'Impossibile contattare il gateway di questa connessione per aprire questa chat di gruppo. Verifica che Hermes sia in esecuzione lì e che tu sia connesso, poi riprova. Non si perde nulla: i messaggi precedenti restano dove sono.',
+    earlierMessages:
+      'Messaggi precedenti, sola lettura. Restano su questo Desktop e non vengono copiati in un nuovo gruppo.',
+    peerTargetSetup:
+      '{connection} non può ancora ospitare un bot per una chat di gruppo su un altro computer. {reason}',
+    peerSetupUpdate: 'Lì Hermes è troppo vecchio. Aggiorna Hermes su quel computer, poi ricontrolla.',
+    peerSetupApiServer:
+      'Lì il server API è spento. Attiva lì il server API (gateway.platforms.api_server), riavvia Hermes su quel computer, poi ricontrolla.',
+    peerSetupRunStorage:
+      'Lì il server API non può salvare i registri di esecuzione, quindi un messaggio potrebbe essere eseguito due volte. Verifica che Hermes possa scrivere nella propria cartella dei dati su quel computer, riavvia Hermes lì, poi ricontrolla.',
+    peerSetupRoomKey:
+      'Lì Hermes non può creare la chiave che protegge l’accesso alle chat di gruppo. Verifica che Hermes possa scrivere nella propria cartella dei dati su quel computer, riavvia Hermes lì, poi ricontrolla.',
+    peerSetupApprovals:
+      'Lì le approvazioni dei comandi sono disattivate, oppure non è possibile leggerne la configurazione. Imposta le approvazioni su manual o smart su quel computer (approvals.mode), poi ricontrolla.',
+    peerSetupAddress:
+      'Non ha un indirizzo raggiungibile dal computer che gestisce questa chat di gruppo. Imposta gateway.room_link_url su quel computer, riavvia Hermes lì, poi ricontrolla.',
+    peerSetupBackground:
+      'Lì Hermes si arresta quando il suo Desktop viene chiuso. Esegui lì il gateway per conto suo (hermes gateway run, oppure installalo come servizio), poi ricontrolla.',
+    peerSetupGeneric:
+      'Aggiorna Hermes lì, attiva il suo server API con un indirizzo raggiungibile dal computer che gestisce questa chat di gruppo (gateway.room_link_url) e tieni attive le approvazioni.',
+    peerJoinFailed: '{name} non si è ancora unito: {reason}',
+    peerJoinUnconfirmed:
+      'Non è stato possibile confermare se {name} si è unito. Controlla la chat di gruppo quando il suo computer è raggiungibile.',
+    peerJoinUnreachable:
+      '{name} non si è ancora unito: il computer che gestisce questa chat di gruppo non ha potuto raggiungere il suo computer. Verifica che il suo computer sia raggiungibile da lì senza Desktop, poi riprova.',
+    peerJoinChanged:
+      '{name} non può entrare in questa chat di gruppo: la configurazione dei bot sul suo computer è cambiata da quando la chat di gruppo è stata creata. Avvia una nuova chat di gruppo per includerlo.',
+    readTimedOut:
+      'Il gateway non ha risposto in tempo. Potrebbe essere in attesa del computer di un bot. Scegli Aggiorna per riprovare.',
+    disbandUnconfirmed:
+      'Non abbiamo potuto confermare che la chat di gruppo sia terminata. Il computer di un bot potrebbe essere sospeso o offline. Riprova quando è di nuovo disponibile.',
+    disbandKept: 'La chat di gruppo è stata conservata. {reason}',
+    disbandPeerUnreachable:
+      'Il suo lavoro è stato arrestato. Il computer di un membro non risponde. Riconnetti quel computer, poi riprova a sciogliere la chat di gruppo.',
+    disbandStopPending:
+      'Non tutti i bot di questa chat di gruppo hanno confermato il proprio arresto. Riprova a sciogliere la chat di gruppo quando l’hanno fatto. Per un turno in attesa, usa Riprova o Scarta se vengono proposti nella chat di gruppo.',
+    disbandMemberHomeUnknown:
+      'La chat di gruppo potrebbe essere ancora attiva, ma uno dei suoi profili bot non è più configurato sul computer che la gestisce. Aggiungi di nuovo quel profilo a hosted_rooms.profiles per poterne confermare l’arresto, poi riprova a sciogliere la chat di gruppo.',
+    disbandInProgress:
+      'Lo scioglimento non è stato completato. Attendi un momento, controlla la chat di gruppo e, se serve, riprova a scioglierla.',
+    disbandRevokeUnsupported:
+      'Il suo lavoro è stato arrestato. Un membro non può rimuovere il proprio accesso a questa chat di gruppo. Aggiorna Hermes sul computer di quel membro, poi riprova a sciogliere la chat di gruppo.',
+    disbandServiceRequired:
+      'Hermes deve essere in esecuzione sul computer che gestisce questa chat di gruppo per arrestarne i bot e rimuoverne gli accessi. Avvia o riconnetti Hermes lì, poi riprova a sciogliere la chat di gruppo.',
+    peerStartWithoutRetry: 'Usa Riprova per questi bot nella nuova chat di gruppo.',
+    peerStartWithoutKept:
+      'La nuova chat di gruppo è stata creata e quella originale è stata conservata. {reason} Sciogli l’originale quando vuoi.',
+    createdNotJoined:
+      'La chat di gruppo è stata creata, ma {names} non si è ancora unito. La chat di gruppo ne indica il motivo; usa lì Riprova.',
+    peerNotJoinedBadge: 'non unito',
+    peerOfflineBadge: 'non in linea',
+    peerRejoinBadge: 'accesso scaduto',
+    peerNotJoined: '{name} non si è ancora unito a questa chat di gruppo.',
+    peerRejoin:
+      'L’accesso di {name} a questa chat di gruppo è terminato. Per invitarlo di nuovo, usa Riprova da un Desktop connesso al suo computer.',
+    peerAway: 'Non è stato possibile raggiungere il computer di {name}. Il prossimo messaggio a lui riproverà.',
+    peerRetryFailed:
+      'Non abbiamo potuto riconnettere {name}. Verifica che Hermes sia in esecuzione sul suo computer, poi riprova.',
+    peerJoinConnect: '{name} non si è ancora unito: connettiti al computer su cui gira, poi scegli Riprova.',
+    peerStartWithout: 'Avvia una nuova chat di gruppo senza {name}',
+    peerStartWithoutConfirm:
+      'Viene avviata una nuova chat di gruppo con gli altri bot. L’originale termina solo dopo che tutti sono entrati e ogni membro originale ha confermato l’arresto e la revoca dell’accesso. Se un passaggio non riesce, entrambe le chat di gruppo restano. I messaggi precedenti non vengono copiati. Usare di nuovo questa azione dopo la creazione genera un’altra chat di gruppo.'
   }
+
 } satisfies Record<string, CanonicalGroupMessages>

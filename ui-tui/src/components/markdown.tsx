@@ -147,6 +147,9 @@ const isTableDivider = (row: string) => {
   return cells.length > 1 && cells.every(c => TABLE_DIVIDER_CELL_RE.test(c))
 }
 
+// Same rule as the ink OSC 8 sinks, applied to the label too: an autolink renders its raw URL
+// as text, where an embedded escape sequence would reach the terminal.
+// eslint-disable-next-line no-control-regex -- stripping controls is the point
 const sanitizeTerminalText = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
 
 const autolinkUrl = (raw: string) =>

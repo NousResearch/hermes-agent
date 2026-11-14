@@ -17,8 +17,10 @@ const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
 
-/** Remove terminal control characters before embedding untrusted text in output. */
+/** Strip C0, DEL and C1 controls from a hyperlink URL: a BEL/ESC in it would end the
+ *  OSC 8 sequence early and hand the rest of the URL to the terminal as raw input. */
 export function sanitizeOsc8Url(value: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping controls is the point
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
 }
 

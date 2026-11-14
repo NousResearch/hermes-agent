@@ -290,6 +290,28 @@ describe('Md link labels', () => {
     expect(rendered).toContain(url)
   })
 
+  it('strips control bytes from a link target so it cannot end OSC 8 early (#131565)', () => {
+    const ansi = renderAnsi(md(`[x](https://example.com/x${BEL}${ESC}]2;TITLE${BEL})`))
+
+    expect(ansi).not.toContain(`${ESC}]2;`)
+    expect(ansi).toContain(`;https://example.com/x]2;TITLE${BEL}`)
+  })
+
+  it('keeps the SGR styling of a link label intact', () => {
+    // chalk defaults to level 0 under vitest, which would emit no SGR to lose.
+    const savedLevel = chalk.level
+    chalk.level = 3
+
+    try {
+      const plain = renderPlain(md('[Trip details](https://docs.example.com/guide/auth)')).join('\n')
+
+      expect(plain).toContain('Trip details')
+      expect(plain).not.toMatch(/\[[0-9;]*m/)
+    } finally {
+      chalk.level = savedLevel
+    }
+  })
+
   it('keeps an authored markdown label and carries the target in OSC 8', () => {
     const url = 'https://docs.example.com/guide/auth'
     const ansi = renderAnsi(md(`[Trip details](${url})`))

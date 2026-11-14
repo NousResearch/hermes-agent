@@ -11,8 +11,8 @@ import renderBorder from './render-border.js'
 import type { Screen } from './screen.js'
 import { squashTextNodesToSegments, type StyledSegment } from './squash-text-nodes.js'
 import type { Color } from './styles.js'
-import { sanitizeOsc8Url } from './termio/osc.js'
 import { isXtermJs } from './terminal.js'
+import { sanitizeOsc8Url } from './termio/osc.js'
 import { widestLine } from './widest-line.js'
 import wrapText from './wrap-text.js'
 
@@ -243,8 +243,10 @@ function drainProportional(node: DOMElement, pending: number, innerHeight: numbe
 const OSC = '\u001B]'
 const BEL = '\u0007'
 
+// Only the URL is untrusted here: `text` already carries this run's SGR, and stray
+// controls in plain text are dropped cell by cell in output.ts.
 function wrapWithOsc8Link(text: string, url: string): string {
-  return `${OSC}8;;${sanitizeOsc8Url(url)}${BEL}${sanitizeOsc8Url(text)}${OSC}8;;${BEL}`
+  return `${OSC}8;;${sanitizeOsc8Url(url)}${BEL}${text}${OSC}8;;${BEL}`
 }
 
 /**
@@ -301,8 +303,7 @@ function applyStylesToWrappedText(
         const segment = segments[runSegmentIndex]
 
         if (segment) {
-          const safeText = sanitizeOsc8Url(runText)
-          let styled = applyTextStyles(safeText, segment.styles)
+          let styled = applyTextStyles(runText, segment.styles)
 
           if (segment.hyperlink) {
             styled = wrapWithOsc8Link(styled, segment.hyperlink)
@@ -310,7 +311,7 @@ function applyStylesToWrappedText(
 
           styledLine += styled
         } else {
-          styledLine += sanitizeOsc8Url(runText)
+          styledLine += runText
         }
 
         runStart = i

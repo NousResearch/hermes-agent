@@ -18,7 +18,7 @@ import re
 # Every word ending in a `git` word (`-c git`, `alias.x=git`) starts its own search over the same rest
 # of the command, so no option word may end in one: the run stops there instead of rescanning what
 # that search covers, which keeps an uncapped run linear (`git -c git -c ... x`).
-_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|\$\([^()\n]*\)|`[^`\n]*`|[^\s;|&"'])++(?<!\bgit)'''
+_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|\$\((?>[^()\n]|\([^()\n]*\))*\)|`[^`\n]*`|[^\s;|&"'])++(?<!\bgit)'''
 _GIT_NO_VALUE = (r'(?:--no-pager|--paginate|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks'
                  r'|--no-advice|--(?:literal|glob|noglob|icase)-pathspecs|--(?:html|man|info)-path|--version|--help|-[pPvh])')
 _GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env'

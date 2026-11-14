@@ -38,6 +38,7 @@ from tools.approval import detect_dangerous_command
         'git -c user.name="O\'Brien \\"Big Jr\\" O\'Neil" reset --hard',
         # A command substitution is one word even unquoted.
         "git -C $(git rev-parse --show-toplevel) push --force",
+        "git -C $(realpath $(pwd)) push --force origin main",
         "git -C `git rev-parse --show-toplevel` reset --hard",
     ],
 )
@@ -57,6 +58,7 @@ def test_flagged(cmd):
         'git -C "/tmp/g space" status',
         "git -C my\\ repo push origin main",
         "git -C $(git rev-parse --show-toplevel) push origin main",
+        "git -C $(realpath $(pwd)) push origin main",
         "git --no-pager log --oneline push --force",
     ],
 )

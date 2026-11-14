@@ -126,6 +126,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    review_lane_unavailable: list[tuple[str, list[str]]] = field(default_factory=list)
+    """``(task_id, missing_skills)`` review-lane cards NOT claimed because a
+    skill the claim would force-load could not be resolved. Operator-actionable
+    and permanent until the skill is restored: the worker would otherwise die
+    at startup with ``kanban_skills_unavailable`` *after* the claim, burning an
+    attempt per tick until the card is archived."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -2036,6 +2042,126 @@ def dispatch_once(
     return result
 
 
+#: Skills the dispatcher force-loads onto every ``review`` claim. A worker that
+#: cannot resolve one dies at startup with ``ValueError('kanban_skills_unavailable')``
+#: -- but only *after* the claim, which burns an attempt, retries into the same
+#: lane, and ends in ``archived``. Resolve them BEFORE claiming instead.
+_REVIEW_LANE_FORCED_SKILLS: tuple[str, ...] = ("sdlc-review",)
+
+
+def _forced_skills_for_claim(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Every skill a ``review`` claim of ``task_id`` would force-load.
+
+    The card's own ``skills`` plus the lane-forced set, deduped in claim order
+    -- must stay identical to what :func:`_dispatch_lane_task` writes onto
+    ``claimed.skills``, or the preflight guards a different set than the worker
+    receives.
+    """
+    row = conn.execute("SELECT skills FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    parsed = _kb._json_or(row["skills"]) if row is not None else None
+    explicit = [str(s) for s in parsed if s] if isinstance(parsed, list) else []
+    return list(dict.fromkeys([*explicit, *_REVIEW_LANE_FORCED_SKILLS]))
+
+
+def _resolve_skills_as_worker(assignee: str, identifiers: Iterable[str]) -> tuple[list[str], list[str]]:
+    """``(loaded, missing)`` for ``identifiers``, resolved the way the worker will.
+
+    ``build_preloaded_skills_prompt`` reads the *home* skills root, so the
+    assignee profile's home is bound for the duration of the call: that is the
+    one difference between this dispatcher process and a ``hermes -p <assignee>``
+    worker, and getting it wrong here would make the guard lie.
+    """
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    token = None
+    try:
+        from hermes_constants import set_hermes_home_override
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        token = set_hermes_home_override(resolve_profile_env(normalize_profile_name(assignee)))
+    except Exception:  # unreadable profile: resolve against the process home
+        token = None
+    try:
+        _prompt, loaded, missing = build_preloaded_skills_prompt(list(identifiers))
+    finally:
+        if token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+
+                reset_hermes_home_override(token)
+            except Exception:
+                pass
+    return [str(s) for s in loaded], [str(s) for s in missing]
+
+
+def _missing_review_skills(conn: sqlite3.Connection, task_id: str, assignee: str) -> list[str]:
+    """Missing forced skills for a ``review`` claim; ``[]`` when it can start."""
+    return _resolve_skills_as_worker(assignee, _forced_skills_for_claim(conn, task_id))[1]
+
+
+def _review_skill_preflight(
+    conn: sqlite3.Connection,
+    task_id: str,
+    assignee: str,
+    result: DispatchResult,
+    *,
+    dry_run: bool,
+) -> list[str]:
+    """Refuse a review claim whose forced skills are unresolvable.
+
+    Returns the missing identifiers (empty = claim may proceed). The card is
+    left in ``review`` untouched: no claim, no run, no ``crashed`` event, no
+    attempt burned. The signal is loud and greppable -- an ERROR log line on
+    every tick naming the skills and the tick, plus a ``review_lane_unavailable``
+    card event (written once per distinct missing set: the condition does not
+    clear by itself, so one row per tick would bury the board).
+
+    A resolver that raises is NOT treated as a missing skill -- that would block
+    reviews for a bug in the check itself, so it fails open and logs.
+    """
+    forced = _forced_skills_for_claim(conn, task_id)
+    try:
+        _loaded, missing = _resolve_skills_as_worker(assignee, forced)
+    except Exception as exc:  # noqa: BLE001 - never let the guard block reviews
+        _kb._log.warning(
+            "kanban dispatcher: review skill preflight for %s could not run (%s: %s); claiming anyway",
+            task_id,
+            type(exc).__name__,
+            exc,
+        )
+        return []
+    if not missing:
+        return []
+    message = "review lane is unable to start: missing skill " + ", ".join(missing)
+    _kb._log.error(
+        "kanban dispatcher: %s (task %s, assignee %s, forced=%s, tick=%d) -- not claiming; "
+        "restore the skill and the next tick will claim it",
+        message,
+        task_id,
+        assignee,
+        ",".join(forced),
+        int(time.time()),
+    )
+    result.review_lane_unavailable.append((task_id, missing))
+    if not dry_run:
+        payload = {
+            "message": message,
+            "missing_skills": missing,
+            "lane": "review",
+            "assignee": assignee,
+        }
+        with _kb.write_txn(conn):
+            last = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'review_lane_unavailable' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            previous = _kb._json_or(last["payload"]) if last is not None else None
+            if not isinstance(previous, dict) or previous.get("missing_skills") != missing:
+                _kb._append_event(conn, task_id, "review_lane_unavailable", payload)
+    return missing
+
+
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
@@ -2111,6 +2237,12 @@ def _dispatch_lane_task(
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+    # Preflight the forced skills before the claim: an unresolvable one kills
+    # the worker ~5s after the claim with an empty output, and the retry lands
+    # back in this lane until the card is archived. Refusing the claim keeps
+    # the card visible in 'review' with an actionable event instead.
+    if lane == "review" and _review_skill_preflight(conn, task_id, assignee, result, dry_run=dry_run):
+        return False
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
@@ -2146,7 +2278,7 @@ def _dispatch_lane_task(
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *_REVIEW_LANE_FORCED_SKILLS]))
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2329,6 +2461,13 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
+        try:
+            if _missing_review_skills(conn, row["id"], assignee):
+                # Preflight refuses this claim (unresolvable forced skill), so
+                # it cannot consume the reservation either.
+                continue
+        except Exception:  # noqa: BLE001 - fail open, mirror of the preflight
+            pass
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
     return False

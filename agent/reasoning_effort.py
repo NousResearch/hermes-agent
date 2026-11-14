@@ -101,16 +101,33 @@ def is_astra_model(model: Optional[str]) -> bool:
     return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
 
 
+#: Older OpenAI reasoning models whose ladder is narrower than ``CODEX_LEGACY_EFFORTS`` (api.openai.com
+#: "Supported values are: …", live 2026-11-04; cline/cline#15489). Bare ids and dated snapshots only:
+#: ``-codex`` variants keep the legacy ladder (xhigh launched on gpt-5.1-codex-max).
+_DATED = r"(?:-\d{4}-\d{2}-\d{2})?$"
+OPENAI_NARROW_LADDERS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"^gpt-5(?:-mini|-nano)?" + _DATED), ("minimal", "low", "medium", "high")),
+    (re.compile(r"^gpt-5-pro" + _DATED), ("high",)),
+    (re.compile(r"^gpt-5\.1" + _DATED), ("none", "low", "medium", "high")),
+    (re.compile(r"^gpt-5\.[2-5]-pro" + _DATED), ("medium", "high", "xhigh")),
+    (re.compile(r"^o3(?:-pro)?" + _DATED), ("low", "medium", "high")),
+)
+
+
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     if is_astra_model(model) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS
-    return (
-        CODEX_GPT56_EFFORTS
-        if "gpt-5.6" in bare or bare.startswith(GPT6_TIER_PREFIXES) or bare in DAYBREAK_MODEL_IDS
-        else CODEX_LEGACY_EFFORTS
-    )
+    if "gpt-5.6" in bare or bare.startswith(GPT6_TIER_PREFIXES) or bare in DAYBREAK_MODEL_IDS:
+        return CODEX_GPT56_EFFORTS
+    return openai_narrow_ladder(bare) or CODEX_LEGACY_EFFORTS
+
+
+def openai_narrow_ladder(model: Optional[str]) -> Optional[tuple[str, ...]]:
+    """The live-verified ladder of an older OpenAI model narrower than the legacy set, else None."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return next((ladder for pattern, ladder in OPENAI_NARROW_LADDERS if pattern.match(bare)), None)
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:

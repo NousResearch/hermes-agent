@@ -108,4 +108,5 @@ def watcher_source(old_pid: int, *, respawn_cwd: str, respawn_env_overlay: dict[
                           respawn_env_literal=json.dumps(respawn_env_overlay),
                           watcher_timeout_literal=json.dumps(timeout_s),
                           project_root_literal=json.dumps(project_root),
-                          start_time_literal=json.dumps(process_start_time_stdlib(old_pid)))
+                          # repr, not json: None (no /proc on macOS) must stay a Python literal.
+                          start_time_literal=repr(process_start_time_stdlib(old_pid)))

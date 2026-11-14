@@ -4,6 +4,8 @@ from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tui_gateway import project_tree, server
 
@@ -126,3 +128,79 @@ def test_overlapping_profile_builds_keep_independent_classifications(monkeypatch
         assert Counter(tree["scoped_session_ids"]) == Counter(s["id"] for s in sessions)
     assert calls == Counter({(owner, kind, path): 1
                              for owner in ("outer", "inner") for kind in ("root", "cwd")})
+
+
+def test_missing_auto_roots_skip_policy_but_recovered_worktrees_keep_cwd_policy(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = tmp_path / "profile"
+    notes = profile / "notes"
+    notes.mkdir(parents=True)
+    profile, notes = str(profile), str(notes)
+    explicit = str(tmp_path / "missing-explicit")
+    recovered = profile + "-feature/src"
+    # Distinct missing paths defeat memoization: none is eligible for an auto project.
+    sessions = [row for i in range(12) for row in (
+        _rows(str(tmp_path / "absent" / f"git{i}"), f"git{i}", 1,
+              root=str(tmp_path / "absent" / f"git{i}"))
+        + _rows(str(tmp_path / "absent" / f"cwd{i}"), f"cwd{i}", 1))]
+    sessions += (_rows(explicit, "explicit", 1, root=explicit) + _rows(notes, "notes", 1)
+                 + _rows(recovered, "recovered", 1) + _rows(profile, "junk-git", 1, root=profile)
+                 + _rows(str(tmp_path), "junk-cwd", 1))
+    _install_inputs(monkeypatch, sessions)
+    projects = [{"id": "explicit", "name": "Explicit", "primary_path": explicit,
+                 "folders": [{"path": explicit}]}]
+    monkeypatch.setattr(server, "_project_tree_inputs", lambda *a, **k: (sessions, projects, [], "active"))
+    monkeypatch.setattr(server.git_probe, "resolve", lambda path: (
+        {"repo_root": profile, "worktree_root": profile} if path == profile else None))
+    calls = Counter()
+    repo_junk, cwd_junk = server._is_repo_junk, server._is_session_cwd_junk
+
+    def classify_root(path):
+        calls["root", path] += 1
+        return repo_junk(path)
+
+    def classify_cwd(path):
+        calls["cwd", path] += 1
+        return cwd_junk(path)
+
+    monkeypatch.setattr(server, "_is_repo_junk", classify_root)
+    monkeypatch.setattr(server, "_is_session_cwd_junk", classify_cwd)
+    token = set_hermes_home_override(Path(profile))
+    try:
+        tree = _build()
+    finally:
+        reset_hermes_home_override(token)
+    assert [p["id"] for p in tree["projects"]] == [project_tree.NO_PROJECT_ID, "explicit", notes, profile]
+    assert [p["sessionCount"] for p in tree["projects"]] == [26, 1, 1, 1]
+    # The missing sibling folds into its surviving parent, even though the parent itself
+    # would be junk. The policy must still see the ORIGINAL cwd, not that parent.
+    assert tree["projects"][-1]["repos"][0]["groups"][0]["path"] == profile
+    assert tree["projects"][-1]["sessionIds"] == ["recovered-0"]
+    assert Counter(tree["scoped_session_ids"]) == Counter(s["id"] for s in sessions)
+    assert calls == Counter({("root", profile): 1, ("cwd", str(tmp_path)): 1,
+                             ("cwd", notes): 1, ("cwd", recovered): 1})
+
+
+@pytest.mark.platforms("posix")
+def test_existing_symlinks_still_obey_distinct_root_and_cwd_policies(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    profile = tmp_path / "profile"
+    notes = profile / "notes"
+    notes.mkdir(parents=True)
+    home_link, notes_link = tmp_path / "home-link", tmp_path / "notes-link"
+    home_link.symlink_to(profile, target_is_directory=True)
+    notes_link.symlink_to(notes, target_is_directory=True)
+    home_link, notes_link = str(home_link), str(notes_link)
+    sessions = (_rows(home_link, "home-git", 1, root=home_link) + _rows(home_link, "home-cwd", 1)
+                + _rows(notes_link, "notes-git", 1, root=notes_link) + _rows(notes_link, "notes-cwd", 1))
+    _install_inputs(monkeypatch, sessions)
+    token = set_hermes_home_override(profile)
+    try:
+        tree = _build()
+    finally:
+        reset_hermes_home_override(token)
+    assert [p["id"] for p in tree["projects"]] == [project_tree.NO_PROJECT_ID, notes_link]
+    assert [p["sessionCount"] for p in tree["projects"]] == [3, 1]
+    assert tree["projects"][1]["sessionIds"] == ["notes-cwd-0"]
+    assert Counter(tree["scoped_session_ids"]) == Counter(s["id"] for s in sessions)

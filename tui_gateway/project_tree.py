@@ -381,13 +381,13 @@ def _auto_buckets(
         if root:
             # Stricter repo policy for real git roots; a root gone from disk is stale and
             # must not resurrect as a project (never reinterpret it as a cwd-only project).
-            if junk(root) or not exists(root):
+            if not exists(root) or junk(root):
                 root = ""
-        elif (cwd := _field(session, "cwd")) and not junk_cwd(cwd):
+        elif (cwd := _field(session, "cwd")):
             # A path-only heuristic placement whose dir is gone from disk would mint a phantom
             # project that can only be dismissed by hand -> Home.
             placement = _place_session(session, resolve)
-            if placement and exists(placement["repo_key"]):
+            if placement and exists(placement["repo_key"]) and not junk_cwd(cwd):
                 root = placement["repo_key"]
         key = _path_key(root) if root else ""
         if key:

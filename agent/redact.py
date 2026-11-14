@@ -1757,14 +1757,18 @@ _BEARER_RESIDUE_RE = re.compile(
 )
 
 
-def redact_for_egress(text: str) -> str:
+def redact_for_egress(text: str, *, urls: bool = False) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
     telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
     sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
-    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned.
+
+    ``urls=True`` also masks credential-named query params and URL userinfo — for archival sinks
+    (memory providers, telemetry) where no one follows the URL. Chat delivery leaves it off so a magic
+    link or OAuth URL the agent hands the user still works."""
     text = str(text or "")
     try:
-        text = redact_sensitive_text(text, force=True)
+        text = redact_sensitive_text(text, force=True, redact_url_credentials=urls)
     except Exception:
         return REDACTION_UNAVAILABLE
     if "earer" in text:

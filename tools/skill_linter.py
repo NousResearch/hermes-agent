@@ -54,6 +54,10 @@ _MAX_REFERENCE_FILES = 60
 # this budget is ~3x that (bundled skills average ~20k chars). The hard cap in skill_manager_tool
 # (100k) is a safety stop, not a target — agent-authored skills grew to sit right under it.
 _BODY_SOFT_BUDGET_CHARS = 24_000
+# dangling-reference: tokens that mean a body reference names a SHAPE, not a single file — a glob
+# (`references/foo-*.md`, `references/foo-?.md`, `references/foo-[12].md`), a `{placeholder}` template,
+# a `...` elision. Every skill that documents a naming convention cites one of these, so it is exempt.
+_REFERENCE_SHAPE_TOKENS = ("*", "?", "[", "{", "...")
 
 ERROR = "error"
 WARNING = "warning"
@@ -150,10 +154,17 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         return
     # Dangling links. Only references/, templates/, assets/ are reliably skill-owned;
     # `scripts/` is excluded because dev skills legitimately cite repo-root scripts.
+    # A reference that names a SHAPE rather than a file — a glob, a `{placeholder}` template, a `...`
+    # elision — is exempt. The character class used to stop at `*`/`{`, so `references/foo-*.md` arrived
+    # as the missing-looking prefix `references/foo-`; it stops at `?`/`[` the same way, so both are in
+    # the class too. `]` deliberately stays out: a markdown link `[references/x.md](…)` must not arrive
+    # as `references/x.md]`, and a bracket class is exempt on its opening `[` alone.
     seen: set[str] = set()
-    for match in re.finditer(r"(references|templates|assets)/[\w./-]+", body):
-        rel = match.group(0)
-        if rel in seen or "*" in rel or rel.endswith("/"):  # dupes, placeholders, globs
+    for match in re.finditer(r"(references|templates|assets)/[\w./*?{}\[-]+", body):
+        # A sentence's own trailing `?` is punctuation, not a single-character glob; every shape that
+        # uses `?` carries an extension after it (`references/topic-?.md`).
+        rel = match.group(0).rstrip(".?")
+        if rel in seen or rel.endswith("/") or any(tok in rel for tok in _REFERENCE_SHAPE_TOKENS):
             continue
         seen.add(rel)
         if not (skill_dir / rel).exists():

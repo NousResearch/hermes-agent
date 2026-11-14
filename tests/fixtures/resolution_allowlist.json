@@ -429,11 +429,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "pm/workspace.py",
-    "symbol": "install_node_sidecar",
-    "kind": "bare_which"
-  },
-  {
     "path": "tools/bot_relay.py",
     "symbol": "_hermes_cli",
     "kind": "bare_which"

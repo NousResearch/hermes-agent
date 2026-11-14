@@ -8,7 +8,16 @@ import pm.user_facing
 from pm.user_facing import user_facing_path
 
 
+def test_unsealed_node_subprocess_context_preserves_pm_environment(tmp_path, monkeypatch):
+    monkeypatch.setattr(pm.install.paths, "store_root", lambda: tmp_path / "tools")
+    original = {"PATH": "ambient", "KEEP_THIS": "value"}
+    assert pm.user_facing.node_env(original, for_subprocess=True) == pm.install.env_for("npm", base_env=original)
+    assert original == {"PATH": "ambient", "KEEP_THIS": "value"}
+    assert not (tmp_path / "tools").exists()
+
+
 def test_user_tools_come_before_hermes_and_python_stops_at_the_store_stub(tmp_path, monkeypatch):
+    monkeypatch.setattr(pm.install.paths, "store_root", lambda: tmp_path / "store")
     npm, node, python, rg = (str(tmp_path / "store" / name) for name in ("npm", "node", "python", "rg"))
     stub = tmp_path / "AppData" / "Local" / "Microsoft" / "WindowsApps"
     stub.mkdir(parents=True)

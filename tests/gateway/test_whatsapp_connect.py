@@ -31,10 +31,15 @@ from gateway.platforms.base import SendResult
 
 
 @pytest.fixture(autouse=True)
-def _pm_node(monkeypatch):
+def _pm_node(monkeypatch, tmp_path):
     """Stand-in for PM's Node/npm; the user's PATH copy is never picked up."""
     from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+    npm = tmp_path / ("npm.cmd" if sys.platform == "win32" else "npm")
+    npm.write_text("", encoding="utf-8")
+    npm.chmod(0o755)
     monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
+    monkeypatch.setattr(whatsapp_adapter, "with_hermes_node_path", lambda env=None, **kwargs: dict(env or {}, PATH=str(tmp_path)))
+    monkeypatch.setattr("pm.npm_command", lambda env=None, **kwargs: (str(npm), dict(env or {}, PATH=str(tmp_path))))
 
 
 def _make_adapter():

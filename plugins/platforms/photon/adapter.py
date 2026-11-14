@@ -298,15 +298,8 @@ def _reinstall_sidecar_deps() -> None:
     import pm
 
     try:
-        npm = find_node_executable("npm")
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm").env
-            installed = pm.installed_package("npm")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
-    except pm.InstallError as exc:
+        npm, env = pm.npm_command()
+    except (pm.InstallError, OSError) as exc:
         logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows

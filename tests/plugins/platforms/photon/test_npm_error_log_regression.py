@@ -33,6 +33,13 @@ _requires_node = pytest.mark.skipif(
 # 1. Return code contract unchanged
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _pm_npm_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "pm.npm_command", lambda env=None, **kwargs: (str(tmp_path / "npm"), dict(env or {}))
+    )
+
 def test_regression_return_code_zero_on_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

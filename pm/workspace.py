@@ -702,11 +702,7 @@ def install_node_sidecar(
     install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
     try:
         runner = pm.ensure("npm", explicit=explicit)
-        # Resolve inside the composed context, including npm.cmd on Windows;
-        # CreateProcess does not search a child's replacement PATH itself.
-        npm = shutil.which("npm", path=runner.env.get("PATH", ""))
-        if npm is None:
-            return "npm is missing from the prepared PM environment"
+        npm, env = pm.npm_command(runner.env, explicit=explicit)
         proc = runner.run(
             [npm, *install_cmd, "--no-audit", "--no-fund"],
             cwd=str(plugin_dir),
@@ -715,6 +711,7 @@ def install_node_sidecar(
             encoding="utf-8",
             errors="replace",
             timeout=900,
+            env=env,
         )
     except Exception as exc:
         return f"npm {install_cmd[0]} failed to run: {exc}"

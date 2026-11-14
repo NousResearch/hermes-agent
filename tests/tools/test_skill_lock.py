@@ -137,3 +137,14 @@ def test_repairing_the_lock_record_restores_the_per_skill_guards(unreadable_reco
     (home / "skills/.usage.json").write_text(json.dumps({"locked-skill": {"locked": True}}), encoding="utf-8")
     assert path_refusal([str(home / "skills/ops/free-skill/SKILL.md")]) is None
     assert "locked" in (path_refusal([str(home / "skills/ops/locked-skill/SKILL.md")]) or "")
+
+
+def test_a_readable_record_with_nothing_locked_stays_writable(locked_home):
+    """Only an UNREADABLE record fails closed; a readable one with no locks guards nothing."""
+    from tools import skill_usage
+    from tools.skill_lock import command_refusal, path_refusal
+
+    assert skill_usage.set_locked("locked-skill", False)
+    record = locked_home / "skills/.usage.json"
+    assert path_refusal([str(record)]) is None
+    assert command_refusal(f"echo x > {record}", str(locked_home)) is None

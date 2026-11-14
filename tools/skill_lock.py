@@ -156,6 +156,8 @@ def path_refusal(paths: Iterable[str]) -> str | None:
     locked, unreadable = _guard_state()
     if unreadable:
         locked = _skill_dirs(None)  # the lock set is unknown: judge every skill in the profile as locked
+    elif not locked:
+        return None
     record = _record_path()
     for path in paths:
         if path and (reason := _hit(path, locked, record)):

@@ -9,7 +9,7 @@ Neither assignment secrets nor launch credentials appear in argv or logs.
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise
 
 import contextlib
@@ -33,7 +33,8 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
                  'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
-                 'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message')
+                 'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message',
+                 'refused_turn_boundary_row_id')
 # The structured fields and their allowed keys: ``billing_block`` (``agent/billing_links.BillingBlock``
 # plus ``unverified``) and ``free_tier`` (``agent/turn_recovery._stamp_free_tier``). With
 # ``failure_reason``, ``failure_retryable`` and ``failure_resets_at`` they are what
@@ -333,6 +334,11 @@ def execute(frame, channel):
     bind_worker_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
+    # This process serves exactly one turn of one profile: bind it as the runtime scope. The
+    # profile state is this process's own (its environment names the home), so only the slot.
+    from hermes_scope import LOCAL_OWNER, LOCAL_TENANT, Fence, Scope, push_state
+    push_state(scope=Scope(LOCAL_TENANT, frame['home'], LOCAL_OWNER).for_turn(
+        scope['session_id'], scope['execution_id'], Fence(scope['epoch'], scope['generation'])))
     rpc = WorkerRPC(frame['home'])
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
@@ -360,7 +366,7 @@ def execute(frame, channel):
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
     try:
-        with policy_scope(policy):
+        with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 # delegate_task stays offered: each child is reserved by the owner under this

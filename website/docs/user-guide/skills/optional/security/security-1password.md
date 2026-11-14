@@ -16,7 +16,7 @@ Set up op CLI, sign in, and read or inject secrets.
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/1password` |
 | Path | `optional-skills/security/1password` |
-| Version | `1.0.0` |
+| Version | `1.1.0` |
 | Author | arceus77-7, enhanced by Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -36,8 +36,12 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 - 1Password account
 - 1Password CLI (`op`) installed
-- One of: desktop app integration, service account token (`OP_SERVICE_ACCOUNT_TOKEN`), or Connect server
+- One of: desktop app integration or a Connect server for `op` in the Hermes terminal
 - `tmux` available for stable authenticated sessions during Hermes terminal calls (desktop app flow only)
+
+Hermes never passes `OP_SERVICE_ACCOUNT_TOKEN` to the terminal or `execute_code`, even when it is in
+`.env` or `terminal.env_passthrough`: it unlocks every secret the service account can read. A service
+account is still the right way to feed provider keys to Hermes itself (`hermes secrets onepassword setup`).
 
 ## When to Use
 
@@ -49,10 +53,12 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 ## Authentication Methods
 
-### Service Account (recommended for Hermes)
+### Service Account (Hermes's own secret resolution, or your own shell)
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load).
-No desktop app needed. Supports `op read`, `op inject`, `op run`.
+A service-account token in `${HERMES_HOME:-~/.hermes}/.env` lets Hermes resolve `op://` references for
+its own provider keys at startup (`hermes secrets onepassword setup`). It is stripped from the processes the
+agent spawns, so `op` run through the Hermes terminal does not see it. To use the token with `op`
+directly, run those commands in your own shell, outside Hermes:
 
 ```bash
 export OP_SERVICE_ACCOUNT_TOKEN="your-token-here"
@@ -100,7 +106,8 @@ op --version
 Hermes terminal commands are non-interactive by default and can lose auth context between calls.
 For reliable `op` use with desktop app integration, run sign-in and secret operations inside a dedicated tmux session.
 
-Note: This is NOT needed when using `OP_SERVICE_ACCOUNT_TOKEN` — the token persists across terminal calls automatically.
+Note: a service-account token is never available here (see Requirements), so headless `op` use from the
+Hermes terminal needs a Connect server instead.
 
 ```bash
 SOCKET_DIR="${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}/cache/scratch}/hermes-tmux-sockets"
@@ -158,12 +165,12 @@ op run -- sh -c '[ -n "$DB_PASSWORD" ] && echo "DB_PASSWORD is set" || echo "DB_
 - Never print raw secrets back to user unless they explicitly request the value.
 - Prefer `op run` / `op inject` instead of writing secrets into files.
 - If command fails with "account is not signed in", run `op signin` again in the same tmux session.
-- If desktop app integration is unavailable (headless/CI), use service account token flow.
+- If desktop app integration is unavailable (headless/CI), use a Connect server from the Hermes terminal; a service-account token only works in the user's own shell or for Hermes's own `op://` resolution.
 
 ## CI / Headless note
 
-For non-interactive use, authenticate with `OP_SERVICE_ACCOUNT_TOKEN` and avoid interactive `op signin`.
-Service accounts require CLI v2.18.0+.
+For non-interactive use outside Hermes, authenticate with `OP_SERVICE_ACCOUNT_TOKEN` and avoid interactive
+`op signin`. Service accounts require CLI v2.18.0+. Inside the Hermes terminal, use a Connect server.
 
 ## References
 

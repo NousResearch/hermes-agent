@@ -33,7 +33,7 @@ import { useMediaImage } from '@/hooks/use-media-image'
 import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -262,6 +262,47 @@ function flattenChildrenToText(node: unknown): string {
   return ''
 }
 
+function isPrivateIPv4([a, b]: number[]): boolean {
+  // 0/8, 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16.
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+}
+
+/** Loopback, unspecified, link-local and RFC 1918 hosts, read from the PARSED hostname, so decimal,
+ *  octal, hex, dotted-unicode and percent-encoded spellings are already folded to one form. A bracketed
+ *  IPv6 host never gets here: the renderer's URL hardening already shows such a link as blocked. */
+function isPrivateNetworkHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    return true
+  }
+
+  const octets = host.split('.')
+
+  return octets.length === 4 && octets.every(octet => /^\d{1,3}$/.test(octet)) && isPrivateIPv4(octets.map(Number))
+}
+
+/** In foreign history only an explicit web URL to a public host navigates, and only on a click: no
+ *  preview card, title fetch, session reference or foreground file resolution, no credential-bearing
+ *  URL, and nothing on this machine or its network. The anchor carries only the sanitized address. */
+function PreviewOnlyMarkdownLink({ children, className, href }: ComponentProps<'a'>) {
+  let target: URL | null = null
+
+  try {
+    target = href && /^https?:\/\//i.test(href.trim()) ? new URL(href.trim()) : null
+  } catch {
+    target = null
+  }
+
+  if (!target || !['http:', 'https:'].includes(target.protocol) || target.username || target.password ||
+    isPrivateNetworkHost(target.hostname)) {
+    return <span>{children}</span>
+  }
+
+  return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>{children}</ExternalLink>
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -432,6 +473,11 @@ function MarkdownImageContent({
   // the w-fit container hugs it so the download button and shadow sit on the
   // image, not on the letterbox. Without a frame (a source that failed last
   // time) it lays out as a plain capped image, like before frames existed.
+  // The click target takes the frame's height so the image's max-h-full has a
+  // definite height to resolve against. Without it a portrait image ignores
+  // the cap and paints over the text below the frame (#154409). A button
+  // centres its content vertically, so it is a top-aligned flex box: a shorter
+  // image stays at the top, under the download button.
   const framed = Boolean(image.frameStyle)
 
   return (
@@ -440,6 +486,7 @@ function MarkdownImageContent({
         <ZoomableImage
           {...props}
           alt={alt}
+          buttonClassName={framed ? 'flex h-full items-start' : undefined}
           className={cn(
             'm-0 block h-auto w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
             framed ? 'max-h-full' : 'max-h-(--image-preview-height)',
@@ -674,7 +721,7 @@ function MarkdownTextSurface({
               {decorateText ? decorateText(children) : children}
             </MarkdownParagraph>
           ),
-        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
+        a: previewOnly ? PreviewOnlyMarkdownLink : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -756,6 +803,11 @@ function MarkdownTextSurface({
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
           }
 
+          // Foreign text never draws: a ```svg or ```mermaid fence shows its source.
+          if (previewOnly) {
+            return <SyntaxHighlighter {...props} defer={isStreaming} />
+          }
+
           return (
             <RichCodeBlock
               code={props.code}
@@ -831,17 +883,23 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
  * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
  * against the ACTIVE gateway, so a message written on another machine (a
  * Connections Bot in a cross-machine room) must not have its path read here —
- * that is a broken image at best and a same-path local file at worst. */
+ * that is a broken image at best and a same-path local file at worst. Such
+ * history also passes `previewOnly`: Markdown images, file links, live
+ * directive cards and rich fences (```svg, ```mermaid, ```listing, shown as
+ * their source) stay inert, and only an explicit web link to a public host
+ * opens, on a click. */
 export function MessageTextContent({
   decorateText,
   media = true,
+  previewOnly = false,
   text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+}: Pick<MarkdownTextSurfaceProps, 'decorateText' | 'previewOnly'> & { media?: boolean; text: string }) {
   return (
     <MarkdownTextContent
       decorateText={decorateText}
       disableArtifacts
       isRunning={false}
+      previewOnly={previewOnly}
       text={media ? renderMediaTags(text) : text}
     />
   )

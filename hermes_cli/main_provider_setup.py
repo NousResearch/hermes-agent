@@ -60,11 +60,11 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("voice_chat", "Voice chat", "spoken voice-mode replies"),
-    ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
-    ("curator", "Curator", "skill-usage review pass")]
+    ("curator", "Curator", "skill-usage review pass"),
+    ("group_router", "Group router", "who answers in auto-routed Group Chats")]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full
@@ -164,10 +164,13 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
         provider = "" if provider == "auto" else provider
     else:
         entry = _ensure_dict_section(_ensure_dict_section(cfg, "auxiliary"), task)
+    from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
+    clear_aux_credentials_on_route_change(entry, provider, base_url)
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
+    from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
+    entry["api_key"] = secret_ref_for(aux_api_key_env(task), api_key or "")
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
         entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
@@ -210,6 +213,11 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", auto}:
             entry["provider"] = auto
             changed = True
+        # The reset route's key pointers must not wait in the block for the next provider pick,
+        # which would hand them to that provider (#141832). api_key is reset with the fields below.
+        for field in ("key_env", "api_key_env", "api_mode"):
+            if entry.pop(field, None):
+                changed = True
         for field in ("model", "base_url", "api_key", "reasoning_effort"):
             # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
             default = str((defaults.get(task) or {}).get(field) or "") if isinstance(defaults.get(task), dict) else ""
@@ -234,7 +242,7 @@ def _aux_config_menu() -> None:
     while True:
         cfg = load_config()
         _say("", "  Auxiliary models — side-task routing", "",
-             "  Side tasks (vision, compression, web extraction, etc.) default",
+             "  Side tasks (vision, compression, title generation, etc.) default",
              '  to your main chat model.  "auto" means "use my main model" —',
              "  Hermes only falls back to a lightweight backend (OpenRouter,",
              "  Nous Portal) if the main model is unavailable.  Override a",
@@ -372,7 +380,12 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     effort = (_prompt_aux_reasoning_effort(task, _aux_effort_word(task_cfg))
               if _aux_task_takes_reasoning(task) else None)
 
-    _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key, reasoning_effort=effort)
+    try:
+        _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key,
+                         reasoning_effort=effort)
+    except ValueError as exc:  # .env write-locked: the refusal names the variable, never the key
+        print(f"  ✗ {exc}")
+        return
     print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else "")
           + (f" · reasoning {effort}" if effort else ""))
 
@@ -492,7 +505,10 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
                           key_env=""):
     """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
     existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    already wrote the key to ``.env``; the entry references it instead of inlining the secret. A
+    literal *api_key* for a NEW entry is written to ``.env`` under the endpoint's name and the entry
+    gets ``key_env`` (#77471); a ``${VAR}`` reference is kept as given and existing entries are
+    never migrated.
 
     See #69449.
     """
@@ -529,6 +545,9 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
     name = name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
+    if api_key and not key_env:
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
+        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
     if key_env:
         entry["key_env"] = key_env
     elif api_key:

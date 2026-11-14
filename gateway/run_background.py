@@ -110,6 +110,9 @@ class GatewayBackgroundMixin:
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # Built outside the turn wiring, so it takes its chat's Daybreak verdicts here.
+                agent.daybreak_surface = self._daybreak_surface(source) is True
+                agent.daybreak = self._load_daybreak(source) is True
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:
@@ -130,6 +133,8 @@ class GatewayBackgroundMixin:
             if response:
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+                await hand_back_unreadable_media([p for p, _ in media_files])
                 images, text_content = adapter.extract_images(response)
             if text_content:
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
@@ -165,9 +170,11 @@ class GatewayBackgroundMixin:
         except Exception:
             logger.exception("Background task %s failed", task_id)
             # Automatic failure diagnostic (the task produced no requested result to deliver).
+            from gateway.bot_peer_notices import automatic_notices_allowed
             with suppress(Exception):
-                await adapter.emit_warning(
-                    source.chat_id,
-                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
-                    metadata=_thread_metadata, logical_platform=source.platform,
-                )
+                if automatic_notices_allowed(source):
+                    await adapter.emit_warning(
+                        source.chat_id,
+                        t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                        metadata=_thread_metadata, logical_platform=source.platform,
+                    )

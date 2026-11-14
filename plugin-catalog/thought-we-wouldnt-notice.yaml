@@ -1,0 +1,21 @@
+name: thought-we-wouldnt-notice
+title: Thought We Wouldn't Notice
+repo: https://github.com/noblebrown-69/hermes-thought-we-wouldnt-notice
+sha: 9816f3447cbb8428b2c7fc80d8e46a1a365fb05d
+description: "Insert a quarter, get a tiny original space-bug shooter, and a wry \"thought we wouldn't notice\" line. A whole-message quarter is swallowed by pre_llm_call so Hermes skips the model and replies \"Thought we wouldn't notice. But we did.\" Hermes Desktop opens the Top Sails cabinet over the window; Esc dismisses it. The dashboard tab has the same cabinet and a Play button. Disclosure — no third-party network calls, no shell, no credentials, and no telemetry; the quarter ledger and high score are stored only under the plugin's own data directory; pre_llm_call blocks the model turn for matching messages only."
+maintainer: noblebrown-69
+tier: community
+category: desktop
+version: "0.1.7"
+image: "https://raw.githubusercontent.com/noblebrown-69/hermes-thought-we-wouldnt-notice/9816f3447cbb8428b2c7fc80d8e46a1a365fb05d/assets/catalog.jpg"
+screenshots:
+  - "https://raw.githubusercontent.com/noblebrown-69/hermes-thought-we-wouldnt-notice/9816f3447cbb8428b2c7fc80d8e46a1a365fb05d/assets/banner.jpg"
+docs_url: "https://github.com/noblebrown-69/hermes-thought-we-wouldnt-notice/blob/9816f3447cbb8428b2c7fc80d8e46a1a365fb05d/README.md"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

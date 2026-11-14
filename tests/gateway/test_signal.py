@@ -34,7 +34,9 @@ def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
         "account": account,
         **extra,
     }
-    return SignalAdapter(config)
+    adapter = SignalAdapter(config)
+    adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
+    return adapter
 
 
 def _stub_rpc(return_value):

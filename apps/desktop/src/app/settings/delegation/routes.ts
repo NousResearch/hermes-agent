@@ -8,9 +8,12 @@ export interface ModelRouteDraft {
   model: string
   reasoning_effort: string
   service_tier: string
+  /** OpenAI Daybreak for this route only (advanced-delegation's `daybreak: true`); false is not stored. */
+  daybreak: boolean
 }
 
-export type RouteField = keyof ModelRouteDraft
+export type RouteField = Exclude<keyof ModelRouteDraft, 'daybreak'>
+type TextField = RouteField
 export type RouteError = 'duplicate' | 'required' | 'spaces'
 
 /** Saved as written: an explicit `normal` turns a provider's own Fast setting off; no tier leaves it alone. */
@@ -22,7 +25,8 @@ export const emptyRouteDraft = (): ModelRouteDraft => ({
   provider: '',
   model: '',
   reasoning_effort: '',
-  service_tier: ''
+  service_tier: '',
+  daybreak: false
 })
 
 export const draftFromRoute = (route: DelegationModelRoute): ModelRouteDraft => ({
@@ -31,7 +35,8 @@ export const draftFromRoute = (route: DelegationModelRoute): ModelRouteDraft => 
   provider: route.provider ?? '',
   model: route.model ?? '',
   reasoning_effort: route.reasoning_effort ?? '',
-  service_tier: route.service_tier ?? ''
+  service_tier: route.service_tier ?? '',
+  daybreak: route.daybreak === true
 })
 
 /** Field → problem, empty when the draft can be saved. `taken` = names of the OTHER routes.
@@ -65,12 +70,21 @@ export function validateRouteDraft(
   return errors
 }
 
+const TEXT_FIELDS: readonly TextField[] = [
+  'name',
+  'description',
+  'provider',
+  'model',
+  'reasoning_effort',
+  'service_tier'
+]
+
 /** The stored route for `draft`: edited fields replace, blank optional fields drop, unknown keys stay. An edited
  *  route names the route it came from (`original_name`), so the server keeps its stored key through a rename. */
 export function routeFromDraft(draft: ModelRouteDraft, previous?: DelegationModelRoute): DelegationModelRoute {
   const next: Record<string, unknown> = { ...previous, ...(previous ? { original_name: previous.name } : {}) }
 
-  for (const field of Object.keys(draft) as RouteField[]) {
+  for (const field of TEXT_FIELDS) {
     const value = draft[field].trim()
 
     if (value) {
@@ -78,6 +92,12 @@ export function routeFromDraft(draft: ModelRouteDraft, previous?: DelegationMode
     } else {
       delete next[field]
     }
+  }
+
+  if (draft.daybreak) {
+    next.daybreak = true
+  } else {
+    delete next.daybreak
   }
 
   return next as DelegationModelRoute

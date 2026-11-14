@@ -85,7 +85,7 @@ def _session_latest_descendant(session_id: str, db):
 def _session_mutation_context(request, profile):
     """Use the same principal and profile boundary for prepare and apply."""
     from fastapi import HTTPException
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_cli.web_server import _has_valid_session_token
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
@@ -112,7 +112,7 @@ def _session_mutation_context(request, profile):
         # Standalone ``serve``/``dashboard`` (no composed gateway; its owner cutover is a
         # follow-up): the store is the owner. Same principal id form as a gateway authority's
         # (``str(home)``), so import bindings written offline stay valid once one starts.
-        return None, Principal(subject, str(home.resolve()), capabilities, 'http')
+        return None, SessionActor(subject, str(home.resolve()), capabilities, 'http')
     # ``?profile=`` selects a served home; its own authority (not the launch one) owns the mutation.
     from gateway.session_authorities import authority_for_home
     runner = getattr(request.app.state, 'gateway_runner', None)
@@ -129,8 +129,8 @@ def _session_mutation_context(request, profile):
         # local history exactly as over the native socket (``require_history_claim``); a shared
         # 'http' id never can.
         import uuid
-        return authority, Principal(subject, authority.profile_id, capabilities, 'native-http:' + uuid.uuid4().hex)
-    return authority, Principal(subject, authority.profile_id, capabilities, 'http')
+        return authority, SessionActor(subject, authority.profile_id, capabilities, 'native-http:' + uuid.uuid4().hex)
+    return authority, SessionActor(subject, authority.profile_id, capabilities, 'http')
 
 
 @contextmanager
@@ -523,12 +523,12 @@ def _maybe_run_skill_maintenance(started_at: float) -> None:
     if _check_gateway_running(get_hermes_home()):
         return
 
-    from agent.curator import maybe_run_curator
+    from hermes_cli.plugins_idle_tasks import run_idle_jobs
 
     try:
         idle_for = _skill_maintenance_idle_for(started_at)
         if idle_for is not None:
-            maybe_run_curator(idle_for_seconds=idle_for)
+            run_idle_jobs(idle_for_seconds=idle_for)
     except Exception as exc:
         _log.debug("serve curator tick skipped: %s", exc)
 

@@ -20,6 +20,7 @@ import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
 import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
+import { esPluginUpdateAll } from './es_plugin_update_all'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -28,6 +29,11 @@ import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  gatewayGroupOpen: {
+    opening: "Abriendo el chat de grupo…",
+    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
+    missing: "Este chat de grupo ya no existe."
+  },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
   intro: introEs,
@@ -1543,6 +1549,9 @@ export const esOverrides = {
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
+      desktopReadAloudTitle: 'Leer respuestas en voz alta en esta app',
+      desktopReadAloudDesc:
+        'Lee cada respuesta terminada en Desktop. Es el mismo interruptor que el del compositor; se aplica a todas las ventanas abiertas, y al apagarlo se detiene una respuesta a mitad de frase. «Leer respuestas en voz alta» abajo es para mensajería y la CLI.',
       showOptions: 'Mostrar opciones'
     },
     hudModifier: {
@@ -2374,15 +2383,20 @@ export const esOverrides = {
       browserRealProfile: {
         label: 'Usar mi perfil real del navegador',
         description:
-          'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
+          'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente, y también inicia sesión con ellos en el navegador integrado. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
         enabledTitle: 'Navegación con perfil real activada',
         enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
         disabledTitle: 'Navegación con perfil real desactivada',
-        disabledMessage: 'Se eliminará la instantánea del perfil; las sesiones nuevas usan un navegador limpio.',
+        disabledMessage: 'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
         failedSave: 'No se pudo guardar el ajuste del perfil real',
+        reimportSignins: 'Volver a importar inicios de sesión',
+        signinsImportedTitle: 'Inicios de sesión del navegador integrado',
+        signinsImported: count => `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
+        signinsRemote: 'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
+        signinsFailed: 'No se pudieron importar los inicios de sesión al navegador integrado',
         prompt: {
           title: 'Mantén la sesión iniciada en tus sitios',
-          body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada.',
+          body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada, para el agente y en el navegador integrado.',
           bulletSnapshot: 'Las cookies y los inicios de sesión se copian en una instantánea administrada.',
           bulletLiveProfile: 'Tu perfil del navegador en uso nunca se abre directamente.',
           bulletLocal: 'Nada sale de este equipo.',
@@ -2509,6 +2523,7 @@ export const esOverrides = {
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
       ...esPluginUpdate,
+      ...esPluginUpdateAll,
       ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
@@ -2852,7 +2867,10 @@ export const esOverrides = {
       backupDesc: 'Comprimir la configuración, memorias, skills y sesiones en un archivo ZIP',
       debugShare: 'Compartir datos de depuración',
       debugShareDesc:
-        'Sube un informe y registros con datos sensibles ocultos y obtén enlaces para compartir (se eliminan automáticamente en 6 h)',
+        'Sube un resumen (versiones, claves de configuración, recuentos de errores; sin texto de registros) y obtén un enlace para compartir (se elimina automáticamente en 6 h)',
+      debugShareConfirm: '¿Subir el informe de depuración a un paste público?',
+      debugShareConfirmDesc:
+        'Sube un resumen a un servicio de paste público: versiones de Hermes, Python y del sistema operativo, nombres de las plataformas conectadas y de los toolsets, claves de configuración (sin valores) y recuentos de advertencias/errores. No contiene líneas de registro ni texto de mensajes. Los pastes se eliminan automáticamente a las 6 horas; si paste.rs no está disponible, la alternativa dpaste.com los mantiene públicos 1 día y no se pueden eliminar antes.',
       debugShareRunning: 'Subiendo informe de depuración…',
       debugShareLinks: 'Enlaces para compartir',
       debugShareFailed: 'No se pudieron compartir los datos de depuración',
@@ -2973,6 +2991,32 @@ export const esOverrides = {
       'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Sin token de bot',
+      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      link: (platform: string) => `Vincular ${platform}`,
+      linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
+      linkedAccounts: 'Cuentas vinculadas',
+      unlink: 'Desvincular',
+      unlinkFailed: 'No se pudo desvincular la cuenta',
+      stepOpen: (platform: string) => `1. Escanea el código con el móvil o abre el bot en ${platform}.`,
+      stepSend: '2. Envía al bot este mensaje desde la cuenta que quieres vincular:',
+      open: (platform: string) => `Abrir ${platform}`,
+      copy: 'Copiar mensaje',
+      copied: 'Copiado',
+      copyFailed: (command: string) => `No se pudo copiar. Escribe ${command}.`,
+      waiting: 'Esperando a que el bot vea tu mensaje. El código sirve una sola vez.',
+      linked: (platform: string) => `Cuenta de ${platform} vinculada. Escribe al bot para hablar con tu agente.`,
+      expired: 'El código caducó antes de usarse. Pide uno nuevo e inténtalo otra vez.',
+      refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
+      qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
+      managed: 'Gestionado por Team Gateway',
+      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
+      openPortal: 'Vincular cuentas en Nous Portal',
+      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+    },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
       subtitle:
@@ -3179,6 +3223,14 @@ export const esOverrides = {
     fieldSkillsPlaceholder: 'nombres de skills separados por comas (opcional)',
     fieldDeliver: 'Entregar a',
     fieldDeliverOnly: 'Entregar solo la carga útil',
+    fieldSignature: 'Firma',
+    fieldSignatureHint: 'El único esquema de firma que acepta esta ruta. Las entregas de GitHub, GitLab y Linear necesitan su propio esquema.',
+    signatureOptions: {
+      generic: 'Genérica (con marca de tiempo)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instrucciones para el agente cuando se active este webhook (opcional)',
     nameRequired: 'Nombre obligatorio',
@@ -3848,7 +3900,7 @@ export const esOverrides = {
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
       '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
-      '/debug': 'Subir un informe de depuración (información del sistema + registros) y obtener enlaces para compartir',
+      '/debug': 'Informe de depuración (versiones, claves de configuración, recuentos de errores; sin texto de registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces',
       '/model': 'Cambiar el modelo de esta sesión'
     },
     hotkeyDescs: {
@@ -4487,7 +4539,9 @@ export const esOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envía ${level} en esta ruta`,
       updateFailed: 'No se pudo actualizar la opción del modelo',
-      fastFailed: 'No se pudo actualizar el modo rápido'
+      fastFailed: 'No se pudo actualizar el modo rápido',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4597,6 +4651,15 @@ export const esOverrides = {
           subagent_definitions: 'Definiciones de subagente',
           system_prompt: 'Prompt del sistema',
           tool_definitions: 'Definiciones de herramientas'
+        },
+        compact: {
+          action: 'Compactar conversación',
+          busyHint: 'Termina o detén primero la respuesta en curso',
+          confirm: 'Compactar',
+          hint: 'Resume el contexto anterior para hacer espacio. Continúa en esta misma conversación.',
+          question: '¿Compactar esta conversación en un resumen?',
+          questionNamed: title => `¿Compactar «${title}» en un resumen?`,
+          working: 'Compactando…'
         },
         empty: 'Aún no hay datos de contexto',
         loading: 'Cargando desglose…',
@@ -5055,6 +5118,7 @@ export const esOverrides = {
       readAloud: 'Leer en voz alta',
       copyFullResponse: 'Copiar la respuesta completa',
       readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
+      contentRefusedNotice: 'El filtro de seguridad del modelo rechazó este mensaje: prueba con otra consulta.',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',
       scrollToBottom: 'Desplazarse hacia abajo',
@@ -5135,6 +5199,10 @@ export const esOverrides = {
       authorized: server => `${server} autorizado`,
       failed: server => `La configuración falló para ${server}`,
       toolCount: count => (count === 1 ? '1 herramienta' : `${count} herramientas`),
+      launchCommand: target => `Ejecuta: ${target}`,
+      launchRemote: target => `Se conecta a: ${target}`,
+      launchEnv: keys => `Entorno: ${keys}`,
+      launchCwd: dir => `Directorio de trabajo: ${dir}`,
       envRequired: 'Rellena primero las credenciales obligatorias',
       sendFailed: 'No se pudo enviar la respuesta de configuración MCP',
       reloadFailed: 'Servidor guardado, pero falló la recarga de herramientas MCP — se cargarán en la próxima sesión',

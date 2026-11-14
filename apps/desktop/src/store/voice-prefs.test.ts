@@ -77,6 +77,26 @@ it('migrates the legacy preference once, not on every refresh', async () => {
   }
 })
 
+it('turning read-aloud off in another window stops this one (Discord: the off toggle did nothing)', async () => {
+  localStorage.clear()
+  vi.resetModules()
+  const prefs = await import('./voice-prefs')
+
+  await prefs.setAutoSpeakReplies(true)
+  expect(prefs.$autoSpeakReplies.get()).toBe(true)
+
+  // The preference sync writes the other window's value, then announces it.
+  localStorage.setItem('hermes.desktop.autoSpeakReplies', 'false')
+  window.dispatchEvent(
+    new StorageEvent('storage', { key: 'hermes.desktop.autoSpeakReplies', newValue: 'false', oldValue: 'true' })
+  )
+  expect(prefs.$autoSpeakReplies.get()).toBe(false)
+
+  // ...and a later config refresh still does not turn it back on.
+  prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: true } })
+  expect(prefs.$autoSpeakReplies.get()).toBe(false)
+})
+
 describe('applyVoiceStopPhraseFromConfig', () => {
   it('defaults to "stop" when the key is absent (backend default applies)', () => {
     applyVoiceStopPhraseFromConfig({ voice: {} })

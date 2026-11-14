@@ -101,6 +101,10 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,
@@ -126,10 +130,13 @@ export type {
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,
-  ToolsetModelsResponse,
+  ToolsetModelsResponse
+} from '@/types/hermes'
+export type {
   WebhookCreatePayload,
   WebhookCreateResponse,
   WebhookEnableResponse,
   WebhookRoute,
+  WebhookSignature,
   WebhooksResponse
-} from '@/types/hermes'
+} from '@/types/webhooks'

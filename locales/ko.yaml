@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ 디버그 보고서 업로드 실패: {error}"
     header: "**디버그 보고서가 업로드되었습니다:**"
     auto_delete: "⏱ 페이스트는 6시간 후 자동 삭제됩니다."
-    full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
+    full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share --nous`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
-    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug`를 보내세요."
+    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    upload_hint: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    upload_hint_local: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를, 여기에서 보려면 `/debug local`을 보내세요."
+    nous_refused: "아무것도 업로드되지 않았습니다. 여기에서는 Nous 비공개 업로드를 사용할 수 없습니다. 터미널에서 `hermes debug share --nous`를 실행하거나 데스크톱 앱의 Send diagnostics를 사용하세요. `/debug upload`는 대신 요약을 공개 paste에 업로드합니다."
   deny:
     stale: "❌ 명령이 거부되었습니다 (승인이 만료됨)."
     no_pending: "거부 대기 중인 명령이 없습니다."
@@ -332,6 +335,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — 제목 없이 세션을 시작했습니다."
     title_empty_untitled: "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
     tip: "\n✦ 팁: {tip}"
+    paused_left: "\n⚠️ 이전 대화가 일시 중지된 동안 보낸 메시지 {count}개가 이전 대화에 저장된 채 답변되지 않았습니다. 실행하려면: /resume {session_id} 후 {discard}."
   restart:
     in_progress: "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting: "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
@@ -487,8 +491,6 @@ gateway:
     root_new: "새 Hermes 채팅을 병렬로 시작하려면 이 봇 화면 상단의 All Messages 토픽을 열고 그곳에 아무 메시지나 보내세요. Telegram이 새 토픽을 만들어 줘요.\n\n각 토픽은 독립된 Hermes 세션이에요. 기존 토픽의 현재 세션을 교체하고 싶을 때만 그 토픽 안에서 /new를 사용하세요."
     new_header: "이 토픽에서 새 Hermes 세션을 시작했어요.\n\n팁: 병렬 작업을 하려면 여기서 /new를 쓰는 대신 All Messages를 열고 메시지를 보내 별도 토픽을 만드세요. /new는 현재 토픽에 연결된 세션을 교체해요."
     help: "/topic — 다중 세션 DM 모드 켜기(봇 하나로 여러 채팅을 병렬로)\n\n사용법:\n  /topic             토픽 모드를 켜거나, 이미 켜져 있으면 상태 표시\n  /topic help        이 메시지 표시\n  /topic off         토픽 모드를 끄고 토픽 연결 지우기\n  /topic <id>        토픽 안에서: ID로 이전 세션 복원\n\n동작 방식:\n1. 이 DM에서 /topic을 한 번 실행하세요 — Hermes가 BotFather의 Threads\n   Settings가 켜져 있는지 확인하고 다중 세션 모드를 켜요.\n2. 봇 상단의 All Messages를 누르고 아무 메시지나 보내세요.\n   Telegram이 그 메시지로 새 토픽을 만들고, 각 토픽은\n   독립된 Hermes 세션이 돼요(새 기록, 새 컨텍스트).\n3. 루트 DM은 시스템 로비가 돼요 — /topic, /status,\n   /help, /usage는 거기서 보내세요. 일반 프롬프트는 토픽에서 보내요.\n4. 토픽 안에서 /new를 쓰면 그 토픽의 세션만 초기화돼요.\n5. 토픽 안에서 /topic <id>를 쓰면 이전 세션을 그 토픽으로 복원해요."
-    system_topic_name: "시스템"
-    system_topic_intro: "Hermes 명령과 상태를 위한 시스템 토픽이에요."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "채팅 ID를 확인할 수 없어요."
     mode_not_enabled: "이 채팅에는 다중 세션 토픽 모드가 아직 켜져 있지 않아요."
@@ -516,6 +518,7 @@ gateway:
     not_git_repo: "✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다."
     hermes_cmd_not_found: "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
     start_failed: "✗ 업데이트 시작 실패: {error}"
+    already_running: "⏳ 이미 업데이트가 진행 중이에요. 업데이트 질문에는 시작한 사람만 답할 수 있어요. 끝난 뒤 /update를 다시 시도해 주세요."
     starting: "☤ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
     reply_failed: "✗ 업데이트 프로세스에 응답을 보내지 못했어요: {error}"
     reply_sent: "✓ 업데이트 프로세스에 `{label}`을(를) 보냈어요."
@@ -601,6 +604,7 @@ gateway:
     disabled: "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
     enabled: "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
   shared:
+    fallback_model_suffix: " — 대체 모델, 기본: `{primary}`"
     session_db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found: "데이터베이스에서 세션을 찾을 수 없습니다."
@@ -625,6 +629,8 @@ gateway:
     action_always: "항상 허용"
     action_deny: "거부"
     deadline: "{window} 안에 답하지 않으면 실행되지 않아요."
+    not_requester: "{requester}님만 이 승인에 응답할 수 있습니다."
+    not_requester_admins_only: "관리자 또는 지정된 승인자만 이 승인에 응답할 수 있습니다."
     text_choice_once: "한 번만 실행하려면 `{prefix}approve`"
     text_choice_session: "이 세션이 끝날 때까지 이 패턴을 허용하려면 `{prefix}approve session`"
     text_choice_always: "영구적으로 허용하려면 `{prefix}approve always`"
@@ -632,6 +638,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", 또는 {choice}으로 답해 주세요.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "미리보기가 줄여졌습니다: 전체 명령({total}자)은 위 메시지에 있습니다."
+    truncated_deny_only: "미리보기가 줄여졌고({total}자) 전체 명령을 여기에 표시할 수 없어 거부만 선택할 수 있습니다. CLI나 데스크톱 앱에서 확인하세요."
+    text_prompt_deny_only: "전체 승인 프롬프트가 이 플랫폼에는 너무 길어 거부만 선택할 수 있습니다. CLI나 데스크톱 앱에서 확인하세요."
   notify:
     media_kind:
       audio: "오디오"
@@ -642,8 +651,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind} 첨부 파일({file_name})을 전달하지 못했어요."
     delivery_failed_retry: "⚠️ 여러 번 시도했지만 메시지 전달에 실패했어요. 요청은 처리됐지만 응답을 보낼 수 없었으니 다시 시도해 주세요."
     plain_fallback_prefix: "(응답 서식 지정에 실패해 일반 텍스트로 표시해요:)\n\n{content}"
-    turn_error_no_details: "자세한 정보 없음"
-    turn_error_detailed: "죄송해요, 오류가 발생했어요 ({error_type}).\n{error_detail}\n다시 시도하거나 /reset으로 새 세션을 시작하세요."
     turn_error: "죄송해요, 오류가 발생했어요."
     context_injection_refused: "컨텍스트 주입이 거부되었어요."
     no_home_channel: "📬 {platform}에 홈 채널이 설정되어 있지 않아요. 홈 채널은 Hermes가 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳이에요.\n\n이 채팅을 홈 채널로 만들려면 {sethome_cmd}을(를) 입력하고, 건너뛰려면 무시하세요."
@@ -742,6 +749,8 @@ gateway:
     reject_loop: "에이전트가 실행 중이에요 — 실행 중에는 /loop status / pause / stop을 사용하거나, 새 루프를 설정하기 전에 /stop하세요."
     draining_maintenance: "⏳ 이 에이전트는 유지 관리 작업을 위해 정리 중이어서 지금은 새 턴을 받지 않아요. 곧 돌아올 테니 잠시 후 다시 보내 주세요."
     another_turn_running: "⏳ 이 세션에서 다른 턴이 아직 실행 중이에요. 대화 기록을 보호하기 위해 이 메시지는 처리하지 않았어요. 활성 턴이 끝난 뒤 다시 보내 주세요."
+    setup_timeout: "⏳ 에이전트 활동 없이 턴 준비가 멈춰 취소되었습니다. 메시지를 다시 보내 주세요."
+    setup_waiting: "⏳ 이 턴은 아직 시작 중입니다({minutes}분, 아직 에이전트 활동 없음). 메시지는 대기열에 있습니다. /stop을 사용하면 이 턴과 대기열의 모든 메시지가 취소됩니다."
     behavior_queue_short: "다음 턴 대기열에 추가"
     behavior_queue_long: "Hermes가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."
     behavior_steer_short: "현재 실행에 조정 메시지로 전달 (다음 도구 호출 뒤)"
@@ -800,6 +809,7 @@ gateway:
     ack_generate: "프로젝트 스캔 결과로 AGENTS.md를 생성하고 있어요…"
   moa:
     prepare_failed: "MoA 턴을 준비하지 못했어요."
+    managed_session: "이 세션에서는 /moa를 사용할 수 없습니다. 안전 모드, 설정 없음, kanban, 관리형 워커 세션은 모든 턴을 자체 모델로 실행합니다. /moa 없이 프롬프트를 보내세요."
   quick_command:
     no_output: "명령이 출력을 반환하지 않았어요."
     timed_out: "빠른 명령 시간 초과 (30초)."
@@ -974,10 +984,8 @@ platform:
     approved: "✅ 승인됨."
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
-  yuanbao:
-    slow_response_notice: "이 작업은 조금 복잡해서 아직 진행 중이에요. 잠시만 기다려 주세요..."
-    owner_command_denied: "⚠️ {command}은(는) 비공개 채팅 모드에서 생성자만 사용할 수 있어요"
   shared:
+    response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
@@ -1168,8 +1176,6 @@ platform:
         unknown: "알 수 없는 스킬: `{name}`. 입력을 시작하면 자동 완성 제안이 표시돼요."
       auto_args_description: "인수: {args_hint}"
       auto_description_fallback: "/{name} 실행"
-    limits:
-      response_truncated: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. {dropped_chars}자가 전송되지 않았고, 전체 응답은 세션 로그에 있어요."
     forum:
       default_title: "새 게시물"
     voice:
@@ -1248,6 +1254,11 @@ platform:
       affirm: "✓ 예"
       negate: "✗ 아니요"
       other: "✏️ 기타 (직접 입력)"
+      multi_hint: "하나 이상 선택한 다음 보내기를 누르세요."
+      send: "✅ 보내기"
+      selected_count: "선택됨: {count}"
+      select_one: "먼저 옵션을 하나 이상 선택하세요."
+      toggle_failed: "선택을 업데이트하지 못했습니다. 다시 눌러 주세요."
       expired_toast: "⚠️ 이 프롬프트가 만료되었어요 — /retry를 실행해 주세요."
       expired_body: "⚠️ 이 질문이 만료되었거나 세션이 초기화되었어요 — /retry를 실행해 주세요."
       type_answer: "✏️ 채팅에 답변을 입력해 주세요."
@@ -1371,6 +1382,12 @@ platform:
       unauthorized: "권한이 있는 Matrix 사용자만 이 컨트롤을 사용할 수 있어요."
       not_requester: "이 작업을 요청한 사용자만 이 컨트롤을 사용할 수 있어요."
   feishu:
+    clarify:
+      title: "Hermes가 입력을 기다리고 있어요"
+      other: "✏️ 기타 (직접 입력)"
+      awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
+    picker:
+      apply_error: "선택 적용 오류: {error}"
     approval:
       action_session: "세션"
       action_always: "항상"
@@ -1474,6 +1491,8 @@ platform:
     prompt_other: "✏️ 기타 (직접 입력)"
     prompt_expired: ⌛ 이 프롬프트는 더 이상 답변을 기다리지 않아요. 일반 메시지로 답변을 보내 주세요.
 slash:
+  rewind:
+    description: "이전 프롬프트로 되감아 편집 후 다시 보내거나, 그 지점에서 분기 (Esc Esc)"
   approve:
     description: "대기 중인 위험 명령 승인"
   bg:
@@ -1697,10 +1716,24 @@ slash:
   version:
     description: "Hermes Agent 버전 표시"
   debug:
-    description: "디버그 보고서(시스템 정보 + 로그) 업로드 및 공유 링크 받기"
+    description: "디버그 보고서(버전, 설정 키 이름, 오류 개수; 로그 텍스트 없음): 먼저 개인정보 안내를 표시하며 /debug upload로 링크 공유"
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
+  backtrack:
+    title: "↺ 대화 기록 — 편집할 프롬프트 선택"
+    keys_hint: "대화 기록 탐색 중 · ↑↓/jk 스크롤 · ←→/hl 프롬프트 · ↵ 편집 · f 분기 · esc 뒤로"
+    prime_hint: "esc를 한 번 더 누르면 이전 메시지를 편집합니다"
+    no_previous: "편집할 이전 메시지가 없습니다."
+    editing_hint: "↺ 프롬프트 {number} 편집 중 — Enter를 누르면 여기로 되감고 전송 · Esc Esc 취소"
+    edit_cancelled: "↺ 되감기가 취소되었습니다. 아무것도 제거되지 않았습니다."
+    rewound: "↺ 프롬프트 {number}(으)로 되감았습니다({count}개 메시지 보관됨). 편집 내용을 전송합니다."
+    forked: "⑂ 프롬프트 {number} 이전에서 분기했습니다. 원래 세션 {parent}은(는) 변경되지 않았습니다. 아래 프롬프트를 편집하고 Enter를 눌러 전송하세요."
+    nothing: "(._.) 되감을 이전 프롬프트가 없습니다."
+    target_changed: "(x_x) 프롬프트 {number}을(를) 선택한 이후 세션이 변경되었습니다. 아무것도 제거되지 않았습니다. 편집 내용이 입력창으로 돌아왔습니다."
+    invalid: "(._.) 프롬프트 {value}이(가) 없습니다 — 1부터 {total} 사이에서 선택하세요."
+    usage: "사용법: /rewind [N | fork N]"
+    rewind_failed: "(x_x) 되감기에 실패했습니다. 기록은 변경되지 않았습니다: {error}"
   modern:
     thought_for: "{seconds}초 동안 생각함"
     thought: "생각함"
@@ -2164,6 +2197,7 @@ cli:
     images_attached_other: "📎 이미지 {count}개 첨부됨"
     command_interrupted: "명령이 중단됐어요."
     welcome: "Hermes Agent에 오신 것을 환영해요! 메시지를 입력하거나 /help로 명령을 확인하세요."
+    vscode_images_hint: "VS Code에서 여기에 이미지를 원본 해상도로 표시할 수 있어요. 설정에서 terminal.integrated.enableImages을(를) 켜세요."
     activated_skills_label: "활성화된 스킬:"
     redaction_disabled_title: "⚠  시크릿 마스킹이 비활성화됨"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API 키와 토큰이 채팅 출력, 세션 JSON, 로그에 그대로 노출될 수 있어요. 다시 활성화하려면 config.yaml에서 {setting}을(를) 설정하세요."
@@ -2618,6 +2652,7 @@ cli:
     goal_turns: "⊙ 목표 {used}/{max}"
     goal: "⊙ 목표"
     ctx_pinned: " 고정됨"
+    ctx_fallback: " 기본값"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 스태시 ({count}개 항목)"
@@ -3795,7 +3830,7 @@ tips:
   t246: "HERMES_HOME_MODE 환경 변수(8진수, 예: 0701)는 웹 서버 접근을 위한 사용자 정의 디렉터리 권한을 설정해요."
   t247: "컨테이너 모드: HERMES_HOME에 .container-mode를 두면 호스트 CLI가 자동으로 컨테이너 안에서 실행돼요."
   t248: "Ctrl+C에는 5단계 우선순위가 있어요: 녹음 취소 → 프롬프트 취소 → 선택기 취소 → 에이전트 중단 → 종료."
-  t249: "에이전트 실행 중 발생한 모든 중단은 타임스탬프와 함께 ~/.hermes/interrupt_debug.log에 기록돼요."
+  t249: "에이전트 실행 중 발생한 중단은 agent.log에 기록돼요(`hermes logs`로 확인). 자세한 추적이 필요하면 HERMES_DEBUG_INTERRUPT=1을 설정하세요."
   t250: "BROWSER_CDP_URL은 브라우저 도구를 실행 중인 어떤 Chromium 계열 브라우저에든 연결해요 — WebSocket, HTTP, host:port 형식을 받아요."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true는 사용자 정의 Chromium 기반의 고급 탐지 회피를 켜요 (Scale Plan)."
   t252: "CLI는 폭이 80열보다 좁은 터미널에서 자동으로 컴팩트 모드로 전환돼요."
@@ -3892,7 +3927,7 @@ tips:
   t343: "/voice tts는 음성 합성 전용 모드를 전환해요 — 에이전트는 소리로 답하지만 프롬프트는 계속 타이핑해요."
   t344: "/reload-skills는 ~/.hermes/skills/를 다시 스캔해서 세션을 재시작하지 않고도 드롭인 스킬이 나타나게 해요."
   t345: "/indicator kaomoji|emoji|unicode|ascii는 에이전트가 실행 중일 때 표시되는 TUI 작업 표시기 스타일을 골라요."
-  t346: "/debug는 지원 번들(시스템 정보 + 로그)을 업로드하고 공유 가능한 링크를 돌려줘요 — 채팅에서도 동작해요."
+  t346: "/debug upload는 요약(버전, 설정 키 이름, 오류 개수; 로그 텍스트 없음)을 업로드하고 공유 가능한 링크를 돌려줘요 — 채팅에서도 동작해요."
   t347: "hermes -z \"<prompt>\"는 가장 순수한 일회성 실행이에요: stdout에 최종 답변만 출력하고 다른 건 없어요 — 스크립트 파이프에 이상적이에요."
   t348: "hermes chat --pass-session-id는 세션 ID를 시스템 프롬프트에 주입해서 에이전트가 자기 세션을 참조할 수 있게 해요."
   t349: "hermes chat --image path/to/pic.png는 별도 업로드 단계 없이 단일 -q 질의에 로컬 이미지를 첨부해요."
@@ -3957,3 +3992,8 @@ plan_usage:
   large_notice_limit: "대형 모델: {name} 한도에 도달했습니다({resets})."
   large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
   large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 취소한 턴에서 변경된 파일: {files}. /rollback 으로 체크포인트 목록을 보고 하나를 복원하세요."
+    more: "외 {count}개"

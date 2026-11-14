@@ -24,13 +24,8 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell commands and process groups")
 
-# Keyed by cell id ``<scenario>-<sink>``: only the platform wire of the streamed answer is the known gap;
-# the same answer reaching gateway.log, state.db, an export or the next request stays a plain red.
-KNOWN: dict[str, tuple[str, str]] = {
-    "assistant_text-platform": (
-        r"^assistant_text: secret reached the redacted sink 'platform wire':\n  platform wire \[chat c-assistant_text\]",
-        "#56039 streamed gateway replies reach the platform without secret redaction"),
-}
+# Keyed by cell id ``<scenario>-<sink>``; a tracked gap gates only that one sink.
+KNOWN: dict[str, tuple[str, str]] = {}
 
 PLATFORM = "fk_tg"
 

@@ -9,6 +9,7 @@ Covers the seams the integration relies on:
 * ``browser_exec`` execution — code is piped on stdin, ``session`` becomes
   ``BU_NAME``, bad session names and a missing CLI produce actionable errors.
 """
+import ipaddress
 import json
 import os
 import socket
@@ -577,6 +578,19 @@ class TestOwnTabPreamble:
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
+    @pytest.mark.platforms("posix")
+    def test_marker_write_never_follows_a_planted_symlink(self, tmp_path, monkeypatch):
+        """The marker name in the shared temp root is predictable: a planted link must not create its target."""
+        monkeypatch.setenv("BU_NAME", "r7k2")
+        monkeypatch.setitem(sys.modules, "browser_harness", None)  # no daemon pid: marker suffix "0"
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        victim = tmp_path / "victim"
+        (tmp_path / f"hermes-bu-owntab-{os.getuid()}-r7k2-0").symlink_to(victim)  # windows-footgun: ok — posix-only
+
+        exec(bu_cli._OWN_TAB_PREAMBLE, {"cdp": lambda *a, **k: {}, "switch_tab": lambda _tid: None})
+
+        assert not victim.exists()
+
 
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker rows."""
@@ -1069,15 +1083,23 @@ class TestExecHybridPrivateUrlRouting:
         monkeypatch.setattr(bs, "get_session_info", session_info)
         cli = _fake_cli(tmp_path, 'cat >/dev/null; printf "%s" "${BU_NAME:-default}"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        # Public hostnames (example.com) resolve to a public address from a fixture: the SSRF
+        # guard refuses a name it cannot resolve, so these cases followed the host's resolver.
+        self._dns(monkeypatch, "93.184.216.34", "93.184.216.34")
 
     @staticmethod
     def _dns(monkeypatch, first_ip, later_ip):
-        """A rebinding host: ``first_ip`` for the first lookup, ``later_ip`` for every later one."""
+        """A rebinding host: ``first_ip`` for the first lookup, ``later_ip`` for every later one.
+        Address literals resolve to themselves, as they do without DNS."""
         lookups = []
 
         def fake_getaddrinfo(host, *a, **kw):
-            lookups.append(host)
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (first_ip if len(lookups) == 1 else later_ip, 0))]
+            try:
+                ip = str(ipaddress.ip_address(host))
+            except ValueError:
+                lookups.append(host)
+                ip = first_ip if len(lookups) == 1 else later_ip
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 

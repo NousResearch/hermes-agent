@@ -1,0 +1,21 @@
+name: mcp-pin
+repo: https://github.com/yuzuru99/hermes-mcp-pin
+sha: "f06e0d206af4e259e31c5d5e74692d5f6aebad68"
+title: MCP Pin
+description: "Hold MCP tools whose definition changed since you approved them. Fingerprints every MCP tool's description and parameter schema as Hermes registered it; if a server later changes a tool (a rug pull, instructions hidden in a description, a new parameter) or adds a tool to a pinned server, the new definition is hidden from the model (tool list, tool_search catalog, tool_describe) and calls to that tool are refused until the owner reviews the full change with /mcppin diff and approves exactly that definition with the code it shows. Works with tool_search on or off and with every provider wire format (not the Codex app-server runtime, where Codex calls MCP servers directly). Fails closed: an unreadable or deleted pin file withholds MCP definitions and refuses MCP calls. Disclosure — llm_request middleware rewrites only held MCP tool definitions in the outgoing request (their tool entry or tool_search catalog line); tool_execution middleware rewrites only tool_search / tool_describe / tool_call results that carry a held definition; pre_tool_call may block a call to a held MCP tool (never modifies arguments, never approves, never touches the approval system); registers /mcppin; reads only its own settings, MCP tool definitions from the tool registry, the per-message session identity, and Hermes's allow_admin_from / group_allow_admin_from lists through the gateway config loader when an approval is attempted from a chat; writes pins.json and a transient lock file (MCP tool names, descriptions, parameter schemas, timestamps, approver) in its plugin data directory, and its own store_id setting (a random id that lets a deleted pin file be detected); no network calls, no shell commands, no background processes, no telemetry, no credential reads, no self-update. Not a sandbox: an approved tool keeps its normal reach."
+maintainer: yuzuru99
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/yuzuru99/hermes-mcp-pin#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware:
+    - llm_request
+    - tool_execution
+  requires_env: []

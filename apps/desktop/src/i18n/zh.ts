@@ -20,6 +20,7 @@ import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
 import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhPluginUpdate } from './zh_plugin_update'
+import { zhPluginUpdateAll } from './zh_plugin_update_all'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
@@ -27,6 +28,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  gatewayGroupOpen: {
+    opening: "正在打开群聊…",
+    lookupFailed: "无法在网关上查找此群组，请重试。",
+    missing: "此群聊已不存在。"
+  },
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
@@ -1255,6 +1261,9 @@ export const zhOverrides = {
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
         '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
+      desktopReadAloudTitle: '在此应用中朗读回复',
+      desktopReadAloudDesc:
+        '在 Desktop 中朗读每条完成的回复。与输入框按钮是同一个开关；对所有打开的窗口生效，关闭后会立即停止正在朗读的回复。下方的“朗读回复”用于消息平台和 CLI。',
       showOptions: '显示选项'
     },
     hudModifier: {
@@ -1986,15 +1995,20 @@ export const zhOverrides = {
       browserRealProfile: {
         label: '使用我的真实浏览器配置文件',
         description:
-          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览。绝不会直接打开你的真实配置文件。将应用于新会话。',
+          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览，应用内浏览器也会用它们登录。绝不会直接打开你的真实配置文件。将应用于新会话。',
         enabledTitle: '真实配置文件浏览：已开启',
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
-        disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
+        disabledMessage: '配置文件快照将被删除，应用内浏览器也会退出这些登录；新会话使用干净的浏览器。',
         failedSave: '无法保存真实配置文件设置',
+        reimportSignins: '重新导入登录信息',
+        signinsImportedTitle: '应用内浏览器登录',
+        signinsImported: count => `已使用浏览器配置文件中的 ${count} 个 Cookie 登录应用内浏览器。`,
+        signinsRemote: '此后端运行在另一台机器上，因此不会将其浏览器配置文件导入应用内浏览器。',
+        signinsFailed: '无法将登录信息导入应用内浏览器',
         prompt: {
           title: '让网站保持登录状态',
-          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，无论是代理还是应用内浏览器，网站打开时即已登录。',
           bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
           bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
           bulletLocal: '所有数据都不会离开这台电脑。',
@@ -2101,6 +2115,7 @@ export const zhOverrides = {
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
       ...zhPluginUpdate,
+      ...zhPluginUpdateAll,
       uninstall: '卸载',
       uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
       uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
@@ -2394,7 +2409,10 @@ export const zhOverrides = {
       backup: '创建备份',
       backupDesc: '打包配置、记忆、技能与会话',
       debugShare: '调试分享',
-      debugShareDesc: '上传脱敏报告与日志，获取可分享链接（6 小时后自动删除）',
+      debugShareDesc: '上传摘要（版本、配置键名、错误计数；不含日志文本），获取可分享链接（6 小时后自动删除）',
+      debugShareConfirm: '将调试报告上传到公开粘贴服务？',
+      debugShareConfirmDesc:
+        '将摘要上传到公开粘贴服务：Hermes、Python 和操作系统版本，已连接平台与工具集名称，配置键名（不含值），以及警告/错误计数。不包含任何日志行或消息文本。粘贴内容 6 小时后自动删除；若 paste.rs 不可用，备用的 dpaste.com 会将其公开保留 1 天，且无法提前删除。',
       debugShareRunning: '正在上传调试报告…',
       debugShareLinks: '分享链接',
       debugShareFailed: '调试分享失败',
@@ -2510,6 +2528,32 @@ export const zhOverrides = {
     restartNow: '立即重启',
     restarting: '正在重启…',
     restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: '无需机器人令牌',
+      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      link: (platform: string) => `关联 ${platform}`,
+      linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
+      linkedAccounts: '已关联账号',
+      unlink: '取消关联',
+      unlinkFailed: '无法取消关联该账号',
+      stepOpen: (platform: string) => `1. 用手机扫描二维码，或在 ${platform} 中打开机器人。`,
+      stepSend: '2. 用要关联的账号向机器人发送这条消息：',
+      open: (platform: string) => `打开 ${platform}`,
+      copy: '复制消息',
+      copied: '已复制',
+      copyFailed: (command: string) => `复制失败。请手动输入 ${command}。`,
+      waiting: '正在等待机器人收到你的消息。此代码只能使用一次。',
+      linked: (platform: string) => `${platform} 账号已关联。给机器人发消息即可与智能体对话。`,
+      expired: '代码在使用前已过期。请获取新代码后重试。',
+      refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
+      qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
+      managedIntro: '此代理的账号在 Nous Portal 中关联。',
+      openPortal: '在 Nous Portal 中关联账号',
+      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+    },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
       subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',
@@ -2669,6 +2713,14 @@ export const zhOverrides = {
     fieldSkillsPlaceholder: '以逗号分隔的技能名称（可选）',
     fieldDeliver: '投递到',
     fieldDeliverOnly: '仅投递载荷',
+    fieldSignature: '签名',
+    fieldSignatureHint: '此路由唯一接受的签名方案。GitHub、GitLab 和 Linear 的投递需要固定为各自的方案。',
+    signatureOptions: {
+      generic: '通用（带时间戳）',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: '提示词',
     fieldPromptPlaceholder: '此 Webhook 触发时给智能体的说明（可选）',
     nameRequired: '需要名称',
@@ -3311,7 +3363,7 @@ export const zhOverrides = {
       '/topup': '显示你的 Nous 余额，并在 Portal 管理账务',
       '/platform': '暂停、恢复或列出故障的网关平台',
       '/version': '显示 Hermes Agent 版本',
-      '/debug': '上传调试报告（系统信息与日志），并获取可分享链接',
+      '/debug': '调试报告（版本、配置键名、错误计数；不含日志文本）：先显示隐私声明；/debug upload 分享链接',
       '/model': '切换此会话的模型'
     },
     hotkeyDescs: {
@@ -3908,7 +3960,9 @@ export const zhOverrides = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由实际发送 ${level}`,
       updateFailed: '模型选项更新失败',
-      fastFailed: '快速模式更新失败'
+      fastFailed: '快速模式更新失败',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失败'
     },
     gatewayMenu: {
       gateway: '网关',
@@ -4022,6 +4076,15 @@ export const zhOverrides = {
           subagent_definitions: '子代理定义',
           system_prompt: '系统提示词',
           tool_definitions: '工具定义'
+        },
+        compact: {
+          action: '压缩对话',
+          busyHint: '请先完成或停止当前回复',
+          confirm: '压缩',
+          hint: '总结较早的上下文以腾出空间，继续当前对话。',
+          question: '将此对话压缩为摘要？',
+          questionNamed: title => `将“${title}”压缩为摘要？`,
+          working: '正在压缩…'
         },
         empty: '暂无上下文数据',
         loading: '正在加载明细…',
@@ -4374,6 +4437,7 @@ export const zhOverrides = {
       readAloud: '朗读',
       copyFullResponse: '复制完整回复',
       readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
+      contentRefusedNotice: '该消息被模型的安全过滤器拒绝 — 请换一个问题重试。',
       editMessage: '编辑消息',
       expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',
@@ -4441,6 +4505,10 @@ export const zhOverrides = {
       authorized: server => `已授权 ${server}`,
       failed: server => `${server} 设置失败`,
       toolCount: count => `${count} 个工具`,
+      launchCommand: target => `将运行：${target}`,
+      launchRemote: target => `将连接：${target}`,
+      launchEnv: keys => `环境变量：${keys}`,
+      launchCwd: dir => `工作目录：${dir}`,
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',

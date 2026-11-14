@@ -18,7 +18,7 @@ import asyncio
 import re
 from contextlib import contextmanager
 from typing import Any, Optional
-from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home_override
 from utils import is_truthy_value
@@ -67,32 +67,6 @@ def normalize_url_for_request(url: str) -> str:
                        quote(parsed.query, safe=safe + "?"), quote(parsed.fragment, safe=safe + "?")))
 
 
-# Unambiguously credential-bearing query param names. Deliberately narrow: bare
-# English words that double as page facets (``code``, ``key``, ``auth``,
-# ``session``, ``sig``) are EXCLUDED so ordinary browsing is not blocked.
-_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
-    "access_token", "api_key", "apikey", "auth_token", "authorization", "awsaccesskeyid",
-    "client_secret", "credential", "credentials", "jwt", "password", "passwd", "secret",
-    "session_id", "signature", "token", "x_amz_security_token", "x_amz_signature",
-    "x-amz-security-token", "x-amz-signature"})
-
-
-def sensitive_query_param_name(url: str) -> Optional[str]:
-    """First credential-named query parameter in ``url`` (with a value), if any. Checked before
-    handing URLs to third-party fetch/browser backends: catches opaque magic links, OAuth codes,
-    signed-URL signatures and custom ``?token=...`` values that prefix-based redaction misses."""
-    if not isinstance(url, str) or "?" not in url:
-        return None
-    try:
-        parsed = urlsplit(url.strip())
-    except ValueError:
-        return None
-    if parsed.scheme.lower() not in _HTTP_SCHEMES or not parsed.query:
-        return None
-    return next((key for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-                 if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES), None)
-
-
 # Cloud metadata hostnames — always blocked regardless of DNS or config toggle.
 _BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
 
@@ -125,6 +99,16 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # answer an IPv4 name (on the reporting macOS host, fake-IP TUN DNS returns it alongside the
 # plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
 _IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
+
+# IPv6 special-use ranges that are not general-purpose public destinations but that ipaddress
+# reports as global on some or all supported Python versions (fec0::/10 and 2001:20::/28 on every
+# 3.11-3.14 release). Listed explicitly so the verdict does not depend on the stdlib's tables.
+_BLOCKED_IPV6_SPECIAL_USE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "100::/64",      # Discard-only (RFC 6666)
+    "2001:2::/48",   # Benchmarking (RFC 5180)
+    "2001:20::/28",  # ORCHIDv2 (RFC 7343)
+    "fec0::/10",     # Deprecated site-local (RFC 3879)
+))
 
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
@@ -336,7 +320,8 @@ def _is_blocked_ip(ip: _IPAddress) -> bool:
     # classified by its embedded IPv4.
     ip = _embedded_ipv4(ip)
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
+            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK
+            or any(ip in net for net in _BLOCKED_IPV6_SPECIAL_USE_NETWORKS))
 
 
 def is_always_blocked_url(url: str) -> bool:
@@ -619,20 +604,36 @@ def _install_ssrf_guard_on_client(client: Any, *, is_async: bool = False) -> Non
         getattr(client, "__dict__", {}).get("_transport"), contextvars.ContextVar(var_name), is_async=is_async)
 
 
+# Identifying UA for Hermes-owned direct downloads: CDNs with basic bot detection
+# (upload.wikimedia.org, #89260) 403 the bare ``python-httpx/x`` default. Names the agent
+# rather than spoofing a browser (Wikimedia's User-Agent policy asks clients to identify).
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+
+
+def _with_default_user_agent(kwargs: dict) -> dict:
+    """``kwargs`` with a client-level ``User-Agent`` default; a caller's own UA (any case, any
+    ``headers=`` form) wins, and a caller-supplied headers object is never mutated."""
+    import httpx
+    headers = httpx.Headers(kwargs.get("headers"))
+    headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    return {**kwargs, "headers": headers}
+
+
 def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     """``httpx.AsyncClient`` with connect-time SSRF validation: direct HTTP(S) connections are
     resolved, validated, and dialed by IP while the hostname is preserved for Host, SNI, and
-    certificate verification. Proxied requests delegate resolution to the proxy."""
+    certificate verification. Proxied requests delegate resolution to the proxy. Sends
+    ``DEFAULT_USER_AGENT`` unless the caller sets a ``User-Agent``."""
     import httpx
-    client = httpx.AsyncClient(**kwargs)
+    client = httpx.AsyncClient(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client, is_async=True)
     return client
 
 
 def create_ssrf_safe_client(**kwargs: Any) -> Any:
-    """Create an ``httpx.Client`` with connect-time SSRF validation."""
+    """Create an ``httpx.Client`` with connect-time SSRF validation (same UA default)."""
     import httpx
-    client = httpx.Client(**kwargs)
+    client = httpx.Client(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client)
     return client
 

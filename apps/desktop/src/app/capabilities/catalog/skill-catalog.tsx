@@ -3,13 +3,13 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { capabilityScoped } from '@/api/client'
 import { Loader } from '@/components/ui/loader'
-import { getOfficialSkills, type ProfileScope, profileScopeKey } from '@/hermes'
+import { getOfficialSkills, getSkillHubUpdates, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
-import { skillSearchTerms } from '../skills/skills-data'
+import { skillSearchTerms, usageOf } from '../skills/skills-data'
 
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
@@ -46,11 +46,13 @@ function ScopedSkillCatalog({
 }: SkillCatalogProps) {
   const { t } = useI18n()
   const h = t.skills.hub
+
   // "Try …" nudges from the user's own skills: search reads categories, not just names.
   const searchHints = useMemo(
     () => (skills.length ? skillSearchTerms(skills).map(term => t.common.tryHint(term)) : undefined),
     [skills, t]
   )
+
   const mounted = useRef(true)
   const pending = useRef(new Set<string>())
   const [installing, setInstalling] = useState<ReadonlySet<string>>(new Set())
@@ -98,7 +100,18 @@ function ScopedSkillCatalog({
     retry: false
   })
 
+  // Upstream check fetches every hub skill's source: cache it for a while, and
+  // never let a slow or failed check hold up the page.
+  const { data: updatesData } = useQuery({
+    queryKey: [...HUB_SOURCES_KEY, 'updates', profileScopeKey(profile)],
+    queryFn: () => getSkillHubUpdates(profile),
+    enabled: hasHubSkills,
+    staleTime: 15 * 60_000,
+    retry: false
+  })
+
   const catalog = useMemo(() => {
+    const updatable = new Set((updatesData?.updates ?? []).map(row => row.name))
     const skillsById = new Map<string, SkillInfo>()
     const skillsByName = new Map(skills.map(skill => [skill.name, skill]))
     const installedByName = new Map<string, CatalogEntry>()
@@ -115,7 +128,16 @@ function ScopedSkillCatalog({
       }))
     ).map(entry => {
       const skill = skillsByName.get(entry.name)!
-      const installed = { ...entry, id: `installed:${skill.name}`, installIdentifier: null, locked: !!skill.locked }
+
+      const installed = {
+        ...entry,
+        id: `installed:${skill.name}`,
+        installIdentifier: null,
+        locked: !!skill.locked,
+        usage: usageOf(skill),
+        updateAvailable: skill.provenance === 'hub' && updatable.has(skill.name)
+      }
+
       skillsById.set(installed.id, skill)
       installedByName.set(skill.name, installed)
 
@@ -206,7 +228,7 @@ function ScopedSkillCatalog({
     ]
 
     return { entries, skillsById, skillsByName, installedIdentifiers, matchInstalled, officialFor }
-  }, [skills, hubData, officialData])
+  }, [skills, hubData, officialData, updatesData])
 
   // Skills install by name, so a same-named entry can never be added beside the installed one.
   const isInstalled = useCallback(

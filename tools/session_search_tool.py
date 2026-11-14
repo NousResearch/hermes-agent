@@ -431,17 +431,44 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
+def _cross_profile_reads_confined() -> bool:
+    """True when the calling task may read only its own profile's store.
+
+    One process serving several profiles (multiplexed gateway, a pooled or ``--isolated`` backend
+    on a multi-profile host, a routed turn) makes each secondary profile a tenant: its allowlisted
+    users must not reach the root profile's transcripts by naming it (#87779). The root profile
+    keeps cross-profile reads, which is how its ``@session:<profile>/<id>`` links resolve. A
+    standalone process for one profile has no such boundary, and neither does the operator's own
+    CLI/TUI/Desktop/ACP session (its frozen launch policy), whose All-profiles sidebar offers
+    ``@session:`` chips from every profile; A2A peers, hosted rooms, cron and messaging stay confined.
+    The caller is the active scope (``get_hermes_home()``), never ``os.environ``, which holds the
+    launch profile's home.
+    """
+    from agent.secret_scope import serves_routed_profile
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from tools.approval_context import is_local_interactive_session
+    if not serves_routed_profile() or is_local_interactive_session():
+        return False
+    return hermes_home_key(get_hermes_home()) != hermes_home_key(get_profile_dir("default"))
+
+
 def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
         return None
     from hermes_cli import profiles as profiles_mod
+    from hermes_constants import get_hermes_home, hermes_home_key
     from hermes_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
+    target = profiles_mod.get_profile_dir(canon)
+    if hermes_home_key(target) != hermes_home_key(get_hermes_home()) and _cross_profile_reads_confined():
+        raise PermissionError("this profile may only search its own sessions; reading another "
+                              "profile's sessions is limited to the default profile")
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return SessionDB(db_path=target / "state.db", read_only=True)
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str | None = None) -> str:
@@ -473,6 +500,8 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
     result = _read_session(db, sid, link_profile=profile)
     if json.loads(result).get("success") is not False or profile:
         return result
+    if _cross_profile_reads_confined():
+        return tool_error(f"session_id not found in this profile: {sid}", success=False)
     return tool_error(f"session_id not found in this profile: {sid}. If it belongs to another "
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
@@ -582,8 +611,10 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
         return _read_scoped(db, session_id.strip(), profile)
-    limit = _clamp_int(limit, 3, 1, 10)
-    if not query or not isinstance(query, str) or not query.strip():
+    browse = not query or not isinstance(query, str) or not query.strip()
+    # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
+    limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
+    if browse:
         return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
@@ -598,7 +629,7 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
 
-def session_search(query: str = "", role_filter: str | None = None, limit: int = 3, db=None,
+def session_search(query: str = "", role_filter: str | None = None, limit: int | None = None, db=None,
                    current_session_id: str | None = None, session_id: str | None = None, around_message_id: int | None = None,
                    window: int = 5, sort: str | None = None, profile: str | None = None, detail: str = "adaptive",
                    after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
@@ -690,11 +721,11 @@ SESSION_SEARCH_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
+                    "Max sessions to return. Discovery defaults to 3; browse/no-args "
+                    "defaults to 10. Max 10. Bump discovery to 5–10 when the topic "
+                    "likely spans several sessions and you want to pick the right one "
+                    "to scroll into."
                 ),
-                "default": 3,
             },
             "sort": {
                 "type": "string",
@@ -798,7 +829,7 @@ registry.register(
     toolset="session_search",
     schema=SESSION_SEARCH_SCHEMA,
     handler=lambda args, **kw: session_search(
-        query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
+        query=args.get("query") or "", limit=args.get("limit"), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
                                     "after", "before", "exclude_session_ids")}),

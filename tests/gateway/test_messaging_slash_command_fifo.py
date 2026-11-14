@@ -12,6 +12,8 @@ import pytest
 
 from tests.waiting import async_wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def _owner(monkeypatch, mode=None):
     from gateway.config import GatewayConfig, Platform, PlatformConfig

@@ -20,12 +20,13 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import config_connected_extra
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
+from gateway.platforms.helpers import voice_mention_gate_enabled
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -103,6 +104,11 @@ def _ok():
     return web.Response(text="ok")
 
 
+def _is_voice_attachment(att: dict[str, Any]) -> bool:
+    """An audio attachment or a ``.caf`` voice memo (which may arrive without an audio MIME)."""
+    return (att.get("mimeType") or "").lower().startswith("audio/") or (att.get("uti") or "").endswith("caf")
+
+
 class BlueBubblesAdapter(BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -178,7 +184,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or str(exc) or type(exc).__name__)
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -211,7 +217,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
+            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or exc)
             await self._close_client()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
@@ -414,8 +420,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=rdata.get("guid") if isinstance(rdata, dict) else None,
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
-        except Exception as e:
-            return SendResult(success=False, error=str(e))
+        except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
+            return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(self.server_url)) or str(e))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -522,9 +528,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return json.loads(payload_str) if payload_str else {}
 
     async def _collect_attachments(self, record: dict[str, Any]):
-        """Download inbound attachments; returns (media_urls, media_types, msg_type)."""
+        """Download inbound attachments; returns (media_urls, media_types, msg_type, voice_paths)."""
         media_urls: list[str] = []
         media_types: list[str] = []
+        voice_paths: list[str] = []
         msg_type = MessageType.TEXT
         for att in record.get("attachments") or []:
             att_guid = att.get("guid", "")
@@ -533,13 +540,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 continue
             mime = (att.get("mimeType") or "").lower()
             media_urls.append(cached)
+            is_voice = _is_voice_attachment(att)
+            if is_voice and not mime.startswith("audio/"):  # a CAF memo sent as octet-stream is still audio
+                mime = "audio/x-caf"
             media_types.append(mime)
-            is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
+            if is_voice:
+                voice_paths.append(cached)
             msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice
                         else MessageType.VIDEO if mime.startswith("video/") else MessageType.DOCUMENT)
         if len(media_urls) > 1 and any(m.split("/")[0] == "image" for m in media_types):  # any image → PHOTO
             msg_type = MessageType.PHOTO
-        return media_urls, media_types, msg_type
+        return media_urls, media_types, msg_type, voice_paths
 
     def _webhook_token(self, request) -> Optional[str]:
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
@@ -587,18 +598,39 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
         # pull every attachment through the REST API only to be dropped.
-        if is_group and self.require_mention:
+        # A captionless voice memo can match only once transcribed (opt-in, #102330).
+        spoken = (is_group and self.require_mention and not text and voice_mention_gate_enabled(self.config.extra)
+                  and any(map(_is_voice_attachment, record.get("attachments") or ())))
+        if is_group and self.require_mention and not spoken:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
-        if not text and media_urls:
+        chat_type = "group" if is_group else "dm"
+        # The fetch spends the server password and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The message still dispatches so the runner applies denial/pairing.
+        has_attachments = bool(record.get("attachments"))
+        media_urls, media_types, msg_type, voice_paths = [], [], MessageType.TEXT, []
+        if has_attachments and self._is_sender_authorized(sender, chat_type, session_chat_id) is True:
+            media_urls, media_types, msg_type, voice_paths = await self._collect_attachments(record)
+        # Only the memo's audio enters gate STT; a rejected envelope's other files are deleted with it.
+        if spoken and not await spoken_mention_clips(
+                voice_paths, self._mention_patterns, adapter=self, source=self.build_source(
+                    chat_id=session_chat_id, chat_name=chat_identifier or sender, chat_type="group",
+                    user_id=sender, user_name=sender, chat_id_alt=chat_identifier)):
+            for path in set(media_urls) - set(voice_paths):
+                with suppress(OSError):
+                    os.remove(path)
+            logger.debug("[bluebubbles] ignoring group voice memo (require_mention=true, no wake word spoken)")
+            return _ok()
+        if spoken:  # speech admitted it: a photo/PDF beside the memo must not demote its audio out of STT
+            msg_type = MessageType.VOICE
+        if not text and (media_urls or has_attachments):
             text = "(attachment)"
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
-                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
+                                   chat_type=chat_type, user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
@@ -647,8 +679,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             return send_error(f"BlueBubbles send failed: {result.error}")
         return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
     except Exception as e:
-        logger.debug("BlueBubbles standalone send failed", exc_info=True)
-        return send_error(f"BlueBubbles send failed: {e}")
+        logger.debug("BlueBubbles standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction((getattr(pconfig, "extra", None) or {}).get("server_url")))))
+        return send_error(f"BlueBubbles send failed: {shown or e}")
 
 
 def interactive_setup() -> None:

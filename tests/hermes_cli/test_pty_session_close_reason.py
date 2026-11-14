@@ -78,7 +78,7 @@ async def test_a_shell_reaped_while_its_redial_is_validated_closes_the_redial_as
         return request_home(profile)
 
     monkeypatch.setattr(web_host_terminal_sessions, "_request_home", held_request_home)
-    redial = SimpleNamespace(query_params={"attach": token})
+    redial = SimpleNamespace(query_params={"attach": token}, state=SimpleNamespace())
     try:
         resolving = asyncio.ensure_future(registry.resolve(token, redial, identity))
         assert await asyncio.to_thread(validating.wait, 5)

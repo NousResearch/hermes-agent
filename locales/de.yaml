@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ Debug-Bericht konnte nicht hochgeladen werden: {error}"
     header: "**Debug-Bericht hochgeladen:**"
     auto_delete: "⏱ Pastes werden in 6 Stunden automatisch gelöscht."
-    full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
+    full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share --nous` aus der CLI."
     share_hint: "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
     report_label: "Bericht"
-    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug`, um den Kurzbericht hochzuladen."
+    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen."
+    upload_hint: "Es wurde nichts hochgeladen. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen."
+    upload_hint_local: "Es wurde nichts hochgeladen. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen, oder `/debug local`, um ihn hier anzuzeigen."
+    nous_refused: "Es wurde nichts hochgeladen. Private Nous-Uploads sind hier nicht verfügbar: Führen Sie `hermes debug share --nous` in einem Terminal aus oder nutzen Sie Send diagnostics in der Desktop-App. `/debug upload` lädt den Kurzbericht stattdessen in einen öffentlichen Paste hoch."
   deny:
     stale: "❌ Befehl abgelehnt (Genehmigung war veraltet)."
     no_pending: "Kein ausstehender Befehl zum Ablehnen."
@@ -332,6 +335,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — Sitzung ohne Titel gestartet."
     title_empty_untitled: "\n⚠️ Titel ist nach Bereinigung leer — Sitzung ohne Titel gestartet."
     tip: "\n✦ Tipp: {tip}"
+    paused_left: "\n⚠️ {count} Nachricht(en), die du gesendet hast, während das vorherige Gespräch pausiert war, sind noch im vorherigen Gespräch gespeichert und unbeantwortet. Zum Ausführen: /resume {session_id}, dann {discard}."
   restart:
     in_progress: "⏳ Gateway-Neustart läuft bereits..."
     restarting: "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."
@@ -487,8 +491,6 @@ gateway:
     root_new: "Um einen neuen parallelen Hermes-Chat zu starten, öffnen Sie oben in dieser Bot-Oberfläche das Thema „Alle Nachrichten“ und senden dort eine beliebige Nachricht. Telegram erstellt dafür ein neues Thema.\n\nJedes Thema ist eine eigenständige Hermes-Sitzung. Verwenden Sie /new in einem bestehenden Thema nur, wenn Sie dessen aktuelle Sitzung ersetzen möchten."
     new_header: "Neue Hermes-Sitzung in diesem Thema gestartet.\n\nTipp: Für paralleles Arbeiten öffnen Sie „Alle Nachrichten“ und senden dort eine Nachricht, um ein separates Thema zu erstellen, statt hier /new zu verwenden. /new ersetzt die an das aktuelle Thema gebundene Sitzung."
     help: "/topic — Multi-Sitzungs-Modus für Direktnachrichten aktivieren (ein Bot, viele parallele Chats)\n\nVerwendung:\n  /topic             Themenmodus aktivieren oder Status anzeigen, falls bereits an\n  /topic help        Diese Nachricht anzeigen\n  /topic off         Themenmodus deaktivieren und Themen-Bindungen löschen\n  /topic <id>        In einem Thema: frühere Sitzung per ID wiederherstellen\n\nSo funktioniert es:\n1. Führen Sie /topic einmal in dieser Direktnachricht aus — Hermes prüft, ob die\n   BotFather-Threads-Einstellungen aktiviert sind, und schaltet den Multi-Sitzungs-Modus ein.\n2. Tippen Sie oben im Bot auf „Alle Nachrichten“ und senden Sie eine beliebige Nachricht.\n   Telegram erstellt dafür ein neues Thema; jedes Thema ist eine\n   eigenständige Hermes-Sitzung (neuer Verlauf, neuer Kontext).\n3. Die Haupt-Direktnachricht wird zur System-Lobby — senden Sie dort /topic, /status,\n   /help, /usage. Normale Prompts gehören in ein Thema.\n4. /new in einem Thema setzt nur die Sitzung dieses Themas zurück.\n5. /topic <id> in einem Thema stellt dort eine alte Sitzung wieder her."
-    system_topic_name: "System"
-    system_topic_intro: "System-Thema für Hermes-Befehle und Status."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Chat-ID konnte nicht ermittelt werden."
     mode_not_enabled: "Der Multi-Sitzungs-Themenmodus ist für diesen Chat derzeit nicht aktiviert."
@@ -516,6 +518,7 @@ gateway:
     not_git_repo: "✗ Kein Git-Repository — Update nicht möglich."
     hermes_cmd_not_found: "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
     start_failed: "✗ Update konnte nicht gestartet werden: {error}"
+    already_running: "⏳ Es läuft bereits ein Update; seine Rückfragen beantwortet nur, wer es gestartet hat. Warte, bis es fertig ist, und versuche /update dann erneut."
     starting: "☤ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
     reply_failed: "✗ Antwort an den Update-Prozess konnte nicht gesendet werden: {error}"
     reply_sent: "✓ `{label}` an den Update-Prozess gesendet."
@@ -601,6 +604,7 @@ gateway:
     disabled: "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."
     enabled: "⚡ YOLO-Modus für diese Sitzung **AN** — alle Befehle werden automatisch genehmigt. Mit Vorsicht verwenden."
   shared:
+    fallback_model_suffix: " — Fallback für `{primary}`"
     session_db_unavailable: "Session-Datenbank nicht verfügbar."
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
     session_not_found: "Session nicht in der Datenbank gefunden."
@@ -625,6 +629,8 @@ gateway:
     action_always: "Immer erlauben"
     action_deny: "Ablehnen"
     deadline: "Wenn Sie nicht innerhalb von {window} antworten, wird er NICHT ausgeführt."
+    not_requester: "Nur {requester} kann diese Freigabe beantworten."
+    not_requester_admins_only: "Nur ein Admin oder eine gelistete freigebende Person kann diese Freigabe beantworten."
     text_choice_once: "Antworten Sie mit `{prefix}approve`, um ihn einmalig auszuführen"
     text_choice_session: "`{prefix}approve session`, um dieses Muster für den Rest dieser Sitzung zu erlauben"
     text_choice_always: "`{prefix}approve always`, um ihn dauerhaft zu erlauben"
@@ -632,6 +638,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", oder {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Vorschau gekürzt: Der vollständige Befehl ({total} Zeichen) steht in der Nachricht darüber."
+    truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Befehl konnte hier nicht angezeigt werden, daher ist nur Ablehnen möglich. Prüfe ihn in der CLI oder der Desktop-App."
+    text_prompt_deny_only: "Die vollständige Freigabeanfrage ist für diese Plattform zu lang, daher ist nur Ablehnen möglich. Prüfe sie in der CLI oder der Desktop-App."
   notify:
     media_kind:
       audio: "Audio"
@@ -642,8 +651,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Der {kind}-Anhang ({file_name}) konnte nicht zugestellt werden."
     delivery_failed_retry: "⚠️ Die Zustellung der Nachricht ist nach mehreren Versuchen fehlgeschlagen. Bitte versuchen Sie es erneut — Ihre Anfrage wurde verarbeitet, aber die Antwort konnte nicht gesendet werden."
     plain_fallback_prefix: "(Formatierung der Antwort fehlgeschlagen, Klartext:)\n\n{content}"
-    turn_error_no_details: "keine Details verfügbar"
-    turn_error_detailed: "Entschuldigung, es ist ein Fehler aufgetreten ({error_type}).\n{error_detail}\nVersuchen Sie es erneut oder verwenden Sie /reset für eine neue Sitzung."
     turn_error: "Entschuldigung, es ist ein Fehler aufgetreten."
     context_injection_refused: "Kontext-Injektion abgelehnt."
     no_home_channel: "📬 Für {platform} ist kein Home-Kanal festgelegt. Im Home-Kanal liefert Hermes Cron-Job-Ergebnisse und plattformübergreifende Nachrichten ab.\n\nGeben Sie {sethome_cmd} ein, um diesen Chat zu Ihrem Home-Kanal zu machen, oder ignorieren Sie dies, um zu überspringen."
@@ -742,6 +749,8 @@ gateway:
     reject_loop: "Agent läuft — verwenden Sie währenddessen /loop status / pause / stop, oder /stop, bevor Sie eine neue Schleife setzen."
     draining_maintenance: "⏳ Dieser Agent wird für eine Wartungsaktion geleert und nimmt gerade keine neuen Züge an. Er ist gleich wieder da — bitte senden Sie in Kürze erneut."
     another_turn_running: "⏳ In dieser Sitzung läuft noch ein anderer Zug. Zum Schutz des Transkripts wurde diese Nachricht nicht verarbeitet. Warten Sie, bis der aktive Zug abgeschlossen ist, und senden Sie sie dann erneut."
+    setup_timeout: "⏳ Die Einrichtung des Zugs hing ohne Agentenaktivität und wurde abgebrochen. Bitte sende deine Nachricht erneut."
+    setup_waiting: "⏳ Dieser Zug startet noch ({minutes} Min., noch keine Agentenaktivität). Deine Nachricht ist eingereiht. Mit /stop brichst du ihn und alles Eingereihte ab."
     behavior_queue_short: "reiht für nächsten Zug ein"
     behavior_queue_long: "Nachrichten werden für den nächsten Zug eingereiht, während Hermes beschäftigt ist."
     behavior_steer_short: "lenkt in aktuellen Lauf (nach nächstem Tool-Aufruf)"
@@ -800,6 +809,7 @@ gateway:
     ack_generate: "Erzeuge AGENTS.md anhand eines Projekt-Scans…"
   moa:
     prepare_failed: "MoA-Zug konnte nicht vorbereitet werden."
+    managed_session: "/moa ist in dieser Sitzung nicht verfügbar: Sitzungen im abgesicherten Modus, ohne Konfiguration, für Kanban und mit verwaltetem Worker führen jeden Turn auf ihrem eigenen Modell aus. Sende den Prompt ohne /moa."
   quick_command:
     no_output: "Befehl hat keine Ausgabe zurückgegeben."
     timed_out: "Zeitüberschreitung beim Schnellbefehl (30s)."
@@ -974,10 +984,8 @@ platform:
     approved: "✅ Genehmigt."
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
-  yuanbao:
-    slow_response_notice: "Diese Aufgabe ist etwas aufwendiger — ich arbeite noch daran, bitte einen Moment Geduld..."
-    owner_command_denied: "⚠️ {command} ist im privaten Chatmodus nur für den Ersteller verfügbar"
   shared:
+    response_as_file: "📎 Lange Antwort: Der vollständige Text ist angehängt."
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
     approval_expired: "⌛ Genehmigung abgelaufen — der Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
@@ -1168,8 +1176,6 @@ platform:
         unknown: "Unbekannter Skill: `{name}`. Tippen Sie los, um Vorschläge zur Vervollständigung zu erhalten."
       auto_args_description: "Argumente: {args_hint}"
       auto_description_fallback: "/{name} ausführen"
-    limits:
-      response_truncated: "⚠️ **Antwort gekürzt** — diese Antwort hat das Zustellungslimit ({max_messages} Nachrichten) überschritten. {dropped_chars} Zeichen wurden nicht zugestellt; die vollständige Antwort steht in den Sitzungs-Logs."
     forum:
       default_title: "Neuer Beitrag"
     voice:
@@ -1248,6 +1254,11 @@ platform:
       affirm: "✓ Ja"
       negate: "✗ Nein"
       other: "✏️ Eigene Antwort"
+      multi_hint: "Wähle eine oder mehrere Optionen und tippe dann auf Senden."
+      send: "✅ Senden"
+      selected_count: "Ausgewählt: {count}"
+      select_one: "Wähle zuerst mindestens eine Option."
+      toggle_failed: "Auswahl konnte nicht aktualisiert werden – bitte erneut tippen."
       expired_toast: "⚠️ Diese Abfrage ist abgelaufen — bitte /retry."
       expired_body: "⚠️ Diese Frage ist abgelaufen oder die Sitzung wurde zurückgesetzt — bitte /retry."
       type_answer: "✏️ Geben Sie Ihre Antwort im Chat ein."
@@ -1371,6 +1382,12 @@ platform:
       unauthorized: "Nur ein autorisierter Matrix-Benutzer kann diese Steuerelemente verwenden."
       not_requester: "Nur der Benutzer, der diese Aktion angefordert hat, kann diese Steuerelemente verwenden."
   feishu:
+    clarify:
+      title: "Hermes benötigt Ihre Eingabe"
+      other: "✏️ Eigene Antwort"
+      awaiting_typed: "Warte auf eingegebene Antwort von {user}…"
+    picker:
+      apply_error: "Fehler beim Anwenden der Auswahl: {error}"
     approval:
       action_session: "Sitzung"
       action_always: "Dauerhaft"
@@ -1474,6 +1491,8 @@ platform:
     prompt_other: "✏️ Eigene Antwort"
     prompt_expired: ⌛ Diese Abfrage wartet nicht mehr auf eine Antwort. Senden Sie Ihre Antwort als normale Nachricht.
 slash:
+  rewind:
+    description: "Zu einem früheren Prompt zurückspulen, um ihn zu bearbeiten & erneut zu senden, oder von dort abzweigen (Esc Esc)"
   approve:
     description: "Einen ausstehenden gefährlichen Befehl genehmigen"
   bg:
@@ -1697,10 +1716,24 @@ slash:
   version:
     description: "Hermes-Agent-Version anzeigen"
   debug:
-    description: "Debug-Bericht hochladen (Systeminfo + Logs) und teilbare Links erhalten"
+    description: "Debug-Bericht (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links"
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
+  backtrack:
+    title: "↺ Verlauf — einen Prompt zum Bearbeiten wählen"
+    keys_hint: "Verlauf durchsuchen · ↑↓/jk scrollen · ←→/hl Prompts · ↵ bearbeiten · f abzweigen · esc zurück"
+    prime_hint: "esc erneut, um die vorige Nachricht zu bearbeiten"
+    no_previous: "Keine vorige Nachricht zum Bearbeiten."
+    editing_hint: "↺ Prompt {number} wird bearbeitet — Enter spult hierher zurück und sendet · Esc Esc bricht ab"
+    edit_cancelled: "↺ Zurückspulen abgebrochen; nichts wurde entfernt."
+    rewound: "↺ Zu Prompt {number} zurückgespult ({count} Nachricht(en) archiviert); Bearbeitung wird gesendet."
+    forked: "⑂ Vor Prompt {number} abgezweigt; die ursprüngliche Sitzung {parent} bleibt unverändert. Bearbeite den Prompt unten und drücke Enter zum Senden."
+    nothing: "(._.) Keine früheren Prompts zum Zurückspulen."
+    target_changed: "(x_x) Die Sitzung hat sich geändert, seit du Prompt {number} gewählt hast; nichts wurde entfernt. Deine Bearbeitung ist wieder im Eingabefeld."
+    invalid: "(._.) Kein Prompt {value} — wähle 1 bis {total}."
+    usage: "Verwendung: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Zurückspulen fehlgeschlagen; Verlauf wurde nicht geändert: {error}"
   modern:
     thought_for: "Nachgedacht für {seconds}s"
     thought: "Nachgedacht"
@@ -2164,6 +2197,7 @@ cli:
     images_attached_other: "📎 {count} Bilder angehängt"
     command_interrupted: "Befehl unterbrochen."
     welcome: "Willkommen bei Hermes Agent! Geben Sie Ihre Nachricht ein oder /help für Befehle."
+    vscode_images_hint: "VS Code kann hier Bilder in voller Auflösung anzeigen: aktiviere terminal.integrated.enableImages in den Einstellungen."
     activated_skills_label: "Aktivierte Skills:"
     redaction_disabled_title: "⚠  Schwärzung von Geheimnissen ist DEAKTIVIERT"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API-Schlüssel und Tokens können im Klartext in der Chat-Ausgabe, in Sitzungs-JSONs und in Logs erscheinen. Setzen Sie {setting} in config.yaml, um sie wieder zu aktivieren."
@@ -2618,6 +2652,7 @@ cli:
     goal_turns: "⊙ Ziel {used}/{max}"
     goal: "⊙ Ziel"
     ctx_pinned: " angeheftet"
+    ctx_fallback: " Fallback"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} Eintrag)"
@@ -3795,7 +3830,7 @@ tips:
   t246: "Die Umgebungsvariable HERMES_HOME_MODE (oktal, z. B. 0701) setzt eigene Verzeichnisrechte für den Zugriff durch Webserver."
   t247: "Container-Modus: Legen Sie .container-mode in HERMES_HOME ab, und die Host-CLI wechselt automatisch per exec in den Container."
   t248: "Ctrl+C hat 5 Prioritätsstufen: Aufnahme abbrechen → Eingabeaufforderungen abbrechen → Auswahl abbrechen → Agent unterbrechen → beenden."
-  t249: "Jede Unterbrechung während eines Agentenlaufs wird mit Zeitstempel in ~/.hermes/interrupt_debug.log protokolliert."
+  t249: "Unterbrechungen während eines Agentenlaufs werden in agent.log protokolliert (anzeigen mit `hermes logs`); setze HERMES_DEBUG_INTERRUPT=1 für eine detaillierte Ablaufverfolgung."
   t250: "BROWSER_CDP_URL verbindet die Browser-Tools mit jedem laufenden Browser der Chromium-Familie — akzeptiert WebSocket, HTTP oder host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true aktiviert erweiterte Anti-Erkennung mit angepasstem Chromium (Scale Plan)."
   t252: "Die CLI wechselt in Terminals mit weniger als 80 Spalten automatisch in den Kompaktmodus."
@@ -3892,7 +3927,7 @@ tips:
   t343: "/voice tts schaltet den reinen TTS-Modus um — der Agent antwortet laut, aber Sie tippen Ihre Prompts weiterhin."
   t344: "/reload-skills durchsucht ~/.hermes/skills/ erneut, sodass Drop-in-Skills ohne Neustart der Sitzung erscheinen."
   t345: "/indicator kaomoji|emoji|unicode|ascii wählt den Stil der TUI-Beschäftigt-Anzeige, die während Agentenläufen erscheint."
-  t346: "/debug lädt ein Support-Bundle hoch (Systeminfos + Logs) und liefert teilbare Links — funktioniert auch im Chat."
+  t346: "/debug upload lädt eine Zusammenfassung hoch (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext) und liefert einen teilbaren Link — funktioniert auch im Chat."
   t347: "hermes -z \"<prompt>\" ist der reinste One-Shot: nur die finale Antwort auf stdout, sonst nichts — ideal für Pipes in Skripten."
   t348: "hermes chat --pass-session-id injiziert die Sitzungs-ID in den System-Prompt, damit der Agent sich selbst darauf beziehen kann."
   t349: "hermes chat --image path/to/pic.png hängt ein lokales Bild an eine einzelne -q-Anfrage an, ohne separaten Upload-Schritt."
@@ -3957,3 +3992,8 @@ plan_usage:
   large_notice_limit: "Großes Modell: {name} erreicht ({resets})."
   large_notice_limit_stops: "Großes Modell: {name} erreicht ({resets}), es läuft bis dahin nicht."
   large_notice_percent: "Großes Modell: verbraucht pro Nachricht mehr von deinem Plan. Monatslimit für große Modelle: {percent} genutzt."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ In den rückgängig gemachten Turns geänderte Dateien: {files}. Führe /rollback aus, um Checkpoints aufzulisten und einen wiederherzustellen."
+    more: "+{count} weitere"

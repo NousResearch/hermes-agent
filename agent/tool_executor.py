@@ -36,11 +36,14 @@ from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
+from agent.prompt_cache_scope import conversation_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
     apply_transform_tool_result,
     emit_terminal_post_tool_call,
+    is_context_engine_tool,
+    is_memory_provider_tool,
     tool_hook_ids,
 )
 from agent.message_metadata import stamp_data_use
@@ -360,34 +363,23 @@ def _append_skipped_tool_results(
 def _tool_search_scoped_names(agent) -> frozenset:
     """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
-    validate against this set. Cached on the agent, keyed by registry scope/generation."""
+    validate against this set. Read through the ``get_tool_definitions`` memo on every call
+    and never copied onto the agent: the memo expires with the check_fn verdicts it was
+    filtered on, a per-agent copy keyed on registry generation would not, and a recovered
+    MCP server's tools would stay uncallable for the agent's lifetime."""
     try:
         import model_tools
         from tools import tool_search as _ts
-        from tools.registry import registry as _registry
     except Exception:
         return frozenset()
-
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    cache_key = (
-        _registry.current_scope_key(),
-        getattr(_registry, "_generation", 0),
-        frozenset(enabled) if enabled is not None else None,
-        frozenset(disabled) if disabled is not None else None,
-    )
-    cached = getattr(agent, "_tool_search_scope_cache", None)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
     try:
-        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
-            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
+        return _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True, skip_tool_search_assembly=True,
         ) or [])
     except Exception:
-        names = frozenset()
-    with contextlib.suppress(Exception):
-        agent._tool_search_scope_cache = (cache_key, names)
-    return names
+        return frozenset()
 
 
 def _canonical_tool_name(function_name: str) -> str:
@@ -709,7 +701,13 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
+    # Deny-by-default for a hosted scope, before plugin hooks, guardrails or any executor: every
+    # sequential, concurrent and batched call reaches its executor (inline, memory provider, context
+    # engine, registry) only through here.
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    block_message, block_error_type = hosted_tool_refusal(ref.name), "hosted_tool_refused"
+    if block_message is None:
+        block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)
@@ -784,6 +782,16 @@ def _run_agent_tool_execution_middleware(
 
     trace = middleware_trace if middleware_trace is not None else []
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if hosted_tool_refusal(function_name) is not None:
+        # Refused in a hosted scope before Relay and every request/execution middleware: no
+        # host-side callback sees, rewrites or acts on a call that will not run.
+        state.dispatched = True
+        state.result = _dispatch_authorized_once(
+            agent, state, _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, trace),
+            execute=execute, scope_block=scope_block, display_index=display_index,
+            begin_execution=begin_execution, authorization_gate=authorization_gate)
+        return state
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
@@ -1696,15 +1704,20 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
-    if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
+        from tools.arg_validation import call_with_arg_checks
+        from tools.registry import registry
+        return _SequentialDispatch(
+            lambda next_args: call_with_arg_checks(
+                registry.get_entry(function_name), next_args, agent._dispatch_delegate_task),
+            spinner=spinner, is_delegate=True)
+    if is_context_engine_tool(agent, function_name):
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
             error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
-    if agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    if is_memory_provider_tool(agent, function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
         return _SequentialDispatch(
             execute=lambda next_args: agent._memory_manager.handle_tool_call(
@@ -1727,6 +1740,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
+                conversation_id=conversation_id(agent),
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

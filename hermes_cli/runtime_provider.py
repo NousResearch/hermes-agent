@@ -439,16 +439,21 @@ def _host_derived_api_key(base_url: str) -> str:
     return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
 
 
+def openai_env_key_authoritative_for(base_url: str, env_openai_base: str) -> bool:
+    """Whether ``OPENAI_API_KEY`` may be sent to *base_url*: an OpenAI-owned host, or exactly the
+    ``OPENAI_BASE_URL`` the key is paired with (the user's own proxy/gateway, not an unrelated host)."""
+    if base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com"):
+        return True
+    env_openai_base = (env_openai_base or "").strip().rstrip("/")
+    return bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base
+
+
 def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
     """Env API keys gated on their authoritative hosts, then the host-derived ``<VENDOR>_API_KEY``.
     Sending OPENAI/OPENROUTER/OLLAMA keys to an unrelated endpoint leaks credentials
     (GHSA-76xc-57q6-vm5m); match on HOST, not substring. ``_host_derived_api_key`` skips OLLAMA, so
     callers that want it opt in via ``ollama``."""
-    is_openai = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    # OPENAI_BASE_URL names the proxy/gateway the OPENAI_API_KEY was issued for (the ``openai`` alias
-    # expands onto it); an exact match is the user's own pairing, not a leak to an unrelated host.
-    env_openai_base = get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/")
-    is_openai = is_openai or (bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base)
+    is_openai = openai_env_key_authoritative_for(base_url, get_secret_str("OPENAI_BASE_URL", ""))
     candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
     return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
                          get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
@@ -635,9 +640,19 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     model_cfg = model_cfg or _get_model_config()
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
     base_url = _finalize_base_url(provider, api_mode, base_url)
+    if declared:  # the URL's owner supplies the key; the built-in's pool rows are another account's
+        return _runtime(provider, api_mode, base_url, entry_key, source="config:providers", requested_provider=requested_provider)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
+
+
+def _owned_url_credential(base_url: str, model_cfg: dict[str, Any], provider: str) -> tuple[bool, Any]:
+    """``(declared, key)`` when ``base_url`` came from ``model.base_url`` and a ``providers:`` entry
+    that owns it declares its own credential: a built-in env or pool key never goes to that URL."""
+    from hermes_cli.runtime_provider_custom import owned_config_url_credential
+    return owned_config_url_credential(base_url, model_cfg, provider)
 
 
 def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) -> bool:
@@ -876,6 +891,10 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, "anthropic")
+    if declared:  # the URL's owner supplies the key; ANTHROPIC_API_KEY / Claude OAuth are another account's
+        return _runtime("anthropic", "anthropic_messages", base_url, entry_key, source="config:providers",
+                        requested_provider=requested_provider)
     # Microsoft Foundry endpoints reject Claude Code OAuth tokens, which resolve_anthropic_token()
     # would return first — use the env key directly.
     if base_url_host_matches(base_url, "azure.com"):
@@ -897,16 +916,19 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
         cfg_url = _config_base_url_for_provider(model_cfg, provider)
         if is_actual_local_base_url(normalize_actual_base_url(cfg_url or creds.get("base_url", "").rstrip("/"))):
             creds = {**creds, "api_key": ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, "source": creds.get("source") or "local-offline"}
+    # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
+    base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
+    if declared:  # the URL's owner supplies the key; the built-in's env key is another account's
+        creds = {**creds, "api_key": entry_key, "source": "config:providers"}
     # An explicitly selected API-key provider is authoritative: an empty key would defer failure
     # to the first request and make a later fallback look like a silent provider switch.
-    if not has_usable_secret(creds.get("api_key")):
+    if not has_usable_secret(creds.get("api_key")) and not (declared and entry_key):
         from hermes_cli.runtime_readiness import missing_credentials_suffix
         from hermes_cli.runtime_provider_missing_key import named_profile_key_hint
         hint = (f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else "") + missing_credentials_suffix(provider)
         hint += named_profile_key_hint(pconfig.api_key_env_vars)
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
-    # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
-    base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
     api_mode = _api_key_provider_api_mode(provider, model_cfg, creds.get("api_key", ""), base_url,
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
@@ -1176,19 +1198,14 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
-        from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
+        from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs, get_fallback_chain
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()
             if not provider or not model:
                 continue
-            kwargs: dict[str, Any] = {"requested": provider, "target_model": model}
-            if entry.get("base_url"):
-                kwargs["explicit_base_url"] = entry["base_url"]
-            if entry_key := resolve_entry_api_key(entry):
-                kwargs["explicit_api_key"] = entry_key
             try:
-                runtime = resolve_runtime_provider(**kwargs)
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
                 continue

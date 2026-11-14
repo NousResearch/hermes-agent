@@ -1,0 +1,18 @@
+name: hermes-skill-router
+repo: https://github.com/mortang2410/hermes-skill-router
+sha: 5345ce9903a0d3e7a61951eda472a41a603e7851
+subdir: ""
+description: "Removes the always-on skill catalog from every Chat Completions request and injects a short fused shortlist instead. Ranks partly by the skills you loaded for similar prompts in past sessions. Disclosure — On Chat Completions requests this plugin removes Hermes's skill catalog from the system prompt and appends a per-turn skill shortlist as a trailing system message. Your newest message, plus up to 10,000 characters of your earlier messages, is sent to the embeddings and rerank endpoints you configure (loopback by default; any non-loopback host must use https). The query text is written to the plugin log. Its index, skill path cache, display record and learned-association database live under ~/.cache/hermes-skill-router, shared by every profile. The optional association backfill command reads ~/.hermes/state.db read-only and stores normalised prompt terms. The optional bundled embeddings server and its systemd unit are started manually by you."
+maintainer: mortang2410
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/mortang2410/hermes-skill-router/5345ce9903a0d3e7a61951eda472a41a603e7851/docs/assets/performance.png
+screenshots:
+- https://raw.githubusercontent.com/mortang2410/hermes-skill-router/5345ce9903a0d3e7a61951eda472a41a603e7851/docs/assets/performance.png
+capabilities:
+  provides_tools: [skill_router_search]
+  provides_hooks: []
+  provides_middleware: [llm_request]
+  requires_env: []

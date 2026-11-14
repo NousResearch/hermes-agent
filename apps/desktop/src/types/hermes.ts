@@ -380,8 +380,42 @@ export interface MessagingPlatformInfo {
    *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
   ingress_url?: null | string
   name: string
+  /** Team Gateway's shared bot carries this platform: setup links a chat account to it. */
+  relay_fronted?: boolean
+  /** The relay owns this platform outright, so a direct bot is switched off at every start. */
+  relay_exclusive?: boolean
+  /** Team Gateway switches this platform's direct connection off at every gateway start. */
+  disabled_by_relay?: boolean
   state?: null | string
   updated_at?: null | string
+}
+
+export interface RelayLinkedAccount {
+  displayName?: string
+  handle?: string
+  platformUserId: string
+}
+
+export interface RelayLinksResponse {
+  /** "portal" when the Nous Portal access setting governs this agent: links are made there. */
+  managed_by?: 'connector' | 'portal'
+  portal_url?: string
+  platforms: { accounts: RelayLinkedAccount[]; bot_url: null | string; platform: string }[]
+}
+
+export interface RelayLinkCode {
+  bot_url: null | string
+  code: string
+  /** The exact message to send the shared bot. */
+  command: string
+  expires_at: null | string
+  platform: string
+}
+
+export interface RelayLinkCodeState {
+  reason?: null | string
+  /** pending = not redeemed yet; inactive = used or expired; refused = see reason. */
+  state: 'inactive' | 'pending' | 'refused'
 }
 
 export interface MessagingPlatformsResponse {
@@ -438,58 +472,6 @@ export interface TelegramOnboardingApplyResponse {
   needs_restart: boolean
   ok: boolean
   platform: 'telegram'
-  restart_action?: string
-  restart_error?: string
-  restart_pid?: null | number
-  restart_started?: boolean
-}
-
-// -- Webhooks (subscription CRUD) --------------------------------------------
-// Incoming HTTP event routes served by the webhook gateway platform. Backed by
-// the same JSON store the CLI/dashboard use; per-route HMAC secrets are
-// redacted on read and surfaced exactly once on create.
-
-export interface WebhookRoute {
-  created_at: null | string
-  deliver: string
-  deliver_only: boolean
-  description: string
-  enabled: boolean
-  events: string[]
-  name: string
-  prompt: string
-  secret_set: boolean
-  skills: string[]
-  url: string
-}
-
-export interface WebhooksResponse {
-  base_url: string
-  enabled: boolean
-  subscriptions: WebhookRoute[]
-}
-
-export interface WebhookCreatePayload {
-  deliver?: string
-  deliver_chat_id?: string
-  deliver_only?: boolean
-  description?: string
-  events?: string[]
-  name: string
-  prompt?: string
-  skills?: string[]
-}
-
-// Create echoes the route summary plus the one-time secret.
-export interface WebhookCreateResponse extends WebhookRoute {
-  secret: string
-}
-
-export interface WebhookEnableResponse {
-  enabled: true
-  needs_restart: boolean
-  ok: boolean
-  platform: 'webhook'
   restart_action?: string
   restart_error?: string
   restart_pid?: null | number
@@ -731,6 +713,9 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    // A safety-refused turn the backend dropped from the model's context but
+    // retained for display (agent/turn_failure_copy.py CONTENT_REFUSED_DISPLAY_KIND).
+    | 'content_refused'
     | 'failed_turn'
     | 'hidden'
     | 'model_switch'
@@ -842,6 +827,10 @@ export interface SessionResumeResult {
   message_count: number
   messages: SessionMessage[]
   messages_omitted?: boolean
+  /** Canonical snapshot only: every admission the owner has not finished (queued, started, or `unknown` after a
+   *  crash). `info.pending_submissions` is derived from it, and a forwarding owner's `session.info` sends a partial
+   *  list under that name. */
+  pending?: unknown
   resumed: string
   running?: boolean
   session_id: string

@@ -66,13 +66,17 @@ UNDATED_INDEX_HINT = ("the package index did not report upload times, which lock
 _BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
 # Streamed uv output keeps only the last 2000 characters. Resolver markers are
 # stitched back if a later verbose flood evicts them; the bytecode marker has
-# to ride the same path or repair/bootstrap never sees the retry signal.
-_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER,)
+# to ride the same path or repair/bootstrap never sees the retry signal, and so
+# does the build marker: a failed native build's traceback runs far past 2000
+# characters, and without it the failure reads as a fetch error, not a verdict.
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS)
 
 # Retries after purging corrupt cached packages. Each round must name a package
 # not purged before, so this bounds a cache with several damaged entries, never
 # a loop on one broken wheel.
 _CACHE_RECOVERY_ROUNDS = 3
+# The pyvenv.cfg key every PM-built environment carries; site ignores keys it does not know.
+PM_BUILT_KEY = "hermes-pm-built"
 
 
 class ResolutionConflict(InstallError):
@@ -111,7 +115,9 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):
-        return BuildFailure("venv", cause)
+        from pm.build_compilers import missing_compiler_remedy
+
+        return BuildFailure("venv", cause, missing_compiler_remedy(output))
     return InstallError("venv", cause)
 
 
@@ -256,7 +262,7 @@ def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
                         output: TextIO | None = None, realize: bool = True) -> PythonEnvironment:
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.packages import uv_cache_dir
 
     tools = _toolchain(explicit=explicit, realize=realize)
@@ -265,10 +271,12 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if sys.platform == "darwin" and python.resolve() == pinned_python.resolve():
-        # PBS's AR still names its deleted build directory. Its CC is already
-        # clang; only the archiver needs a default, and only for our interpreter.
-        build_env.setdefault("AR", "/usr/bin/ar")
+    if python.resolve() == pinned_python.resolve():
+        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+        from pm.build_compilers import pinned_build_defaults
+
+        for key, value in pinned_build_defaults(python, build_env).items():
+            build_env.setdefault(key, value)
     return PythonEnvironment(
         uv=uv, python=python,
         destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),
@@ -330,6 +338,12 @@ class PythonEnvironment:
         # or the venv it writes would record the extended-length one in pyvenv.cfg.
         env.update(UV_PYTHON=native(self.python), UV_PROJECT_ENVIRONMENT=native(self.destination),
                    UV_CACHE_DIR=native(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # CMake 4 removed compatibility with cmake_minimum_required(VERSION < 3.5),
+        # so an sdist carrying an old minimum dies at CONFIGURE time: python-olm
+        # (mautrix[encryption], the matrix extra) vendors libolm declaring 3.4.
+        # Every source build uv drives inherits this env; older CMake ignores
+        # the variable, and a value the caller or user already set wins.
+        env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [native(self.uv), *map(native, args)]
@@ -382,32 +396,47 @@ class PythonEnvironment:
         )
         if result.returncode:
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
+        # Marks the environment as PM's whatever interpreter it runs: a checkout `.venv` built by
+        # `pm.build_env --python <any>` is never read as a pre-PM install (pm.extras._built_by_pm).
+        with (self.destination / "pyvenv.cfg").open("a", encoding="utf-8") as cfg:
+            cfg.write(f"{PM_BUILT_KEY} = true\n")
 
-    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
+    def lock(self, source: Path, *, upgrade: bool = False, upgrade_packages: Sequence[str] = (),
+             timeout: int = 1800) -> None:
         command = ["lock", "--python", str(self.python)]
         if upgrade:
             command.append("--upgrade")
+        for requirement in upgrade_packages:
+            command += ["--upgrade-package", requirement]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
     def check_lock(self, source: Path) -> None:
-        result = self._run(["lock", "--check", "--python", str(self.python)],
-                           cwd=source, timeout=1800)
+        command = ["lock", "--check", "--python", str(self.python)]
+        # Online, uv re-downloads every direct-URL wheel even when the lock already satisfies
+        # the manifest, so one unreachable release asset (kittentts) failed every CI job's
+        # setup. Offline answers a current lock from the lock alone; only a lock it cannot
+        # vouch for goes online, where uv names what is stale.
+        if not self.offline and replace(self, offline=True, output=None)._run(
+                command, cwd=source, timeout=1800).returncode == 0:
+            return
+        result = self._run(command, cwd=source, timeout=1800)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
     def sync(self, source: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
              timeout: int = 1800, frozen: bool = True, all_extras: bool = False,
              no_install_project: bool = False, locked: bool = False,
-             no_default_groups: bool = False) -> None:
+             no_default_groups: bool = False, upgrade: Sequence[str] = ()) -> None:
         """Install the root and every member; resolve only in a writable workspace.
 
         ``frozen=False`` is reserved for the caller-owned generated workspace,
-        never the original project's lock. Seed/replay policy belongs to PM.
+        never the original project's lock. Seed/replay policy belongs to PM;
+        *upgrade* is that policy's ``uv lock -P`` list.
         """
         if not frozen:
-            self.lock(source, timeout=timeout)
+            self.lock(source, upgrade_packages=upgrade, timeout=timeout)
         # Locking members alone is insufficient: plain sync only installs root deps.
         # uv writes no __pycache__ (pip does): without --compile-bytecode the first import
         # of every module in the foreground of a user request compiles it (#100461).

@@ -50,8 +50,6 @@ _POLISHED_TOOLS = {
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
     "kanban_block", "kanban_request_review", "kanban_request_changes",
     "kanban_link", "kanban_heartbeat",
-    "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
-    "yb_send_dm", "yb_send_sticker",
 }
 
 _EMPTYISH = (None, "", [], {})

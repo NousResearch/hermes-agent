@@ -16,11 +16,12 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
+                           'client'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
-FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
-                   'platform_toolsets')
+FOLLOW_MODEL_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
+FOLLOW_SECTIONS = (*FOLLOW_MODEL_SECTIONS, 'platform_toolsets')
 # A Bot Chat an earlier build committed frozen follows its profile once a client opens it (``follow_bot_chat``).
 # The marker sits in the policy's own config, so no other receipt changes shape (an older owner restores
 # them all, and reads this chat as frozen), and the creation request, the exact-retry identity, stays as sent.
@@ -84,6 +85,10 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
 # ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
+# Creation labels of the owner's own chats: the only LOCAL routes that carry OpenAI Daybreak (agent.daybreak),
+# the approved account's own access (no third-party or downstream use). Not ``tool`` (third-party
+# integrations), ``acp`` (editor clients), or the ``bot_room`` / ``a2a`` policies hosted rooms and peers stage.
+DAYBREAK_LABELS = frozenset({'cli', 'tui', 'gui', 'oneshot'})
 # Every other creation label is rewritten to ``source='local'`` on peer refresh.
 _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
@@ -184,7 +189,7 @@ class LocalSessionPolicy:
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
             from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
-            recovered = recover_config_secrets(authority, self)
+            recovered = recover_config_secrets(authority, self, skip=self.followed_sections if live else None)
             for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
@@ -203,7 +208,7 @@ class LocalSessionPolicy:
             chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
             pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
             pinned |= {'service_tier'} if 'service_tier' in request else set()
-            for key in FOLLOW_SECTIONS:
+            for key in self.followed_sections:
                 if key in pinned:
                     continue
                 if key in live:
@@ -216,7 +221,7 @@ class LocalSessionPolicy:
                 from gateway.run import _resolve_gateway_model
                 model = _resolve_gateway_model(live) or self.model
             agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
-            for key in FOLLOW_AGENT_KEYS:
+            for key in FOLLOW_AGENT_KEYS if self.follows_profile else ():
                 if key in pinned:
                     continue
                 if key in live_agent:
@@ -239,14 +244,26 @@ class LocalSessionPolicy:
         return (json.loads(self.request_json).get('follow_profile_config') is True
                 or json.loads(self.config_json).get(FOLLOW_ADOPTED) is True)
 
-    def read_profile(self, authority):
+    @property
+    def followed_sections(self):
+        # The hosted member's stored policy already identifies its owner, including
+        # rooms created before route following. Keep its tool and approval policy frozen.
+        if self.source == 'bot_room' and not self.ignore_user_config:
+            return FOLLOW_MODEL_SECTIONS
+        return FOLLOW_SECTIONS if self.follows_profile else ()
+
+    def read_profile(self, authority, *, for_turn=False):
         """The owning profile's current config for a following session, else None; inside this policy's
         turn scope, the turn's one read."""
-        if authority is None or not self.follows_profile:
+        if authority is None or not self.followed_sections:
             return None
         held = _TURN_PROFILE.get()
         if held is not None and held[0] == self:
             return held[1]
+        # Room creation and history use the stored policy. Only execution
+        # resolves a new model route from the owning profile.
+        if self.source == 'bot_room' and not for_turn:
+            return None
         return profile_config(authority)
 
     def current_toolsets(self, config):
@@ -446,6 +463,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
+    if 'client' in params:  # a self-declared label kept in the request as sent; no decision below reads it
+        from gateway.session_client import client_problem
+        if problem := client_problem(params['client']):
+            _refuse('client', problem)
     launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
     picked_route = {'model', 'provider', 'base_url'} & set(_without_auto_pick(params))
@@ -1107,36 +1128,42 @@ def refused_turn_result(policy, exc) -> dict | None:
 
 
 @contextmanager
-def policy_scope(policy, *, authority=None):
+def policy_scope(policy, *, authority=None, home=None):
+    """Bind a session's frozen policy for a turn. *home* is the profile that owns the session (its
+    terminal policy's owner); it defaults to *authority*'s profile."""
     if policy is None:
         yield
         return
     if not workspace_ready(policy):
         raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
-    from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
+    live = policy.read_profile(authority, for_turn=True)
     if policy.config_secret_ref is not None:
         from gateway.session_policy_credentials import recover_config_secrets
-        for path, value in recover_config_secrets(authority, policy).items():
+        for path, value in recover_config_secrets(authority, policy, skip=policy.followed_sections if live else None).items():
             if path[0] is None:
                 terminal[path[1]] = value
     # A following session's turn reads its profile once; every resolution in the turn uses that read.
-    profile_token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    profile_token = _TURN_PROFILE.set((policy, live))
     active = policy
     if policy.follows_profile:
         from dataclasses import replace
         active = replace(policy, toolsets=policy.current_toolsets(policy.config(authority, secrets=False)))
     cwd_token = set_session_cwd(policy.cwd)
-    terminal_token = set_terminal_scope(terminal)
+    owner = home if home is not None else getattr(authority, 'profile_id', None)
+    terminal_token = bind_terminal_policy(terminal, profile_home=owner)
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
-        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
-        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
+        # session never reads the profile: its side tasks use its own saved section (code defaults only).
+        aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
+                     if policy.ignore_user_config else contextlib.nullcontext())
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
               policy.client_env_scope()):
             yield
@@ -1207,6 +1234,17 @@ def profile_read_scope(policy, authority):
     token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
     try:
         yield
+    finally:
+        _TURN_PROFILE.reset(token)
+
+
+def turn_model(policy, authority):
+    """The model this policy's turn resolved, for checks that run after ``policy_scope`` exits: a
+    hosted room member reads its owning profile only in turn scope, so an unscoped read would
+    report the frozen model and the post-turn fallback check would evict every switched agent."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority, for_turn=True)))
+    try:
+        return policy.current_model(authority)
     finally:
         _TURN_PROFILE.reset(token)
 

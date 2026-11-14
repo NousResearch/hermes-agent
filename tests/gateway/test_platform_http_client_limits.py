@@ -53,3 +53,13 @@ async def test_platform_http_client_is_ssrf_guarded_with_shared_limits():
             await client.get("http://169.254.169.254/latest/meta-data/")
     finally:
         await client.aclose()
+
+
+def test_max_keepalive_zero_disables_keepalive(monkeypatch):
+    """``0`` is httpx's "keep no idle connections" and must survive the parse; the expiry knob stays > 0."""
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "0")
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", "0")
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    limits = platform_httpx_limits()
+    assert limits.max_keepalive_connections == 0
+    assert limits.keepalive_expiry == 2.0

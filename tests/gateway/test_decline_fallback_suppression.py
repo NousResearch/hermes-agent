@@ -127,9 +127,10 @@ def _busy(adapter: _ConfirmAdapter):
 
 
 def _event():
-    return SimpleNamespace(
-        source=SimpleNamespace(chat_id="C1", platform="discord", user_id="u1")
-    )
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    return MessageEvent(text="/wipe", source=SessionSource(platform=Platform.DISCORD, chat_id="C1", user_id="u1"))
 
 
 def _run_confirm(busy) -> Optional[str]:

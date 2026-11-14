@@ -1,0 +1,27 @@
+name: hermes-design-studio
+repo: https://github.com/1lpredest1nato/hermes-design-studio
+sha: 9354ba4e1b62b46ac656f6c3fa29c8740feaa16c
+subdir: ""
+title: Hermes Design Studio
+description: "Non-destructive shader image editing inside Hermes Desktop, manually or with an agent. Human-approved shader tools, recipes, numerical previews and PNG export."
+maintainer: 1lpredest1nato
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/1lpredest1nato/hermes-design-studio#readme
+version: "0.1.0"
+readme: true
+platforms: [linux]
+onboarding: false
+capabilities:
+  provides_tools:
+    - design_studio_catalog
+    - design_studio_project
+    - design_studio_apply
+    - design_studio_preview
+    - design_studio_create_tool
+    - design_studio_recipe
+    - design_studio_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

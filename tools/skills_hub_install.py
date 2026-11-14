@@ -64,6 +64,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     skill_name = _validate_skill_name(bundle.name)
     # Validate every path before touching disk so a bad member aborts cleanly.
     validated_files = [(_validate_bundle_rel_path(rel_path), content) for rel_path, content in bundle.files.items()]
+    executables = {_validate_bundle_rel_path(rel_path) for rel_path in bundle.executables if rel_path in bundle.files}
     dest = _quarantine_dir() / skill_name
     if dest.exists():
         shutil.rmtree(dest)
@@ -77,6 +78,10 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
             # newline="" keeps the bundle's LF bytes verbatim; the default None mode would
             # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
             file_dest.write_text(file_content, encoding="utf-8", newline="")
+        if rel_path in executables:
+            # Execute where read is allowed (0644 -> 0755), so the umask still decides group/other.
+            mode = file_dest.stat().st_mode
+            file_dest.chmod(mode | (mode & 0o444) >> 2)
     return dest
 
 

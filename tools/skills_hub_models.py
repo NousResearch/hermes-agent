@@ -46,6 +46,10 @@ class SkillBundle:
     identifier: str
     trust_level: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Relative paths the source marks executable (git mode 100755, a zip entry's Unix x bit, a local
+    # file's x bit). Content alone loses that, and a script run as ``scripts/run`` then fails with
+    # "Permission denied".
+    executables: frozenset[str] = frozenset()
 
 
 def _skill_meta_to_dict(meta: SkillMeta) -> dict:

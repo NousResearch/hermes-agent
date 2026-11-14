@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple, Union
 
 from agent.skill_utils import is_excluded_skill_path
-from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
+from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_executables, _tree_members
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
 )
@@ -125,13 +125,16 @@ class OptionalSkillSource(SkillSource):
         if upstream is not None:
             return self._fetch_from_upstream(upstream, rel_id)
         files: dict[str, str | bytes] = {}
+        executables: set[str] = set()
         for f in skill_dir.rglob("*"):
             if f.is_file() and not _skip_bundle_file(f.relative_to(skill_dir).as_posix()):
                 try:
                     files[str(f.relative_to(skill_dir))] = f.read_bytes()
+                    if f.stat().st_mode & 0o111:
+                        executables.add(str(f.relative_to(skill_dir)))
                 except OSError:
                     continue
-        return self._bundle(rel_id, files) if files else None
+        return self._bundle(rel_id, files, executables=frozenset(executables)) if files else None
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         skill_name = self._rel(identifier).rsplit("/", 1)[-1]
@@ -191,7 +194,8 @@ class OptionalSkillSource(SkillSource):
         if upstream is not None:
             return self._fetch_from_upstream(upstream, rel)
         logger.info("Optional skill '%s' fetched from live repo (not in local checkout)", rel)
-        return self._bundle(rel, files)
+        executables = _tree_executables(tree[1], f"{self.OPTIONAL_SKILLS_PREFIX}/{rel}/") & files.keys()
+        return self._bundle(rel, files, executables=executables)
 
     def _list_remote_skill_dirs(self) -> dict[str, bool]:
         """``category/skill`` dirs under optional-skills/ on live main. One repo-tree call (cached
@@ -253,6 +257,7 @@ class OptionalSkillSource(SkillSource):
             # "trusted", not "builtin", so a dangerous scan verdict still blocks.
             trust_level="trusted",
             metadata={**bundle.metadata, "upstream_repo": upstream["repo"], "upstream_path": upstream["path"]},
+            executables=bundle.executables,
         )
 
     def _local_skill_mds(self):

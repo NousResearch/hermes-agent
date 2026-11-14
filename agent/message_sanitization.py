@@ -694,6 +694,9 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # localhost/LAN engine keeps both carriers while a remote gateway gets reasoning_content only --
     # strict serde gateways alias `reasoning` to `reasoning_content` and reject both keys (#136486).
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    # The MoA facade is in-process, not a wire: it gets every carrier and applies its aggregator's own replay
+    # policy (``moa_aggregator_wire.aggregator_reasoning_view``), so an Anthropic aggregator gets signed thinking.
+    (_ALL_CARRIERS, frozenset({"moa"}), ()),
 )
 
 

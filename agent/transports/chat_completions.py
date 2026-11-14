@@ -44,6 +44,7 @@ _STRIP_MSG_KEYS = (
     MESSAGE_UID, DATA_USE,
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
+_MOA_FACADE_KEYS = frozenset({"anthropic_content_blocks"})
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
@@ -455,6 +456,7 @@ def _mistral_tool_id(key: str) -> str:
 def _sanitize_message(
     msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
     native_reasoning_details_type: str | None = None, *, mistral_tool_ids: bool = False,
+    keep_keys: frozenset = frozenset(),
 ) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
@@ -473,7 +475,7 @@ def _sanitize_message(
     """
     if not isinstance(msg, dict):
         return None
-    strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    strip_keys = [k for k in msg if (k in _STRIP_MSG_KEYS and k not in keep_keys) or (isinstance(k, str) and k.startswith("_"))]
     if msg.get("role") == "assistant":
         strip_keys += [k for k in strip_reasoning if k in msg]
     kept_details = None
@@ -552,8 +554,11 @@ class ChatCompletionsTransport(ProviderTransport):
             carriers = carriers | {"reasoning_details"}
         strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
         mistral_ids = _route_requires_mistral_tool_ids(provider, kwargs.get("model"), kwargs.get("base_url"))
+        # The MoA facade is in-process, not a wire: it gets the ordered Anthropic sidecar too and shapes
+        # every carrier for its own aggregator (``moa_aggregator_wire.aggregator_reasoning_view``).
+        keep_keys = _MOA_FACADE_KEYS if str(provider or "").strip().lower() == "moa" else frozenset()
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type,
-                                                 mistral_tool_ids=mistral_ids))
+                                                 mistral_tool_ids=mistral_ids, keep_keys=keep_keys))
                            for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
@@ -748,6 +753,16 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+        # An Anthropic refusal relayed through an OpenAI-shaped adapter (MoA aggregator, aux client)
+        # keeps its reason, the same ``stop_details`` the native transport exposes.
+        stop_details = _attr_or_model_extra(msg, "stop_details")
+        if isinstance(stop_details, dict):
+            provider_data["stop_details"] = stop_details
+        # So does the ordered block list of a turn interleaving signed thinking with tool_use, which
+        # the MoA aggregator replays from (``moa_aggregator_wire.aggregator_reasoning_view``).
+        ordered_blocks = _attr_or_model_extra(msg, "anthropic_content_blocks")
+        if isinstance(ordered_blocks, list) and ordered_blocks:
+            provider_data["anthropic_content_blocks"] = ordered_blocks
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,

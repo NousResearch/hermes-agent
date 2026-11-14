@@ -988,6 +988,13 @@ def aggregate_moa_context(
     )
 
 
+# Message fields the one-chunk adapter relays: reasoning (readable and signed), an Anthropic refusal's
+# reason, and the ordered blocks a turn interleaving signed thinking with tool_use replays from.
+_CHUNK_MESSAGE_FIELDS = (
+    "reasoning_content", "reasoning", "reasoning_details", "stop_details", "anthropic_content_blocks",
+)
+
+
 def _completed_response_as_stream_chunk(response: Any) -> Any:
     """Adapt a completed response into one delta stream chunk (facade boundary only)."""
     choices = getattr(response, "choices", None)
@@ -1008,7 +1015,7 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
         ]
     delta = SimpleNamespace(
         content=getattr(message, "content", None), tool_calls=tool_call_deltas,
-        **{k: getattr(message, k, None) for k in ("reasoning_content", "reasoning", "reasoning_details")},
+        **{k: getattr(message, k, None) for k in _CHUNK_MESSAGE_FIELDS},
     )
     choice = SimpleNamespace(
         index=getattr(first_choice, "index", 0), delta=delta, finish_reason=getattr(first_choice, "finish_reason", None) or "stop",
@@ -1210,9 +1217,8 @@ class MoAChatCompletions:
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_runtime = _slot_runtime(aggregator)
-        agg_messages, tools = self._plan_aggregator_cache(
-            prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
-        )
+        conversation, guidance, wire = self._aggregator_conversation(prepared, agg_runtime)
+        agg_messages, tools = self._plan_aggregator_cache(conversation, api_kwargs.get("tools"), guidance, agg_runtime)
         trace = self._pending_trace
         if trace is not None:
             trace["aggregator_label"] = _slot_label(aggregator)
@@ -1241,6 +1247,8 @@ class MoAChatCompletions:
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        if wire is not None:
+            send = functools.partial(wire.send_with_recovery, send, _slot_label(aggregator))
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1256,6 +1264,8 @@ class MoAChatCompletions:
             )
             agg_messages = retry_messages
             agg_response = send(messages=agg_messages)
+        if wire is not None:
+            wire.sent(agg_response)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
             trace["aggregator_input_messages"] = (
@@ -1273,6 +1283,23 @@ class MoAChatCompletions:
             # when streaming was requested; hand the loop a one-chunk iterator.
             return iter((_completed_response_as_stream_chunk(agg_response),))
         return agg_response
+
+    def _aggregator_conversation(self, prepared: dict[str, Any], agg_runtime: dict[str, Any]) -> tuple:
+        """``(messages, guidance, wire)`` for the aggregator: its reasoning view of the prepared request and,
+        when its route replays signed thinking, the append-only wire that keeps that thinking valid."""
+        from agent.moa_aggregator_wire import AggregatorWire, aggregator_reasoning_view, replays_signed_thinking
+
+        conversation = aggregator_reasoning_view(prepared["messages"], agg_runtime)
+        guidance = prepared.get("guidance")
+        if not replays_signed_thinking(agg_runtime):
+            return conversation, guidance, None
+        # Facades built via __new__ (tests, swaps) have no __init__ state.
+        wire = self.__dict__.setdefault("_aggregator_wire", AggregatorWire())
+        history = peel_reference_guidance(conversation, guidance) if guidance else conversation
+        conversation, guidance = wire.request(history, guidance, prepared.get("guidance_key"))
+        if guidance:
+            _attach_reference_guidance(conversation, str(guidance))
+        return conversation, guidance, wire
 
     def _fanout_cache_key(
         self, preset: dict[str, Any], ref_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
@@ -1465,6 +1492,10 @@ class MoAChatCompletions:
             self._pending_trace = None
         else:
             reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
+            # The aggregator wire sends each advisor run's guidance once. Only a finished run is cached, so a HIT
+            # reuses the latest run; a fan-out that runs again under the same key (an interrupted one is not cached)
+            # is a new run, and its advice goes out.
+            self._fanout_run = getattr(self, "_fanout_run", 0) + 1
 
         agg_messages = [dict(m) for m in messages]
         guidance = self._build_guidance(
@@ -1475,8 +1506,8 @@ class MoAChatCompletions:
             _attach_reference_guidance(agg_messages, guidance)
 
         prepared_request = {
-            "messages": agg_messages, "guidance": guidance, "aggregator": aggregator,
-            "aggregator_temperature": aggregator_temperature,
+            "messages": agg_messages, "guidance": guidance, "guidance_key": (cache_key, getattr(self, "_fanout_run", 0)),
+            "aggregator": aggregator, "aggregator_temperature": aggregator_temperature,
         }
         if api_kwargs.pop("_moa_prepare_only", False):
             return prepared_request

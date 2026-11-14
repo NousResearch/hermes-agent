@@ -155,6 +155,29 @@ async def test_a_failed_read_reply_does_not_cancel_the_running_control(rig):
 
 
 @pytest.mark.asyncio
+async def test_failed_manual_compression_reply_identifies_session_and_noop(rig, monkeypatch, caplog):
+    """A lost JSON-RPC reply must say whether the compaction itself committed or did nothing."""
+    sock, _gates, log = rig
+
+    async def no_op_compression(_authority, req, _method, _transport):
+        log.append("compression:no-op")
+        return {"jsonrpc": "2.0", "id": req["id"],
+                "result": {"session_id": req["params"]["session_id"], "status": "noop"}}
+
+    monkeypatch.setattr(ws_mod, "_dispatch_request", no_op_compression)
+    sock.fail_ids.add("compact")
+    sock.inbound.put_nowait({
+        "jsonrpc": "2.0", "id": "compact", "method": "session.mutate",
+        "params": {"session_id": "bot-chat-73", "operation": "compress"},
+    })
+    await asyncio.wait_for(ws_mod.handle_ws(sock), 5)
+
+    assert log == ["compression:no-op", "teardown"]
+    assert "ws response send failed" in caplog.text
+    assert "session_id=bot-chat-73 outcome=noop" in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["session.transcript"])
 async def test_a_slow_stored_read_never_holds_an_interrupt(rig, method):
     """A picker paging a long stored transcript must not queue the socket's interrupt behind it (#150091)."""

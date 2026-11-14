@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
                             'suggestions', 'bundles', 'skills'})
-_CONTROL_COMMANDS = frozenset({'title'})
+# Controls whose gateway handler runs for a local session. ``compress`` runs no handler here: its
+# canonical mutation (``session.mutate compress``, gateway/session_mutation_compress) owns the rewrite,
+# so the transcript publishes under a receipt as Desktop's native action does. The messaging
+# ``/compress`` handler is a different store path and would rotate it without one (#148272).
+_CONTROL_COMMANDS = frozenset({'title', 'compress'})
 # Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
 # local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its
 # cached agent, the /debug summary upload, /blueprint's job creation. A turn the handler would have
@@ -418,6 +422,20 @@ def _session_workspace(runner, source):
         reset_session_cwd(cwd_token)
 
 
+async def _command_output(authority, actor, ref, canonical, arg, run):
+    """A control command's reply: the canonical mutation where one owns the write, else its handler.
+
+    ``/compress`` commits ``session.mutate compress`` (Bot Mode's only reset path, #148272); every
+    other control runs the messaging handler ``run`` builds.
+    """
+    if canonical == 'compress':
+        from gateway.session_mutation_compress import commit_compress_command
+        reply = await commit_compress_command(authority, actor, ref, arg)
+        if reply is not None:
+            return reply
+    return await run()
+
+
 async def execute_command(connection, ref, params, *, dispatch=False):
     authority, actor = connection.authority, connection.actor
     authority.authorize(actor, ref, 'session:read')
@@ -513,8 +531,8 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                 from gateway.session_setting_commands import commit_reasoning_command
                 await commit_reasoning_command(authority, actor, ref,
                                                *GatewayConfigLoadersMixin._parse_reasoning_command_args(arg))
-            handler = runner._command_handler_table((canonical,))[canonical]
-            output = await handler(event)
+            output = await _command_output(authority, actor, ref, canonical, arg, lambda: runner._command_handler_table(
+                (canonical,))[canonical](event))
     if canonical in _APPROVAL_COMMANDS:
         # Settle the answered prompt for every viewer now (`approval.settled`), as approval.respond does.
         handle = authority._handle(ref)

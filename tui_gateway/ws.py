@@ -498,8 +498,23 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                          "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
             return
         if resp is not None:
+            # A lost compaction reply can conceal a read-only noop or refusal, not just a
+            # successful commit. Preserve the outcome at the socket's failure boundary.
+            suffix, args = "", [peer, req_id, req_method]
+            params = req.get("params") if isinstance(req, dict) else None
+            if req_method == "session.mutate" and isinstance(params, dict) and params.get("operation") == "compress":
+                error = resp.get("error") if isinstance(resp, dict) else None
+                result = resp.get("result") if isinstance(resp, dict) else None
+                if isinstance(error, dict):
+                    data = error.get("data")
+                    reason = data.get("reason") if isinstance(data, dict) else None
+                    outcome = f"error:{reason or error.get('code', 'unknown')}"
+                else:
+                    outcome = (result.get("status") or "committed") if isinstance(result, dict) else "unknown"
+                suffix = " session_id=%s outcome=%s"
+                args.extend((str(params.get("session_id", ""))[:64], outcome))
             await _reply(resp, "send_failed_after_response",
-                         "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+                         "ws response send failed peer=%s id=%s method=%s" + suffix, *args)
 
     async def _dispatch_concurrent_read(req: Any) -> None:
         async with concurrent_read_slots:

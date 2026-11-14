@@ -190,6 +190,29 @@ def test_quoted_cr_is_not_a_statement_break(cmd):
     assert not detect_hardline_command(cmd)[0], cmd
 
 
+# A -WhatIf only previews its own statement: in a quoted `pwsh -c` payload the CR/LF is masked to a space for
+# detection, so a -WhatIf on a later destructive statement must not exempt an earlier unpreviewed Clear-Disk.
+@pytest.mark.parametrize("cmd", [
+    'pwsh -c "Clear-Disk -Number 0' + CR + 'Remove-Item -Recurse -Force C:\\ -WhatIf"',
+    "powershell -Command 'Clear-Disk -WhatIf" + LF + "Format-Volume -DriveLetter C C:\\x,C:\\*'",
+    'pwsh -c "Clear-Disk C:\\x,C:\\*' + CR + 'rd /s /q C:\\ -WhatIf"',
+    'pwsh -c "Clear-Disk -Include *.tmp' + CR + 'Format-Volume -DriveLetter C -WhatIf"',
+    "powershell -Command 'Clear-Disk,D:\\x" + LF + "Format-Volume -DriveLetter C -WhatIf -Confirm:$false'",
+    'pwsh -c "Clear-Disk -Number 0' + CR + 'Get-Date -WhatIf"',
+])
+def test_whatif_of_another_statement_does_not_exempt_clear_disk(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    'pwsh -c "Get-Date' + CR + 'Clear-Disk -Number 0 -WhatIf"',
+    "Get-Disk | Clear-Disk -WhatIf",
+])
+def test_every_statement_previewing_stays_approvable(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+    assert detect_dangerous_command(cmd)[0], cmd
+
+
 # A drive root later in a PowerShell/cmd argument list is still deleted.
 @pytest.mark.parametrize("cmd", [
     "Remove-Item -Recurse C:\\x,C:\\*",

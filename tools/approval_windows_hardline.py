@@ -3,6 +3,8 @@
 Pure regex text, built from the caller's command-position prefix so this module needs no import back.
 """
 
+import re
+
 # Windows drive root (`C:/`, `C:/*`, `C:/*.*`; backslashes are flattened to `/` by the
 # Windows-path detection variant).
 _HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
@@ -21,16 +23,43 @@ _CMDLET_END = r'(?![\w.\\/-])'
 # A bare CR ends the statement too, and a guarded cmdlet named again later voids it: a quoted `pwsh -c` newline is
 # masked to a space, so `-WhatIf\nClear-Disk 1` reaches this as `-WhatIf Clear-Disk 1`.
 _PS_NOT_WHATIF = r'(?!(?=(?:[^\r\n;&|"\'`(){}$@#]*[^\r\n;&|"\'`(){}$@#\s,])?\s+-whatif(?:\s|["\']?$))(?![^\r\n;&|"\'`(){}$@#]*-whatif:)(?![^\r\n;&|]*\s(?:clear-disk|(?:restart|stop)-computer)(?![\w.\\/-])))'
+_PS_WHATIF_GUARDED = r'(?<![\w.\\/-])(?:clear-disk|(?:restart|stop)-computer)' + _CMDLET_END
+# A guarded cmdlet with no real -WhatIf of its own, judged per raw statement (CR/LF quoted or not, `;`, `|`, `&`).
+_WHATIF_STATEMENT_UNGUARDED_RE = re.compile(_PS_WHATIF_GUARDED + _PS_NOT_WHATIF, re.IGNORECASE)
+# Any other destructive verb anywhere voids the preview: a masked quoted newline joins its statement onto the
+# guarded one, so the `-WhatIf` of `pwsh -c "Clear-Disk 0<CR>Format-Volume C -WhatIf"` would cover Clear-Disk.
+_WHATIF_OTHER_HARDLINE_RE = re.compile(
+    r'(?<![\w.\\/$-])(?:format-volume|format(?:\.com)?|remove-item|ri|rm|rd|rmdir|del|erase|mkfs(?:\.\w+)?|dd|kill|'
+    r'shutdown|reboot|halt|poweroff|init|telinit|systemctl)(?![\w-])', re.IGNORECASE)
 
 
-def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
-    """The Windows analogues of the shutdown / mkfs / root-rm hardline rules, anchored at ``cmdpos``."""
+def whatif_preview_is_real(command: str) -> bool:
+    """Whether every guarded cmdlet in ``command`` previews: each statement naming one carries its own real
+    ``-WhatIf`` and no other destructive verb appears anywhere (the -WhatIf exemption is per statement)."""
+    if _WHATIF_OTHER_HARDLINE_RE.search(command):
+        return False
+    return not any(_WHATIF_STATEMENT_UNGUARDED_RE.search(s) for s in re.split(r'[\r\n;&|]', command))
+
+
+def windows_whatif_strict_patterns(cmdpos: str) -> dict[str, str]:
+    """The -WhatIf-exempt rules without the exemption, keyed by description (see ``whatif_preview_is_real``)."""
+    win_cmdpos = _win_cmdpos(cmdpos)
+    return {"system shutdown/reboot (PowerShell)": win_cmdpos + r'(?:restart|stop)-computer' + _CMDLET_END,
+            "wipe disk (Clear-Disk)": win_cmdpos + r'clear-disk' + _CMDLET_END}
+
+
+def _win_cmdpos(cmdpos: str) -> str:
     # cmdpos, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
     # take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
     # `-File` is not skipped: its operand is a script path (`pwsh -File Stop-Computer.ps1`), not code.
     # PowerShell's tokenizer also reads a bare CR as a statement break (bash does not, so only here).
-    win_cmdpos = (r'(?:\r\s*|' + cmdpos + r')(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
-                  r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
+    return (r'(?:\r\s*|' + cmdpos + r')(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
+            r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
+
+
+def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
+    """The Windows analogues of the shutdown / mkfs / root-rm hardline rules, anchored at ``cmdpos``."""
+    win_cmdpos = _win_cmdpos(cmdpos)
     return [
         # Windows analogues of the shutdown / mkfs / dd / root-rm rules. Command-position anchored like
         # the POSIX rules (#93392), also behind a powershell/pwsh/cmd launcher because cmdlets are

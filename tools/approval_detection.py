@@ -19,7 +19,7 @@ from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_env_split import _split_env_string
-from tools.approval_windows_hardline import windows_hardline_patterns
+from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 
 logger = logging.getLogger("tools.approval")
 
@@ -236,6 +236,11 @@ _RE_FLAGS = re.IGNORECASE | re.DOTALL
 _QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({"redirect to raw block device", "fork bomb"})
 HARDLINE_PATTERNS_COMPILED = [
     (re.compile(p, _RE_FLAGS), d, d in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS) for p, d in HARDLINE_PATTERNS
+]
+_WHATIF_STRICT = windows_whatif_strict_patterns(_CMDPOS)
+_HARDLINE_PATTERNS_NO_WHATIF = [
+    (re.compile(_WHATIF_STRICT[d], _RE_FLAGS), d, q) if d in _WHATIF_STRICT else (r, d, q)
+    for r, d, q in HARDLINE_PATTERNS_COMPILED
 ]
 # Commands that hand a quoted argument to another shell to EXECUTE: quoted text is code, not
 # prose, so quote-masked hardline rules scan the raw string.
@@ -523,11 +528,16 @@ def _detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
+    # The -WhatIf preview exemption holds only when every guarded statement previews on its own (judged on the raw
+    # command: masking a quoted newline joins statements); otherwise those rules apply without it.
+    patterns = HARDLINE_PATTERNS_COMPILED
+    if "whatif" in command.lower() and not whatif_preview_is_real(command):
+        patterns = _HARDLINE_PATTERNS_NO_WHATIF
     capped: list[str] = []
     for command_variant in _command_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
-        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+        for pattern_re, description, quote_masked in patterns:
             if quote_masked and masked_lower is None:
                 # Positionless rules see quoted prose as DATA, except under shell carriers
                 # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c

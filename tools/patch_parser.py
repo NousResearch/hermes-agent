@@ -3,13 +3,13 @@
 + ``+`` lines; ``*** Delete File: o``; ``*** Move File: a -> b``. Entry points:
 ``parse_v4a_patch(text) -> (ops, error)`` and ``apply_v4a_operations(ops, file_ops)``."""
 
-import contextlib
 import difflib
 import inspect
 import ntpath
 import posixpath
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
@@ -128,24 +128,23 @@ def _count_occurrences(text: str, pattern: str) -> int:
     return sum(1 for i in range(len(text) + 1) if text.startswith(pattern, i))
 
 
-def _split_hunk(hunk: Hunk) -> tuple[list[str], list[str]]:
-    """``(search_lines, replace_lines)``: context+removed vs context+added."""
-    return ([l.content for l in hunk.lines if l.prefix != '+'],
-            [l.content for l in hunk.lines if l.prefix != '-'])
+# Preserve the existing hint window; its boundary remains an open specification.
+_HINT_WINDOW_BEFORE, _HINT_WINDOW_AFTER = 500, 2000
 
 
-def _no_match_hint(error: Optional[str], search_pattern: str, content: str) -> str:
-    """Best-effort 'Did you mean...' suffix; never lets a hint failure mask the real error."""
-    with contextlib.suppress(Exception):
-        from tools.fuzzy_match import format_no_match_hint
-        return format_no_match_hint(error, 0, search_pattern, content)
-    return ""
+class _Plan(NamedTuple):
+    """An Update's hunks applied in memory: ``notes`` are the escape-drift corrections made,
+    ``strategies`` the fuzzy strategies that located the edits (for the boundary note)."""
+    content: str
+    errors: list[str]
+    changes: int
+    notes: list[str]
+    strategies: list[str]
 
 
-def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
-    """(occurrences, error) for an addition-only hunk's context hint; error is '' when unique."""
-    n = _count_occurrences(content, hint)
-    return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
+def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
+    """Use the same provenance planner for direct callers and patch application."""
+    return _plan_file(content, hunks)
 
 
 def _overlay_key(path: str, file_ops: Any) -> str:
@@ -185,128 +184,285 @@ def _backend_is_windows(env: Any, cwd: str) -> bool:
         re.match(r"^[A-Za-z]:[\\/]", cwd))
 
 
-def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
-    """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
-    order so later hunks see post-earlier-hunk content, exactly as apply will."""
-    from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
-    errors: list[str] = []
-    real_change_count = 0
-    # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
-    # keyed by _overlay_key so path aliases share one entry.
-    pending_content: dict = {}
-    removed_paths: set = set()
+class _Commit(NamedTuple):
+    """One mutation whose bytes were chosen before any write. Commit must not replan it."""
+    op: PatchOperation
+    snapshot: Optional[str]
+    content: Optional[str]
+    read_sha: Optional[str]
+    notes: tuple[str, ...]
+    strategies: tuple[str, ...]
 
-    def _read(path: str) -> tuple[Optional[str], Optional[str]]:
-        key = _overlay_key(path, file_ops)
-        if key in pending_content:
-            return pending_content[key], None
-        if key in removed_paths:
-            return None, "file not found"
-        r = file_ops.read_file_raw(path)
-        return (None, r.error) if r.error else (r.content, None)
 
-    def _occupied(path: str) -> Optional[str]:
-        """Why an Add target or Move destination is not free, or None. Only a read that reports
-        the path absent (``not_found``) frees it: a read that FAILED (no byte transport, a
-        directory, an unreadable file) says nothing about what is there, and taking it as free
-        writes over the file the check exists to protect."""
-        key = _overlay_key(path, file_ops)
-        if key in pending_content:
+class _Snap(NamedTuple):
+    """Disk observation the plan depended on. Re-read this, do not select against a new read."""
+    path: str
+    content: Optional[str]
+    absent: bool
+    sha: Optional[str]
+
+
+class _Resolution(NamedTuple):
+    errors: list[str]
+    commits: list[_Commit]
+    snaps: dict[str, _Snap]
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value]
+
+
+def _redact_planner_errors(errors: list) -> list[str]:
+    """Drop source excerpts an untrusted planner may echo. Keep the diagnostic shape."""
+    return [
+        re.sub(r"(?m)^  L(\d+):[^\n]*", r"  L\1: [source omitted]", str(error))
+        for error in errors
+    ]
+
+
+def _plan_file(content: Optional[str], hunks: list[Hunk], state=None, *, finalize=True) -> _Plan:
+    """Run the provenance planner once. A raised or unusable result is a refusal, not a write."""
+    from tools.v4a_planner import plan_hunks
+    if not isinstance(content, str):
+        return _Plan("", ["hunk planning failed"], 0, [], [])
+    try:
+        raw = plan_hunks(content, hunks, state, finalize=finalize)
+    except Exception:  # health: allow BLE001 -- planner boundary: fail closed with a fixed code; exception text can hold source
+        return _Plan(content, ["hunk planning failed"], 0, [], [])
+    planned = getattr(raw, "content", None)
+    errors = getattr(raw, "errors", None)
+    changes = getattr(raw, "changes", None)
+    if not isinstance(planned, str) or not isinstance(errors, list) or type(changes) is not int:
+        return _Plan(content, ["hunk planning failed"], 0, [], [])
+    return _Plan(
+        planned, _redact_planner_errors(errors), changes,
+        _as_str_list(getattr(raw, "notes", ())),
+        _as_str_list(getattr(raw, "strategies", ())))
+
+
+def _note_disk_read(snaps: dict[str, _Snap], key: str, path: str, result: Any) -> None:
+    """Record the first disk observation for ``key``. Overlay hits must not call this."""
+    if key in snaps:
+        return
+    if getattr(result, "error", None):
+        if getattr(result, "not_found", False):
+            snaps[key] = _Snap(path, None, True, None)
+        return
+    snaps[key] = _Snap(path, result.content, False, getattr(result, "_content_sha256", None))
+
+
+def _remember_update(commits: list[_Commit], op: PatchOperation, snapshot: Optional[str],
+                     sha: Optional[str], plan: _Plan) -> None:
+    """Keep a successful Update's planned bytes. A refusal is not a commit."""
+    if plan.errors or not isinstance(snapshot, str) or not isinstance(plan.content, str):
+        return
+    commits.append(_Commit(op, snapshot, plan.content, sha, tuple(plan.notes), tuple(plan.strategies)))
+
+
+def _drift_reason(snap: _Snap, again: Any) -> list[str]:
+    """Why ``again`` is not the snapshot the plan used, or empty when it still matches."""
+    if snap.absent:
+        if getattr(again, "not_found", False):
+            return []
+        if getattr(again, "error", None):
+            return [f"{snap.path}: READ_ERROR"]
+        return [f"{snap.path}: source changed after it was read"]
+    if getattr(again, "error", None):
+        return [f"{snap.path}: READ_ERROR"]
+    if again.content != snap.content:
+        return [f"{snap.path}: source changed after it was read"]
+    return []
+
+
+def _snapshot_drift(snaps: dict[str, _Snap], file_ops: Any) -> list[str]:
+    """Re-read every plan-time disk snapshot. A mismatch refuses; it does not replan."""
+    drifted: list[str] = []
+    for snap in snaps.values():
+        try:
+            again = file_ops.read_file_raw(snap.path)
+        except Exception:  # health: allow BLE001 -- re-read boundary: fail closed with a fixed code; exception text can hold paths/secrets
+            drifted.append(f"{snap.path}: could not re-read source before write")
+            continue
+        drifted.extend(_drift_reason(snap, again))
+    return drifted
+
+
+def _fail_closed(errors: list[str]) -> PatchResult:
+    detail = "\n".join(f"  • {error}" for error in errors)
+    return PatchResult(
+        success=False,
+        error="Patch validation failed (no files were modified):\n" + detail)
+
+
+def _read_raw(file_ops: Any, path: str) -> Any:
+    """Backend read for planning; a raised exception is a fixed-code read error, never its text."""
+    try:
+        return file_ops.read_file_raw(path)
+    except Exception:  # health: allow BLE001 -- plan-read boundary: exception text can hold paths or secrets
+        return SimpleNamespace(error="READ_ERROR", content=None, not_found=False)
+
+
+class _Overlay:
+    """In-memory file state shared by one plan. Disk reads are snapshotted; nothing is written."""
+
+    def __init__(self, file_ops: Any) -> None:
+        self.file_ops = file_ops
+        self.errors: list[str] = []
+        self.commits: list[_Commit] = []
+        self.snaps: dict[str, _Snap] = {}
+        self.pending: dict = {}
+        self.shas: dict = {}
+        self.removed: set = set()
+        self.planners: dict = {}
+        self.all_planners: list = []
+        self.changes = 0
+
+    def read(self, path: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        key = _overlay_key(path, self.file_ops)
+        if key in self.pending:
+            return self.pending[key], None, self.shas.get(key)
+        if key in self.removed:
+            return None, "file not found", None
+        result = _read_raw(self.file_ops, path)
+        _note_disk_read(self.snaps, key, path, result)
+        sha = getattr(result, "_content_sha256", None)
+        return (None, "READ_ERROR", None) if result.error else (result.content, None, sha)
+
+    def occupied(self, path: str) -> Optional[str]:
+        """Why an Add target or Move destination is not free, or None.
+
+        Only a read that reports the path absent (``not_found``) frees it. A read that
+        FAILED says nothing about what is there; treating it as free would overwrite
+        the file the check exists to protect.
+        """
+        key = _overlay_key(path, self.file_ops)
+        if key in self.pending:
             return "exists"
-        if key in removed_paths:
+        if key in self.removed:
             return None
-        r = file_ops.read_file_raw(path)
-        if not r.error:
+        result = _read_raw(self.file_ops, path)
+        _note_disk_read(self.snaps, key, path, result)
+        if not result.error:
             return "exists"
-        return None if getattr(r, "not_found", False) else f"could not confirm the path is free — {r.error}"
+        if getattr(result, "not_found", False):
+            return None
+        return "READ_ERROR"
 
-    def _validate_update(op: PatchOperation) -> None:
-        nonlocal real_change_count
-        simulated, read_err = _read(op.file_path)
-        if read_err:
-            errors.append(f"{op.file_path}: {read_err}")
-            return
-        for hunk_index, hunk in enumerate(op.hunks, start=1):
-            search_lines, replace_lines = _split_hunk(hunk)
-            if search_lines == replace_lines:
-                # Context-only anchor hunks (models emit these between changes) are inert; identical
-                # -/+ lines are skipped by apply as a no-op — neither may fail validation.
-                real_change_count += any(l.prefix in '-+' for l in hunk.lines)
-                continue
-            real_change_count += 1
-            if not search_lines:  # addition-only: the context hint must be unique
-                if hunk.context_hint:
-                    occurrences, ambiguous = _hint_ambiguity(simulated, hunk.context_hint)
-                    if occurrences == 0:
-                        errors.append(f"{op.file_path}: addition-only hunk context hint "
-                                      f"'{hunk.context_hint}' not found")
-                    elif ambiguous:
-                        errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
-                continue
-            search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
-            new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
-                simulated, search_pattern, replacement, replace_all=False)
-            if count:
-                simulated = new_simulated
-            elif not is_already_applied(simulated or "", search_pattern, replacement):
-                # Already-applied hunks are no-ops (apply performs the same skip).
-                label = f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)"
-                errors.append(
-                    f"{op.file_path}: hunk {hunk_index} {label} not found"
-                    + (f" — {match_error}" if match_error else "")
-                    + _no_match_hint(match_error, search_pattern, simulated))
-        pending_content[_overlay_key(op.file_path, file_ops)] = simulated
+    def remove(self, path: str) -> None:
+        key = _overlay_key(path, self.file_ops)
+        self.removed.add(key)
+        self.pending.pop(key, None)
 
-    def _remove(path: str) -> None:
-        key = _overlay_key(path, file_ops)
-        removed_paths.add(key)
-        pending_content.pop(key, None)
 
+def _resolve_update(op: PatchOperation, overlay: _Overlay) -> None:
+    """Plan this Update once against the overlay. A refusal is recorded, not written."""
+    simulated, read_err, sha = overlay.read(op.file_path)
+    if read_err or not isinstance(simulated, str):
+        overlay.errors.append(f"{op.file_path}: {read_err or 'READ_ERROR'}")
+        return
+    from tools.v4a_planner import PlannerState
+
+    key = _overlay_key(op.file_path, overlay.file_ops)
+    if key not in overlay.planners:
+        state = PlannerState.from_content(simulated)
+        overlay.planners[key] = state
+        overlay.all_planners.append((op.file_path, state))
+    plan = _plan_file(simulated, op.hunks, overlay.planners[key], finalize=False)
+    overlay.changes += plan.changes
+    overlay.errors.extend(f"{op.file_path}: {error}" for error in plan.errors)
+    overlay.pending[key] = plan.content
+    overlay.shas.pop(key, None)
+    _remember_update(overlay.commits, op, simulated, sha, plan)
+
+
+def _resolve_delete(op: PatchOperation, overlay: _Overlay) -> None:
+    deleted, delete_err, delete_sha = overlay.read(op.file_path)
+    if delete_err:
+        overlay.errors.append(f"{op.file_path}: file not found for deletion")
+        return
+    overlay.remove(op.file_path)
+    overlay.planners.pop(_overlay_key(op.file_path, overlay.file_ops), None)
+    overlay.commits.append(_Commit(op, deleted, None, delete_sha, (), ()))
+
+
+def _resolve_move(op: PatchOperation, overlay: _Overlay) -> None:
+    if not op.new_path:
+        overlay.errors.append(f"{op.file_path}: MOVE operation missing destination path")
+        return
+    src_content, src_err, src_sha = overlay.read(op.file_path)
+    if src_err:
+        overlay.errors.append(f"{op.file_path}: source file not found for move")
+    dst_taken = overlay.occupied(op.new_path)
+    if dst_taken == "exists":
+        overlay.errors.append(f"{op.new_path}: destination already exists — move would overwrite")
+        return
+    if dst_taken:
+        overlay.errors.append(f"{op.new_path}: {dst_taken}")
+        return
+    if src_err:  # only a cleanly-validated move updates the overlay
+        return
+    overlay.pending[_overlay_key(op.new_path, overlay.file_ops)] = src_content if src_content is not None else ""
+    src_key = _overlay_key(op.file_path, overlay.file_ops)
+    dst_key = _overlay_key(op.new_path, overlay.file_ops)
+    overlay.shas[dst_key] = overlay.shas.pop(src_key, src_sha)
+    if src_key in overlay.planners:
+        overlay.planners[dst_key] = overlay.planners.pop(src_key)
+    overlay.remove(op.file_path)
+    overlay.commits.append(_Commit(op, src_content, None, src_sha, (), ()))
+
+
+def _added_text(op: PatchOperation) -> str:
+    return "\n".join(line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+")
+
+
+def _resolve_add(op: PatchOperation, overlay: _Overlay) -> None:
+    """An Add creates a new file. An existing target is a refusal, not a clobber.
+
+    Overlay-aware: an Add after a Delete of the same path stays legal, and the added
+    text enters the overlay so a later Update validates against it.
+    """
+    add_taken = overlay.occupied(op.file_path)
+    if add_taken == "exists":
+        overlay.errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
+        return
+    if add_taken:
+        overlay.errors.append(f"{op.file_path}: {add_taken}")
+        return
+    key = _overlay_key(op.file_path, overlay.file_ops)
+    overlay.removed.discard(key)
+    overlay.pending[key] = _added_text(op)
+    overlay.commits.append(_Commit(op, None, None, "", (), ()))
+
+
+_RESOLVE_OP = {
+    OperationType.DELETE: _resolve_delete,
+    OperationType.MOVE: _resolve_move,
+    OperationType.ADD: _resolve_add,
+}
+
+
+def _resolve_operations(operations: list[PatchOperation], file_ops: Any) -> _Resolution:
+    """Plan every op against one overlay. The planner runs once per Update; nothing is written."""
+    overlay = _Overlay(file_ops)
     for op in operations:
         if op.operation == OperationType.UPDATE:
-            _validate_update(op)
+            _resolve_update(op, overlay)
             continue
-        real_change_count += 1
-        if op.operation == OperationType.DELETE:
-            if _read(op.file_path)[1]:
-                errors.append(f"{op.file_path}: file not found for deletion")
-            else:
-                _remove(op.file_path)
-        elif op.operation == OperationType.MOVE:
-            if not op.new_path:
-                errors.append(f"{op.file_path}: MOVE operation missing destination path")
-                continue
-            src_content, src_err = _read(op.file_path)
-            if src_err:
-                errors.append(f"{op.file_path}: source file not found for move")
-            dst_taken = _occupied(op.new_path)
-            if dst_taken == "exists":
-                errors.append(f"{op.new_path}: destination already exists — move would overwrite")
-            elif dst_taken:
-                errors.append(f"{op.new_path}: {dst_taken}")
-            elif not src_err:  # only a cleanly-validated move updates the overlay
-                pending_content[_overlay_key(op.new_path, file_ops)] = src_content if src_content is not None else ""
-                _remove(op.file_path)
-        elif op.operation == OperationType.ADD:
-            # An Add must create a NEW file. If the target already exists, write_file
-            # would clobber it with only the patch's '+' lines and report success,
-            # silently destroying the original contents (models frequently confuse Add
-            # with Update). Reject it here so the two-phase contract holds, mirroring
-            # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
-            # same path in this patch stays legal, and the added content enters the
-            # overlay so later hunks against it validate.
-            add_taken = _occupied(op.file_path)
-            if add_taken == "exists":
-                errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
-            elif add_taken:
-                errors.append(f"{op.file_path}: {add_taken}")
-            else:
-                removed_paths.discard(_overlay_key(op.file_path, file_ops))
-                pending_content[_overlay_key(op.file_path, file_ops)] = '\n'.join(
-                    line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
-    if not errors and real_change_count == 0:
-        errors.append("Patch contains no changes (only context lines were provided)")
-    return errors
+        overlay.changes += 1
+        _RESOLVE_OP[op.operation](op, overlay)
+    from tools.v4a_planner import finish_state
+
+    for path, state in overlay.all_planners:
+        try:
+            errors = _redact_planner_errors(finish_state(state))
+        except Exception:  # health: allow BLE001 -- planner boundary: fail closed with a fixed code; exception text can hold source
+            errors = ["hunk planning failed"]
+        overlay.errors.extend(f"{path}: {error}" for error in errors)
+    if not overlay.errors and overlay.changes == 0:
+        overlay.errors.append("Patch contains no changes (only context lines were provided)")
+    return _Resolution(overlay.errors, overlay.commits, overlay.snaps)
 
 
 class ApplyResult(NamedTuple):
@@ -342,53 +498,19 @@ def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
 
 
 def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> PatchResult:
-    """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
-    failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
-    ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
+    """Plan every file, refuse before any write, then commit the planned bytes.
 
-    def _bullets(errs: list[str]) -> str:
-        return "\n".join(f"  • {e}" for e in errs)
-
-    if errors := _validate_operations(operations, file_ops):
-        return PatchResult(
-            success=False,
-            error="Patch validation failed (no files were modified):\n" + _bullets(errors))
-    files: dict[str, list[str]] = {"created": [], "deleted": [], "modified": []}
-    all_diffs: list[str] = []
-    notes: list[str] = []
-    # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
-    lsp_blocks: list[str] = []
-    lint_results: dict[str, dict] = {}
-    writes: list[tuple] = []
-    for op in operations:
-        handler, verb, bucket = _APPLY_DISPATCH[op.operation]
-        try:
-            ok, payload, lsp, lint, write, op_notes = handler(op, file_ops)
-        except Exception as e:
-            ok, payload = None, str(e)
-        if not ok:
-            prefix = f"Failed to {verb}" if ok is False else "Error processing"
-            errors.append(f"{prefix} {op.file_path}: {payload}")
-            continue
-        is_move = op.operation is OperationType.MOVE
-        files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
-        all_diffs.append(payload)
-        if write:
-            writes.append(write)
-        notes.extend(op_notes)
-        if lsp:
-            lsp_blocks.append(lsp)
-        if lint:
-            lint_results[op.file_path] = lint
-    # Each LSP block carries its own <diagnostics file="..."> header; joining keeps attribution.
-    return PatchResult(
-        success=not errors,
-        error=("Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
-               + _bullets(errors)) if errors else None,
-        diff='\n'.join(all_diffs),
-        files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
-        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes,
-        note="\n".join(dict.fromkeys(notes)) or None)
+    The provenance planner runs once per Update. A refused hunk writes nothing in any
+    file. Commit does not select or plan again: it re-reads the snapshots and writes
+    only when they still match. A later I/O error is reported, not rolled back.
+    ``file_ops`` needs read_file_raw/write_file/delete_file/move_file.
+    """
+    resolved = _resolve_operations(operations, file_ops)
+    if resolved.errors:
+        return _fail_closed(resolved.errors)
+    if drift := _snapshot_drift(resolved.snaps, file_ops):
+        return _fail_closed(drift)
+    return _commit_resolved(resolved.commits, file_ops)
 
 
 def _write_file_accepts_pre_content(file_ops: Any) -> bool:
@@ -443,82 +565,107 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
         True, f"# Moved: {op.file_path} -> {op.new_path}")
 
 
-def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tuple[Optional[str], Optional[str]]:
-    """Place an addition-only hunk after its context hint (or at EOF). Returns (content, error)."""
-    if hunk.context_hint:
-        occurrences, ambiguous = _hint_ambiguity(
-            new_content, hunk.context_hint, " — provide a more unique hint")
-        if ambiguous:
-            return None, f"Addition-only hunk: {ambiguous}"
-        if occurrences == 1:
-            eol = new_content.find('\n', new_content.find(hunk.context_hint))
-            if eol == -1:
-                return new_content + '\n' + insert_text, None
-            return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None
-    # No hint / hint not found — append at end as a safe fallback.
-    return new_content.rstrip('\n') + '\n' + insert_text + '\n', None
-
-
-def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
-    """Apply each hunk via fuzzy replace, then write once."""
-    from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace, is_already_applied
-    read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
-    if read_result.error:
-        return _fail(f"Cannot read file: {read_result.error}")
-    current_content = new_content = read_result.content
-    notes: list[str] = []  # escape-drift corrections, appended by fuzzy_find_and_replace
-    strategies: list[str] = []  # the fuzzy strategies that located the hunks
-    for hunk in op.hunks:
-        search_lines, replace_lines = _split_hunk(hunk)
-        if search_lines and search_lines == replace_lines:
-            continue
-        search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
-        if not search_lines:
-            new_content, err = _insert_addition_only(new_content, hunk, replacement)
-            if err:
-                return _fail(err)
-            continue
-        new_content, count, strategy, error = fuzzy_find_and_replace(
-            new_content, search_pattern, replacement, replace_all=False, correction_notes=notes)
-        if not (error and count == 0):
-            if count > 0:
-                strategies.append(strategy)
-            continue
-        # Retry inside a window around the context hint, if any.
-        hint_pos = new_content.find(hunk.context_hint) if hunk.context_hint else -1
-        if hint_pos != -1:
-            window_start = max(0, hint_pos - 500)
-            window_end = min(len(new_content), hint_pos + 2000)
-            window_new, count, strategy, error = fuzzy_find_and_replace(
-                new_content[window_start:window_end], search_pattern, replacement, replace_all=False,
-                correction_notes=notes)
-            if count > 0:
-                strategies.append(strategy)
-                new_content = new_content[:window_start] + window_new + new_content[window_end:]
-                error = None
-        if error:
-            # Mirror validation's already-applied skip, else the two phases disagree and fail here.
-            if is_already_applied(new_content, search_pattern, replacement):
-                continue
-            hint = _no_match_hint(error, search_pattern, new_content)
-            return _fail(f"Could not apply hunk: {error}" + hint)
-    # Pass pre_content to skip a redundant re-read inside write_file when supported.
-    extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
-    write_result = file_ops.write_file(op.file_path, new_content, **extra)
-    result = _written(write_result, _unified_diff(op.file_path, current_content, new_content),
-                      op.file_path, getattr(read_result, "_content_sha256", None))
+def _commit_planned_update(commit: _Commit, file_ops: Any) -> ApplyResult:
+    """Write the bytes the planner already chose. Never read the file to select a site."""
+    from tools.fuzzy_match import _note_edit_match, boundary_note
+    op = commit.op
+    if not isinstance(commit.snapshot, str) or not isinstance(commit.content, str):
+        return _fail("planned update is missing content")
+    # pre_content skips a redundant re-read inside write_file. It is the snapshot, not a new selection.
+    extra = {"pre_content": commit.snapshot} if _write_file_accepts_pre_content(file_ops) else {}
+    write_result = file_ops.write_file(op.file_path, commit.content, **extra)
+    result = _written(
+        write_result, _unified_diff(op.file_path, commit.snapshot, commit.content),
+        op.file_path, commit.read_sha)
     if not result.ok:
         return result
-    # A hunk found by a similarity strategy may have landed a line off; say so, per file.
-    if note := boundary_note(strategies, "the hunk's", f" in {op.file_path}"):
+    for strategy in commit.strategies:
+        _note_edit_match(strategy)  # shared metrics: which strategy landed each hunk
+    notes = list(commit.notes)
+    if note := boundary_note(commit.strategies, "the hunk's", f" in {op.file_path}"):
         notes.append(note)
     return result._replace(notes=tuple(notes))
 
 
-# operation -> (handler, verb for error text, files_* bucket)
+def _commit_one(commit: _Commit, file_ops: Any) -> tuple[ApplyResult, str, str]:
+    """Dispatch a planned mutation. Update never re-enters the planner."""
+    op = commit.op
+    if op.operation is OperationType.UPDATE:
+        return _commit_planned_update(commit, file_ops), "update", "modified"
+    handler, verb, bucket = _APPLY_DISPATCH[op.operation]
+    return handler(op, file_ops), verb, bucket
+
+
+# Backend denials that name the policy knob, not source text. Anything else is IO_ERROR.
+_KNOWN_IO_DENIALS = {"HERMES_WRITE_SAFE_ROOT": "WRITE_DENIED (HERMES_WRITE_SAFE_ROOT)"}
+
+
+def _io_code(backend_error: Any) -> str:
+    """Fixed code for a backend write failure; the backend text itself is never echoed."""
+    text = backend_error if isinstance(backend_error, str) else ""
+    for marker, code in _KNOWN_IO_DENIALS.items():
+        if marker in text:
+            return code
+    return "IO_ERROR"
+
+
+def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
+    """Write planned bytes in order. An I/O failure is not a selection refusal and is not rolled back."""
+    errors: list[str] = []
+    files: dict[str, list[str]] = {"created": [], "deleted": [], "modified": []}
+    all_diffs: list[str] = []
+    notes: list[str] = []
+    lsp_blocks: list[str] = []
+    lint_results: dict[str, dict] = {}
+    writes: list[tuple] = []
+    written_sha: dict[str, Optional[str]] = {}
+    for commit in commits:
+        op = commit.op
+        key = _overlay_key(op.file_path, file_ops)
+        if commit.read_sha is None and written_sha.get(key):
+            # A later Update of a file this patch already wrote was planned on the earlier
+            # op's bytes; its baseline is what that earlier write produced.
+            commit = commit._replace(read_sha=written_sha[key])
+        try:
+            outcome, verb, bucket = _commit_one(commit, file_ops)
+            ok, payload, lsp, lint, write, op_notes = outcome
+        except Exception:  # health: allow BLE001 -- commit boundary: report a fixed code; exception text can hold source or secrets
+            ok, payload, lsp, lint, write, op_notes = None, "INTERNAL_ERROR", None, None, None, ()
+            verb, bucket = "process", "modified"
+        if not ok:
+            prefix = f"Failed to {verb}" if ok is False else "Error processing"
+            code = 'INTERNAL_ERROR' if ok is None else _io_code(payload)
+            errors.append(f"{prefix} {op.file_path}: {code}")
+            continue
+        if write:
+            written_sha[key] = write[2]
+        if op.operation is OperationType.MOVE and op.new_path:
+            written_sha[_overlay_key(op.new_path, file_ops)] = written_sha.pop(key, None)
+        is_move = op.operation is OperationType.MOVE
+        files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
+        all_diffs.append(payload)
+        if write:
+            writes.append(write)
+        notes.extend(op_notes)
+        if lsp:
+            lsp_blocks.append(lsp)
+        if lint:
+            lint_results[op.file_path] = lint
+    detail = "\n".join(f"  • {error}" for error in errors)
+    return PatchResult(
+        success=not errors,
+        error=("Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
+               + detail) if errors else None,
+        diff='\n'.join(all_diffs),
+        files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
+        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes,
+        note="\n".join(dict.fromkeys(notes)) or None)
+
+
+# operation -> (handler, verb for error text, files_* bucket). Update is not here: commit
+# writes the planned bytes and must not select a site.
 _APPLY_DISPATCH: dict[OperationType, tuple[Callable[[PatchOperation, Any], ApplyResult], str, str]] = {
     OperationType.ADD: (_apply_add, "add", "created"),
     OperationType.DELETE: (_apply_delete, "delete", "deleted"),
     OperationType.MOVE: (_apply_move, "move", "modified"),
-    OperationType.UPDATE: (_apply_update, "update", "modified"),
 }

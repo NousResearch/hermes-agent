@@ -15,6 +15,7 @@ import os
 import shlex
 import sys
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -231,10 +232,14 @@ class TestPatchV4A:
         assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "block_anchor"
         path = tmp_path / "anchor.py"
         path.write_text(self.FUNC)
-        result = ops.patch_v4a(self._patch(
-            path, " def total(x):", "-    y = x + 2", "-    return y", "+    return x + 1"))
-        assert result.success, result.error
-        assert result.note and "block_anchor" in result.note and str(path) in result.note
+        # Similarity-only targets are refused (wrong-site splice class): no fuzzy chain.
+        with mock.patch("tools.fuzzy_match.fuzzy_find_and_replace", side_effect=AssertionError("fuzzy called")):
+            result = ops.patch_v4a(self._patch(
+                path, " def total(x):", "-    y = x + 2", "-    return y", "+    return x + 1"))
+        assert not result.success
+        assert "Could not find a match for old_string in the file" in result.error
+        assert path.read_text() == self.FUNC
+        assert result.note is None
 
     def test_line_trimmed_match_gets_no_note(self, ops, tmp_path):
         from tools.fuzzy_match import fuzzy_find_and_replace
@@ -265,9 +270,12 @@ class TestPatchV4A:
             f"*** Update File: {exact}", "@@ @@",
             "-a = 1", "+a = 5",
             "*** End Patch"])
-        result = ops.patch_v4a(patch)
-        assert result.success, result.error
-        assert str(approx) in result.note and str(exact) not in result.note
+        with mock.patch("tools.fuzzy_match.fuzzy_find_and_replace", side_effect=AssertionError("fuzzy called")):
+            result = ops.patch_v4a(patch)
+        assert not result.success
+        assert "Could not find a match for old_string in the file" in result.error
+        assert approx.read_text() == self.FUNC and exact.read_text() == "a = 1\nb = 2\n"
+        assert result.note is None
 
 
 # ── search ───────────────────────────────────────────────────────────────

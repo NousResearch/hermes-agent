@@ -1,0 +1,22 @@
+name: taofind
+title: TaoFind
+repo: https://github.com/AbigailDavised/taofind-mcp
+sha: c4b6551382f4ceed5cecea6b1219d86153f86615
+version: "1.0.0"
+description: "China reverse proxy shopping hub, 1688 link desensitizer, IATA volumetric shipping calculator (5000 vs 6000 divisor), and proxy agent fee comparator through TaoFind's official MCP server (Streamable HTTP at https://taofind.com/api/mcp, no sign-in, no keys in config). Bundles the taofind workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to taofind.com/api/mcp with only the shopping link or haul parcel arguments. All tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: TaoFind
+tier: community
+category: tools
+docs_url: https://taofind.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/taofind-mcp/c4b6551382f4ceed5cecea6b1219d86153f86615/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/taofind-mcp/c4b6551382f4ceed5cecea6b1219d86153f86615/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/taofind-mcp/c4b6551382f4ceed5cecea6b1219d86153f86615/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

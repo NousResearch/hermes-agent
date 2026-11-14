@@ -29,7 +29,7 @@ PATH = "/srv/workspace/project"
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     monkeypatch.setattr(redact_secret_sources, "_VALUES_BY_HOME", {})
-    monkeypatch.setattr("agent.redact._VAULT_REDACTION_VALUES", {})
+    monkeypatch.setattr("agent.redact_vault_values._VAULT_REDACTION_VALUES", {})
     env_loader.reset_secret_source_cache()
     yield
     env_loader.reset_secret_source_cache()

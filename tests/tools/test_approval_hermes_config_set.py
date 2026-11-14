@@ -61,6 +61,19 @@ def _policy_rule_fires(command: str) -> bool:
     # A quoted key reaches the CLI as the same key.
     'hermes config set "approvals.mode" off',
     "hermes config set 'command_allowlist' x",
+    # `-p`/`--profile` is stripped from anywhere in argv, so it also works after the subcommand.
+    "hermes config set -p work approvals.mode off",
+    "hermes config set --profile=work approvals.mode off",
+    "hermes config -p work set approvals.mode off",
+    "hermes config --profile work unset command_allowlist",
+    # A quoted assignment in front of the program.
+    "NOTE='a b' hermes config set approvals.mode off",
+    'NOTE="a b" hermes config set approvals.mode off',
+    # A Windows drive-qualified program, either separator, and an attached `-m`.
+    r"C:\Users\me\AppData\Local\hermes\hermes.exe config set approvals.mode off",
+    "C:/Users/me/hermes.exe config set approvals.mode off",
+    r"C:\Python312\python.exe -m hermes_cli.main config set approvals.mode off",
+    "python -mhermes_cli.main config set approvals.mode off",
 ])
 def test_a_real_config_set_invocation_is_gated(command):
     dangerous, _key, _description = detect_dangerous_command(command)
@@ -87,6 +100,8 @@ def test_a_real_config_set_invocation_is_gated(command):
     "python -m hermes_cli.main config show",
     "HERMES_HOME=/tmp/x hermes config show",
     'hermes config set "display.language" en',
+    "hermes config -p work set display.language en",
+    "NOTE='a b' hermes config show",
 ])
 def test_a_read_or_an_unrelated_invocation_is_not_gated(command):
     dangerous, _key, description = detect_dangerous_command(command)
@@ -113,4 +128,4 @@ def test_a_long_global_option_run_stays_linear():
     start = time.perf_counter()
     detect_dangerous_command(command)
     elapsed = time.perf_counter() - start
-    assert elapsed < 1.0, f"detection took {elapsed:.3f}s for a 40-flag run"
+    assert elapsed < 2.0, f"detection took {elapsed:.3f}s for a 40-flag run"

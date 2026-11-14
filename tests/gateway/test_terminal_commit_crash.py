@@ -4,13 +4,12 @@ from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import socket
 import sqlite3
 import threading
 
 import aiohttp
 import pytest
-from tests.gateway.fixtures.local_recovery_probe import daemon, Model
+from tests.gateway.fixtures.local_recovery_probe import daemon, Model, listen_port
 from tests.waiting import async_wait_until
 
 
@@ -23,8 +22,7 @@ def test_terminal_commit_before_publication_survives_kill(tmp_path):
     peer.requests = []
     peer.blocked, peer.release = threading.Event(), threading.Event()
     threading.Thread(target=peer.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+    port = listen_port()
     base = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'model': {'provider': 'custom', 'default': 'local-wire-stub', 'base_url': base},
            'gateway': {'platforms': {'api_server': {'enabled': True, 'port': port, 'host': '127.0.0.1'}}, 'multiplex_profiles': False},

@@ -49,10 +49,20 @@ def _stem(token: str) -> str:
     return _thread_local.stemmer.stemWord(token)
 
 
+# Function words name no capability. Left in, the rarest-token gate picks one ("me" in "render
+# a thumbnail for me" is in two tool descriptions) and admits only tools that happen to say it.
+# Dropped from the index and the query alike, so a tool's own name loses nothing it could match.
+_FUNCTION_WORDS = frozenset(
+    "a an the of to in on at by for with from into onto and or as is are be it its this that "
+    "these those i me my mine you your we our us please".split())
+
+
 def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens, Snowball-stemmed (English); shared by the index and
-    query paths so "issues" matches ``create_issue``."""
-    return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)] if text else []
+    """Lowercase alphanumeric tokens minus function words, Snowball-stemmed (English); shared by
+    the index and query paths so "issues" matches ``create_issue``."""
+    if not text:
+        return []
+    return [_stem(t) for t in (tok.lower() for tok in _TOKEN_RE.findall(text)) if t not in _FUNCTION_WORDS]
 
 
 def _fn(td: dict[str, Any]) -> dict[str, Any]:

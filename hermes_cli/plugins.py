@@ -464,6 +464,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             try:
                 result = snapshot() if snapshot is not None else None
             except BaseException as exc:
+                logger.exception("Plugin discovery snapshot failed; notifying listeners before re-raising")
                 snapshot_error = exc
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         try:

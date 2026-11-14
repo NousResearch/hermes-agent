@@ -2588,8 +2588,6 @@ class _BedrockStream:
                 chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
                 metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
-            # Preserve upstream spinner eligibility, while always delivering deltas to
-            # dynamically discovered hooks (including after a busy discovery lock).
             try:
                 from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
                 plugin_reasoning_observer = has_reasoning_stream_observer_hooks()

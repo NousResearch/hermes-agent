@@ -263,9 +263,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "finally:\n"
             "    if fd is not None: os.close(fd)\n"
         )
-        result = self._exec_python_snippet(snippet)
-        if result.exit_code == 127:
-            result = self._exec_python_snippet(snippet, py="python")
+        try:
+            result = self._exec_python_snippet(snippet)
+            if result.exit_code == 127:
+                result = self._exec_python_snippet(snippet, py="python")
+        except Exception:  # health: allow BLE001 -- backend exception text can contain secrets
+            return None
         lines = _strip_terminal_fence_leaks(result.stdout).splitlines()
         matches = [line[len(marker):] for line in lines if line.startswith(marker)]
         if result.exit_code != 0 or len(matches) != 1:
@@ -1401,9 +1404,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "finally:\n"
             "    if fd is not None: os.close(fd)\n"
         )
-        result = self._exec_python_snippet(snippet)
-        if result.exit_code == 127:
-            result = self._exec_python_snippet(snippet, py="python")
+        try:
+            result = self._exec_python_snippet(snippet)
+            if result.exit_code == 127:
+                result = self._exec_python_snippet(snippet, py="python")
+        except Exception:  # health: allow BLE001 -- backend exception text can contain secrets
+            return WriteResult(error="Oversized source changed or cannot be verified")
         lines = _strip_terminal_fence_leaks(result.stdout).splitlines()
         if result.exit_code != 0 or sum(line.strip() == marker + "OK" for line in lines) != 1:
             return WriteResult(error="Oversized source changed or cannot be verified")

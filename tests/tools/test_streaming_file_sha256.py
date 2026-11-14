@@ -22,6 +22,19 @@ def test_rejects_digest_with_unfenced_extra_output(tmp_path, monkeypatch):
     assert ops.file_sha256(str(tmp_path / "data")) is None
 
 
+def test_backend_exception_does_not_escape_digest_or_delete(tmp_path, monkeypatch):
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic_private_value")
+
+    monkeypatch.setattr(ops, "_exec_python_snippet", fail)
+    assert ops.file_sha256(str(tmp_path / 'x')) is None
+    result = ops.delete_file(str(tmp_path / 'x'), expected_sha256='a' * 64)
+    assert result.error and "synthetic_private_value" not in repr(result)
+
+
 def test_ignores_banner_around_fenced_digest(tmp_path, monkeypatch):
     from tools.file_operations_common import ExecuteResult
     path = tmp_path / "data"

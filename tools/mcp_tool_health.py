@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
-from tools.mcp_tool_schema import mcp_prefixed_tool_name
+from tools.mcp_tool_schema import list_tools_repairing_schemas, mcp_prefixed_tool_name
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_registration as _registration
 
@@ -148,7 +148,8 @@ class MCPServerHealthMixin:
                 if session is None:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
-                new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
+                new_mcp_tools = await _core._paginate_full_list(
+                    list_tools_repairing_schemas(session), "tools", self.name)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})
@@ -173,7 +174,7 @@ class MCPServerHealthMixin:
         OPTIONAL); on -32601 latch ``_ping_unsupported`` (reset per transport connection) and fall
         back to ``list_tools`` when the server advertises tools, else the -32601 propagates."""
         async def list_tools():
-            await asyncio.wait_for(self.session.list_tools(), timeout=_KEEPALIVE_RPC_TIMEOUT)
+            await asyncio.wait_for(list_tools_repairing_schemas(self.session)(), timeout=_KEEPALIVE_RPC_TIMEOUT)
         if not self._ping_unsupported:
             try:
                 await asyncio.wait_for(self.session.send_ping(), timeout=_KEEPALIVE_RPC_TIMEOUT)

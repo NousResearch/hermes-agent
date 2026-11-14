@@ -102,23 +102,7 @@ def build_models_payload(
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
 
-    # Managed local runtime: staged GGUFs are selectable like any provider's models, but
-    # list_authenticated_providers can't know about them (no credential — reachability is the
-    # credential), so inject the row here where every picker surface inherits it.
-    local_row = _local_runtime_row(ctx)
-    if local_row is not None:
-        rows = _without_slug(rows, "llamacpp") + [local_row]
-        # A live session on the managed server reports provider "custom" (raw base_url label), which
-        # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
-        # checkmark. The Local row owns the managed server's identity — drop such custom rows.
-        if local_row.get("is_current"):
-            staged = set(local_row["models"])
-
-            def _is_managed_custom(row: dict) -> bool:
-                models = {str(m) for m in (row.get("models") or [])}
-                return _slug(row) == "custom" and bool(models) and models <= staged
-
-            rows = [r for r in rows if not _is_managed_custom(r)]
+    rows, local_row = inject_local_runtime_row(rows, ctx)
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -1012,6 +996,29 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
                 # Window plans: the picker shows the usage word, not per-token prices.
                 row.pop("pricing", None)
+
+
+def inject_local_runtime_row(rows: list[dict], ctx: ConfigContext) -> tuple[list[dict], dict | None]:
+    """Add the managed local runtime's ``llamacpp`` row to authenticated-provider ``rows`` — every
+    picker (desktop/CLI payload and the chat-platform ``/model`` picker) goes through here.
+    ``list_authenticated_providers`` can't know about staged GGUFs (no credential — reachability is
+    the credential). Returns ``(rows, local_row)``; ``local_row`` is ``None`` when nothing is staged."""
+    local_row = _local_runtime_row(ctx)
+    if local_row is None:
+        return rows, None
+    rows = _without_slug(rows, "llamacpp") + [local_row]
+    # A live session on the managed server reports provider "custom" (raw base_url label), which
+    # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
+    # checkmark. The Local row owns the managed server's identity — drop such custom rows.
+    if local_row.get("is_current"):
+        staged = set(local_row["models"])
+
+        def _is_managed_custom(row: dict) -> bool:
+            models = {str(m) for m in (row.get("models") or [])}
+            return _slug(row) == "custom" and bool(models) and models <= staged
+
+        rows = [r for r in rows if not _is_managed_custom(r)]
+    return rows, local_row
 
 
 def _local_runtime_row(ctx: ConfigContext) -> dict | None:

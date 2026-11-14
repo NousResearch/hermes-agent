@@ -333,9 +333,9 @@ class TestReloadNoticeWithoutTodo:
             "[CONTEXT COMPACTION] summary\n\n## Pruned Skills\n"
             + _skill_pruned_marker("hodle-design-system")
         )
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         parent = "PARENT_SKILL_TODO_FREE"
-        db.create_session(parent, source="cli")
+        seed_session(db, parent, "cli")
         agent = _build_agent_with_db(db, parent)
         agent.context_compressor.compress.return_value = [
             {"role": "user", "content": summary},
@@ -367,9 +367,9 @@ class TestReloadNoticeWithoutTodo:
         from agent.conversation_compression import _fold_todo_snapshot
 
         marker = _skill_pruned_marker("alpha")
-        agent = _build_agent_with_db(
-            SessionDB(db_path=tmp_path / "state.db"), "PARENT_NOTICE_RESTRIPE"
-        )
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "PARENT_NOTICE_RESTRIPE", "cli")
+        agent = _build_agent_with_db(db, "PARENT_NOTICE_RESTRIPE")
         compressed = [
             {"role": "user", "content": f"[CONTEXT COMPACTION] {marker}"},
             {"role": "assistant", "content": "ack"},
@@ -394,9 +394,9 @@ class TestReloadNoticeWithoutTodo:
             "[CONTEXT COMPACTION] summary\n\n## Pruned Skills\n"
             + _skill_pruned_marker("alpha")
         )
-        agent = _build_agent_with_db(
-            SessionDB(db_path=tmp_path / "state.db"), "PARENT_NOTICE_REAL_TAIL"
-        )
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "PARENT_NOTICE_REAL_TAIL", "cli")
+        agent = _build_agent_with_db(db, "PARENT_NOTICE_REAL_TAIL")
         from agent.conversation_compression import _fold_todo_snapshot
 
         compressed = [
@@ -422,9 +422,9 @@ class TestReloadNoticeWithoutTodo:
         from agent.conversation_compression import _fold_todo_snapshot
 
         marker = _skill_pruned_marker("alpha")
-        agent = _build_agent_with_db(
-            SessionDB(db_path=tmp_path / "state.db"), "PARENT_NOTICE_WELD_RESTRIPE"
-        )
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "PARENT_NOTICE_WELD_RESTRIPE", "cli")
+        agent = _build_agent_with_db(db, "PARENT_NOTICE_WELD_RESTRIPE")
         compressed = [
             {"role": "user", "content": f"[CONTEXT COMPACTION] {marker}"},
             {"role": "assistant", "content": "ack"},
@@ -451,9 +451,9 @@ class TestReloadNoticeWithoutTodo:
         from agent.conversation_compression import _fold_todo_snapshot
 
         marker = _skill_pruned_marker("alpha")
-        agent = _build_agent_with_db(
-            SessionDB(db_path=tmp_path / "state.db"), "PARENT_NOTICE_RELOAD_STRIP"
-        )
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "PARENT_NOTICE_RELOAD_STRIP", "cli")
+        agent = _build_agent_with_db(db, "PARENT_NOTICE_RELOAD_STRIP")
         compressed = [
             {"role": "user", "content": f"[CONTEXT COMPACTION] {marker}"},
             {"role": "assistant", "content": "ack"},

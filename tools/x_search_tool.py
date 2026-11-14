@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from datetime import date, datetime, timezone, UTC
 from ipaddress import ip_address
@@ -44,8 +43,12 @@ def _load_x_search_config() -> dict[str, Any]:
 
 def _x_search_gateway_config() -> dict[str, str] | None:
     raw = _load_x_search_config().get("gateway")
-    if not isinstance(raw, dict) or not raw:
+    if raw is None or raw == {}:
         return None
+    if not isinstance(raw, dict):
+        # Fail closed: a gateway the user tried to configure must never silently
+        # fall back to xAI credentials (and xAI billing).
+        raise ValueError("x_search.gateway must be a mapping with base_url, key_env, and model")
     base_url = str(raw.get("base_url") or "").strip().rstrip("/")
     key_env = str(raw.get("key_env") or "").strip()
     model = str(raw.get("model") or "").strip()
@@ -70,7 +73,10 @@ def _resolve_x_search_gateway() -> tuple[str, str, str] | None:
     gateway = _x_search_gateway_config()
     if gateway is None:
         return None
-    key = os.environ.get(gateway["key_env"], "").strip()
+    from hermes_cli.config import get_env_value
+
+    # Same scope-aware reader as other Hermes secrets (profile scope, ~/.hermes/.env).
+    key = str(get_env_value(gateway["key_env"]) or "").strip()
     if not key:
         raise RuntimeError(f"x_search gateway key is missing from {gateway['key_env']}")
     return key, gateway["base_url"], gateway["model"]

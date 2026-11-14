@@ -11,6 +11,8 @@ Covers:
 
 import json
 
+import pytest
+
 import requests
 
 class _FakeResponse:
@@ -387,11 +389,101 @@ def test_x_search_gateway_rejects_plain_http_except_loopback(monkeypatch):
     assert "HTTPS" in result["error"]
 
 
+def test_x_search_gateway_allows_plain_http_on_loopback(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("X_SEARCH_GATEWAY_KEY", "gateway-secret")
+    monkeypatch.setattr(
+        "tools.x_search_tool._load_x_search_config",
+        lambda: {"gateway": {
+            "base_url": "http://127.0.0.1:20128/v1",
+            "key_env": "X_SEARCH_GATEWAY_KEY",
+            "model": "custom-search-model",
+        }},
+    )
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        return _FakeResponse({"output_text": "loopback"})
+
+    monkeypatch.setattr("requests.post", _fake_post)
+    result = json.loads(x_search_tool(query="latest posts"))
+    assert result["success"] is True
+    assert captured["url"] == "http://127.0.0.1:20128/v1/responses"
+
+
+def _fail_if_xai_resolved(*_a, **_k):
+    raise AssertionError("gateway mode must never resolve xAI credentials")
+
+
+@pytest.mark.parametrize(
+    "gateway",
+    [
+        pytest.param({"base_url": "https://gateway.example/v1", "key_env": "X_SEARCH_GATEWAY_KEY_UNSET",
+                      "model": "m"}, id="missing-key"),
+        pytest.param({"base_url": "https://gateway.example/v1", "model": "m"}, id="missing-key-env"),
+        pytest.param("https://gateway.example/v1", id="not-a-mapping"),
+    ],
+)
+def test_x_search_misconfigured_gateway_fails_closed(monkeypatch, gateway):
+    """A configured-but-broken gateway is a tool error: no xAI fallback, no request sent."""
+    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+
+    monkeypatch.delenv("X_SEARCH_GATEWAY_KEY_UNSET", raising=False)
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setattr("tools.x_search_tool._load_x_search_config", lambda: {"gateway": gateway})
+    monkeypatch.setattr("tools.x_search_tool.resolve_xai_http_credentials", _fail_if_xai_resolved)
+    monkeypatch.setattr("requests.post", lambda *a, **k: pytest.fail("no request may be sent"))
+
+    assert check_x_search_requirements() is False
+    result = json.loads(x_search_tool(query="latest posts"))
+    assert "error" in result
+    assert "xai-secret" not in json.dumps(result)
+
+
+def test_x_search_gateway_never_sends_oauth_bearer(monkeypatch):
+    """Even with a live xAI OAuth credential, gateway mode sends only the gateway key."""
+    from tools.x_search_tool import x_search_tool
+
+    oauth_token = _xcred("oauth")
+    _install_fake_oauth_pool(monkeypatch, oauth_token)
+    monkeypatch.setenv("X_SEARCH_GATEWAY_KEY", "gateway-secret")
+    monkeypatch.setattr(
+        "tools.x_search_tool._load_x_search_config",
+        lambda: {"gateway": {
+            "base_url": "https://gateway.example/v1",
+            "key_env": "X_SEARCH_GATEWAY_KEY",
+            "model": "custom-search-model",
+        }},
+    )
+    monkeypatch.setattr("tools.x_search_tool.resolve_xai_http_credentials", _fail_if_xai_resolved)
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured.update(url=url, headers=headers, json=json)
+        return _FakeResponse({"output_text": "gateway result"})
+
+    monkeypatch.setattr("requests.post", _fake_post)
+    result = json.loads(x_search_tool(query="latest posts"))
+    assert result["success"] is True
+    assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
+    assert oauth_token not in str(captured)
+
+
 def test_x_search_gateway_is_default_off(monkeypatch):
     from tools.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-secret")
-    monkeypatch.setattr("requests.post", lambda *a, **k: _FakeResponse({"output_text": "xai"}))
+    monkeypatch.setattr("tools.x_search_tool._load_x_search_config", dict)
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        return _FakeResponse({"output_text": "xai"})
+
+    monkeypatch.setattr("requests.post", _fake_post)
     result = json.loads(x_search_tool(query="latest posts"))
     assert result["credential_source"] == "xai"
     assert result["success"] is True
+    assert captured["url"].startswith("https://api.x.ai/")

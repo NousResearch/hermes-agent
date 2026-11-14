@@ -43,10 +43,22 @@ def _add_refresh_prompts(sessions_subparsers) -> None:
     _flag(refresh, "--json", help="Machine-readable output")
 
 
+def _add_stats_and_cost(sessions_subparsers) -> None:
+    sessions_subparsers.add_parser("stats", help="Show session store statistics")
+    sessions_cost = sessions_subparsers.add_parser(
+        "cost", help="Per-session cache-hit rate, estimated cost and cache savings",
+        description="Token usage, prompt-cache hit rate, estimated cost and the estimated cost had the "
+            "cache never hit. The counterfactual assumes cache reads bill at cost.cache_hit_ratio "
+            "(default 0.10) of the cold input rate; sessions without a price show n/a.")
+    sessions_cost.add_argument("--session", metavar="ID", help="Full breakdown for one session (id or unique prefix)")
+    sessions_cost.add_argument("--limit", type=int, default=20, help="Max sessions in the table (default: 20)")
+    sessions_cost.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
-        "sessions", help="Manage session history (list, rename, export, prune, delete)",
+        "sessions", help="Manage session history (list, cost, rename, export, prune, delete)",
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
@@ -293,7 +305,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_recover.add_argument(
         "--report", type=Path, help="JSON report path (defaults to <output>.recovery.json)")
 
-    sessions_subparsers.add_parser("stats", help="Show session store statistics")
+    _add_stats_and_cost(sessions_subparsers)
     _add_rename_and_discard(sessions_subparsers)
 
     sessions_pin = sessions_subparsers.add_parser(

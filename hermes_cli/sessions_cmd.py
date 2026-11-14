@@ -1350,6 +1350,54 @@ def _cmd_stats(db, args):
         print(f"Database size: {_size_mb(db.db_path):.1f} MB")
 
 
+def _cmd_cost(db, args):
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.session_cost import (
+        CACHE_HIT_WARN_THRESHOLD_PCT, cache_hit_ratio_from_config, format_hit_pct, format_usd,
+        session_cost_breakdown,
+    )
+    ratio = cache_hit_ratio_from_config(load_config_readonly())
+    note = (f"Counterfactual: cache reads billed at {ratio:.0%} of the cold input rate "
+            "(config cost.cache_hit_ratio); estimates, not a bill. n/a = no price for that model.")
+    if getattr(args, "session", None):
+        full_id = db.resolve_session_id(args.session)
+        row = db.get_session(full_id) if full_id else None
+        if not row:
+            return _not_found(args.session)
+        b = session_cost_breakdown(row, cache_hit_ratio=ratio)
+        hit = format_hit_pct(b["cache_hit_pct"])
+        if b["below_threshold"]:
+            hit += f"  ⚠ below {CACHE_HIT_WARN_THRESHOLD_PCT:.0f}%, prompt prefix may have been invalidated"
+        print(f"Session {full_id}")
+        for label, value in (
+            ("Title", row.get("title") or "—"), ("Source", row.get("source") or "—"),
+            ("Model", row.get("model") or "unknown"), ("Input tokens", f"{b['input_tokens']:,}"),
+            ("Cache read", f"{b['cache_read_tokens']:,}"), ("Cache write", f"{b['cache_write_tokens']:,}"),
+            ("Output tokens", f"{b['output_tokens']:,}"), ("Cache hit", hit),
+            ("Cost status", b["cost_status"] or "—"), ("Estimated cost", format_usd(b["estimated_cost"])),
+            ("Cost if 0% cache", format_usd(b["counterfactual_cost"])),
+            ("Estimated savings", format_usd(b["savings"])),
+        ):
+            print(f"  {label + ':':<20}{value}")
+        print(note)
+        return 0
+    sessions = _surface_reader(db).list_sessions_rich(
+        source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    if not sessions:
+        print("No sessions found.")
+        return 0
+    print(f"{'ID':<26}{'Hit%':>7}{'Input':>12}{'CRead':>12}{'CWrite':>12}{'Output':>12}"
+          f"{'Cost':>11}{'No-Cache':>11}{'Saved':>11}\n" + "─" * 114)
+    for s in sessions:
+        b = session_cost_breakdown(s, cache_hit_ratio=ratio)
+        print(f"{s['id']:<26}{format_hit_pct(b['cache_hit_pct']):>7}{b['input_tokens']:>12,}"
+              f"{b['cache_read_tokens']:>12,}{b['cache_write_tokens']:>12,}{b['output_tokens']:>12,}"
+              f"{format_usd(b['estimated_cost']):>11}{format_usd(b['counterfactual_cost']):>11}"
+              f"{format_usd(b['savings']):>11}{'  ⚠' if b['below_threshold'] else ''}")
+    print("\n" + note)
+    return 0
+
+
 # -- dispatch -----------------------------------------------------------------
 
 def _cmd_repair_profiles(args):
@@ -1379,14 +1427,14 @@ _PRE_DB_HANDLERS = {
     "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
     "adopt": _cmd_adopt,  # native resumes on the owner; reads its own store read-only
 }
-_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
+_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned", "cost"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
-    "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
+    "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats, "cost": _cmd_cost,
     "refresh-prompts": _cmd_refresh_prompts,
 }
 

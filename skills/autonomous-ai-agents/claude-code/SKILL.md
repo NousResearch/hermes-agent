@@ -285,7 +285,7 @@ Automatically falls back to the specified model when the default is overloaded (
 |------|--------|
 | `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Container, VM or sandbox runtime only; a worktree is not a sandbox — see "Opt-in" above |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
-| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
+| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` (`bypassPermissions` is the same bypass as `--dangerously-skip-permissions` — same rule, see "Opt-in" above) |
 | `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
 | `--disallowedTools <tools...>` | Blacklist specific tools |
 | `--tools <tools...>` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |

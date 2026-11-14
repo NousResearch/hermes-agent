@@ -2,8 +2,8 @@
 
 ``handle_function_call`` unwraps the Tool Search ``tool_call`` wrapper so "every downstream
 hook (pre/post, edit approval, guardrails) sees the real tool name, never the bridge". A
-caller that fired the wrapper's policy itself (the agent loop's parse step, a run where the
-parse-time peel could not resolve the catalog) therefore passes
+caller that fired the wrapper's policy itself (the agent loop, when its parse-time peel
+swallowed an exception and fell back to the wrapper name) therefore passes
 ``skip_pre_tool_call_hook=True`` — but the unwrapped re-dispatch forwarded that flag, so the
 REAL tool skipped ``pre_tool_call`` entirely: a plugin guardrail matched on ``terminal`` or
 ``write_file`` never ran, and ``tool_request`` / ``tool_execution`` middleware never saw the

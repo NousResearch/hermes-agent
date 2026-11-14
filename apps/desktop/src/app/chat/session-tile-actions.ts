@@ -54,8 +54,10 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   deepCutConfirmRequest,
+  discardSteer,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
+  holdSteer,
   planConfirmedEdit,
   planConfirmedReload,
   planRestore,
@@ -63,6 +65,7 @@ import {
   revalidateEditPlan,
   runRewindSubmit,
   sealAcceptedCorrection,
+  sealSteerAtArrival,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
@@ -443,17 +446,15 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       // Reserve the correction's arrival position without sealing the stream.
       // Deltas arriving during a refused RPC must keep their live bubble.
+      // A steer is held from the send, not the ACK: `steer.delivered` can arrive first.
       mutate(state => {
         const message = { id: messageId, role: 'user' as const, parts: [textPart(text)] }
+        const reserved = { ...state, messages: [...state.messages, message] }
 
-        return { ...state, messages: [...state.messages, message] }
+        return mode === 'steer' ? holdSteer(reserved, messageId, text) : reserved
       })
 
-      const discardOptimisticMessage = () =>
-        mutate(state => ({
-          ...state,
-          messages: state.messages.filter(message => message.id !== messageId)
-        }))
+      const discardOptimisticMessage = () => mutate(state => discardSteer(state, messageId))
 
       const moveOptimisticMessageToEnd = () =>
         mutate(state => {
@@ -469,7 +470,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           sessionId,
           storedIdRef.current,
           liveId =>
-            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+            requestSessionGateway<{ delivery_event?: boolean; status?: string }>(
+              mode === 'steer' ? 'session.steer' : 'session.redirect',
+              {
               session_id: liveId,
               text
             }),
@@ -492,10 +495,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
         if (result?.status === 'queued') {
           // A redirect queued in the build window is the next turn; an
-          // accepted steer joins this one after its running tool.
+          // accepted steer joins this one at its next tool boundary, which
+          // only gateways that announce `steer.delivered` report.
           if (mode === 'steer') {
-            flushStreamDeltas(sessionId)
-            mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+            if (!result.delivery_event) {
+              flushStreamDeltas(sessionId)
+              mutate(state => sealSteerAtArrival(state, messageId))
+            }
           } else {
             moveOptimisticMessageToEnd()
           }

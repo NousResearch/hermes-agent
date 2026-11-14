@@ -373,6 +373,18 @@ class ReactionPayload(Payload):
 event("reaction", ReactionPayload, doc="Affection reaction detected in the user's message (hearts etc.).")
 
 
+class SteerDeliveredPayload(Payload):
+    """``agent_callbacks`` steer_delivered_callback: the steer submissions one drain joined, oldest first."""
+
+    count: int
+    # Each submission's text as ``steer()`` stored it (stripped): a client releases the steers it sent.
+    texts: list[str] | None = None
+
+
+event("steer.delivered", SteerDeliveredPayload,
+      doc="Mid-turn steers joined the conversation; the next API call is the first to read them.")
+
+
 class ReviewSummaryPayload(Payload):
     """``server`` background_review_callback."""
 

@@ -30,6 +30,12 @@ A small, deterministic Electron suite that guards three issue classes end to end
     steer at each point of a tool turn, then reload and switch-back over the
     folded tool turns. `switch-back-race.spec.ts` runs both orders with a tool
     turn too (history folds it under its first row, #128809).
+    `steer-held-until-delivered.spec.ts` (`busy_input_mode: steer`): a steer
+    sent while the model thinks waits under that reply until `steer.delivered`
+    after the next tool batch, so the thinking and its tool stay one bubble
+    above the steer; checked while the tool runs, after delivery and after
+    reload (the oracle leaves reasoning placement out, so this asserts the
+    bubble structure itself).
     `behind-window-send.spec.ts`: two windows on one chat, window 2 deaf to
     window 1's turn pings; window 2's send from behind goes through with no
     "Chat out of date" refusal, the model's request carries window 1's turn,

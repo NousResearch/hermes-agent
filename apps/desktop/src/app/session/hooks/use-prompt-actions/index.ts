@@ -64,9 +64,11 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   deepCutConfirmRequest,
+  discardSteer,
   durableRowIdsForRebind,
   type EditPlan,
   finalizeStoppedMessages,
+  holdSteer,
   planConfirmedReload,
   planEdit,
   planEditAfterConfirm,
@@ -75,6 +77,7 @@ import {
   retryKeepsDeepConfirm,
   runRewindSubmit,
   sealAcceptedCorrection,
+  sealSteerAtArrival,
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
@@ -895,11 +898,12 @@ export function usePromptActions({
         // stream until acceptance: a refusal must leave in-flight deltas intact.
         const messageId = appendSessionTextMessage(id, 'user', text, target.storedSessionId)
 
-        const discardOptimisticMessage = () =>
-          updateSessionState(id, state => ({
-            ...state,
-            messages: state.messages.filter(message => message.id !== messageId)
-          }))
+        // Held from the send, not the ACK: `steer.delivered` can arrive first.
+        if (mode === 'steer') {
+          updateSessionState(id, state => holdSteer(state, messageId, text))
+        }
+
+        const discardOptimisticMessage = () => updateSessionState(id, state => discardSteer(state, messageId))
 
         const moveOptimisticMessageToEnd = () =>
           updateSessionState(id, state => {
@@ -937,10 +941,13 @@ export function usePromptActions({
 
           if (result?.status === 'queued') {
             // A redirect queued in the build window is the next turn; an
-            // accepted steer joins this one after its running tool.
+            // accepted steer joins this one at its next tool boundary, which
+            // only gateways that announce `steer.delivered` report.
             if (mode === 'steer') {
-              flushStreamDeltas(id)
-              updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+              if (!result.delivery_event) {
+                flushStreamDeltas(id)
+                updateSessionState(id, state => sealSteerAtArrival(state, messageId))
+              }
             } else {
               moveOptimisticMessageToEnd()
             }

@@ -46,6 +46,8 @@ const COMPARED_FIELDS = [
   // Not painted, but the view's copy can seed session state again (resume
   // reads $messages), so a started queued turn must reach it.
   'queuedTurnStarted',
+  // Same reason: a held steer's flag decides where the next reply row lands.
+  'steerPending',
   'reactions',
   'timestamp',
   'completedAt',

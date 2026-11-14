@@ -30,4 +30,6 @@ _CALLBACK_PARAMS = (
     "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
+    # A drained /steer just joined the conversation the next API call sends (live viewers place it).
+    "steer_delivered_callback",
 )

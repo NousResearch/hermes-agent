@@ -639,6 +639,46 @@ describe('/steer', () => {
     expect(messages[0]).toMatchObject({ pending: true, parts: [expect.anything(), tool] })
   })
 
+  it('holds the live reply open above the notice when the gateway will announce delivery', async () => {
+    const requestGateway = gateway(method =>
+      method === 'session.steer' ? { status: 'queued', delivery_event: true } : undefined
+    )
+
+    const live = { id: 'stream-1', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'thinking', timestamp: 1 }] }
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[live]}
+        seedStreamId="stream-1"
+      />
+    )
+    publishSessionState(RUNTIME_SESSION_ID, { ...handle!.state(), busy: true })
+
+    await handle!.submitText('/steer use the other file')
+
+    // The model keeps writing this reply until it reads the steer (steer.delivered seals it);
+    // the notice is the anchor later reply rows go above.
+    const { messages, streamId } = handle!.state()
+    expect(streamId).toBe('stream-1')
+    expect(messages.map(message => message.id).indexOf('stream-1')).toBe(0)
+    expect(messages.at(-1)).toMatchObject({ role: 'system', steerPending: 'use the other file' })
+    expect(renderedText(handle!)).toContain(copy.steerQueued('use the other file'))
+  })
+
+  it('drops the hold when the steer is not accepted', async () => {
+    publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
+    const requestGateway = gateway(method => (method === 'session.steer' ? { status: 'rejected' } : undefined))
+
+    const handle = await mount(requestGateway)
+    await handle.submitText('/steer late words')
+
+    expect(handle.state().messages.some(message => message.steerPending)).toBe(false)
+    expect(renderedText(handle)).not.toContain(copy.steerQueued('late words'))
+  })
+
   it('queues the text as the next turn when the steer is not accepted', async () => {
     publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
     const requestGateway = gateway(method => (method === 'session.steer' ? { status: 'rejected' } : undefined))

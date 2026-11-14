@@ -93,6 +93,9 @@ export interface SessionSteerResponse {
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
+  /** An accepted steer the gateway will announce with `steer.delivered` once
+   *  the agent appends it; absent on older gateways (seal at arrival there). */
+  delivery_event?: boolean
   /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
   voice_stopped?: boolean
 }

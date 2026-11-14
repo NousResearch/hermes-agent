@@ -279,6 +279,10 @@ class TestDriveLetterRoots:
         ("rm -rf \"C:/\"'./'\"..\"", "recursive delete of drive root"),
         ("rm -rf \"/\"'/'", "recursive delete of root filesystem"),
         ("rm -rf \"/\"'./'\"/\"'/'*", "recursive delete of root filesystem"),
+        # Bare dots before a quoted slash: `/../`, `/./`.
+        ("rm -rf \"/\"..'/'", "recursive delete of root filesystem"),
+        ("rm -rf \"C:/\".\"/\"", "recursive delete of drive root"),
+        ("rm -rf \"$HOME\"/..'/'", "recursive delete of home directory"),
     ])
     def test_quoted_root_collapse_segments_stay_hardline(self, monkeypatch, cmd, rule):
         monkeypatch.setenv("HOME", "/root")
@@ -291,6 +295,10 @@ class TestDriveLetterRoots:
         # A quoted `*` is a literal file name, not a glob.
         'rm -rf "$HOME"/"*"',
         "rm -rf \"/\"'*'",
+        # `/../build`, and dots that join a quoted segment's dots into a literal `...` name.
+        "rm -rf \"/\"..'/build'",
+        "rm -rf \"/\"..'./'",
+        "rm -rf \"/\"...'/'",
     ])
     def test_quoted_subdirectory_segments_are_not_hardline(self, cmd):
         assert detect_hardline_command(cmd) == (False, None), cmd

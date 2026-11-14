@@ -119,9 +119,10 @@ _CMDPOS = (
 # A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
 # `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root. The components
 # may be quoted too (`"$HOME"'/'`, `"/"'./'"/"*`), but a quoted `*` is a literal name, not a glob.
-# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear.
+# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear. Bare dots may
+# also end at a quote whose segment starts the slash (`"/"..'/'` is `/../`), never one that adds dots (`...`).
 _RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*+(?:\.\.?)?'
-_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
+_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|\.\.?(?=["\']/)|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
                           r'(?:\.\.?)?\**+(?=\s|$|[)`;|&])')
 
 

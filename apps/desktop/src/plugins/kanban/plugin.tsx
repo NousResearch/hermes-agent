@@ -5,8 +5,8 @@
  * through `ctx.rest` (namespace-scoped to `/api/plugins/kanban`). No new
  * backend, no core edits.
  *
- * Ships OFF by default (`defaultEnabled: false`): it inventories in
- * Capabilities ▸ Plugins and registers nothing until the user flips the switch.
+ * Ships ON by default: it inventories in
+ * Capabilities ▸ Plugins and registers immediately.
  */
 
 import './kanban.css'

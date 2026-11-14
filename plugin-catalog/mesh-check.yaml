@@ -1,0 +1,21 @@
+name: mesh-check
+repo: https://github.com/TakeshiTGAL/hermes-plugin-mesh-check
+sha: a9fdecd3e2401fa358fbf7d320788316e3f25750
+description: 'Mesh Check reads one local STL, OBJ, PLY, GLB, or glTF file and returns whether it is closed, its volume, its bounds, and mesh, animation, and material counts. Use it before a 3D print or a game export. Disclosure — opens the path you pass and follows its symlink; stops at 33554432 bytes, including a glTF buffer in that directory; enable prepares trimesh and pygltflib (numpy comes with trimesh); no rendering, repair, network, write, or approval; anyone you allow on your Hermes gateway can call it; install with .git is 364 KiB; remove deletes that directory and can leave numpy, trimesh, known_plugin_toolsets, plugin-deps/pyproject.toml, workspace pyproject.toml, uv.lock, and backups/config.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-mesh-check#readme
+version: 0.1.0
+requires_hermes: '>=0.21.4'
+platforms:
+- linux
+- macos
+title: Mesh Check
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-mesh-check/a9fdecd3e2401fa358fbf7d320788316e3f25750/assets/catalog-banner.png
+readme: true
+capabilities:
+  provides_tools:
+  - mesh_check
+  provides_hooks: []
+  requires_env: []

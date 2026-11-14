@@ -610,13 +610,14 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
-    def test_non_272k_advertisement_is_trusted_verbatim(self):
-        """Any advertised value other than the known-stale 272,000 — higher or
-        lower — is a real server-side change and must NOT be overridden, even
-        for an explicit ``-900k`` opt-in variant."""
+    def test_advertisement_outside_the_stale_band_is_trusted_verbatim(self):
+        """Only a value in the stale band (>= the 272K floor, below the live-verified
+        cap) is a stale advertisement. A value BELOW the floor is a real downgrade and
+        one at or above the verified cap is a real upgrade: both are trusted as-is,
+        even for an explicit ``-900k`` opt-in variant."""
         from agent.model_metadata import get_model_context_length
 
-        for advertised in (372_000, 200_000, 1_050_000):
+        for advertised in (200_000, 1_050_000):
             fake_response = MagicMock()
             fake_response.status_code = 200
             fake_response.json.return_value = {
@@ -634,6 +635,37 @@ class TestCodexOAuthContextLength:
                     provider="openai-codex",
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
+
+    @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000)])
+    def test_raised_advertisement_below_the_verified_cap_still_bumps(self, catalog_max, expected):
+        """A catalog raise that stays under the verified cap is still a stale advertisement.
+
+        gpt-6.1-sol moved from 272K to a 500K advertisement while the backend kept
+        accepting ~920K (live 2026-10-29). Under an exact-272K rule the ``-900k`` opt-in
+        silently stopped bumping and the flagship model was left on the SMALLEST window
+        of the set; here the same raise must reach the verified cap, clamped by the
+        catalog's own ``max_context_window`` when it publishes one.
+        """
+        from agent.model_metadata import get_model_context_length
+
+        item = {"slug": "gpt-6.1-sol", "context_window": 500_000}
+        if catalog_max is not None:
+            item["max_context_window"] = catalog_max
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {"models": [item]}
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-6.1-sol-900k",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key=_codex_jwt("fake-token"),
+                provider="openai-codex",
+            )
+        assert ctx == expected
 
     @pytest.mark.parametrize("base", ["gpt-5.6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])

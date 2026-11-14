@@ -98,9 +98,11 @@ def test_force_sweeps_the_background_processes_a_killed_gateway_left_behind(monk
         (tmp_path / "processes.json").write_text(json.dumps([
             {"session_id": "proc_left", "pid": left.pid, "pid_scope": "host", "systemd_unit": "",
              "host_start_time": get_process_start_time(left.pid), "persist_on_release": True,
+             "owner_pid": gateway.pid,
              "command": "sleep 900"},
             {"session_id": "proc_recycled", "pid": stranger.pid, "pid_scope": "host", "systemd_unit": "",
-             "host_start_time": get_process_start_time(stranger.pid) + 1, "command": "sleep 900"}]))
+             "host_start_time": get_process_start_time(stranger.pid) + 1, "owner_pid": gateway.pid,
+             "command": "sleep 900"}]))
         monkeypatch.setattr(force_stop, "FORCE_KILL_AFTER_S", 0.5)
         monkeypatch.setattr(force_stop, "_live_work", lambda entry: [])
         force_stop.force_stop_gateways({}, [{"pid": gateway.pid, "home": str(tmp_path), "ct": None}])
@@ -147,3 +149,72 @@ def test_an_unsettled_force_stop_aborts_before_the_checkout_moves(monkeypatch, t
     owed = pause_record.read()
     assert owed and owed["token"]["resume_needed"], "the stopped unit is no longer owed a restart"
     assert [u["unit"] for u in owed["token"]["posix_units"]] == ["hermes-gateway.service"]
+
+
+def test_the_sweep_never_touches_a_process_another_interpreter_recorded(monkeypatch, tmp_path, no_record):
+    """``processes.json`` is shared by every interpreter on the home (an ACP editor's background
+    commands too): the sweep stops only what the killed gateway recorded, never another's job."""
+    import os
+    from gateway.status import get_process_start_time
+    from tests.waiting import wait_until
+    gateway, foreign = _child(ignore_term=True), _sleeper()
+    try:
+        wait_until(lambda: get_process_start_time(foreign.pid))
+        (tmp_path / "processes.json").write_text(json.dumps([
+            {"session_id": "proc_acp", "pid": foreign.pid, "pid_scope": "host", "systemd_unit": "",
+             "host_start_time": get_process_start_time(foreign.pid), "owner_pid": os.getpid(),
+             "command": "npm run dev"}]))
+        monkeypatch.setattr(force_stop, "FORCE_KILL_AFTER_S", 0.5)
+        monkeypatch.setattr(force_stop, "_live_work", lambda entry: [])
+        force_stop.force_stop_gateways({}, [{"pid": gateway.pid, "home": str(tmp_path), "ct": None}])
+        assert gateway.wait(timeout=5) == -signal.SIGKILL
+        assert foreign.poll() is None, "the sweep killed a background process the gateway did not own"
+    finally:
+        for proc in (gateway, foreign):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+
+def test_a_worker_scope_that_will_not_stop_aborts_the_update(monkeypatch, tmp_path, no_record):
+    """The killed gateway's worker scope holds a child ignoring SIGTERM and its stop fails even
+    after the scope is SIGKILLed: that is an unsettled stop naming the scope, never a clean sweep."""
+    from tools import process_registry
+    gateway, killed = _child(ignore_term=True), []
+    try:
+        (tmp_path / "processes.json").write_text(json.dumps([
+            {"session_id": "proc_w", "pid": None, "pid_scope": "host", "host_start_time": None,
+             "systemd_unit": "hermes-worker-proc_w.scope", "owner_pid": gateway.pid, "command": "x"}]))
+        monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit: False)
+        monkeypatch.setattr(force_stop, "_kill_scope", killed.append, raising=False)
+        monkeypatch.setattr(force_stop, "FORCE_KILL_AFTER_S", 0.5)
+        monkeypatch.setattr(force_stop, "_live_work", lambda entry: [])
+        with pytest.raises(posix_pause.StopUnsettled, match="hermes-worker-proc_w.scope"):
+            force_stop.force_stop_gateways({}, [{"pid": gateway.pid, "home": str(tmp_path), "ct": None}])
+        assert killed == ["hermes-worker-proc_w.scope"], "the scope was not SIGKILLed before giving up"
+    finally:
+        if gateway.poll() is None:
+            gateway.kill()
+            gateway.wait(timeout=5)
+
+
+def test_recovery_never_starts_a_unit_whose_force_stop_is_still_running(monkeypatch, tmp_path):
+    """An aborted ``--force`` left the unit's stop job running after its gateway PID exited: the
+    next launch's recovery holds the unit (still owed) instead of queueing a start behind it."""
+    from hermes_cli import update_cmd_fleet_unit_budget as budget
+    from hermes_cli import update_pause_record as pause_record
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    unit = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway.service", "pid": 2 ** 22 + 11,
+            "home": str(tmp_path), "ct": None}
+    token = pause_record.record_pause({**posix_pause._empty_token(), "resume_needed": True,
+                                       "posix_units": [unit], "identities": {}}, None, [])
+    posix_pause._abort_unsettled(token, "systemd's stop job for hermes-gateway.service is still stopping")
+    body = pause_record.read()
+    pause_record._atomic_write(pause_record.record_path(), {**body, "owner": pause_record.UNOWNED})  # updater exited
+    monkeypatch.setattr(budget, "unit_job_state",
+                        lambda scope, name: {"ActiveState": "deactivating", "SubState": "stop-sigterm", "Job": "42"})
+    monkeypatch.setattr(posix_pause, "_start_unit", lambda entry: pytest.fail("started behind its stop job"))
+    pause_record.recover(["status"])
+    [claim] = pause_record._claims(pause_record.record_path())
+    owed = pause_record.read(claim)["token"]
+    assert [u["unit"] for u in owed["posix_units"]] == ["hermes-gateway.service"], "the unit's restart was dropped"

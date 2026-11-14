@@ -17,6 +17,8 @@
 
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
+
 export interface QuickEntryState {
   enabled: boolean
   /** null before the first read; the settings row shows a skeleton until then. */
@@ -133,6 +135,8 @@ export const QUICK_TARGET_NEW = 'new'
 export interface QuickEntryStatePush {
   connected: boolean
   sessions: QuickEntrySessionOption[]
+  /** The primary window's UI language — the quick window has no config read of its own. */
+  locale?: string
 }
 
 /** What a quick-window submit carries back to the primary renderer. */
@@ -211,14 +215,15 @@ export function quickEntryResultEvent(result: QuickEntrySubmitResult, submitId: 
 
   if (result.code === 'timeout') {
     return {
-      message: result.message || 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+      // The shell's timeout text is English; the window speaks the catalog's.
+      message: translateNow('quickEntry.notConfirmed'),
       submitId,
       type: 'submit-unknown'
     }
   }
 
   return {
-    message: result.message || 'Quick Entry could not deliver the prompt.',
+    message: result.message || translateNow('quickEntry.quickEntryFailed'),
     submitId,
     type: 'submit-error'
   }

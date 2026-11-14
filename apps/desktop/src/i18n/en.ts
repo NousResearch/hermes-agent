@@ -351,7 +351,9 @@ export const en: Translations = {
     formatJson: 'Format JSON',
     free: 'Free',
     loading: 'Loading…',
+    loadingStatus: 'Loading',
     notSet: 'Not set',
+    suggestions: 'Suggestions',
     refresh: 'Refresh',
     remove: 'Remove',
     replace: 'Replace',
@@ -667,7 +669,17 @@ export const en: Translations = {
       'composer.slash': 'Slash command palette',
       'composer.help': 'Quick help',
       'composer.history': 'Cycle popover / history',
-      'composer.cancel': 'Close popover · cancel run'
+      'composer.cancel': 'Close popover · cancel run',
+      // Actions contributed through the registry (palette rows, rebindable keys).
+      'layout.editMode': 'Toggle layout edit mode',
+      'layout.reset': 'Reset layout',
+      'plugins.reload': 'Reload desktop plugins',
+      'view.simpleMode': 'Simple mode',
+      'keybinds.panel': 'Keyboard shortcuts',
+      'profile.export': 'Export profile…',
+      'profile.import': 'Import profile…',
+      'logs.toggle': 'Toggle logs',
+      'session.yolo': 'Toggle yolo'
     }
   },
 
@@ -936,7 +948,8 @@ export const en: Translations = {
       safety: 'Safety',
       memory: 'Memory & Context',
       voice: 'Voice',
-      advanced: 'Advanced'
+      advanced: 'Advanced',
+      browser: 'Browser'
     },
     searchPlaceholder: {
       about: 'About Hermes Desktop',
@@ -1115,6 +1128,17 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
+    optionLabels: {
+      'agent.image_input_mode': { auto: 'Auto', native: 'Native', text: 'Text' },
+      'agent.service_tier': { normal: 'Normal', fast: 'Fast', auto: 'Auto', cold: 'Cold' },
+      'approvals.mode': { manual: 'Manual', smart: 'Smart', off: 'Off' },
+      'code_execution.mode': { project: 'Project', strict: 'Strict' },
+      'context.engine': { compressor: 'Compressor', default: 'Default', custom: 'Custom' },
+      'stt.provider': { local: 'Local' },
+      'terminal.backend': { local: 'Local' },
+      'updates.non_interactive_local_changes': { stash: 'Stash', discard: 'Discard' },
+      'voice.voice_chat_mode': { chained: 'Chained', 'gpt-live': 'GPT-Live' }
+    },
     uninstallSection: enUninstallSection,
     memoryLayers: enMemoryLayers,
     customEndpoints: {
@@ -3120,7 +3144,172 @@ export const en: Translations = {
       loading: 'Loading blueprints...',
       failedLoad: 'Failed to load blueprints',
       emptyTitle: 'No blueprints available',
-      emptyDesc: 'No automation blueprints are available on this backend.'
+      emptyDesc: 'No automation blueprints are available on this backend.',
+      catalog: {
+        'morning-brief': {
+          title: 'Morning briefing',
+          description:
+            'A short daily briefing: today\'s calendar, weather, and anything urgent waiting on you.'
+        },
+        'important-mail': {
+          title: 'Important-mail monitor',
+          description:
+            'Check your inbox periodically and ping you ONLY about mail that actually needs attention.',
+          fields: {
+            interval_min: { label: 'How often?', help: 'minutes between checks' },
+            criteria: { label: 'Only notify me if the mail…' }
+          }
+        },
+        'weekly-review': {
+          title: 'Weekly review',
+          description:
+            'A weekly recap: what got done, what\'s still open, and what\'s coming up.',
+          fields: {
+            day: { label: 'Which day?' }
+          }
+        },
+        'workday-start': {
+          title: 'Workday start reminder',
+          description:
+            'A weekday nudge with your agenda and top priorities.'
+        },
+        'custom-reminder': {
+          title: 'Custom reminder',
+          description:
+            'A recurring reminder in your own words, on your schedule.',
+          fields: {
+            what: { label: 'Remind me to…' },
+            recurrence: { label: 'Repeat on' }
+          }
+        },
+        'evening-winddown': {
+          title: 'Evening wind-down',
+          description:
+            'An end-of-day check-in: tomorrow\'s calendar at a glance and anything you should prep tonight.'
+        },
+        'news-digest': {
+          title: 'Topic news digest',
+          description:
+            'A recurring digest on a topic you care about — deduped against what was already sent, so only genuinely new items land.',
+          fields: {
+            topic: { label: 'What topic?', help: 'a subject, product, person, or search phrase' },
+            recurrence: { label: 'Repeat on' },
+            count: { label: 'How many bullets?' }
+          }
+        },
+        'bill-renewal-watch': {
+          title: 'Bills & renewals reminder',
+          description:
+            'A heads-up before a recurring payment, subscription renewal, or due date — so nothing auto-charges by surprise.',
+          fields: {
+            what: { label: 'What\'s due?' },
+            recurrence: { label: 'Repeat on' }
+          }
+        },
+        'price-watch': {
+          title: 'Price & availability watch',
+          description:
+            'Watch an exact product, flight, hotel, or listing and alert when your price or availability condition is met.',
+          fields: {
+            item: { label: 'What exactly to watch?', help: 'URL or precise description — variant, dates, seller' },
+            condition: { label: 'Alert me when…', help: 'threshold price (state the currency), availability, or terms change' },
+            interval_h: { label: 'How often?', help: 'hours between checks — be gentle with rate limits' }
+          }
+        },
+        'competitor-watch': {
+          title: 'Competitor news watch',
+          description:
+            'Track named companies for material news — launches, pricing, funding, filings — with a cited digest.',
+          fields: {
+            companies: { label: 'Which companies?', help: 'canonical names and domains; aliases help dedup' },
+            categories: { label: 'Which events matter?' },
+            recurrence: { label: 'Repeat on' }
+          }
+        },
+        'habit-checkin': {
+          title: 'Habit check-in',
+          description:
+            'A recurring nudge to keep a habit on track and reflect on whether you did it.',
+          fields: {
+            habit: { label: 'Which habit?' },
+            recurrence: { label: 'Repeat on' }
+          }
+        },
+        'hydration-move': {
+          title: 'Hydration & movement nudge',
+          description:
+            'A periodic nudge during the day to drink water, stand up, and stretch.',
+          fields: {
+            interval_hours: { label: 'How often?', help: 'hours between nudges' },
+            start_hour: { label: 'Start hour', help: 'first hour of the active window (24h)' },
+            end_hour: { label: 'End hour', help: 'last hour of the active window (24h)' }
+          }
+        },
+        'meal-plan': {
+          title: 'Weekly meal plan',
+          description:
+            'A weekly meal plan plus a consolidated grocery list, tuned to your diet and how much time you have to cook.',
+          fields: {
+            diet: { label: 'Diet?' },
+            meals: { label: 'Meals per day?' },
+            effort: { label: 'Cooking effort?' },
+            day: { label: 'Which day?' }
+          }
+        },
+        'learn-daily': {
+          title: 'Daily learning drip',
+          description:
+            'One bite-sized lesson a day on a topic you want to learn, building progressively over time.',
+          fields: {
+            topic: { label: 'Learn about…' },
+            recurrence: { label: 'Repeat on' }
+          }
+        },
+        'gratitude-journal': {
+          title: 'Gratitude & reflection prompt',
+          description:
+            'A gentle evening prompt to reflect on the day and note what went well.',
+          fields: {
+            recurrence: { label: 'Repeat on' }
+          }
+        },
+        'on-this-day': {
+          title: 'On-this-day discovery',
+          description:
+            'A daily dose of curiosity: a notable historical event, fact, or word for the day.',
+          fields: {
+            flavor: { label: 'What kind?' }
+          }
+        }
+      },
+      sharedFields: {
+        time: { label: 'What time?', help: '24h local time, e.g. 08:00' },
+        deliver: { label: 'Where to deliver?' }
+      },
+      optionLabels: {
+        everyday: 'everyday',
+        weekdays: 'weekdays',
+        weekends: 'weekends',
+        sunday: 'sunday',
+        monday: 'monday',
+        friday: 'friday',
+        saturday: 'saturday',
+        'no restrictions': 'no restrictions',
+        vegetarian: 'vegetarian',
+        vegan: 'vegan',
+        'high-protein': 'high-protein',
+        'low-carb': 'low-carb',
+        'dinner only': 'dinner only',
+        'lunch and dinner': 'lunch and dinner',
+        'all three': 'all three',
+        quick: 'quick',
+        medium: 'medium',
+        ambitious: 'ambitious',
+        'on this day in history': 'on this day in history',
+        'word of the day': 'word of the day',
+        'science fact': 'science fact',
+        'quote of the day': 'quote of the day'
+      }
     }
   },
 
@@ -3328,8 +3517,24 @@ export const en: Translations = {
     markAllRead: 'Mark all as read'
   },
 
+  quickEntry: {
+    inputLabel: 'Quick Entry',
+    placeholder: 'Ask Hermes…',
+    notConnected: 'Not connected — open Hermes to reconnect',
+    sendTo: 'Send to',
+    targetLabel: 'Target session',
+    currentChat: 'Current chat',
+    deliveryFailed: 'Hermes could not deliver the prompt.',
+    quickEntryFailed: 'Quick Entry could not deliver the prompt.',
+    notConfirmed: 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+    notAccepted: 'The prompt was not accepted.',
+    wrongSession: 'The prompt was accepted by a different session than the one requested.',
+    acceptanceUnknown: 'The selected session prompt was dispatched, but backend acceptance is unknown.',
+    submitUnavailable: 'The selected session submit path is unavailable.'
+  },
   composer: {
     message: 'Message',
+    addContext: 'Add context',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
@@ -3861,6 +4066,17 @@ export const en: Translations = {
     versionDetailsBackend: 'Connected backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build Origin',
+    versionDetailsSource: {
+      build: 'Build',
+      ci: 'CI',
+      'commit-build': 'Commit-build',
+      docker: 'Docker',
+      fallback: 'Fallback',
+      git: 'Git',
+      local: 'Local',
+      nix: 'Nix',
+      unknown: 'Unknown'
+    },
     versionDetailsDistribution: 'Distribution',
     versionDetailsDistributionDesktop: 'Desktop app',
     versionDetailsDistributionDesktopMsix: 'Desktop app (MSIX)',
@@ -4107,6 +4323,16 @@ export const en: Translations = {
       xhigh: 'Extra High',
       max: 'Max',
       ultra: 'Ultra',
+      effortShort: {
+        none: 'Off',
+        minimal: 'Min',
+        low: 'Low',
+        medium: 'Med',
+        high: 'High',
+        xhigh: 'XHigh',
+        max: 'Max',
+        ultra: 'Ultra'
+      },
       sendsOnRoute: (level: string) => `sends ${level} on this route`,
       updateFailed: 'Model option update failed',
       fastFailed: 'Fast mode update failed',
@@ -4478,6 +4704,7 @@ export const en: Translations = {
     thread: {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
+      timelineLabel: 'Conversation timeline',
       loadingResponse: 'Hermes is loading a response',
       loadingLocalModel: model => `Loading ${model} into memory`,
       processingPrompt: 'Processing prompt',

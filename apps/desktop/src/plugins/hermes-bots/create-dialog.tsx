@@ -70,7 +70,7 @@ import {
   liveGroupChatNames
 } from './group-membership'
 import { useBots } from './i18n'
-import { botProfileIdentity, displayName } from './labels'
+import { botProfileIdentity, connectionDisplayLabel, displayName } from './labels'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import type {
@@ -1544,7 +1544,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
                     </div>
                     {spansConnections && (
                       <Badge className="shrink-0 rounded-full px-1.5 text-[0.625rem]" data-device-badge variant="muted">
-                        {bot.connectionLabel || (botOnConnection(bot, connectionId) ? b.bot.thisDevice : bot.connectionId)}
+                        {connectionDisplayLabel(bot.connectionId, bot.connectionLabel, b.bot.thisDevice) ||
+                          (botOnConnection(bot, connectionId) ? b.bot.thisDevice : bot.connectionId)}
                       </Badge>
                     )}
                     <Checkbox

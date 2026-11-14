@@ -4173,6 +4173,17 @@ export const esOverrides = {
     versionDetailsBackend: 'Backend conectado',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origen de la compilación',
+    versionDetailsSource: {
+      build: 'Compilación',
+      ci: 'CI',
+      'commit-build': 'Compilación de commit',
+      docker: 'Docker',
+      fallback: 'Respaldo',
+      git: 'Git',
+      local: 'Local',
+      nix: 'Nix',
+      unknown: 'Desconocido'
+    },
     versionDetailsDistribution: 'Distribución',
     versionDetailsDistributionDesktop: 'Aplicación de escritorio',
     versionDetailsDistributionDesktopMsix: 'Aplicación de escritorio (MSIX)',

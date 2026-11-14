@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n/catalog'
+
 import {
   currentPickerSelection,
   displayModelName,
   formatModelPillLabel,
   modelDisplayParts,
-  modelVariantTag
+  modelVariantTag,
+  providerDisplayName
 } from './model-status-label'
 
 describe('model-status-label', () => {
@@ -146,5 +149,17 @@ describe('model-status-label', () => {
     it('falls back to the store while options are still loading', () => {
       expect(currentPickerSelection(store, undefined)).toEqual(store)
     })
+  })
+})
+
+describe('providerDisplayName', () => {
+  it('names descriptive provider titles in the given language and keeps brand names', () => {
+    const ru = TRANSLATIONS.ru
+
+    expect(providerDisplayName('openai-codex', ru)).toBe(ru.onboarding.providerNames['openai-codex'])
+    expect(providerDisplayName('openai-codex', ru)).not.toBe(providerDisplayName('openai-codex', TRANSLATIONS.en))
+    expect(providerDisplayName(' Nous ', ru)).toBe('Nous Portal')
+    expect(providerDisplayName('xai-oauth', ru)).toBe('xAI Grok')
+    expect(providerDisplayName('my-endpoint', ru)).toBe('my-endpoint')
   })
 })

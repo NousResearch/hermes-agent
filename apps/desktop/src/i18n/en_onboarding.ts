@@ -84,5 +84,12 @@ export const enOnboarding: Translations['onboarding'] = {
   price: (input, output) => `${input} in / ${output} out per Mtok`,
   change: 'Change',
   startChatting: 'Begin',
-  docs: provider => `${provider} docs`
+  docs: provider => `${provider} docs`,
+  providerNames: {
+    anthropic: 'Anthropic Account',
+    'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
+    'openai-codex': 'ChatGPT or Codex Subscription'
+  },
+  customEndpointName: 'Local / custom endpoint',
+  directApiAccess: provider => `Direct API access to ${provider}.`
 }

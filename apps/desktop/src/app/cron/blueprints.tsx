@@ -1,6 +1,11 @@
+import { useCallback } from 'react'
+
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
+import { type Translations, useI18n } from '@/i18n'
+
+type BlueprintCopy = Pick<Translations['cron']['blueprints'], 'catalog' | 'sharedFields'>
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
@@ -13,6 +18,39 @@ const DESKTOP_DELIVER_DEFAULT = 'local'
 
 function isDeliverField(field: AutomationBlueprintField): boolean {
   return field.name === DELIVER_FIELD
+}
+
+// The backend serves the built-in catalog in English. Swap in the window's
+// language for the blueprints and slots the catalog names; plugin blueprints
+// and anything unlisted keep the backend's text. Keys, slot names and option
+// values are untouched, so what gets scheduled is the same.
+export function localizeBlueprints(list: AutomationBlueprint[], copy: BlueprintCopy): AutomationBlueprint[] {
+  return list.map(blueprint => {
+    const entry = copy.catalog[blueprint.key]
+
+    if (!entry) {
+      return blueprint
+    }
+
+    return {
+      ...blueprint,
+      title: entry.title,
+      description: entry.description,
+      fields: blueprint.fields.map(field => {
+        const fieldCopy =
+          entry.fields?.[field.name] ?? copy.sharedFields[field.name as keyof BlueprintCopy['sharedFields']]
+
+        return fieldCopy ? { ...field, label: fieldCopy.label, help: fieldCopy.help ?? field.help } : field
+      })
+    }
+  })
+}
+
+/** `localizeBlueprints` as a stable react-query `select` for the active language. */
+export function useBlueprintLocalizer(): (list: AutomationBlueprint[]) => AutomationBlueprint[] {
+  const copy = useI18n().t.cron.blueprints
+
+  return useCallback((list: AutomationBlueprint[]) => localizeBlueprints(list, copy), [copy])
 }
 
 // Initial form state for a blueprint = each field's default (or ''). Pure so the
@@ -58,6 +96,8 @@ export function BlueprintSlotControl({
   onChange: (next: string) => void
   value: string
 }) {
+  const optionLabels = useI18n().t.cron.blueprints.optionLabels
+
   if (field.type === 'enum' || field.type === 'weekdays') {
     return (
       <Select onValueChange={onChange} value={value}>
@@ -67,7 +107,7 @@ export function BlueprintSlotControl({
         <SelectContent>
           {field.options.map(option => (
             <SelectItem key={option} value={option}>
-              {option}
+              {optionLabels[option] ?? option}
             </SelectItem>
           ))}
         </SelectContent>

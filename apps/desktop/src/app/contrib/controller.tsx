@@ -38,8 +38,8 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { LocalizedTabTitle, translateNow } from '@/i18n'
-import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
+import { LocalizedTabTitle, subscribeRuntimeI18nLocale, translateNow } from '@/i18n'
+import { newSessionTitle, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
   Download,
   FileText,
@@ -221,7 +221,7 @@ registry.registerMany([
     id: 'workspace',
     area: 'panes',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
-    title: NEW_SESSION_TITLE,
+    title: newSessionTitle(),
     data: {
       placement: 'main',
       minWidth: '22vw',
@@ -503,7 +503,7 @@ const syncWorkspaceTitle = () => {
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
     // the same name, which told two open bots apart by nothing (#99152).
     title: workspaceOwnerTitle(
-      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
+      stored ? storedSessionTitle(stored) : newSessionTitle(),
       selected ? $botChatScopes.get()[selected] : undefined
     ),
     data: {
@@ -547,6 +547,9 @@ $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)
+// The fallback title is a finished string registered before display.language loads:
+// re-resolve it when the language loads or changes.
+subscribeRuntimeI18nLocale(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the
 // workspace) instead of re-scattering them — pre-placed before adoption.
@@ -718,7 +721,10 @@ registry.register(
         continue
       }
 
-      const title = String(pane.title ?? pane.id)
+      // `tabTitleText` is the pane's live title in the active language; `title`
+      // is a string frozen when the pane registered.
+      const tabTitleText = (pane.data as { tabTitleText?: () => string } | undefined)?.tabTitleText
+      const title = tabTitleText?.() || String(pane.title ?? pane.id)
 
       stripTabToggles.set(
         pane.id,
@@ -727,7 +733,7 @@ registry.register(
             id: `strip-tab.${pane.id}`,
             label: translateNow('zones.toggleStripTab', title),
             icon: LayoutDashboard,
-            keywords: [title.toLowerCase(), 'tab', 'pane', 'sidebar', 'show', 'hide'],
+            keywords: [title.toLowerCase(), pane.id, 'tab', 'pane', 'sidebar', 'show', 'hide'],
             // On-screen truth, same contract as the logs toggle above.
             get: () => isPaneVisible(pane.id),
             set: visible => {
@@ -745,6 +751,16 @@ registry.register(
 
   syncStripTabToggles()
   registry.subscribeArea('panes', syncStripTabToggles)
+
+  // Rows register a finished label; rebuild them once the language loads or changes.
+  subscribeRuntimeI18nLocale(() => {
+    for (const dispose of stripTabToggles.values()) {
+      dispose()
+    }
+
+    stripTabToggles.clear()
+    syncStripTabToggles()
+  })
 }
 
 // YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo

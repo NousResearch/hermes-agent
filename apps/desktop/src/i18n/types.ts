@@ -386,7 +386,11 @@ export interface Translations extends NoticeTranslations {
     formatJson: string
     free: string
     loading: string
+    /** Accessible name of a busy indicator (spinner, loader). */
+    loadingStatus: string
     notSet: string
+    /** Accessible name of a command list's results. */
+    suggestions: string
     refresh: string
     remove: string
     replace: string
@@ -921,6 +925,9 @@ export interface Translations extends NoticeTranslations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    /** Select-value labels by config key, then value. A value with no entry
+     *  renders title-cased (`prettyName`), as product names do. */
+    optionLabels: Record<string, Record<string, string>>
     uninstallSection: UninstallSectionTranslations
     memoryLayers: MemoryLayersTranslations
     customEndpoints: {
@@ -2728,6 +2735,17 @@ export interface Translations extends NoticeTranslations {
       failedLoad: string
       emptyTitle: string
       emptyDesc: string
+      /** The built-in catalog (cron/blueprint_catalog.py serves it in English),
+       *  keyed by blueprint key, then slot name. Unlisted blueprints (plugins)
+       *  and slots render the backend's text. */
+      catalog: Record<
+        string,
+        { title: string; description: string; fields?: Record<string, { label: string; help?: string }> }
+      >
+      /** Slots every built-in blueprint shares. */
+      sharedFields: Record<'deliver' | 'time', { label: string; help?: string }>
+      /** Display labels for enum slot values, which the backend sends raw. */
+      optionLabels: Record<string, string>
     }
   }
 
@@ -2928,8 +2946,26 @@ export interface Translations extends NoticeTranslations {
     markAllRead: string
   }
 
+  /** The Quick Entry window (global shortcut capture card) and its delivery results. */
+  quickEntry: {
+    inputLabel: string
+    placeholder: string
+    notConnected: string
+    sendTo: string
+    targetLabel: string
+    currentChat: string
+    deliveryFailed: string
+    quickEntryFailed: string
+    notConfirmed: string
+    notAccepted: string
+    wrongSession: string
+    acceptanceUnknown: string
+    submitUnavailable: string
+  }
   composer: {
     message: string
+    /** The composer's "+" menu: attach files, folders, snippets. */
+    addContext: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
@@ -3321,6 +3357,11 @@ export interface Translations extends NoticeTranslations {
     versionDetailsBackend: string
     versionDetailsCommit: string
     versionDetailsBuildOrigin: string
+    /** The build stamp's `source`, as the Build Origin row shows it. */
+    versionDetailsSource: Record<
+      'build' | 'ci' | 'commit-build' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown',
+      string
+    >
     versionDetailsDistribution: string
     versionDetailsDistributionDesktop: string
     versionDetailsDistributionDesktopMsix: string
@@ -3565,6 +3606,8 @@ export interface Translations extends NoticeTranslations {
       xhigh: string
       max: string
       ultra: string
+      /** Compact effort labels for tight chrome (the composer pill, picker rows). */
+      effortShort: Record<'high' | 'low' | 'max' | 'medium' | 'minimal' | 'none' | 'ultra' | 'xhigh', string>
       /** The CLI's `/reasoning` clamp note, e.g. "sends Max on this route". */
       sendsOnRoute: (level: string) => string
       updateFailed: string
@@ -3929,6 +3972,8 @@ export interface Translations extends NoticeTranslations {
     thread: {
       loadingSession: string
       showEarlier: string
+      /** Accessible name of the message rail beside the transcript. */
+      timelineLabel: string
       loadingResponse: string
       loadingLocalModel: (model: string) => string
       processingPrompt: string

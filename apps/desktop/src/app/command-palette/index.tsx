@@ -800,16 +800,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           label: cc.openFolder,
           run: () => void openFolderAsProject()
         },
-        ...filterVisibleProjects(projectTree, dismissedAutoProjects).map(project => ({
+        ...filterVisibleProjects(projectTree, dismissedAutoProjects).map(project => {
+          // The no-project bucket is named by the catalog, as in the sidebar.
+          const label = project.isNoProject ? t.sidebar.projects.home : project.label
+
+          return {
           comboHint: 'mod+enter',
           icon: codiconIcon(project.icon || (project.isNoProject ? 'home' : 'folder-library')),
           id: `project-${project.id}`,
-          keywords: ['project', 'workspace', 'go to', project.label, ...(project.path ? [project.path] : [])],
-          label: project.label,
-          modLabel: cc.newSessionInProject(project.label),
+          keywords: ['project', 'workspace', 'go to', label, project.label, ...(project.path ? [project.path] : [])],
+          label,
+          modLabel: cc.newSessionInProject(label),
           runWithEvent: (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) =>
             goToProject(project.id, { newSession: Boolean(event?.metaKey || event?.ctrlKey) })
-        }))
+          }
+        })
       ]
     }
 
@@ -906,7 +911,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                 id: item.key,
                 keepOpen: item.keepOpen,
                 keywords: item.keywords,
-                label: item.label,
+                // Contributions register a plain English string at import time; the
+                // catalog names the same row id in the active language.
+                label: t.keybinds.actions[item.id] ?? item.label,
                 run: item.run
               }))
             }

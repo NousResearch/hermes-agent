@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 
+import { getRuntimeI18nLocale, subscribeRuntimeI18nLocale, translateNow } from '@/i18n'
 import {
   initQuickEntryBridge,
   QUICK_TARGET_CURRENT,
@@ -42,7 +43,7 @@ export function quickEntrySubmitAck(
   if (!submitted) {
     return {
       code: 'submit-rejected',
-      message: 'The prompt was not accepted.',
+      message: translateNow('quickEntry.notAccepted'),
       ok: false,
       retryable: true
     }
@@ -147,7 +148,7 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
               // did not prove it used.
               ack({
                 code: 'submit-identity-mismatch',
-                message: 'The prompt was accepted by a different session than the one requested.',
+                message: translateNow('quickEntry.wrongSession'),
                 ok: false,
                 retryable: false
               })
@@ -160,7 +161,7 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
             if (promptDispatched) {
               ack({
                 code: 'submit-failed',
-                message: 'The selected session prompt was dispatched, but backend acceptance is unknown.',
+                message: translateNow('quickEntry.acceptanceUnknown'),
                 ok: false,
                 retryable: false
               })
@@ -181,7 +182,7 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
 
         ack({
           code: 'submit-unavailable',
-          message: 'The selected session submit path is unavailable.',
+          message: translateNow('quickEntry.submitUnavailable'),
           ok: false,
           retryable: true
         })
@@ -231,17 +232,23 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
     }
 
     const push = () => {
-      api.pushState({ connected: $gatewayState.get() === 'open', sessions: sessionOptions() })
+      api.pushState({
+        connected: $gatewayState.get() === 'open',
+        locale: getRuntimeI18nLocale(),
+        sessions: sessionOptions()
+      })
     }
 
     push()
 
     const offGateway = $gatewayState.listen(push)
     const offSessions = $sessions.listen(push)
+    const offLocale = subscribeRuntimeI18nLocale(push)
 
     return () => {
       offGateway()
       offSessions()
+      offLocale()
     }
   }, [])
 }

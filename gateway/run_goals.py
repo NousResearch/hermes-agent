@@ -394,11 +394,11 @@ class GatewayGoalsMixin:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                kwargs = dict(session_entry=session_entry, source=source,
-                              final_response="" if failed else final_text)
-                if label == "goal continuation":
-                    kwargs["run_generation"] = turn_run_generation(event)
-                await hook(**kwargs)
+                # Both hooks may defer a notice into this turn's post-delivery slot: each needs
+                # the turn's generation or the chained bubble cleanup loses it.
+                await hook(session_entry=session_entry, source=source,
+                           final_response="" if failed else final_text,
+                           run_generation=turn_run_generation(event))
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
         await self._publish_local_control(source, only_if_present=True)
@@ -437,6 +437,7 @@ class GatewayGoalsMixin:
 
     async def _post_turn_loop_completion(
         self, *, session_entry: Any, source: Any, final_response: str,
+        run_generation: int | None = None,
     ) -> None:
         """Complete a /loop wakeup tick after a gateway turn. No-op unless a tick is in flight
         (``awaiting_response``, set when the wakeup was injected); applies the LOOP_COMPLETE marker
@@ -455,7 +456,7 @@ class GatewayGoalsMixin:
         decision = await self._run_in_executor_with_context(mgr.complete_tick, final_response or "")
         msg = decision.get("message") or ""
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            await self._defer_goal_status_notice_after_delivery(source, msg, run_generation=run_generation)
 
     async def _loop_wakeup_fire_one(
         self, sid: str, state: Any, now: float, warned_no_route: set, profile: Optional[str] = None,

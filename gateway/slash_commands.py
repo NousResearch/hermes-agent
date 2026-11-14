@@ -21,7 +21,7 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base import EphemeralReply, TextOnlyReply
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
@@ -635,16 +635,17 @@ class GatewaySlashCommandsMixin(
         return {}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
-        """Handle /help command - list available commands."""
-        return self._telegramized_command_reply(
-            event, _execute("help", options=self._catalog_options(event)).text)
+        """Handle /help command - list available commands. Text-only: the catalog embeds skill and
+        plugin descriptions, and a path in one must never be uploaded as an attachment."""
+        return TextOnlyReply(self._telegramized_command_reply(
+            event, _execute("help", options=self._catalog_options(event)).text))
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         # Page size is a surface parameter (Telegram messages are shorter).
         page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
         options = {"page_size": page_size, **self._catalog_options(event)}
         reply = _execute("commands", args=event.get_command_args(), options=options)
-        return self._telegramized_command_reply(event, reply.text)
+        return TextOnlyReply(self._telegramized_command_reply(event, reply.text))
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

@@ -332,8 +332,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
     # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
-        # The sender's own relay folder, as below: the default's would relay a named bot's DM as the default.
-        relayed = _try_relay_delivery(Path(sender.home), raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
         if relayed is not None:
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
@@ -345,7 +344,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
-        relayed = _try_relay_delivery(Path(sender.home), raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
         if relayed is not None:
             return relayed
         if resolved == me:
@@ -377,6 +376,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             resolve_remote_target, waiter_command,
         )
 
+        root = _hermes_root(root)
         roster = read_remote_roster(root)
         match = resolve_remote_target(raw_target, roster) if roster else None
         if match is None:

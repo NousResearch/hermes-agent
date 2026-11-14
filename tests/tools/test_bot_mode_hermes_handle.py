@@ -50,18 +50,20 @@ def test_remote_default_is_never_offered_as_a_bare_form_a_local_profile_answers_
     """A remote default beside a real remote 'hermes' profile is published as handle 'default'.
     Local resolution accepts the folder id 'default' (this install's own default), so the roster a
     named local bot sees must not offer bare @default for the remote row: the DM it invites was
-    admitted locally instead of relayed. Collision forms come from the install root, not the
-    sender's own profile home."""
+    admitted locally instead of relayed. Collision forms come from the install root, and the
+    envelope queues into the install-wide mailbox the Desktop drains (#146035)."""
     _capture_spawn(monkeypatch)
     monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
     root = _managed_home(tmp_path, teammates=("researcher",))
     sender = root / "profiles" / "researcher"
     authority = _canonical_target(monkeypatch, root)
-    bot_relay.write_remote_roster(sender, [
+    rows = [
         {"profile": "default", "handle": "default", "title": "Remote Main", "connection_id": "box", "connection_label": "Box"},
         {"profile": "hermes", "handle": "hermes", "connection_id": "box", "connection_label": "Box"},
-    ])
+    ]
+    bot_relay.write_remote_roster(sender, rows)  # the per-profile discovery view
+    bot_relay.write_remote_roster(root, rows)    # the roster the relay resolves against
 
     remote = bot_mode_probe.get_bot_mode_protocol_section(sender).split("OTHER connected machines")[1]
     offered = next(line for line in remote.splitlines() if "Remote Main" in line).split("`")[1].removeprefix("@")
@@ -69,4 +71,5 @@ def test_remote_default_is_never_offered_as_a_bare_form_a_local_profile_answers_
 
     assert offered != "default" and ack["status"] == "queued", (offered, ack)
     assert authority.calls == []
-    assert [(e["target_connection"], e["target_profile"]) for e in bot_relay.claim_pending_envelopes(sender)] == [("box", "default")]
+    assert bot_relay.claim_pending_envelopes(sender) == []
+    assert [(e["target_connection"], e["target_profile"]) for e in bot_relay.claim_pending_envelopes(root)] == [("box", "default")]

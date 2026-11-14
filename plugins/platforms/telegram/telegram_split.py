@@ -16,6 +16,17 @@ from typing import Any, Optional
 REPLY_FILE_MAX_BYTES = 45 * 1024 * 1024
 
 
+def split_reply_anchor(adapter: Any, chat_id: str, reply_to: Optional[str],
+                       metadata: Optional[dict[str, Any]], parts: int) -> Optional[str]:
+    """``reply_to`` for a reply sent as ``parts`` messages: dropped for a split reply when
+    ``extra.anchor_multipart_replies`` is false (TDLib/Desktop can hide an anchored split reply's
+    first part, #55059). DM topics keep it: the topic is routed by the anchor."""
+    if (getattr(adapter, "_anchor_multipart_replies", True) or parts <= 1
+            or adapter._is_private_dm_topic_send(chat_id, adapter._metadata_thread_id(metadata), metadata)):
+        return reply_to
+    return None
+
+
 def reply_message_count(adapter: Any, content: str, metadata: Optional[dict[str, Any]]) -> int:
     """Messages ``send(content)`` would post: its rich parts when it goes out rich, else its
     MarkdownV2 chunks (escaping can push a raw-sized text past 4,096 UTF-16 units)."""

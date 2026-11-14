@@ -212,7 +212,8 @@ from plugins.platforms.telegram.telegram_outbound import is_visually_empty, reso
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCooldownMixin, land_persisted_state
 from plugins.platforms.telegram.telegram_send_errors import LOST, classify_send_exception, explain_username_chat_not_found, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
-from plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
+from plugins.platforms.telegram.telegram_split import (
+    REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document, split_reply_anchor)
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
 from plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
@@ -3424,8 +3425,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         routing chunk index continues). A mid-loop refusal returns the ``partial_overflow`` result."""
         thread_id, used_thread_fallback, prior = self._metadata_thread_id(metadata), False, len(delivered)
         requested_thread_id = self._message_thread_id_for_send(thread_id)
-        if not getattr(self, "_anchor_multipart_replies", True) and prior + len(chunks) > 1 and not self._is_private_dm_topic_send(chat_id, thread_id, metadata):
-            reply_to = None  # TDLib/Desktop can hide an anchored split reply's first chunk; DM topics route by it
+        reply_to = split_reply_anchor(self, chat_id, reply_to, metadata, prior + len(chunks))
         for chunk in chunks:
             outcome = await self._send_chunk_with_retries(
                 chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)

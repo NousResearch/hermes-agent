@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
-    CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,
-    load_pool,
+    AUTH_TYPE_OAUTH, CredentialPool, PooledCredential, _is_manual_source, credential_pool_matches_provider,
+    custom_provider_pool_key_candidates, load_pool,
 )
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
@@ -35,7 +35,7 @@ from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
-from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
+from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int, same_base_url_origin
 
 
 # A frozen session route's config (``frozen_runtime_config``); None = the live profile config.
@@ -780,12 +780,19 @@ class PoolChoice:
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
+    # A Foundry endpoint rejects Claude Code OAuth tokens, and pairing an OAuth row with a
+    # config-stored Foundry model.base_url presents the subscription token to a non-Anthropic host:
+    # select from (and attach, for 429/401 recovery) only the rows bound to that Foundry origin;
+    # with none, the env rung's Azure key answers (#154242).
+    cfg_url = _anthropic_cfg_base_url(model_cfg) if provider == "anthropic" else ""
     should_use_pool = provider != "openrouter" or _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
                                                                              explicit_base_url)
     try:
         pool = load_pool(provider) if should_use_pool else None
     except Exception:
         pool = None
+    if base_url_host_matches(cfg_url, "azure.com"):
+        pool = anthropic_foundry_pool(pool, cfg_url)
     picked = choose_pool_key(pool, provider, model=target_model)
     if picked is None:
         return None
@@ -801,6 +808,9 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
 
 def _explicit_anthropic(requested_provider, model_cfg, api_key, base_url, target_model):
     base_url = base_url or _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
+    if base_url_host_matches(base_url, "azure.com"):  # every alias (claude, claude-code) lands here: never OAuth on Foundry
+        if not (api_key := api_key or anthropic_foundry_key(model_cfg, base_url, target_model)):
+            raise AuthError(_NO_AZURE_KEY)
     api_key = api_key or _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, api_key, source="explicit", requested_provider=requested_provider)
 
@@ -963,6 +973,67 @@ def _azure_anthropic_env_key(model_cfg: dict[str, Any]) -> str:
             or get_secret_str("ANTHROPIC_API_KEY", "").strip())
 
 
+_NO_AZURE_KEY = ("No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY, or point "
+                 "key_env/api_key_env in your config.yaml model section at a custom env var.")
+
+
+def anthropic_foundry_entry_ok(entry: Any, base_url: str) -> bool:
+    """Whether an anthropic pool row may be sent to the Azure Foundry ``base_url``: a key the user
+    added (`hermes auth add anthropic --api-key`) and recorded for that origin. An unrecorded row's
+    address is api.anthropic.com (``recorded_address``, #130410). Never an OAuth row, which Foundry
+    rejects, nor a seeded env row (ANTHROPIC_API_KEY would outrank the Foundry key_env/api_key)."""
+    from agent.anthropic_credentials import _is_oauth_token
+    from agent.custom_entry_pool import recorded_address
+    return (_is_manual_source(str(getattr(entry, "source", "") or "")) and getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH
+            and not _is_oauth_token(str(_pool_entry_api_key(entry) or ""))
+            and same_base_url_origin(recorded_address(entry, "anthropic"), str(base_url or "")))
+
+
+def anthropic_foundry_pool(pool: Optional[CredentialPool], base_url: str) -> Optional[CredentialPool]:
+    """The rows of the ``anthropic`` pool that may serve the Foundry ``base_url``
+    (``anthropic_foundry_entry_ok``): the pool itself when all qualify, else a view sharing its rows
+    and token baselines (persisting it merges into the stored pool), None when none does. Selection
+    and recovery both read it, so a rotation never reaches a row meant for another host (#154242)."""
+    if pool is None:
+        return None
+    rows = pool.entries()
+    kept = [row for row in rows if anthropic_foundry_entry_ok(row, base_url)]
+    if len(kept) == len(rows):
+        return pool
+    if not kept:
+        return None
+    view = CredentialPool(pool.provider, kept)
+    view._persisted_token_pairs = pool._persisted_token_pairs
+    return view
+
+
+def anthropic_foundry_key(model_cfg: Any, base_url: str, model: Optional[str] = None) -> str:
+    """Key for a native-anthropic client at an Azure Foundry ``base_url``; never an OAuth token (#154242):
+    a pool row bound to that origin, else the ``model`` section's key/key_env when ``model`` configures
+    anthropic at this very URL (another provider's inline key, or one meant for another resource,
+    stays put), else the fixed Azure env names."""
+    try:
+        picked = choose_pool_key(anthropic_foundry_pool(load_pool("anthropic"), base_url), "anthropic", model=model)
+    except Exception as exc:  # health: allow BLE001 -- an unreadable pool leaves the env/config key
+        logger.debug("Could not read the anthropic pool for a Foundry key: %s", exc)
+        picked = None
+    if picked is not None and (key := str(picked.api_key or "").strip()):
+        return key
+    cfg = model_cfg if isinstance(model_cfg, dict) else {}
+    if not (_cfg_provider(cfg) == "anthropic" and _anthropic_cfg_base_url(cfg) == (base_url or "").strip().rstrip("/")):
+        return _azure_anthropic_env_key({})
+    return _azure_anthropic_env_key(cfg)
+
+
+def anthropic_discovery_token(api_key: Optional[str], base_url: Optional[str]) -> Optional[str]:
+    """Key for an Anthropic ``/v1/models`` read: the caller's, else at an Azure Foundry host the
+    Foundry key (None when there is none: send nothing, #154242), else ``resolve_anthropic_token()``."""
+    if (key := str(api_key or "").strip()) or not base_url_host_matches(str(base_url or ""), "azure.com"):
+        from agent.anthropic_credentials import resolve_anthropic_token
+        return key or resolve_anthropic_token() or ""
+    return anthropic_foundry_key(_get_model_config(), str(base_url)) or None
+
+
 def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], target_model: str | None = None) -> dict[str, Any]:
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
@@ -976,8 +1047,7 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
     if base_url_host_matches(base_url, "azure.com"):
         token = _azure_anthropic_env_key(model_cfg)
         if not token:
-            raise AuthError("No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY, or point "
-                            "key_env/api_key_env in your config.yaml model section at a custom env var.")
+            raise AuthError(_NO_AZURE_KEY)
     else:
         token = _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
@@ -1088,8 +1158,10 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     # bypass _resolve_named_custom_runtime (which would yield custom/chat_completions/no key).
     eff_base = (explicit_base_url or "").strip()
     if requested_provider == "anthropic" and base_url_host_matches(eff_base, "azure.com"):
-        return _runtime("anthropic", "anthropic_messages", eff_base.rstrip("/"),
-                        (explicit_api_key or "").strip() or _azure_anthropic_env_key({}), source="azure-explicit",
+        # No key is an error, not "": callers fill an empty native-anthropic key with the OAuth token.
+        if not (key := (explicit_api_key or "").strip() or _azure_anthropic_env_key({})):
+            raise AuthError(_NO_AZURE_KEY)
+        return _runtime("anthropic", "anthropic_messages", eff_base.rstrip("/"), key, source="azure-explicit",
                         requested_provider=requested_provider)
     # Azure Foundry resolves before the custom-runtime / pool / generic paths so its config is
     # always picked up from model.base_url + model.api_mode, with or without explicit_* args.

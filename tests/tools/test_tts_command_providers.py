@@ -355,6 +355,26 @@ class TestRenderCommandTtsTemplate:
         assert "PWNED" not in proc.stdout
 
 
+    @pytest.mark.parametrize("value", [
+        r"C:\tmp\a&b.mp3", r"C:\tmp\a|b.mp3", r"C:\tmp\a^b.mp3", r"C:\tmp\a>b.mp3",
+        r"C:\tmp\%TEMP%.mp3", r"C:\tmp\a!b.mp3", r'C:\tmp\a"b.mp3', "a\nb",
+    ])
+    @pytest.mark.parametrize("template", ["tts --out {output_path}", 'tts --out "{output_path}"'])
+    def test_windows_refuses_cmd_metacharacters_in_values(self, template, value):
+        """cmd.exe has no reliable escape for these under ``cmd /c`` (#138361): fail closed."""
+        with pytest.raises(ValueError, match="cmd.exe"):
+            _render_command_tts_template(template, {"output_path": value}, os_name="nt")
+
+    def test_windows_still_quotes_plain_paths(self):
+        rendered = _render_command_tts_template(
+            "tts --out {output_path}", {"output_path": r"C:\Users\Me\My Audio\out.mp3"}, os_name="nt")
+        assert rendered == r'tts --out "C:\Users\Me\My Audio\out.mp3"'
+
+    def test_posix_keeps_quoting_cmd_metacharacters(self):
+        rendered = _render_command_tts_template(
+            "tts --out {output_path}", {"output_path": "/tmp/a&b%c!.mp3"}, os_name="posix")
+        assert rendered == "tts --out '/tmp/a&b%c!.mp3'"
+
 # ---------------------------------------------------------------------------
 # _run_command_tts idle/progress timeout behavior
 # ---------------------------------------------------------------------------

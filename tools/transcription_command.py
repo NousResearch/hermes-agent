@@ -131,7 +131,7 @@ def _transcribe_command_stt(
         return fail(
             f"STT command provider '{provider_name}' exited with code {exc.returncode}: {command_failure_detail(exc)}"
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:  # ValueError: placeholder unsafe for cmd.exe
         return fail(str(exc))
     except OSError as exc:
         return fail(f"STT command provider '{provider_name}' failed: {exc}")

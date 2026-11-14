@@ -33,7 +33,13 @@ const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 // transport and askpass helpers `git push` authenticates with, and
 // GIT_TERMINAL_PROMPT, which stops a credential prompt from blocking a git
 // process that has no terminal.
-export const SIMPLE_GIT_ALLOWED_ENV = ['GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_TERMINAL_PROMPT']
+export const SIMPLE_GIT_ALLOWED_ENV = [
+  'GIT_SSH_COMMAND',
+  'GIT_SSH',
+  'GIT_ASKPASS',
+  'SSH_ASKPASS',
+  'GIT_TERMINAL_PROMPT'
+]
 
 // simple-git's vulnerability check additionally rejects GIT_SSH/GIT_SSH_COMMAND
 // and GIT_ASKPASS/SSH_ASKPASS in an explicit `.env()` (the Windows host path

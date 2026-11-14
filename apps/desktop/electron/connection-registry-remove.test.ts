@@ -234,6 +234,7 @@ it('saving a corrected key or Hermes path updates the matching SSH entry in plac
 
 it('Apply routes the window to each applied SSH profile, back to one already saved; Save never re-picks', () => {
   let registry = normalizeRegistry({ connections: [{ id: 'local', kind: 'local', label: 'This device' }] })
+
   const route = (remoteProfile: string) => ({
     mode: 'ssh',
     remote: { host: 'box.example.invalid', user: 'hermes', remoteProfile }

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-import hermes_cli.secrets_cli as secrets_cli
+from hermes_cli import secrets_cli
 
 HOSTILE = "token revoked [green]Token accepted[/green] \x1b]8;;http://evil.example\x07CLICKME\x1b]8;;\x07 end"
 
@@ -99,7 +99,7 @@ class TestSetupAndSyncSurfaces:
         monkeypatch.setattr(secrets_cli.bw, "fetch_bitwarden_secrets",
                             lambda **k: (secrets, warnings))
         monkeypatch.setattr(secrets_cli, "save_config", lambda _c: None)
-        monkeypatch.setattr(secrets_cli, "load_config", lambda: {})
+        monkeypatch.setattr(secrets_cli, "load_config", dict)
 
     def test_setup_escapes_secret_names_and_warnings(self, monkeypatch, capsys):
         hostile_key = "K[green]spoof[/green]"
@@ -117,6 +117,22 @@ class TestSetupAndSyncSurfaces:
         out = capsys.readouterr().out
         assert "[green]spoof[/green]" in out
         assert "[red]x[/red]" in out
+        assert "\x1b" not in out and "\x07" not in out
+
+    def test_setup_fetch_error_text_escaped(self, monkeypatch, capsys):
+        self._setup_stubs(monkeypatch, {}, [])
+
+        def boom(**k):
+            raise RuntimeError("bws exited 1: [green]ok[/green] \x1b]8;;u\x07")
+        monkeypatch.setattr(secrets_cli.bw, "fetch_bitwarden_secrets", boom)
+        monkeypatch.setattr(secrets_cli.subprocess, "run",
+                            lambda *a, **k: subprocess.CompletedProcess(
+                                a[0], 0, json.dumps([{"id": "p1", "name": "n"}]), ""))
+        args = argparse.Namespace(access_token="0.t", server_url="https://vault.example",
+                                  project_id="p1")
+        assert secrets_cli.cmd_setup(args) == 1
+        out = capsys.readouterr().out
+        assert "[green]ok[/green]" in out
         assert "\x1b" not in out and "\x07" not in out
 
     def test_sync_escapes_secret_names_and_warnings(self, monkeypatch, capsys):

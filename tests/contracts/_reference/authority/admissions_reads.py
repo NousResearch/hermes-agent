@@ -74,6 +74,11 @@ class AdmissionReadsMixin:
         row = rows.lookup(self._committed(), admission_id)
         return rows.record(row) if row is not None else None
 
+    def latest_admission(self, *, session_id: str, payload_marker: str) -> AdmissionRecord | None:
+        selected = rows.session_rows(self._committed(), session_id)
+        row = next((r for r in reversed(selected) if isinstance(r["payload"], dict) and payload_marker in r["payload"]), None)
+        return rows.record(row) if row is not None else None
+
     def settled_result(self, *, admission_id: str, epoch: int | None = None, generation: int | None = None) -> AdmissionResult | None:
         if (epoch is None) != (generation is None):
             raise ValueError("settled_result takes epoch and generation together or not at all")

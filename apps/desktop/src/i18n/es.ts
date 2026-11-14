@@ -5147,6 +5147,7 @@ export const esOverrides = {
       command: 'Comando',
       moreOptions: 'Más opciones de aprobación',
       allowSession: 'Permitir esta sesión',
+      switchToYolo: 'Aprobar todo en este chat (YOLO)',
       alwaysAllowMenu: 'Permitir siempre…',
       jumpToApproval: 'Aprobación necesaria',
       reject: 'Rechazar',

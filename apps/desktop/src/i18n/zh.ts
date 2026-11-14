@@ -4460,6 +4460,7 @@ export const zhOverrides = {
       command: '命令',
       moreOptions: '更多审批选项',
       allowSession: '允许本会话',
+      switchToYolo: '本聊天全部自动批准（YOLO）',
       alwaysAllowMenu: '始终允许…',
       jumpToApproval: '需要审批',
       reject: '拒绝',

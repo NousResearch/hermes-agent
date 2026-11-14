@@ -88,7 +88,7 @@ _CHAIN_CAP = 1000
 # ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
 # ``_chat_adopted`` (``gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
 # chat onto stays that chat's conversation past a rotation, or the route guard rejects the new tip.
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted")
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted", "_vision_payload_evictions_v1")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:
@@ -333,8 +333,10 @@ class SessionCompressionMixin:
         from hermes_state_sessions import _parse_model_config
         # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
         # verbs also publish through here, and their child is its own conversation.
-        continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
-        carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
+        prior_config = _parse_model_config(parent["model_config"])
+        continuation = not any(k in (model_config or {}) and model_config[k] != prior_config.get(k)
+                               for k in ("_branched_from", "_reset_from"))
+        carried = {key: value for key, value in prior_config.items()
                    if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
         model_config = {**carried, **(model_config or {})}
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)

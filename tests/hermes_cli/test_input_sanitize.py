@@ -1,6 +1,7 @@
 """Tests for shared user prompt input sanitization."""
 
 from hermes_cli.input_sanitize import (
+    replace_lone_surrogates,
     collapse_repeated_input_artifacts,
     sanitize_user_prompt_text,
     strip_leaked_bracketed_paste_wrappers,
@@ -34,3 +35,21 @@ class TestSanitizeUserPromptText:
         prefix = "hello["
         corrupted = prefix + "~[[e" * 8
         assert sanitize_user_prompt_text(corrupted) == "hello"
+
+
+class TestReplaceLoneSurrogates:
+    def test_lone_surrogate_becomes_replacement_char(self):
+        assert replace_lone_surrogates("a\udcffb") == "a\ufffdb"
+
+    def test_clean_text_is_returned_unchanged(self):
+        assert replace_lone_surrogates("git status") == "git status"
+
+    def test_is_idempotent(self):
+        once = replace_lone_surrogates("a\udcffb")
+        assert replace_lone_surrogates(once) == once
+
+    def test_result_is_utf8_encodable(self):
+        replace_lone_surrogates("a\udcffb").encode("utf-8")  # must not raise
+
+    def test_prompt_sanitizer_drops_surrogates(self):
+        assert sanitize_user_prompt_text("a\udcffb") == "a\ufffdb"

@@ -51,4 +51,19 @@ def sanitize_user_prompt_text(text: str) -> str:
     """Normalize user-authored prompt text before persistence or model input."""
     if not isinstance(text, str) or not text:
         return text
-    return collapse_repeated_input_artifacts(strip_leaked_bracketed_paste_wrappers(text))
+    return collapse_repeated_input_artifacts(
+        strip_leaked_bracketed_paste_wrappers(replace_lone_surrogates(text))
+    )
+
+
+# Terminal input is decoded with errors="surrogateescape", so invalid UTF-8 bytes
+# survive as lone surrogates. They cannot be encoded back to UTF-8, so persisting or
+# sending them raises UnicodeEncodeError.
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def replace_lone_surrogates(text: str) -> str:
+    """Replace lone surrogates with U+FFFD so the text is UTF-8 encodable again."""
+    if not isinstance(text, str) or not text:
+        return text
+    return _LONE_SURROGATE_RE.sub("\ufffd", text)

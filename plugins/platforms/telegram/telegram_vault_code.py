@@ -58,16 +58,28 @@ def _t(key: str, **kwargs: Any) -> str:
     return t(key, **kwargs)
 
 
+_RETIRED_MAX = 512  # cards whose late replies are still swallowed (bounded; oldest dropped first)
+
+
 class TelegramVaultCodeMixin:
     """``send_vault_code_prompt`` (the capability the gateway detects) and the inbound interception."""
 
     _bot: Any
 
     def _vault_code_replies(self) -> dict:
+        """Live cards keyed by ``(chat_id, card message_id)``: each has its own record and its own timer."""
         replies = getattr(self, "_vault_code_reply_state", None)
         if replies is None:
             replies = self._vault_code_reply_state = {}
         return replies
+
+    def _retired_vault_code_cards(self) -> dict:
+        """Cards that ended, ``(chat_id, card message_id) -> True`` in retirement order: a late reply to one
+        is still a code and must never become chat text."""
+        retired = getattr(self, "_vault_code_retired_state", None)
+        if retired is None:
+            retired = self._vault_code_retired_state = {}
+        return retired
 
     async def send_vault_code_prompt(self, chat_id: str, site: str, hint: str, *, user_id: str,
                                      submit: Callable[[str], bool], timeout_s: float,
@@ -80,6 +92,9 @@ class TelegramVaultCodeMixin:
             _t("platform.telegram.vault_code.body", site=site))
         if hint:
             text += "\n" + _html.escape(hint[:_HINT_LIMIT])
+        if str(chat_id).startswith("-"):
+            # In a group, ForceReply(selective) opens the reply field only for users the card mentions.
+            text = f'<a href="tg://user?id={int(user_id)}">\u2063</a>' + text
         reply_markup = ForceReply(selective=True, input_field_placeholder=_t(
             "platform.shared.vault_code.input_label")[:_PLACEHOLDER_LIMIT])
         pending: dict = {}
@@ -92,7 +107,7 @@ class TelegramVaultCodeMixin:
         result = await self._send_prompt("send_vault_code_prompt", chat_id, metadata, build, parse_mode=ParseMode.HTML,
                                          thread_id=self._metadata_thread_id(metadata))
         if result.success and pending:
-            key = (pending["chat_id"], str(user_id))
+            key = (pending["chat_id"], pending["message_id"])
             self._vault_code_replies()[key] = _CodeReply(
                 submit=submit, user_id=str(user_id), chat_id=pending["chat_id"],
                 prompt_message_id=pending["message_id"], prompt_text=text, expires_at=time.monotonic() + timeout_s)
@@ -105,6 +120,10 @@ class TelegramVaultCodeMixin:
         reply = self._vault_code_replies().pop(key, None)
         if reply is not None:
             _DropPendingCodeUpdates.pending = max(0, _DropPendingCodeUpdates.pending - 1)
+            retired = self._retired_vault_code_cards()
+            retired[key] = True
+            while len(retired) > _RETIRED_MAX:
+                retired.pop(next(iter(retired)))
         return reply
 
     async def _retire_vault_code_reply(self, key: tuple, outcome: str) -> None:
@@ -122,34 +141,47 @@ class TelegramVaultCodeMixin:
         except Exception:  # health: allow BLE001 -- the card's outcome line is cosmetic; the request is already settled
             logger.debug("[%s] vault code card edit failed", getattr(self, "name", "Telegram"), exc_info=True)
 
-    def _pending_vault_code_reply(self, msg) -> Optional[tuple]:
+    def _match_vault_code_card(self, msg) -> tuple[Optional[tuple], bool]:
+        """``(live card key or None, is a reply to an ended card)`` for an inbound text."""
         chat_id = str(getattr(msg, "chat_id", "") or "")
         user_id = str(getattr(getattr(msg, "from_user", None), "id", "") or "")
-        key = (chat_id, user_id)
-        reply = self._vault_code_replies().get(key)
-        if reply is None or time.monotonic() >= reply.expires_at:
-            return None
         replied_to = getattr(getattr(msg, "reply_to_message", None), "message_id", None)
-        private = str(getattr(getattr(msg, "chat", None), "type", "")) == "private"
-        # A group message counts only as a reply to the card; a private chat has no one else to answer.
-        if not private and str(replied_to) != reply.prompt_message_id:
-            return None
-        return key
+        now = time.monotonic()
+        if replied_to is not None:
+            key = (chat_id, str(replied_to))
+            reply = self._vault_code_replies().get(key)
+            if reply is not None:
+                return (key if reply.user_id == user_id and now < reply.expires_at else None), reply.user_id == user_id
+            return None, key in self._retired_vault_code_cards()
+        # A private chat has no one else to answer: the author's next text answers their newest live card.
+        if str(getattr(getattr(msg, "chat", None), "type", "")) != "private":
+            return None, False
+        live = [k for k, r in self._vault_code_replies().items()
+                if k[0] == chat_id and r.user_id == user_id and now < r.expires_at]
+        return (live[-1] if live else None), False
 
     async def consume_vault_code_reply(self, msg) -> bool:
-        """True when ``msg`` answered a pending code prompt: deleted, handed over, never a turn."""
-        key = self._pending_vault_code_reply(msg)
+        """True when ``msg`` answered a code card (live or ended): deleted, never a turn."""
+        key, to_ended_card = self._match_vault_code_card(msg)
         reply = self._pop_vault_code_reply(key) if key is not None else None
-        if reply is None:
+        if reply is None and not to_ended_card:
             return False
         self._accept_update()
+        chat_id = str(getattr(msg, "chat_id", "") or "")
         code = (getattr(msg, "text", "") or "").strip()
-        deleted = await self.delete_message(reply.chat_id, str(msg.message_id))
-        accepted = bool(code) and reply.submit(code)
+        # Confirmed: a delete queued behind a flood wait must not read as done, or the warning never goes out.
+        deleted = await self.delete_message_confirmed(chat_id, str(msg.message_id))
+        accepted = reply is not None and bool(code) and reply.submit(code)
         code = ""
-        await self._mark_vault_code_card(reply, "submitted" if accepted else "ended")
+        if reply is not None:
+            await self._mark_vault_code_card(reply, "submitted" if accepted else "ended")
+        notice_card = reply or _CodeReply(submit=lambda _c: False, user_id="", chat_id=chat_id,
+                                          prompt_message_id=str(msg.reply_to_message.message_id), prompt_text="",
+                                          expires_at=0.0)
         if not deleted:
-            await self._vault_code_notice(reply, "platform.telegram.vault_code.delete_failed")
+            await self._vault_code_notice(notice_card, "platform.telegram.vault_code.delete_failed")
+        if not accepted:
+            await self._vault_code_notice(notice_card, "platform.shared.vault_code.ended")
         return True
 
     async def _vault_code_notice(self, reply: _CodeReply, key: str) -> None:

@@ -1101,7 +1101,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop", "moa")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1212,25 +1212,34 @@ class GatewayBusySessionMixin:
         await _busy_accepted()
         adapter = self._delivery_adapter_for(source)
         if adapter:
-            queued = MessageEvent(
-                text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
-                source=event.source, raw_message=event.raw_message, message_id=event.message_id,
-                media_urls=list(getattr(event, "media_urls", []) or []),
-                media_types=list(getattr(event, "media_types", []) or []),
-                media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
-                media_filenames=list(getattr(event, "media_filenames", []) or []),
-                reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
-                reply_to_author_id=event.reply_to_author_id,
-                reply_to_author_name=event.reply_to_author_name,
-                reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
-                channel_prompt=event.channel_prompt, channel_context=event.channel_context,
-                internal=event.internal, timestamp=event.timestamp,
-                edit_revision=event.edit_revision,  # an edited /queue is its own input (admission id)
-            )
+            queued = self._queued_turn_event(event, queued_text, has_media)
             if await self._queue_command_turn(quick_key, event, queued, adapter, t("gateway.queue.queued")):
                 return None  # its commit sends the ack
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
+
+    @staticmethod
+    def _queued_turn_event(event: MessageEvent, text: str, has_media: bool) -> MessageEvent:
+        """*event*'s turn as its own FIFO input with *text* as the prompt (``/queue``, ``/moa``)."""
+        return MessageEvent(
+            text=text, message_type=event.message_type if has_media else MessageType.TEXT,
+            source=event.source, raw_message=event.raw_message, message_id=event.message_id,
+            media_urls=list(getattr(event, "media_urls", []) or []),
+            media_types=list(getattr(event, "media_types", []) or []),
+            media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
+            media_filenames=list(getattr(event, "media_filenames", []) or []),
+            reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
+            reply_to_author_id=event.reply_to_author_id,
+            reply_to_author_name=event.reply_to_author_name,
+            reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
+            channel_prompt=event.channel_prompt, channel_context=event.channel_context,
+            internal=event.internal, timestamp=event.timestamp,
+            edit_revision=event.edit_revision,  # an edited /queue is its own input (admission id)
+        )
+
+    async def _busy_moa_command(self, event: MessageEvent, quick_key: str, source):
+        from gateway.session_moa_turn import queue_busy_moa
+        return await queue_busy_moa(self, event, quick_key, source)
 
     async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool

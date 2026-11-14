@@ -153,9 +153,34 @@ healthy and unreachable. The symptom is a dashboard reporting a stale
 curl -s http://127.0.0.1:9119/api/status | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['version'], d['config_version'], d['latest_config_version'])"
 ```
 
-If `version` is `unknown` you are on the container (fine — the image reports the
-git stamp). If it names an old release, a host process owns the port: stop it and
-then `docker compose ... up -d --force-recreate hermes-web` so Docker rebinds.
+If it names an old release, a host process owns the port: stop it and then
+`docker compose ... up -d --force-recreate hermes-web` so Docker rebinds.
+
+Confirm which side answered instead of trusting the number alone — the container
+is the one whose config version matches `latest`:
+
+```bash
+docker port hermes-web                                      # empty => Docker never bound 9119
+docker exec hermes-web python3 -c "import urllib.request,json;d=json.load(urllib.request.urlopen('http://127.0.0.1:9119/api/status'));print(d['config_version'],d['latest_config_version'])"
+```
+
+When the bind was lost, Docker Desktop's own log states the reason — search
+`%LOCALAPPDATA%\Docker\log\host\com.docker.backend.exe.log` for:
+
+```
+resyncer][E] giving up on opening a port forward ... 127.0.0.1:9119: bind: Only one usage of each socket address
+```
+
+The same collision takes the gateway ports: a host-native
+`hermes gateway run` holds `0.0.0.0:8642`/`8644`, and the container forward then
+logs `unable to connect ... tcp forward from 0.0.0.0:8642`. Stop it with
+`hermes gateway stop` (verify with
+`Get-NetTCPConnection -LocalPort 8642 -State Listen`) before recreating the stack.
+
+> `version` reading `unknown` is **not** "fine" — it means the image shipped a
+> commit-only install stamp, so `requires_hermes` plugin gates fail open. See
+> Plan 006 §4; the fix is in `fork-ghcr-publish.yml`, and it takes effect after
+> the next image rebuild.
 
 > A gateway reporting `DEGRADED` with `weixin: WEIXIN_TOKEN is required` is not a
 > broken upgrade: weixin has no credentials. Either scan the QR code or set

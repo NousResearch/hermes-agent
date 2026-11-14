@@ -86,6 +86,27 @@ Consequences, and this is why the fork's GHCR images reported nothing useful:
   side declares** (it was a fork-local Dockerfile hack that upstream's rewrite
   deleted). The arg was silently ignored.
 
+**A stamp with only `--commit` is still not enough.** The first fix passed just
+`--commit`/`--branch`, which leaves `baseVersion` null: the image then reports
+`git.<sha>` / `"version": "unknown"` in `/api/status`, and
+`plugins_manifest.running_hermes_version()` returns `"unknown"`. That fails every
+`requires_hermes` gate **open** — `version_satisfies(spec, "unknown")` is False, so
+`requires_hermes_error()` returns None and catalog entries needing a newer core
+install silently and then do nothing. The workflow must therefore derive the base
+release the way upstream `docker.yml` does, from
+`python3 -m scripts.releases.distance`.
+
+Two CI-only preconditions, both verified against a scratch full-history clone
+with an empty tag set (the fork publishes **no** tags):
+
+| condition | without it |
+|---|---|
+| `actions/checkout@v4` with `fetch-depth: 0` | `git tag --merged HEAD` sees no ancestry, so 0 tags match and the helper raises `NoReleaseTag` |
+| fetching `NousResearch/hermes-agent` `v*` tags (the fork has none) | 0 tags exist locally, same `NoReleaseTag` fallback |
+
+Either one missing silently degrades the stamp back to a commit-only identity
+(the step exits 0 with empty output — there is no error to notice).
+
 **Do not bump `pyproject.toml`.** A hand-edited version diverges from the stamp
 and makes `hermes doctor` report a source tree that does not match its image.
 Instead the workflow now writes a real stamp, so the image reports the actual

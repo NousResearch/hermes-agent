@@ -6,7 +6,7 @@ applyTo:
   - "INSTALL.md"
   - "docker/*.sh"
   - "docker/*.yaml"
-  - ".github/workflows/docker-publish.yml"
+  - ".github/workflows/fork-ghcr-publish.yml"
 ---
 
 # Fork Maintenance
@@ -14,7 +14,7 @@ applyTo:
 ## Start From Current State
 
 - Verify remotes before planning merges. The usual layout in this fork is `origin` for the personal fork and `upstream` for `NousResearch/hermes-agent`, but always confirm with `git remote -v`.
-- Read [docker-compose.yml](../../docker-compose.yml), [INSTALL.md](../../INSTALL.md), [docker/hermes-config.yaml](../../docker/hermes-config.yaml), and [docker publish workflow](../workflows/docker-publish.yml) before proposing Docker changes. Read [docker/entrypoint.sh](../../docker/entrypoint.sh) when startup behavior or image-entrypoint drift is part of the task.
+- Read [docker-compose.yml](../../docker-compose.yml), [INSTALL.md](../../INSTALL.md), [docker/hermes-config.yaml](../../docker/hermes-config.yaml), and the [fork image workflow](../workflows/fork-ghcr-publish.yml) before proposing Docker changes. Read [docker/entrypoint.sh](../../docker/entrypoint.sh) when startup behavior or image-entrypoint drift is part of the task. (`docker-publish.yml` is upstream-only: it is gated on `github.repository == 'NousResearch/hermes-agent'` and never runs on this fork.)
 - The upstream container reference is [website/docs/user-guide/docker.md](../../website/docs/user-guide/docker.md).
 
 ## Safety Rules

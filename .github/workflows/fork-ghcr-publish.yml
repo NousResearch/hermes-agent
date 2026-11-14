@@ -60,6 +60,41 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # `python -m scripts.releases.distance` counts commits from the
+          # highest reachable release tag, so the stamp needs the tag history.
+          # The default depth-1 clone has no tags and yields a commit-only
+          # identity.
+          fetch-depth: 0
+
+      # The stamp step runs on the runner's python3, whose version depends on
+      # the runner image. Pin it instead of trusting it (mirrors upstream's
+      # docker.yml).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Fetch upstream release tags
+        # `actions/checkout` fetches tags from the FORK, and this fork publishes
+        # none (`git ls-remote --tags origin` is empty). Without a release tag
+        # the distance helper raises NoReleaseTag and the stamp falls back to a
+        # commit-only identity — the "unknown" version this step exists to fix.
+        # Blobs are filtered out: only the tag objects and their commits are
+        # needed to resolve `--merged HEAD` and the commit distance. The
+        # refspec must use a plain `*` — git rejects character classes such as
+        # `v[0-9]*` as an invalid refspec. Non-release identities (canary
+        # builds, CalVer tags, backup tags) are discarded downstream by
+        # `version_from_tag`, so fetching them is harmless.
+        #
+        # Deliberately NOT continue-on-error: a failed fetch would leave zero
+        # tags, and the distance helper would then degrade the stamp back to
+        # "unknown" with no error anywhere. The build already needs GitHub
+        # reachability, so failing here is the honest outcome.
+        run: |
+          git fetch --no-recurse-submodules --filter=blob:none --no-tags \
+            https://github.com/NousResearch/hermes-agent.git \
+            '+refs/tags/v*:refs/tags/v*'
+          echo "reachable release tags: $(git tag --merged HEAD --list 'v[0-9]*' | wc -l)"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -91,12 +126,28 @@ jobs:
         # placeholder, so `hermes --version` and the provenance marker report
         # 0.0.0 / revision null. The Dockerfile copies the stamp into the bulk
         # `COPY . .` layer, so it has to exist first.
+        #
+        # Passing only --commit is NOT enough: baseVersion stays null, so the
+        # runtime reports "unknown" (dashboard /api/status, and
+        # plugins_manifest.running_hermes_version). An "unknown" running version
+        # makes every `requires_hermes` gate fail OPEN, so catalog entries that
+        # need a newer core install silently and then do nothing. Derive the
+        # base release and commit distance the way upstream docker.yml does.
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: |
+          display="$(python3 -m scripts.releases.distance)"
+          identity=(--commit "$GITHUB_SHA")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
             --distribution docker --update-mechanism external --source ci \
-            --commit "$GITHUB_SHA" --branch main
+            --branch main "${identity[@]}"
+          python3 -c 'import json; s = json.load(open("install-stamp.json")); print("stamp:", s.get("displayVersion"), "base:", s.get("baseVersion"), "distance:", s.get("distance"))'
 
       - name: Build and push image
         id: build

@@ -115,12 +115,6 @@ _HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
 _HYGIENE_TURNHOLD_RETRY_SECONDS = 60.0
 
 
-def _gateway_session_db_inner(gateway):
-    """The raw SessionDB behind ``gateway._session_db`` (unwrapping the async facade), or None."""
-    session_db = getattr(gateway, "_session_db", None)
-    return getattr(session_db, "_db", session_db)
-
-
 def _hygiene_cooldown_for_failure(gateway, session_key: str, base_cooldown_seconds: float) -> float:
     """Bump the hygiene failure streak and return the escalated cooldown (x1/x3/x9 over base, clamped).
 
@@ -2162,6 +2156,7 @@ from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
+from gateway.run_turn_hygiene import _gateway_session_db_inner
 from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
@@ -4193,6 +4188,7 @@ class GatewayRunner(
         progress_grouping: Any = None
         _display_surface_mode: Any = None
         tool_progress_enabled: Any = None
+        feishu_progress_card_enabled: Any = None
         _live_status_mode: Any = None
         _live_status_adapter: Any = None
         log_mode_enabled: Any = None

@@ -457,6 +457,27 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     return _contains_launchctl_gateway_lifecycle(normalized) or contains_host_interpreter_kill(normalized)
 
 
+def first_gateway_lifecycle_match(text: str) -> Optional[str]:
+    """The command-shaped span ``contains_gateway_lifecycle_command`` keys on, for rejection text.
+
+    Covers the raw and shell-tokenized regex passes; None when only the profile-flag, split-label
+    launchctl or interpreter-kill pass fired (callers then fall back to a generic message).
+    """
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", strip_inert_heredoc_bodies(text or ""))
+    match = _GATEWAY_LIFECYCLE_PATTERN.search(normalized)
+    if match:
+        return match.group(0)
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        for candidate in (joined, _ARGV_LIST_PUNCTUATION.sub(" ", joined)):
+            match = _GATEWAY_LIFECYCLE_PATTERN.search(candidate)
+            if match:
+                return match.group(0)
+    return None
+
+
 # Whole-walk work limits. The per-file cap and depth bound above limit one read, not the walk: a
 # command can reference arbitrarily many scripts, and the pure-Python shlex pass (quadratic on a
 # giant token) once held the GIL for minutes. These caps bound one whole walk and are charged

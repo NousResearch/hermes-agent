@@ -207,7 +207,7 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * contains every on-screen row replaces the window. When the page overlaps
  * the screen but that splice would put an older stored id after a newer one,
  * merge by stored id. The fresh page wins where both sides share an id, and
- * a row with no stored id stays at the end. A page that shares no stored id
+ * unbound live rows stay at the end. A page that shares no stored id
  * is the transcript now on screen — a compaction rewrite or a different
  * session — and replaces the window.
  */
@@ -297,13 +297,31 @@ interface StoredRowSlot {
   message: ChatMessage
   /** Rows without a stored id (e.g. a page-local tool fold) that precede this row. */
   leading: ChatMessage[]
+  /** Settled synthetic tools immediately following this durable anchor. */
+  trailing: ChatMessage[]
+}
+
+function isSettledToolRow(message: ChatMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    !message.pending &&
+    !message.interim &&
+    !message.error &&
+    message.durableComplete !== false &&
+    message.persistedTurn?.complete !== false &&
+    message.parts.length > 0 &&
+    message.parts.every(
+      part => part.type === 'tool-call' && (part.result !== undefined || part.completedAt !== undefined)
+    )
+  )
 }
 
 /**
  * Stored-id merge for a page that overlaps the window but does not anchor in
  * front of it. A row with no stored id travels with the next stored row after
- * it, so a page-local fold stays in front of the row it preceded. Rows with no
- * stored id after the last stored row stay at the end (page first, then live).
+ * it, so a page-local fold stays in front of the row it preceded. Settled
+ * synthetic tool rows stay just after their previous durable anchor instead;
+ * unbound live rows stay at the end (page first, then live).
  */
 function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
   // Compaction, rewind, or a different session arrives as new stored ids.
@@ -341,8 +359,32 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     return true
   }
 
+  const placeUnstored = (
+    message: ChatMessage,
+    sourceIds: number[],
+    fresh: boolean,
+    pending: ChatMessage[],
+    lastRowId: number | undefined
+  ): void => {
+    // The fresh page's copy of an unstored row wins over the window's.
+    if (!fresh && refreshedIds.has(message.id)) {
+      return
+    }
+
+    const previousSlot = lastRowId === undefined ? undefined : byRowId.get(lastRowId)
+
+    // A closed question/tool card is history, not a live suffix. Do not
+    // borrow an anchor across unbound content or move page-local folds.
+    if (!fresh && !sourceIds.length && !pending.length && previousSlot && isSettledToolRow(message)) {
+      previousSlot.trailing.push(message)
+    } else {
+      pending.push(message)
+    }
+  }
+
   const place = (messages: ChatMessage[], fresh: boolean): ChatMessage[] => {
     let pending: ChatMessage[] = []
+    let lastRowId: number | undefined
 
     for (const message of messages) {
       const sourceIds = transcriptRowIds(message)
@@ -365,14 +407,18 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
       const rowId = covered ? (folded?.rowId ?? message.rowId) : message.rowId
 
       if (rowId === undefined) {
-        // The fresh page's copy of an unstored row wins over the window's.
-        if (fresh || !refreshedIds.has(message.id)) {
-          pending.push(message)
+        placeUnstored(message, sourceIds, fresh, pending, lastRowId)
+
+        // Even when the page owns this row, it separates a later card from
+        // our last durable slot. Suppressing its copy must not erase that barrier.
+        if (refreshedIds.has(message.id)) {
+          lastRowId = undefined
         }
 
         continue
       }
 
+      lastRowId = rowId
       const existing = byRowId.get(rowId)
 
       if (!fresh && existing) {
@@ -384,7 +430,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
       // The fresh page replaces the row; keep the window's leading rows when
       // the page brought none of its own for it.
       const leading = fresh && existing && pending.length === 0 ? existing.leading : pending
-      byRowId.set(rowId, { message, leading })
+      byRowId.set(rowId, { message, leading, trailing: existing?.trailing ?? [] })
       pending = []
     }
 
@@ -401,7 +447,12 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
 
   const stored = [...byRowId.entries()]
     .sort((left, right) => left[0] - right[0])
-    .flatMap(([rowId, { leading, message }]) => [...leading, ...(anchored.get(rowId) ?? []), message])
+    .flatMap(([rowId, { leading, message, trailing }]) => [
+      ...leading,
+      ...(anchored.get(rowId) ?? []),
+      message,
+      ...trailing
+    ])
 
   // A notice whose anchor row the page dropped after all still stays on screen.
   const unplaced = [...anchored.entries()].filter(([rowId]) => !byRowId.has(rowId)).flatMap(([, notices]) => notices)

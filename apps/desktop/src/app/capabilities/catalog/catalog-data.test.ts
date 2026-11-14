@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchCatalog, parseCatalog } from './catalog-data'
+import { queryClient } from '@/lib/query-client'
+
+import { fetchCatalog, parseCatalog, prefetchCatalogWhenIdle } from './catalog-data'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -141,5 +143,44 @@ describe('public catalog data', () => {
 
   it('rejects a non-catalog response instead of treating an error payload as an empty catalog', () => {
     expect(() => parseCatalog('skills', { error: 'Service unavailable' })).toThrow('Invalid catalog response')
+  })
+})
+
+describe('idle catalog prefetch', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('falls back to a timeout where requestIdleCallback is unavailable (WebKit) instead of blanking the pane', () => {
+    // WebKit never shipped requestIdleCallback; the unguarded call site threw
+    // `can't find variable: requestIdleCallback` past the workspace boundary (#155594).
+    vi.stubGlobal('requestIdleCallback', undefined)
+    vi.stubGlobal('cancelIdleCallback', undefined)
+    vi.useFakeTimers()
+    const prefetch = vi.spyOn(queryClient, 'prefetchQuery').mockResolvedValue(undefined)
+
+    let cancel: () => void
+    expect(() => {
+      cancel = prefetchCatalogWhenIdle('plugins')
+    }).not.toThrow()
+    expect(prefetch).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(1)
+    expect(prefetch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ queryKey: ['public-catalog', 'plugins'] }))
+    cancel!()
+  })
+
+  it('keeps the fallback prefetch off the wire when cancelled before it fires', () => {
+    vi.stubGlobal('requestIdleCallback', undefined)
+    vi.stubGlobal('cancelIdleCallback', undefined)
+    vi.useFakeTimers()
+    const prefetch = vi.spyOn(queryClient, 'prefetchQuery').mockResolvedValue(undefined)
+
+    const cancel = prefetchCatalogWhenIdle('skills')
+    cancel()
+    vi.advanceTimersByTime(5)
+
+    expect(prefetch).not.toHaveBeenCalled()
   })
 })

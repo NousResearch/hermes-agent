@@ -172,3 +172,52 @@ def test_unencodable_provider_ids_do_not_crash_and_stay_distinct():
 
     assert all(i.startswith("call_") for i in ids)
     assert len(set(ids)) == 2
+
+
+def test_duplicate_call_id_rewrites_bedrock_sidecar_and_result_pair():
+    """A repeated model ``call_0`` must be renamed in native Bedrock replay blocks too."""
+    from agent.bedrock_adapter import convert_messages_to_converse
+    from agent.turn_tool_validation import validate_tool_calls
+
+    current = _tool_call("call_0", "current")
+    sidecar = [
+        {"text": "I will read it."},
+        {"toolUse": {
+            "toolUseId": "call_0", "name": "read_file",
+            "input": {"path": "current"},
+        }},
+    ]
+    response = SimpleNamespace(content="", tool_calls=[current], bedrock_content_blocks=sidecar)
+    agent = _agent()
+
+    verdict = validate_tool_calls(
+        agent, response, "tool_calls",
+        messages=[{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_0", "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        }],
+        conversation_history=[], api_call_count=1, effective_task_id="t1",
+    )
+
+    assert verdict.action == "ok"
+    assert current.id == "call_0_d2"
+    assert sidecar[1]["toolUse"]["toolUseId"] == "call_0_d2"
+
+    stored = {
+        "role": "assistant", "content": response.content,
+        "tool_calls": [_assistant_tool_call_dict(agent, current, 0)],
+        "bedrock_content_blocks": sidecar,
+    }
+    _, wire = convert_messages_to_converse([
+        {"role": "user", "content": "read current"},
+        stored,
+        {"role": "tool", "tool_call_id": current.id, "content": "ok"},
+    ])
+    emitted_use = next(
+        block["toolUse"]["toolUseId"]
+        for block in wire[1]["content"] if "toolUse" in block
+    )
+    emitted_result = wire[2]["content"][0]["toolResult"]["toolUseId"]
+    assert emitted_use == emitted_result == "call_0_d2"

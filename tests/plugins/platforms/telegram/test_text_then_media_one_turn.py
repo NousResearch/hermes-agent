@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.gateway.test_telegram_documents import _make_file_obj, _make_message, _make_video
+from tests.gateway.test_telegram_documents import _make_document, _make_file_obj, _make_message, _make_video
 from tests.plugins.platforms.telegram.test_text_then_photo_one_turn import _adapter, _text, _update
 from tests.waiting import async_wait_until
 
@@ -53,3 +53,26 @@ async def test_another_senders_video_does_not_take_the_comment():
     adapter._is_user_authorized_from_message = lambda _msg: True
     events = await _comment_then_video(adapter, video_user=2)
     assert [(e.text, e.media_urls) for e in events] == [("Look at this clip", []), ("", ["/v/clip.mp4"])]
+
+
+@pytest.mark.asyncio
+async def test_comment_before_a_document_album_with_a_command_caption_reaches_the_turn(tmp_path, monkeypatch):
+    # The comment joins an uncaptioned text file that inlined its content; the album's /goal caption
+    # then rebuilds the text from the saved captions, which must carry the comment too.
+    monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path)
+    adapter = _adapter()
+    adapter.config.extra["media_group_wait_seconds"] = 0.05
+    notes = _make_message(document=_make_document("notes.txt", "text/plain", file_obj=_make_file_obj(b"alpha")),
+                          media_group_id="mg")
+    goal = _make_message(document=_make_document("plan.txt", "text/plain", file_obj=_make_file_obj(b"beta")),
+                         caption="/goal summarize these", media_group_id="mg")
+    for msg in (notes, goal):
+        msg.reply_to_message = None
+    await adapter._handle_text_message(_update(_text("Look at these")), MagicMock())
+    await adapter._handle_media_message(_update(notes), MagicMock())
+    await adapter._handle_media_message(_update(goal), MagicMock())
+    await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
+    await async_wait_until(lambda: not adapter._media_group_events and not adapter._pending_text_batches, timeout=5)
+
+    texts = [c.args[0].text for c in adapter.handle_message.await_args_list]
+    assert any("Look at these" in (t or "") for t in texts), texts

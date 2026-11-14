@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.telegram_batching import adopt_routing
-from plugins.platforms.telegram.telegram_media_group import tracking_album_items
+from plugins.platforms.telegram.telegram_media_group import CAPTION_TEXT_ATTR, tracking_album_items
 
 # Upper bound on how long a due text flush waits for a claiming image's download.
 CLAIM_MAX_WAIT_SECONDS = 8.0
@@ -89,6 +89,9 @@ def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
     if task is not None and not task.done():
         task.cancel()
     event.text = adapter._merge_caption(pending.text, event.text) if event.text else pending.text
+    if CAPTION_TEXT_ATTR in event.__dict__:  # a document inlined its text: an album merge rebuilds from the caption
+        caption = event.__dict__[CAPTION_TEXT_ATTR]
+        event.__dict__[CAPTION_TEXT_ATTR] = adapter._merge_caption(pending.text, caption) if caption else pending.text
     event.absorb_reply_expected(pending)
     if pending.reply_to_message_id and not event.reply_to_message_id:
         for attr in ("reply_to_message_id", "reply_to_text", "reply_to_author_id",

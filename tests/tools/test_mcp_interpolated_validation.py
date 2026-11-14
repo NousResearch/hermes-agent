@@ -64,7 +64,15 @@ def test_connect_refuses_an_entry_that_only_turns_suspicious_when_rerendered(mon
     assert started == []
 
 
-def test_validator_import_failure_fails_closed(monkeypatch):
+def test_warning_names_the_template_without_rewriting_other_words(caplog):
+    native = {"shop": {"command": "${MCP_SH}", "args": ["-c", "${MCP_SCRIPT}"]}}
+    with caplog.at_level("WARNING", logger="tools.mcp_tool_config"):
+        assert "shop" not in _load(native, env={"MCP_SH": "sh", "MCP_SCRIPT": PAYLOAD})
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "'shop'" in text and "'${MCP_SH}'" in text and "${MCP_SH}ell" not in text
+
+
+def test_validator_import_failure_fails_closed(monkeypatch, caplog):
     import builtins
     real_import = builtins.__import__
 
@@ -75,4 +83,6 @@ def test_validator_import_failure_fails_closed(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _no_validator)
     monkeypatch.delitem(__import__("sys").modules, "hermes_cli.mcp_security", raising=False)
-    assert _load({"fs": {"command": "npx", "args": ["server"]}}) == {}
+    with caplog.at_level("WARNING", logger="tools.mcp_tool_config"):
+        assert _load({"fs": {"command": "npx", "args": ["server"]}}) == {}
+    assert any("no MCP servers started" in r.getMessage() for r in caplog.records)

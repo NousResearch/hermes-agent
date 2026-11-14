@@ -667,7 +667,8 @@ def _suspicious_mcp_issues(name: str, cfg: Any) -> list[str]:
     command = cfg.get("command")
     template = getattr(command, "template", None)
     if template is not None and template != command:  # name the configured template, never a resolved secret
-        issues = [issue.replace(str(command), template) for issue in issues]
+        quoted = f"'{command}'"
+        issues = [issue.replace(quoted, f"'{template}'") for issue in issues]
     return issues
 
 
@@ -758,6 +759,9 @@ def _load_mcp_config() -> dict[str, dict]:
         rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
         _portable_mcp_servers(safe_servers, rejected)
         return safe_servers
+    except ImportError as exc:  # the safety validator is missing: fail closed, but visibly
+        logger.warning("MCP server validator unavailable; no MCP servers started: %s", exc)
+        return {}
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

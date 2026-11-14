@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import build_auto_tts_output_path
+from gateway.platforms.base import BasePlatformAdapter, build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -430,6 +430,20 @@ class GatewayVoiceMixin:
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+        # Capability, not a platform list: an adapter that inherits the base
+        # send_voice can only deliver the failure notice, never audio — skip
+        # synthesis rather than billing a call whose only product is the
+        # failure the base path posts. Adapters with a real override
+        # (Telegram, Discord, Google Chat, relay when media is negotiated)
+        # keep their behavior; future adapters inherit the right default.
+        # Unresolvable on test doubles: getattr defaults to no-block, so
+        # doubles keep the pre-gate behavior and the platform guards decide.
+        if getattr(type(adapter), "send_voice", None) is BasePlatformAdapter.send_voice:
+            logger.debug(
+                "Auto voice reply skipped: %s has no native send_voice; base fallback would only post a failure notice",
+                type(adapter).__name__,
+            )
+            return False
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)

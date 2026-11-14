@@ -18,7 +18,8 @@ from typing import Any, NoReturn
 _result: int | None = None
 
 # The historical updater entrypoints. `_historical_context` reads capture data
-# from these frames; `tools.lazy_deps.install_specs` hands off only inside them.
+# from these frames; every retired shim hands off only inside them
+# (`stop_historical_updater`).
 # Keep in sync with scripts/audit-old-updater-imports.py UPDATE_ENTRYPOINTS: the
 # audit list is wider on purpose (helpers run *under* these frames and are found
 # by the frame walk).
@@ -228,6 +229,25 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
         _result = 1
         print(f"Update takeover failed: {exc}", file=sys.stderr, flush=True)
     raise SystemExit(_result)
+
+
+class RetiredUpdaterHook(RuntimeError):
+    """A retired updater hook was called by code that is not a historical updater."""
+
+
+def stop_historical_updater(hook: str, error: type[Exception] = RetiredUpdaterHook) -> NoReturn:
+    """The one gate every retired shim goes through before ``stop_for_relaunch()``.
+
+    A historical updater (its entrypoint frame is on the stack, or it already
+    handed off and is unwinding through finally/atexit) still hands off to the
+    takeover child. Any other caller is live current code (a serve, dashboard,
+    gateway, plugin): starting a whole update finish from it restarts the
+    gateway and backend it runs in, which then reaches the shim again (#122656).
+    It gets a catchable ``error`` instead.
+    """
+    if _result is not None or in_historical_update():
+        stop_for_relaunch()
+    raise error(f"{hook} is a retired updater hook; it does nothing outside a running update.")
 
 
 def relaunch_stopped_serves(token: dict) -> None:

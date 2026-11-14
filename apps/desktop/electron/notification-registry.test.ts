@@ -49,6 +49,34 @@ it('releases terminal closes immediately when opted in without expiring unrelate
   expect(vi.getTimerCount()).toBe(0)
 })
 
+it("withdraws only the seen session's notifications, optionally by kind", () => {
+  vi.useFakeTimers()
+  const registry = createNotificationRegistry({ ttlMs: 1000 })
+  const make = () => Object.assign(new EventEmitter(), { close: vi.fn() })
+  const approval = make()
+  const done = make()
+  const other = make()
+  const untagged = make()
+  registry.retain(approval, { kind: 'approval', sessionId: 's1' })
+  registry.retain(done, { kind: 'turnDone', sessionId: 's1' })
+  registry.retain(other, { kind: 'approval', sessionId: 's2' })
+  registry.retain(untagged)
+
+  expect(registry.dismiss('s1', ['turnDone'])).toBe(1)
+  expect(done.close).toHaveBeenCalledOnce()
+  expect(approval.close).not.toHaveBeenCalled()
+
+  expect(registry.dismiss('s1')).toBe(1)
+  expect(approval.close).toHaveBeenCalledOnce()
+  expect(registry.has(approval)).toBe(false)
+  expect(registry.dismiss('')).toBe(0)
+  expect(registry.has(other)).toBe(true)
+  expect(registry.has(untagged)).toBe(true)
+  expect(other.close).not.toHaveBeenCalled()
+  // Dismissed entries took their retention timers with them.
+  expect(vi.getTimerCount()).toBe(2)
+})
+
 it('dismisses an expired notification before releasing it and releases failed delivery immediately', () => {
   vi.useFakeTimers()
   const registry = createNotificationRegistry({ ttlMs: 1000 })

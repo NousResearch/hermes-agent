@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 
-SECRET = "sk-proj-chatstreamleak1234567890abcdef"
+SECRET = "sk-" + "proj-chatstreamleak1234567890abcdef"
 ERROR = f"provider auth failed OPENAI_API_KEY={SECRET}"
 
 

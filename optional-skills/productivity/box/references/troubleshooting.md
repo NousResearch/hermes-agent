@@ -20,7 +20,7 @@ Confirm the current actor, resource type, ID, resource-specific collaboration, a
 | Signal | Likely cause | Next action |
 | --- | --- | --- |
 | local OAuth reports `EADDRINUSE`, opens an unusable result, or never returns to the CLI | occupied or mismatched loopback callback port | stop the waiting login process; for the official app, retry `3001`, `4000`, `5000`, then `8080`; for a custom app, register the exact new callback URI before retrying |
-| remote OAuth browser ends on an unreachable localhost page | expected `--code` redirect or wrong topology | if Hermes is remote, return the URL's `code` and `state` to the waiting CLI; if Hermes and the browser are on the same host, stop and restart without `--code` |
+| remote OAuth browser ends on an unreachable localhost page | expected `--code` redirect or wrong topology | if Hermes is remote, the user types the address bar's `code` and `state` into the CLI prompts in their own terminal on the Hermes host (see [OAuth setup](oauth-setup.md)), never into chat, process input, or a command line; if Hermes and the browser are on the same host, stop and restart without `--code` |
 | 401 or 403 | expired auth, missing scope, insufficient role | verify identity, reauthorize the app, and check folder role |
 | shared file/folder absent from root or 404 | wrong actor, an access-only/shared item, or missing file/folder collaboration | verify `users:get me`, then fetch the known file/folder ID directly; only change collaboration after confirming the target and actor |
 | Hub absent from root or 404 | root listing cannot discover Hubs, wrong actor, or missing Hub collaboration | run `box hubs --scope all` and `box hubs:get <HUB_ID>`; verify Hub collaboration separately from underlying-file access |

@@ -24,6 +24,10 @@ def _ensure_redaction_enabled(monkeypatch):
      "postgresql+psycopg2://db/app?user=app&password=***"),
     ("mongodb+srv://cluster.example.net/app?password=Zq7x9LmP2kk",
      "mongodb+srv://cluster.example.net/app?password=***"),
+    ("mysql://db/app?user=app&passwd=Zq7x9LmP2kk",
+     "mysql://db/app?user=app&passwd=***"),
+    ("postgresql://db/app?sslmode=verify-full&sslpassword=Zq7x9LmP2kk",
+     "postgresql://db/app?sslmode=verify-full&sslpassword=***"),
     ("mysql://db/app?password=first1&password=second2",
      "mysql://db/app?password=***&password=***"),
 ])

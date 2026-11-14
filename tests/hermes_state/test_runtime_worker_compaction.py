@@ -37,6 +37,7 @@ def test_publication_replay_advances_assignment_once_and_keeps_markers(worker):
         original(method, **params)
         raise TimeoutError('lost-ack')
     store.rpc = lost_ack
+    store.owner_patience_s = 0  # every reply is lost: no resend window
     with pytest.raises(TimeoutError, match='lost-ack'):
         store.publish_compression_child(parent_session_id='owned', child_session_id='child', source='cli',
             messages=[{'role': 'assistant', 'content': 'summary'}], system_prompt='prefix',

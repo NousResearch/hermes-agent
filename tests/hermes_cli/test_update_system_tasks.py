@@ -353,9 +353,17 @@ def test_legacy_launcher_is_refreshed_on_its_own_home_without_reregistering_task
         gateway_windows, "_exec_schtasks", lambda *_: pytest.fail("task re-registered")
     )
     tasks.refresh_task_launcher({"home": str(tmp_path), "name": "Hermes_Gateway"})
-    assert "fixture-python.exe" in (service / "Hermes_Gateway.vbs").read_text(
-        encoding="utf-8"
-    )
+    vbs = service / "Hermes_Gateway.vbs"
+    # Windows Script Host reads a BOM-less script in the ANSI code page, so the launcher the
+    # SYSTEM task runs must keep the UTF-16 BOM the installer writes.
+    assert vbs.read_bytes().startswith((b"\xff\xfe", b"\xfe\xff"))
+    assert "fixture-python.exe" in vbs.read_text(encoding="utf-16")
     assert "fixture-python.exe" in (service / "Hermes_Gateway.cmd").read_text(
         encoding="utf-8"
     )
+    # The next update must find nothing to rewrite: same bytes as the shared renderer.
+    for path, content, encoding in gateway_windows._render_launchers(
+        ("fixture-python.exe", str(tmp_path), str(tmp_path), ""), service / "Hermes_Gateway.cmd"
+    ):
+        assert path.read_bytes() == content.encode(encoding)
+    assert not list(service.glob("*.tmp"))

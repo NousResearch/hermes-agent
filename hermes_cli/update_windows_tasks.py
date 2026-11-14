@@ -178,7 +178,7 @@ def definition_matches_home(xml: str, home: Path, task_name: str) -> bool:
 
 def discover_profile_tasks(profile_processes: dict, service_pids: set[int]) -> dict:
     """Map only strict, live SYSTEM gateway identities to inspected profile tasks."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from agent.runtime_scope import bind_profile_scope
     from hermes_cli import gateway_windows
     import psutil
     from hermes_platform.host.facts import os_family
@@ -198,11 +198,8 @@ def discover_profile_tasks(profile_processes: dict, service_pids: set[int]) -> d
             continue
         if born != profile.create_time:
             raise RuntimeError("Gateway identity changed before task discovery")
-        scope = set_hermes_home_override(profile.path)
-        try:
+        with bind_profile_scope(profile.path, hydrate_secrets=False):
             names = dict.fromkeys((gateway_windows.get_task_name(), "Hermes_Gateway"))
-        finally:
-            reset_hermes_home_override(scope)
         for name in names:
             xml = task_operation(name, "query")
             if xml is not None and definition_matches_home(
@@ -273,23 +270,12 @@ def relaunch_profile(profile: str, old_pid: int, tasks: dict) -> bool:
 def refresh_task_launcher(task: dict) -> None:
     """Retarget the exact legacy launcher to current Python without changing its task principal."""
     from hermes_cli import gateway_windows as windows
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from agent.runtime_scope import bind_profile_scope
 
     home = Path(task["home"])
-    scope = set_hermes_home_override(home)
-    try:
+    with bind_profile_scope(home, hydrate_secrets=False):
         settings = windows._launcher_settings(home)
         script = home / "gateway-service" / f"{task['name']}.cmd"
-        windows._atomic_write(
-            script,
-            windows._build_gateway_cmd_script(*settings),
-            script.with_suffix(".tmp"),
-        )
-        vbs = script.with_suffix(".vbs")
-        windows._atomic_write(
-            vbs,
-            windows._build_gateway_vbs_script(*settings),
-            vbs.with_suffix(".vbs.tmp"),
-        )
-    finally:
-        reset_hermes_home_override(scope)
+        # The shared renderer owns each file's encoding: the .vbs is UTF-16 with a BOM, and the
+        # update's drift check compares against those exact bytes.
+        windows._write_launcher_scripts(windows._render_launchers(settings, script))

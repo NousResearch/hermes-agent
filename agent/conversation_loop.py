@@ -1956,7 +1956,14 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
         boundary = {
-            "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
+            "role": "assistant",
+            "content": failed_turn_notice(
+                turn_messages,
+                failure_reason=result.get("failure_reason"),
+                turn_exit_reason=result.get("turn_exit_reason"),
+                tool_reason=getattr(agent, "_tool_interrupt_reason", None),
+            ),
+            "display_kind": FAILED_TURN_DISPLAY_KIND,
         }
         if failure := _failed_turn_display_metadata(agent, result):
             boundary["display_metadata"] = failure

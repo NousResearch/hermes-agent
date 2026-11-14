@@ -52,3 +52,43 @@ export function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
     }
   ]
 }
+
+// Interrupted settles that never got a reasoned message.complete still must not go blank.
+// Non-retryable: Stop / system cancel is intentional, not a connection failure (#131205 family).
+const INTERRUPTED_EMPTY_SURFACE: ErrorSurface = { code: 'interrupted', layer: 'runtime', retryable: false }
+const INTERRUPTED_EMPTY_ERROR = 'Operation interrupted: turn stopped with no reply.'
+
+/** Interrupted turn with no user-visible text and no message.complete reason yet. */
+export function withInterruptedEmptyNotice(messages: ChatMessage[]): ChatMessage[] {
+  const last = messages.findLast(message => !message.hidden)
+
+  if (last?.role === 'assistant') {
+    return messages.map(message =>
+      message === last
+        ? {
+            ...message,
+            error: INTERRUPTED_EMPTY_ERROR,
+            errorSurface: INTERRUPTED_EMPTY_SURFACE,
+            interrupted: true
+          }
+        : message
+    )
+  }
+
+  const occurredAt = Date.now() / 1000
+
+  return [
+    ...messages,
+    {
+      completedAt: occurredAt,
+      error: INTERRUPTED_EMPTY_ERROR,
+      errorSurface: INTERRUPTED_EMPTY_SURFACE,
+      id: `assistant-interrupted-empty-${Date.now()}`,
+      interrupted: true,
+      parts: [],
+      pending: false,
+      role: 'assistant',
+      timestamp: occurredAt
+    }
+  ]
+}

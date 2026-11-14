@@ -2443,12 +2443,8 @@ def switch_model(
     snapshot and re-raises (callers catch)."""
     old_model = agent.model
     old_provider = agent.provider
-    # ── Reload credential pool for the new provider (issue #52727) ── Without this,
-    # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
-    # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
-    # pool's entries. Only reload when the provider actually changed (or the pool was missing) —
-    # re-selecting the same provider must not churn the pool reference. A reload failure is logged +
-    # swallowed: the switch itself must still complete.
+    # Reload credential pool for the new provider (#52727) when the provider changed or the pool
+    # was missing; reload failure is logged + swallowed so the switch itself still completes.
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     api_mode, base_url, destination_capabilities = _resolve_switch_destination(
@@ -2462,6 +2458,9 @@ def switch_model(
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
+    if (old_model != new_model or old_norm != new_norm) and "vertex" in (old_norm, new_norm):
+        from agent.vertex_adapter import reset_vertex_sticky_region
+        reset_vertex_sticky_region(getattr(agent, "session_id", None))
     custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
     # Refresh the custom-provider snapshot from the config just loaded so the prompt_caching lookup
     # sees flags added to config.yaml after session start.

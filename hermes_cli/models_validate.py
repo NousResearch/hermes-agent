@@ -497,16 +497,17 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
-    """MiniMax has no /models endpoint — static catalog, case-insensitive (ids like MiniMax-M2.7).
+    """MiniMax / Vertex have no /models endpoint — static catalog, case-insensitive.
     Returns None when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if not catalog:
         return None
+    label = "Vertex AI" if req.normalized == "vertex" else "MiniMax"
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
     return match.verdict(req) or _soft_accept(
-        f"Note: `{req.requested}` was not found in the MiniMax catalog."
+        f"Note: `{req.requested}` was not found in the {label} catalog."
         f"{match.suggestion_text}"
-        "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
+        f"\n  {label} does not expose a /models endpoint, so Hermes cannot verify the model name."
         "\n  The model may still work if it exists on the server."
     )
 
@@ -765,7 +766,7 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
     (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
-    (_for("minimax", "minimax-cn"), _validate_minimax),
+    (_for("minimax", "minimax-cn", "vertex"), _validate_minimax),
     (_for("llamacpp", "llama.cpp", "llama-cpp"), _validate_managed_local),
     (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),

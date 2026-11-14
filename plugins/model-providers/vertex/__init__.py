@@ -14,6 +14,19 @@ from providers.base import ProviderProfile
 class VertexProfile(ProviderProfile):
     """Vertex AI — reuse Gemini's thinking_config translation for extra_body."""
 
+    def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
+        """Vertex's OpenAI-compatible endpoint requires publisher-prefixed IDs (e.g. ``google/gemini-3.8-flash``)."""
+        from hermes_cli.model_normalize import _repair_prefix_from_catalogue, _strip_matching_provider_prefix
+
+        raw = _strip_matching_provider_prefix((model or "").strip(), "vertex")
+        if not raw:
+            return None
+        if "/" in raw:
+            return raw
+        if raw.lower().startswith(("gemini-", "gemma-", "imagen-", "veo-", "chirp-", "text-embedding-", "multimodalembedding")):
+            return f"google/{raw}"
+        return _repair_prefix_from_catalogue(raw, "vertex")
+
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Emit ``extra_body.google.{thinking_config,safety_settings}`` like the ``gemini`` provider's OpenAI-compat subpath."""
         from agent.gemini_native_adapter import GEMINI_SAFETY_SETTINGS_OFF

@@ -27,6 +27,22 @@ _MODAL_TITLE_LIMIT = 24  # Slack caps modal title / submit text at 24 characters
 _REQUESTS_MAX = 200
 
 
+class _DropVaultCodeFrames(logging.Filter):
+    """slack_sdk's Socket Mode client logs every received frame at DEBUG before Bolt dispatches it, so a
+    modal submit would put the code in agent.log with ``logging.level: DEBUG``. Drop those frames."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return VIEW_CALLBACK not in record.getMessage()
+
+
+# The Socket Mode client logs through the Bolt app's logger (``AsyncSocketModeHandler`` passes
+# ``app.logger``); the module loggers cover a client built without one.
+for _name in ("slack_bolt.AsyncApp", "slack_sdk.socket_mode.aiohttp", "slack_sdk.socket_mode.async_client"):
+    _logger = logging.getLogger(_name)
+    if not any(isinstance(f, _DropVaultCodeFrames) for f in _logger.filters):
+        _logger.addFilter(_DropVaultCodeFrames())
+
+
 @dataclass
 class _CodeCard:
     submit: Callable[[str], bool]

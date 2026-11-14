@@ -48,6 +48,12 @@ class _CodeRequest:
         with self._lock:
             self._event.set()
 
+    def cancel(self) -> None:
+        """The turn ended: settle the request AND drop a code submitted but not yet consumed."""
+        with self._lock:
+            self._value = ""
+            self._event.set()
+
     def wait(self, timeout_s: float, cancelled, heartbeat) -> str:
         """The submitted code, or "" on timeout or interrupt. Waits in 1 s slices so ``heartbeat``
         keeps the gateway's inactivity watchdog from killing a turn whose user is still typing."""
@@ -58,7 +64,8 @@ class _CodeRequest:
             heartbeat()
         self.close()
         # A /stop that raced the submit still wins: nothing is entered for a stopped turn.
-        return "" if cancelled() else self._value
+        with self._lock:
+            return "" if cancelled() else self._value
 
 
 def _code_card_adapter(turn):
@@ -119,4 +126,4 @@ def code_card_scope(turn, agent):
             scope_open[0] = False
             pending = list(open_requests)
         for request in pending:
-            request.close()
+            request.cancel()

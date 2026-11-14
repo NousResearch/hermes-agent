@@ -203,7 +203,7 @@ class TestFamilyRouting:
 
     @pytest.fixture
     def with_fake_fal(self, monkeypatch):
-        """Stub fal_client.submit to capture which endpoint we hit."""
+        """Stub fal_client.SyncClient(key=...).submit to capture which endpoint we hit."""
         import sys
         import types
 
@@ -548,7 +548,7 @@ class TestUpscalePass:
 
     @pytest.fixture
     def with_fake_fal(self, monkeypatch):
-        """Stub fal_client.submit, capturing every endpoint hit in order."""
+        """Stub fal_client.SyncClient(key=...).submit, capturing every endpoint hit in order."""
         import sys
         import types
 

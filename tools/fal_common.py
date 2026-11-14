@@ -11,9 +11,13 @@ Holds the stateless atoms that every FAL-backed tool needs:
 * :func:`_normalize_fal_queue_url_format`, :func:`_extract_http_status`
   — small helpers used by both the managed client wrapper and
   ``_submit_fal_request``.
+* :func:`direct_fal_client` — the direct-key ``SyncClient`` for the active
+  profile, shared by the image tool and the video plugin. Its per-profile
+  cache lives here; it is keyed on the ``fal_client`` module the caller
+  passes in, so a test that replaces that module still gets a fresh client.
 
-Stateful pieces (cache globals, ``_managed_fal_client*`` selectors,
-``_submit_fal_request``) intentionally stay on
+The managed-client stateful pieces (``_managed_fal_client*`` cache globals and
+selectors, ``_submit_fal_request``) intentionally stay on
 :mod:`tools.image_generation_tool`. That module is the patch target for
 existing test suites (``tests/tools/test_image_generation.py``,
 ``tests/tools/test_managed_media_gateways.py``) and for the

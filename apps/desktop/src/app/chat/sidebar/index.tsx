@@ -1980,8 +1980,10 @@ export function ChatSidebar({
               />
             )}
 
+            {/* Platform sections are global — orthogonal to which code
+                workspace is in front — so they render in Project view too
+                (#90579). Hiding them there read as data loss. */}
             {!trimmedQuery &&
-              !worktreeGroupingActive &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)
@@ -2038,7 +2040,10 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && cronJobs.length > 0 && (
+            {/* Same reasoning as the platform sections above: the scheduler's
+                control surface has no owning workspace, so Project view must
+                not hide it (#90579). */}
+            {!trimmedQuery && showsAdvancedChrome && cronJobs.length > 0 && (
               <SidebarCronJobsSection
                 jobs={cronJobs}
                 label={s.cronJobs}

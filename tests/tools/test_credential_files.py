@@ -637,7 +637,7 @@ class TestMasterCredentialStoresAreNeverMountable:
     The bar is the canonical read deny-list: whatever the agent is forbidden to
     ``read_file`` must not be mountable either, so the mount surface can't
     grant what the read surface denies. One carve-out: skill-scoped service
-    tokens (``_MOUNTABLE_SERVICE_TOKENS``, today only ``google_token.json``)
+    tokens (``_MOUNTABLE_SERVICE_TOKENS``: the google-workspace token and client secret)
     are read-denied to the agent but stay mountable, because the skill's own
     sandboxed scripts are their intended consumer.
     """
@@ -713,6 +713,21 @@ class TestMasterCredentialStoresAreNeverMountable:
         (home / "google_oauth_pending.json").write_text("{}")
         with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
             assert register_credential_file("google_oauth_pending.json") is False
+            assert get_credential_file_mounts() == []
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("link_name", ["google_token.json", "google_client_secret.json"])
+    @pytest.mark.parametrize("target", [".env", "auth.json"])
+    def test_carve_out_name_symlinked_at_a_master_store_is_refused(self, tmp_path, link_name, target):
+        """The carve-out judges the file a link resolves to, not the name it was requested by: a
+        ``google_token.json`` planted as a symlink to ``.env`` must not mount ``.env``, and must not
+        make ``.env`` itself mountable."""
+        home = self._home(tmp_path)
+        (home / link_name).unlink()
+        (home / link_name).symlink_to(home / target)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file(link_name) is False
+            assert register_credential_file(target) is False
             assert get_credential_file_mounts() == []
 
     def test_carve_out_is_exact_path_not_basename(self, tmp_path):

@@ -69,8 +69,10 @@ def _contained_host_path(rel: str, hermes_home: Path, abs_msg: str, traversal_ms
 
 
 def _is_mountable_service_token(resolved: Path, hermes_home: Path) -> bool:
-    """True when *resolved* is exactly a ``_MOUNTABLE_SERVICE_TOKENS`` file at the HERMES_HOME root."""
-    return any(resolved == (hermes_home / name).resolve() for name in _MOUNTABLE_SERVICE_TOKENS)
+    """True when *resolved* (symlinks already followed) is itself a ``_MOUNTABLE_SERVICE_TOKENS`` file at the
+    HERMES_HOME root. Comparing against ``(hermes_home / name).resolve()`` would follow the same planted link,
+    so a ``google_token.json`` symlinked at ``.env`` would pass as the token."""
+    return resolved.parent == hermes_home.resolve() and resolved.name in _MOUNTABLE_SERVICE_TOKENS
 
 
 def register_credential_file(relative_path: str, container_base: str = "/root/.hermes") -> bool:

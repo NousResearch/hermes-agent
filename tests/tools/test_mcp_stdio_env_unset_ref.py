@@ -51,3 +51,12 @@ def test_child_spawned_through_the_sdk_merge_sees_the_documented_env():
     assert "OPT_DIR" not in seen and "EMPTY" not in seen
     assert seen["TERM"] == "parent-term"
     assert seen["RESOLVED_LITERAL"] == "${STILL_UNSET}"
+
+
+def test_stdio_cwd_expands_a_leading_tilde(tmp_path, monkeypatch):
+    """``cwd: ~/dir`` reaches the spawn expanded, like ``command:``; the SDK spawns without a shell."""
+    from tools.mcp_tool_transport import _stdio_launch
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert _stdio_launch({"command": sys.executable, "cwd": "~/work"})[2] == str(tmp_path / "work")
+    assert _stdio_launch({"command": sys.executable, "cwd": "/abs/dir"})[2] == "/abs/dir"

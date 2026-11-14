@@ -420,11 +420,15 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
-# Git global options between `git` and the subcommand (`git -C <dir> reset --hard`). Value-taking
-# options consume their separate value word; any other option is a single dash token. A word may
-# contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as one argument.
+# `git` plus the global options that may sit before the subcommand (`git -C <dir> reset --hard`).
+# Value-taking options consume their separate value word; any other option is a single dash token.
+# A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as
+# one argument. Each option is an atomic group with the value-taking form tried first: the two
+# alternatives overlap (`-c x` is also two dash-or-word tokens), so a non-atomic run of option-like
+# tokens (`git -c -c -c ... x`) is re-split exponentially on a failed match.
 _GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
-_GIT_GLOBAL_OPTS = rf'(?:\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)\s+{_GIT_WORD}|-{_GIT_WORD}))*'
+_GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)'
+        rf'\s+{_GIT_WORD}|-{_GIT_WORD}))*\s+')
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -669,20 +673,20 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations. `git reset --hard` accepts any unambiguous long-flag prefix (--h,
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (rf'{_GIT}reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    (rf'{_GIT}push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (rf'{_GIT}push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (rf'{_GIT}clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
     # tokens' case in the detection input (every other pattern matches case-insensitively and is
     # unaffected). The safe merged-only -d / --delete stays ungated by design — git itself refuses
     # to delete a branch that is not fully merged.
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+branch\s+(?-i:-D)\b', "git branch force delete"),
+    (rf'{_GIT}branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (rf'\bgit{_GIT_GLOBAL_OPTS}\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (rf'{_GIT}branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (rf'{_GIT}branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
@@ -749,7 +753,7 @@ _REMOVED_PATTERN_KEY_ALIASES = {
 # with stored allowlist/session entries), both ways.
 _PATTERN_KEY_ALIASES: dict[str, set[str]] = {}
 for _canonical_key, _legacy_key in [
-    (d, p.split(r'\b')[1] if r'\b' in p else p[:20]) for p, d in ((p.replace(_GIT_GLOBAL_OPTS, ''), d) for p, d in DANGEROUS_PATTERNS)
+    (d, p.split(r'\b')[1] if r'\b' in p else p[:20]) for p, d in ((p.replace(_GIT, r'\bgit\s+'), d) for p, d in DANGEROUS_PATTERNS)
 ] + list(_REMOVED_PATTERN_KEY_ALIASES.items()):
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})

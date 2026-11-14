@@ -21,6 +21,7 @@ PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
+CLAUDE_CODE = "skills/autonomous-ai-agents/claude-code"
 
 
 def _document(skill):
@@ -66,6 +67,10 @@ def test_required_references_are_present_and_routed(skill, references):
              "sent replies", "fall back to matching the incoming thread's register",
              "generic-professional"), ()),
     (SOCIAL, (), ("image-generation-workflow",)),
+    # A git worktree isolates file edits, not the filesystem, network or credentials.
+    (CLAUDE_CODE, ("it is not a filesystem, network or credential sandbox", "sandbox runtime",
+                   "`bypassPermissions` is the same bypass as `--dangerously-skip-permissions`"),
+     ("throwaway worktree",)),
 ])
 def test_document_obligations(skill, required, forbidden):
     _, body = _document(skill)
@@ -116,12 +121,3 @@ def test_optional_skill_available_on_posix(skill):
 def test_optional_skill_availability_on_windows():
     assert skill_matches_platform(_document(QUESTIONNAIRE)[0])
     assert not skill_matches_platform(_document(DARWINIAN)[0])
-
-
-def test_claude_code_bypass_is_not_scoped_to_a_worktree():
-    # A git worktree isolates file edits, not the filesystem, network or credentials, so it
-    # must not be offered as the place where the permission bypass is safe.
-    _, body = _document("skills/autonomous-ai-agents/claude-code")
-    assert "it is not a filesystem, network or credential sandbox" in body
-    assert "sandbox runtime" in body
-    assert not re.search(r"throwaway worktree", body, re.IGNORECASE)

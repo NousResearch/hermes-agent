@@ -1,0 +1,28 @@
+name: vividsites
+repo: https://github.com/krumjahn/vividsites-connectors
+sha: ac045b1d3adfdfb663beb36a8586aa7728362d02
+subdir: hermes
+description: Cinematic website design sources for Hermes. Free UI components without a key; website templates, build prompts and blueprints with an optional paid VividSites library account.
+maintainer: VividSites
+tier: community
+category: web
+requires_hermes: ">=0.23.1"
+version: "1.2.0"
+title: VividSites — Cinematic Website Design
+readme: true
+capabilities:
+  provides_tools:
+    - list_free_components
+    - get_free_component
+    - vividsites_search_sites
+    - vividsites_get_template_preview
+    - vividsites_get_build_prompt
+    - vividsites_search_components
+    - vividsites_get_component
+    - vividsites_video_prompt_formula
+    - vividsites_get_website_blueprint
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+image: https://raw.githubusercontent.com/krumjahn/vividsites-connectors/e988245c704aa0441f547fbcb08abb624bc00db6/hermes/docs/marketplace-banner.png

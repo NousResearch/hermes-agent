@@ -2278,8 +2278,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
     if fallback_entry is not None:
-        # The entry's model is what this agent sends (#112600); the caller pops the notice (#74349) and the
-        from agent.primary_auth_fallback import RUNTIME_KEY  # primary's failed login (#147212) before AIAgent.
+        # The entry's model is what this agent sends (#112600); the caller pops the notice (#74349).
+        from agent.primary_auth_fallback import RUNTIME_KEY  # and the primary's failed login (#147212)
         return {**_runtime_agent_kwargs(runtime), "model": fallback_entry["model"],
                 RUNTIME_KEY: runtime.get(RUNTIME_KEY),
                 "_fallback_notice": pre_agent_fallback_notice(

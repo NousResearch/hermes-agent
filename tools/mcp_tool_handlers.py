@@ -219,6 +219,18 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
         return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args)
 
 
+def _untrusted(server_name: str) -> bool:
+    from tools.mcp_tool_scope import _server_key
+    return _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL) == _core._TRUST_UNTRUSTED
+
+
+async def _refuse_unconsented_write(server_name: str, tool_name: str) -> str:
+    """A retry whose reconnect turned a tool cleared as read-only write-capable: refuse rather than prompt from a
+    recovery path; the re-invoked call meets the gate with the new hint and asks."""
+    return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' is no longer annotated read-only "
+                      f"after a reconnect, so it was NOT run without approval. Re-invoke it to ask the user.")
+
+
 def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
                   gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
     """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
@@ -832,15 +844,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             # The session that will run the call was (re)discovered after the
             # gate ran, and it no longer reports the tool as read-only.
             # Consent must be decided against this metadata, not the cache.
-            from tools.mcp_tool_scope import _server_key
-            key = _server_key(server_name)
-            if (_core._server_trust_levels.get(key, _core._TRUST_FULL) == _core._TRUST_UNTRUSTED
-                    and not _trust_granted(server_name, tool_name)):
+            if _untrusted(server_name) and not _trust_granted(server_name, tool_name):
                 error = _ask_for_call(server_name, tool_name, None, booked, args=args)
                 if error is not None:
                     for charge in booked:
                         charge.refund()
                     return error
+        # Still cleared only as read-only: a recoverer's reconnect can rediscover the tool as write-capable
+        # before its retry, so every attempt re-checks (on this thread: the hint and grant are scope-bound).
+        cleared_as_read_only = read_only and _untrusted(server_name)
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
         from agent.tool_progress_relay import current_tool_progress
@@ -873,9 +885,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+
+        def _attempt():
+            if (cleared_as_read_only and not _tool_is_read_only(server_name, tool_name)
+                    and not _trust_granted(server_name, tool_name)):
+                return _refuse_unconsented_write(server_name, tool_name)
+            return _call()
+
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         text = _dispatch(
-            server_name, server, op, _call, tool_timeout,
+            server_name, server, op, _attempt, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.

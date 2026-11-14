@@ -882,7 +882,8 @@ def _sanitize_cell_spill(kernel: SessionKernel, cell_spill: str) -> str:
                 pass
             if dfd >= 0:
                 os.close(dfd)
-    except Exception:  # noqa: BLE001
+    except Exception:
+        logger.debug("Failed to republish cell stdout spill %s", cell_spill, exc_info=True)
         return ""
 
 

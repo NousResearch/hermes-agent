@@ -531,7 +531,6 @@ Gateway steers (including explicit `/steer`) and active-turn redirects carry the
 ```yaml
 display:
   busy_input_mode: steer   # or queue, or interrupt (default)
-  busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
   busy_text_debounce_seconds: 0.35   # quiet window before merged busy text is delivered
   busy_text_hard_cap_seconds: 1.0    # never hold merged busy text longer than this
 ```
@@ -540,7 +539,15 @@ All four keys are read from each profile's own `config.yaml`, so multiplexed pro
 
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
-If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
+If you find the busy acknowledgment noisy in one audience-facing chat, set it per platform. Input handling is unchanged; only the confirmation message is hidden. `failed_turn_notice: false` similarly keeps a failed turn silent in that chat while preserving its durable transcript boundary and diagnostics.
+
+```yaml
+display:
+  platforms:
+    whatsapp:
+      busy_ack_enabled: false
+      failed_turn_notice: false
+```
 
 ## Clarify Questions (Multi-Select)
 
@@ -987,7 +994,7 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 - **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
 - **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
 
-These per-platform defaults apply only while the same key is unset directly under `display:`. A global `display.tool_progress`, `display.show_reasoning`, `display.busy_ack_detail`, `display.interim_assistant_messages` or `display.long_running_notifications` applies to every platform and replaces its default. A `config.yaml` copied from an older `cli-config.yaml.example` sets all five globally, and an older first-time `hermes setup` wrote `tool_progress: all`; delete those lines to get the per-platform defaults back.
+These per-platform defaults apply only while the same key is unset directly under `display:`. A global `display.tool_progress`, `display.show_reasoning`, `display.busy_ack_enabled`, `display.busy_ack_detail`, `display.failed_turn_notice`, `display.interim_assistant_messages` or `display.long_running_notifications` applies to every platform and replaces its default. A `config.yaml` copied from an older `cli-config.yaml.example` sets these display options globally, and an older first-time `hermes setup` wrote `tool_progress: all`; delete those lines to get the per-platform defaults back.
 
 Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
 

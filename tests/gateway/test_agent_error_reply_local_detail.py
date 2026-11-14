@@ -42,3 +42,63 @@ def test_local_client_sees_the_raised_cause_and_chat_keeps_the_apology():
 
     chat = _committed_error(Platform.TELEGRAM)
     assert "anthropic" not in chat and "ImportError" not in chat, chat
+
+
+def test_quiet_platform_keeps_failed_turn_record_but_returns_no_chat_notice(monkeypatch):
+    """The error path records its result while a platform can suppress its outbound notice."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_config",
+        lambda: {"display": {"platforms": {"telegram": {"failed_turn_notice": False}}}},
+    )
+
+    runner = object.__new__(GatewayRunner)
+
+    async def stop_typing(event, source):
+        return None
+
+    runner._hmwa_stop_typing_for_turn = stop_typing
+    runner._session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=None))
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+    prepared = runner._PreparedTurn([], "", None, None, None, None)
+    captured = {}
+    token = execution_result.set(captured)
+    try:
+        reply = asyncio.run(runner._hmwa_agent_error_reply(
+            RuntimeError("upstream unavailable"), MessageEvent(text="x", source=source),
+            source, None, "k", prepared,
+        ))
+    finally:
+        execution_result.reset(token)
+
+    assert reply is None
+    assert "This turn did not complete" in captured["result"]["error"]
+
+
+def test_local_client_keeps_error_reply_when_quiet_notice_is_disabled_globally(monkeypatch):
+    """A host operator still needs the local failure result even with quiet chat defaults."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"failed_turn_notice": False}})
+    runner = object.__new__(GatewayRunner)
+
+    async def stop_typing(event, source):
+        return None
+
+    runner._hmwa_stop_typing_for_turn = stop_typing
+    runner._session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=None))
+    source = SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u")
+    prepared = runner._PreparedTurn([], "", None, None, None, None)
+    captured = {}
+    token = execution_result.set(captured)
+    try:
+        reply = asyncio.run(runner._hmwa_agent_error_reply(
+            RuntimeError("upstream unavailable"), MessageEvent(text="x", source=source),
+            source, None, "k", prepared,
+        ))
+    finally:
+        execution_result.reset(token)
+
+    assert reply is not None
+    assert captured["result"]["error"] == "RuntimeError: upstream unavailable"

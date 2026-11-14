@@ -1939,8 +1939,7 @@ _AGENT_ENV_BRIDGE = {
 _SESSIONS_ENV_BRIDGE = {"search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
 _DISPLAY_ENV_BRIDGE = {
     "busy_input_mode": "HERMES_GATEWAY_BUSY_INPUT_MODE",
-    "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE",
-    "busy_ack_enabled": "HERMES_GATEWAY_BUSY_ACK_ENABLED"}
+    "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE"}
 
 
 def _bridge_section_to_env(section: Any, mapping: dict[str, str]) -> None:

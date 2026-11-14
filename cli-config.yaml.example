@@ -1970,7 +1970,7 @@ display:
   # tool_progress: all
 
   # tool_progress, interim_assistant_messages, long_running_notifications,
-  # busy_ack_detail and show_reasoning are left unset here on purpose: a value
+  # busy_ack_enabled, busy_ack_detail, failed_turn_notice and show_reasoning are left unset here on purpose: a value
   # set under display: applies to EVERY messaging platform and replaces its
   # built-in default. To change one platform, set it under
   # display.platforms.<platform> instead.
@@ -2038,6 +2038,13 @@ display:
   # platform default), both stay terse: "Interrupting current task" and
   # "⏳ Working — 12 min, terminal".
   # busy_ack_detail: true
+
+  # Gateway-only system notices. Set either switch to false under
+  # display.platforms.<platform> to keep an audience-facing chat quiet without
+  # changing other platforms. Busy input is still queued, steered or interrupted
+  # as configured; failed turns still retain their durable transcript boundary.
+  # busy_ack_enabled: true
+  # failed_turn_notice: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)

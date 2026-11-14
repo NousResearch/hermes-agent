@@ -1129,6 +1129,50 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert "PASS" in result.stdout
 
 
+def test_run_summary_renders_as_markdown():
+    """A run's ``summary`` is agent-written markdown, like the task body, the result and
+    the comments — so the drawer must hand it to MarkdownBlock instead of interpolating
+    it as a plain string. Interpolated, a summary's links, ``**bold**`` and inline code
+    stay literal (the body/comments/result right next to it do render), and the drawer's
+    markdown toggle has to reach this block too.
+
+    The bundle has no build step, so this runs the real RunHistorySection (extracted
+    verbatim, not regex-matched) against a minimal React stub — behavioral, not a
+    source-text pin.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_run_summary_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
+
+def test_comment_composer_multiline_and_resizable():
+    """#144093: three-row Kanban composer must preserve multiline comments,
+    submit on Enter (not Shift+Enter), and allow vertical resize. Exercise
+    the real shipped TaskDrawer rather than searching its source for strings.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    dist = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist"
+    probe = Path(__file__).parent / "fixtures" / "kanban_comment_composer_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(dist / "index.js"), str(dist / "style.css")],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
 # Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
 

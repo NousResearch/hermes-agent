@@ -332,6 +332,37 @@ describe('profile creation warnings', () => {
     expect(mocks.request.mock.calls.filter(([method]) => method === 'profiles.configure')).toEqual([])
   })
 
+  it('opens Configure model on the live roster row once the roster has the bot', async () => {
+    mocks.activeConnection.value = 'gateway-a'
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
+      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    const configure = vi.fn()
+    const dialog = await renderDialog(true, configure)
+    await showNotifications()
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    dialog.unmount()
+    const { $lastRoster } = await import('./data')
+
+    const live: RosterRow = {
+      name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true,
+      route: { connectionId: 'gateway-a', mode: 'remote', profile: 'inbox-triage', targetProfile: 'inbox-triage' }
+    }
+
+    const previous = $lastRoster.get()
+    $lastRoster.set([live])
+
+    try {
+      const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
+      await act(async () => clearResumeToasts(undefined))
+      fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
+      expect(configure).toHaveBeenCalledWith(live)
+    } finally {
+      $lastRoster.set(previous)
+    }
+  })
+
   it('explicit Clear all dismisses persistent creation and needs-model cards', async () => {
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'profiles.create'

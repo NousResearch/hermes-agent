@@ -759,7 +759,18 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
               persistent: true,
               detail: readiness?.error,
               ...(!remoteTarget && onConfigureModel
-                ? { action: { label: b.editor.configureModel, onClick: () => onConfigureModel(bot) } }
+                ? {
+                    action: {
+                      label: b.editor.configureModel,
+                      // The live roster row, as Edit Profile gets it, once the
+                      // roster has loaded the bot: it carries the route its
+                      // appearance and settings are keyed by.
+                      onClick: () =>
+                        onConfigureModel(
+                          $lastRoster.get().find(row => botRosterKey(row) === botRosterKey(bot)) ?? bot
+                        )
+                    }
+                  }
                 : {})
             }
           : { kind: 'success', message: createdMessage }

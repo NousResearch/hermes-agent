@@ -303,3 +303,49 @@ def test_r2_model_reset_on_a_taken_chat_keeps_the_pin_it_refuses_to_drop(taken, 
         "session_id": taken.sid, "key": "model", "value": "reset"}})
     err = resp.get("error") or {}
     assert {"code": err.get("code"), "pin": taken.record.get("model_override")} == {"code": 4090, "pin": pin}, resp
+
+
+# ── A /compress claim is released however late, or never, the host's ack arrives ──────────────────────────
+
+def _compress_supervisor(chat, monkeypatch, tmp_path):
+    from tui_gateway.host_supervisor import HostSupervisor
+    sup = HostSupervisor(registry_path=tmp_path / "idle-edge-host.json", autostart=False)
+    frames = []
+    monkeypatch.setattr(sup, "start", lambda: None)
+    monkeypatch.setattr(sup, "_send_frame", frames.append)
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda *a, **k: sup)
+    monkeypatch.setattr(server, "_compute_host_compress_wait_seconds", lambda *a, **k: 0.01)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a, **k: True)
+    return sup, frames
+
+
+def test_c1_compress_claim_released_when_the_ack_lands_as_the_waiter_gives_up(chat, monkeypatch, tmp_path):
+    import queue as stdlib_queue
+    from tui_gateway import host_supervisor
+    sup, frames = _compress_supervisor(chat, monkeypatch, tmp_path)
+
+    class _ReaderWinsAfterTimeout(stdlib_queue.Queue):
+        def get(self, block=True, timeout=None):
+            if not block:
+                return super().get(block=False)
+            # The reader thread's control.ack lands just after the wait timed out, before the waiter retires it.
+            request_id = frames[-1]["request_id"]
+            sup._deliver_control_frame(request_id, {"type": "control.ack", "request_id": request_id, "output": "ok"})
+            raise stdlib_queue.Empty
+    monkeypatch.setattr(host_supervisor, "queue", SimpleNamespace(
+        Queue=_ReaderWinsAfterTimeout, Empty=stdlib_queue.Empty, Full=stdlib_queue.Full))
+
+    status = server._compute_host_slash(chat.sid, chat.record, "compress", "/compress")[0]
+    released = server._release_idle_session_leases(time.time() + 1200)
+    assert {"status": status, "frames": len(frames), "released_20min_later": released} == {
+        "status": "ok", "frames": 1, "released_20min_later": 1}
+
+
+def test_c2_compress_claim_released_when_its_late_handler_is_evicted(chat, monkeypatch, tmp_path):
+    from tui_gateway import host_supervisor
+    sup, frames = _compress_supervisor(chat, monkeypatch, tmp_path)
+    assert server._compute_host_slash(chat.sid, chat.record, "compress", "/compress")[0] == "pending"
+    for n in range(host_supervisor._LATE_CONTROL_MAX):  # later compressions on other chats fill the cap
+        sup._register_late_control_handler(f"other-{n}", lambda _frame: None)
+    assert frames[0]["request_id"] not in sup._late_control_handlers
+    assert server._release_idle_session_leases(time.time() + 1200) == 1

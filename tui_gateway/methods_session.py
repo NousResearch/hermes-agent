@@ -1992,8 +1992,10 @@ def _(rid, params: dict, session: dict) -> dict:
                     # The projection in _history_to_messages only forwards row_id when the row carries a
                     # stamp, so an unstamped read here silently strips the one durable address clients can
                     # use. See #87059.
+                    # include_compacted: same display lineage as session.resume / REST — without it,
+                    # rewind and history rebuilds drop every turn archived by in-place compaction.
                     history = db.get_messages_as_conversation(
-                        row_session, include_ancestors=True, include_row_ids=True)
+                        row_session, include_ancestors=True, include_row_ids=True, include_compacted=True)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 

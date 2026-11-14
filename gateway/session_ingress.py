@@ -479,6 +479,7 @@ async def deliver_settled(authority, admission_id):
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
+            adopter._hermes_run_generation = getattr(held, '_hermes_run_generation', None)
             held = None
         delivery = None
     if delivery is None:

@@ -473,12 +473,19 @@ def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     model each get their own pins without any surface re-plumbing the kwargs)."""
     flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
         "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
-        "data_collection": agent.provider_data_collection}
+        "data_collection": agent.provider_data_collection, "zdr": None}
     per_model = {}
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_per_model_provider_routing
         _pr = load_config_readonly().get("provider_routing")
+        # ``zdr`` (OpenRouter zero-data-retention) is a config-level policy flag with no
+        # per-agent constructor kwarg: no surface needs to vary it mid-session, and the
+        # transport only forwards provider prefs on OpenRouter requests anyway. Sourced
+        # here so every surface (CLI, gateway, TUI, cron, delegation) inherits it, and so
+        # ``provider_routing.models.<id>.zdr`` can still overlay it per model.
+        if isinstance(_pr, dict) and _pr.get("zdr") is True:
+            flat["zdr"] = True
         per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
     merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
     merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])

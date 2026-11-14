@@ -244,3 +244,36 @@ def test_managed_worker_turn_carries_the_committed_surface_to_the_model(tmp_path
     assert turns['plain'] == ('main-model', 'PLAIN_TURN'), 'the following typed turn carries no surface'
     # The voice route rewrites only its own request's model identity; main-model turns share one prefix.
     assert len({r['messages'][0]['content'] for r in model.requests if r['model'] == 'main-model'}) == 1
+
+
+def test_over_limit_voice_context_keeps_the_newest_turns():
+    """A live-voice window over the limit reaches the model as "Recent spoken conversation, newest
+    last", so the clipped head must be the OLDEST lines: dropping the tail drops what the user just
+    said. The clip also has to start at a line boundary and stay stable when a managed turn re-checks
+    it through admission again."""
+    from gateway.session_surface import admit_surface, _VOICE_CONTEXT_LIMIT
+
+    lines = [f'User: line {i:03d} ' + 'x' * 60 for i in range(150)]
+    kept = admit_surface({'surface': 'voice-live', 'voice_context': '\n'.join(lines)})['surface_v1']['voice_context']
+
+    assert len(kept) <= _VOICE_CONTEXT_LIMIT
+    assert kept.splitlines()[-1] == lines[-1], 'the newest line the user just said must survive'
+    assert lines[0] not in kept
+    assert kept.startswith('User: line '), 'the window starts at a turn, not mid-line'
+    assert admit_surface({'surface': 'voice-live', 'voice_context': kept})['surface_v1']['voice_context'] == kept
+
+
+def test_voice_context_that_fills_the_limit_at_a_turn_boundary_keeps_every_line():
+    """A tail whose first character already starts a line needs no trimming: partition() would drop
+    that complete oldest turn even though it fits, so the boundary is checked before the split."""
+    from gateway.session_surface import admit_surface, _VOICE_CONTEXT_LIMIT
+
+    lines = [f'turn {i:02d} ' + 'x' * 60 for i in range(2)]
+    last = 'turn 02 ' + 'y' * (_VOICE_CONTEXT_LIMIT - sum(len(line) + 1 for line in lines) - len('turn 02 '))
+    window = '\n'.join([*lines, last])
+    assert len(window) == _VOICE_CONTEXT_LIMIT, 'the fixture must fill the limit exactly'
+
+    kept = admit_surface({'surface': 'voice-live', 'voice_context': 'older words\n' + window})['surface_v1']['voice_context']
+
+    assert kept == window, 'a tail that already starts at a turn keeps its oldest line too'
+    assert admit_surface({'surface': 'voice-live', 'voice_context': kept})['surface_v1']['voice_context'] == kept

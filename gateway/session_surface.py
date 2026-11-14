@@ -21,6 +21,21 @@ def submit_surface_fields(params):
     return {key: params[key] for key in _SUBMIT_FIELDS if key in params}
 
 
+def clip_voice_context(context: str) -> str:
+    """The newest part of a spoken transcript: the note tells the model it is "newest last", so an
+    over-limit window keeps the TAIL (what the user just said), starting at a line boundary. Both
+    the canonical admission and the desktop ``prompt.submit`` lane clip here so they cannot
+    disagree, and a clipped window clips to itself again when a managed turn re-checks it."""
+    if len(context) <= _VOICE_CONTEXT_LIMIT:
+        return context
+    tail = context[-_VOICE_CONTEXT_LIMIT:]
+    if context[-_VOICE_CONTEXT_LIMIT - 1] == '\n':
+        # The tail already starts at a turn: keep that whole first line instead of trimming it.
+        return tail
+    _head, separator, rest = tail.partition('\n')
+    return rest if separator and rest else tail
+
+
 def admit_surface(params):
     """Wire ``surface`` / ``voice_context`` / ``interrupted`` / ``voice_turn`` -> committed ``surface_v1``
     (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode turn: it runs on ``auxiliary.voice_chat``."""
@@ -37,7 +52,7 @@ def admit_surface(params):
     if surface:
         committed['surface'] = surface
     if context:
-        committed['voice_context'] = context[:_VOICE_CONTEXT_LIMIT]
+        committed['voice_context'] = clip_voice_context(context)
     if interrupted:
         committed['interrupted'] = True
     if voice_turn:

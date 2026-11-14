@@ -95,9 +95,10 @@ def test_resumed_api_run_keeps_access_after_compression(monkeypatch):
     assert _call(monkeypatch, "poll", "other-conv", "run-3") == pr._not_found("proc_owned1")
 
 
-def test_container_task_id_may_poll(reg, monkeypatch):
-    _finished(reg)
-    assert _call(monkeypatch, "poll", "container-a", "")["status"] != "not_found"
+def test_shared_container_key_is_not_process_owner(reg, monkeypatch):
+    """A default-profile container is shared; its key is not a conversation's raw owner."""
+    _finished(reg, task_id="default")
+    assert _call(monkeypatch, "poll", "default", "key-b") == pr._not_found("proc_owned1")
 
 
 def test_unidentified_caller_passes(reg, monkeypatch):

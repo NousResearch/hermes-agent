@@ -21,8 +21,8 @@ def caller_session_key() -> str:
 def session_action_allowed(session, task_id: str, session_key: str) -> bool:
     """Whether the caller may poll/log/wait/kill/write/submit/close ``session``.
 
-    Ownership is the spawning task (``owner_task_id``, or the container
-    ``task_id`` it collapsed to) or the gateway ``session_key`` — a
+    Ownership is the raw spawning task (``owner_task_id``), not the potentially
+    shared container ``task_id``, or the gateway ``session_key`` — a
     session-scoped process started by a sibling task is still this
     conversation's to manage (#29177), including through a compression resume.
     A caller carrying no identity at all is trusted internal plumbing rather
@@ -30,7 +30,7 @@ def session_action_allowed(session, task_id: str, session_key: str) -> bool:
     identity (unowned/detached) has no owner to violate.
     """
     owner = session.owner_task_id or session.task_id
-    if task_id and task_id in (owner, session.task_id):
+    if task_id and task_id == owner:
         return True
     if session_key and session_key == session.session_key:
         return True

@@ -71,7 +71,7 @@ class EngineStubHandler(BaseHTTPRequestHandler):
     last_caller = None
     screen_calls = 0
 
-    def do_POST(self):  # noqa: N802 - stdlib naming
+    def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path.endswith("/screen"):
@@ -110,7 +110,7 @@ class GuardrailTestCase(unittest.TestCase):
         self.loop = asyncio.new_event_loop()
         self.addCleanup(self.loop.close)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), EngineStubHandler)
-        self.endpoint = "http://127.0.0.1:%d/v1/screen" % self.server.server_port
+        self.endpoint = f"http://127.0.0.1:{self.server.server_port}/v1/screen"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.outcome_delay_s = 0.0

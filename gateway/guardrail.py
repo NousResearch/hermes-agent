@@ -224,7 +224,7 @@ async def drain_outcome_tasks(timeout: float = 5.0) -> None:
                 asyncio.gather(*list(_OUTCOME_TASKS),
                                return_exceptions=True),
                 timeout=timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             for stuck in list(_OUTCOME_TASKS):
                 stuck.cancel()
 
@@ -284,7 +284,7 @@ async def _screen_inner(adapter, event) -> bool:
         result = await asyncio.wait_for(asyncio.to_thread(call),
                                         timeout=timeout + 1.0)
         if not isinstance(result, dict):
-            raise ValueError("non-dict engine response: %r" % type(result))
+            raise ValueError(f"non-dict engine response: {type(result)!r}")
     except Exception as err:
         _log(dict(base, tier="engine_unreachable_or_malformed",
                   error=str(err)[:160]))
@@ -308,8 +308,8 @@ async def _screen_inner(adapter, event) -> bool:
     question_id = ("q_" + reasons[0]) if reasons else None
     if tier == "block":
         await _maybe_alert(adapter, sender, platform,
-                           "%s-tier (%s) - held automatically"
-                           % (tier, ", ".join(reasons)[:_ALERT_TEXT_CAP]))
+                           f"{tier}-tier ({', '.join(reasons)[:_ALERT_TEXT_CAP]})"
+                           " - held automatically")
         reply = _flag("HERMES_GATEWAY_GUARDRAIL_HOLD_REPLY")
         if reply and chat_id:
             await _send(adapter, chat_id, reply)
@@ -323,7 +323,7 @@ async def _screen_inner(adapter, event) -> bool:
                                "chain-down - engine held or failed per its "
                                "own rule; message allowed through Phase 2")
         _spawn_outcome_report(result, "escalated",
-                              "%s-tier (Phase 2 advisory pass)" % tier,
+                              f"{tier}-tier (Phase 2 advisory pass)",
                               question_id)
         return False
     _spawn_outcome_report(result, "accepted", "allow-tier (Phase 2)",
@@ -337,7 +337,7 @@ async def _maybe_alert(adapter, sender: str, platform: str,
     if not owner_chat:
         return
     window = _float_env("HERMES_GATEWAY_GUARDRAIL_DEBOUNCE_S", 600.0)
-    if not _debounced("%s:%s" % (platform, sender), window):
+    if not _debounced(f"{platform}:{sender}", window):
         return
     await _send(adapter, owner_chat,
-                "[guardrail] %s on %s: %s." % (sender, platform, detail))
+                f"[guardrail] {sender} on {platform}: {detail}.")

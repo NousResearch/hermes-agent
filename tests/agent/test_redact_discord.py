@@ -85,3 +85,23 @@ class TestDiscordTokens:
         result = redact_sensitive_text(f"line{left}{self.TOKEN}")
         assert "7Zq1rJ8mN0pQ" not in result
         assert result.startswith(f"line{left}")
+
+    @pytest.mark.parametrize("tail", [".", "...", ". Next sentence.", ".\n", "\u2026"])
+    def test_token_at_sentence_end_is_masked(self, tail):
+        """A dot that ends the run is punctuation, not part of a dotted identifier."""
+        for token in (self.TOKEN, self.MFA_TOKEN):
+            result = redact_sensitive_text(f"Bot token: {token}{tail}")
+            assert token.split(".")[-1][:12] not in result
+            assert result.endswith(tail)
+
+    def test_dotted_continuation_is_not_a_token(self):
+        """``<shape>.more`` continues an identifier; neither form claims it."""
+        for text in (f"{self.TOKEN}.attr", f"{self.MFA_TOKEN}.attr", f"x.{self.MFA_TOKEN}",
+                     f"schema{self.MFA_TOKEN}"):
+            assert redact_sensitive_text(text) == text
+
+    @pytest.mark.parametrize("left", ["\\n", "%0A", "\\u0020", "\x1b[31m"])
+    def test_mfa_after_escape_spelling_is_masked(self, left):
+        result = redact_sensitive_text(f"line{left}{self.MFA_TOKEN}")
+        assert self.MFA_TOKEN not in result
+        assert result.startswith(f"line{left}")

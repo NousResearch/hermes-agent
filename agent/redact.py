@@ -4,7 +4,6 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
-import base64
 import json
 import logging
 import os
@@ -19,6 +18,7 @@ from urllib.parse import unquote_plus
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_discord import _redact_discord_tokens
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
@@ -874,50 +874,6 @@ def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
 _ZHIPU_API_KEY_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
 )
-
-# Discord bot tokens: ``<base64 user id>.<base64 timestamp>.<hmac>``, plus the ``mfa.<secret>``
-# form. Shape alone is not enough — a long dotted CamelCase identifier
-# (``SomeVeryLongClassName.Config.AnotherLongAttributeName``) fits it — so a candidate only
-# counts when its first segment base64-decodes to a Discord snowflake (17-20 ASCII digits),
-# which is what the real first segment always is. JWTs are handled by _JWT_RE. Without this,
-# ``DISCORD_BOT_TOKEN=<tok>`` was masked by the assignment pass but the same token as a JSON
-# value or bare in tool output went through verbatim (#117848) — in a project whose Discord
-# adapter keeps one in every install's ``.env``. The first character is the top six bits of
-# the id's leading ASCII digit, so ids starting 0-3 encode to ``M``, 4-7 to ``N`` and 8-9 to
-# ``O`` at every snowflake length; ``[MNO]`` covers them all, not just the older ``M`` bots.
-# The id form has no left-boundary lookbehind: a token glued to an escape spelling
-# (``\\n``/``%0A``/``\\u0020`` in JSON-dumped or URL-encoded tool output, an ANSI colour
-# code) has a letter/digit as its left neighbor and would slip a ``(?<![A-Za-z0-9])`` guard.
-# Candidates are found overlapping (lookahead) and the snowflake decode in
-# _is_discord_token is what rejects every start that is not a real user id.
-_DISCORD_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])(mfa\.[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_.-])"
-    r"|(?=([MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,})(?![A-Za-z0-9_.-]))"
-)
-
-
-def _is_discord_token(candidate: str) -> bool:
-    """True when *candidate* carries a real Discord user id, not just the token shape."""
-    if candidate.startswith("mfa."):
-        return True
-    head = candidate.split(".", 1)[0]
-    try:
-        decoded = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4))
-    except (ValueError, base64.binascii.Error):
-        return False
-    return decoded.isdigit() and 17 <= len(decoded) <= 20
-
-
-def _redact_discord_tokens(text: str, mask_fn) -> str:
-    parts, pos = [], 0
-    for m in _DISCORD_TOKEN_RE.finditer(text):
-        token = m.group(1) or m.group(2)
-        start = m.start(1) if m.group(1) else m.start(2)
-        if start < pos or not _is_discord_token(token):
-            continue
-        parts += (text[pos:start], mask_fn(token))
-        pos = start + len(token)
-    return "".join(parts) + text[pos:] if parts else text
 
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a

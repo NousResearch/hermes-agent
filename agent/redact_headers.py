@@ -11,9 +11,15 @@ import re
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
 SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
-_SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})"
+# ``x-<name>-key`` custom API-key header names (``x-acme-key``, ``x-functions-key``). Each dash
+# segment is whole and the lookarounds stop a mid-word match, so ``x-monkey`` / ``x-keyboard`` /
+# ``inbox-key`` / prose ``*-key`` words do not match.
+_X_KEY_HEADER_NAME = r"(?<![A-Za-z0-9_\-])x-(?:[a-z0-9]+-)*key(?![A-Za-z0-9_\-])"
+_SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)}|{_X_KEY_HEADER_NAME})"
 _SECRET_HEADER_LINE_RE = re.compile(
-    rf"(^[ \t]*(?:[<>][ \t]+)?{_SECRET_HEADER_NAMES}[ \t]*:[ \t]*)([^\r\n]+)",
+    # The optional ``12|`` prefix is read_file's line-number gutter: without it a quoted header
+    # value in a numbered config.yaml read matched no rule at all.
+    rf"(^[ \t]*(?:[0-9]+\|[ \t]*)?(?:[<>][ \t]+)?{_SECRET_HEADER_NAMES}[ \t]*:[ \t]*)([^\r\n]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 _SECRET_HEADER_INLINE_RE = re.compile(

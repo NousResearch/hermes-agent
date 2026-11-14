@@ -1,0 +1,19 @@
+name: mem-forever
+title: Mem-Forever
+repo: https://github.com/ilang-ai/Mem-Forever
+sha: 44e436733881d253292ba788f4cff09af37434ae
+subdir: hermes
+version: "3.2.0"
+description: "Your private Git repository is the agent's brain, the same brain Claude Code, Codex, Cursor, Copilot, Gemini CLI and a pasted chat already read: BRAIN.md is the entry, handoff/CURRENT.md says where you stopped (date, done, next, unverified), soul/ is who you are, memory/ is one file per memory, log/ keeps your words verbatim, env/ledger.env is the ledger of the doors the brain can open. Session start saves what the previous session left unsaved, pulls the brain and puts BRAIN.md in the system prompt; the first turn gets the hand-off, the soul and the index; each of your turns is appended to log/; before compression and at session end the brain is committed and pushed and the ::PROGRESS line goes to the summary; one tool, mem_forever, runs the brain's own engine (status, check, ledger verify, unlock, hand-off review, recognize, log, commit, pull). No API key, no service, no Python dependencies; a fork of the template is the brain. Disclosure: runs git and python tools/brain.py inside the brain repository you configure (status, add, commit, pull --rebase, push, one clone if you give a remote); the only network traffic is git to that repository's own remote; your messages, as Hermes hands them to memory providers, are written verbatim to log/ in that private repository; the plugin stores no credentials, and a ledger row is printed into the context only by the unlock action when the engine's own rules allow it (a next item names the door, this machine holds the owner's grant, a top door has the owner's one-time code); the ledger rests encoded, not encrypted, in your private repository by design. Subagent and cron runs read the brain and never write."
+maintainer: iLang Inc.
+tier: community
+category: memory
+docs_url: https://github.com/ilang-ai/Mem-Forever#readme
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

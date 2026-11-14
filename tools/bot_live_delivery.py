@@ -28,13 +28,29 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
+def _usable_state_db(home: Path) -> Path | None:
+    """``home/state.db`` when it holds a store, else None.
+
+    A 0-byte or table-less file is an interrupted initialisation, not an empty profile: SQLite
+    opens it and then every query fails with "no such table: sessions". Callers read it as "no
+    store" (no owner), the same as a missing file; a damaged non-empty store still raises (#153048)."""
+    from hermes_state_dbfile import state_db_holds_store
+
+    db_path = home / 'state.db'
+    return db_path if state_db_holds_store(db_path) else None
+
+
 def _bot_chat_tip(home: Path) -> str | None:
     """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet."""
+    db_path = _usable_state_db(home)
+    return None if db_path is None else _read_bot_chat_tip(db_path)
+
+
+def _read_bot_chat_tip(db_path: Path) -> str | None:
+    """Bot Chat tip id from a store the caller already resolved with :func:`_usable_state_db`."""
     from hermes_state import SessionDB
 
-    if not (home / 'state.db').is_file():
-        return None
-    db = SessionDB(db_path=home / 'state.db', read_only=True)
+    db = SessionDB(db_path=db_path, read_only=True)
     try:
         row = db.get_session_by_title('Bot Chat')
         return db.get_compression_tip(row['id']) if row else None
@@ -54,9 +70,10 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     discovery = discover_gateway_endpoint(home, timeout=5)
     if discovery.state != 'ready' or discovery.endpoint is None:
         raise ValueError('profile authority is not ready')
-    if not (home / 'state.db').is_file():
+    db_path = _usable_state_db(home)  # probed once; the tip read reuses it
+    if db_path is None:
         return None
-    tip = _bot_chat_tip(home)
+    tip = _read_bot_chat_tip(db_path)
     return dict(profile_home=str(home), session_id=tip or '', canonical=True,
                 lease_id=discovery.endpoint.instance_id, live_session_id=tip or '')
 

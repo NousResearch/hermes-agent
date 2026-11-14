@@ -86,8 +86,9 @@ class GatewaySessionStore:
         first start, after the CLI's startup maintenance probe) is retried on the next read."""
         if self._reader is None:
             from hermes_constants import get_hermes_home
+            from hermes_state_dbfile import state_db_holds_store
             path = get_hermes_home() / "state.db"
-            if not path.exists():
+            if not state_db_holds_store(path):  # missing, 0-byte or table-less: retried next read (#153048)
                 return None
             try:
                 from hermes_state import SessionDB

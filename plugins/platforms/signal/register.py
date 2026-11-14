@@ -39,6 +39,7 @@ _PLATFORM_HINT = (
     "Signal formatting; bullets render as \u2022. No tables \u2014 use bullets or labeled lines. "
     "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
     "Images (.png, .jpg, .webp) send as photos, other files as documents; ![alt](url) sends as photos."
+    " Ask multiple-choice questions with the clarify tool (choices) rather than a numbered list in your message: Signal shows them as a native poll the user answers with one tap."
 )
 def _parse_send_target(ref):
     # "group:<id>" is a native group target; an empty id is not explicit.

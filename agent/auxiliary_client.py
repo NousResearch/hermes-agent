@@ -3053,18 +3053,11 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
         return None, None
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     # A model-scoped cooldown spares the key's other models.
-    pool_present, entry = _select_pool_entry("anthropic", requested_model or model)
-    if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
-    else:
-        # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
-        entry = None
-        token = explicit_api_key or resolve_anthropic_token()
-    if not token:
-        return None, None
+    pool_present, entry = _select_pool_entry("anthropic", requested_model or model)  # (False, None) when absent
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
     # Anthropic-compatible; a foreign host (Codex, OpenRouter) would 401 every aux call.
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
+    model_cfg: Any = {}
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
@@ -3090,6 +3083,13 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
             )
             return None, None
         base_url = override_url
+    from hermes_cli.runtime_provider import anthropic_foundry_key  # Foundry: never the OAuth token (#154242)
+    if explicit_api_key or base_url_host_matches(base_url, "azure.com"):
+        token = explicit_api_key or anthropic_foundry_key(entry, model_cfg, base_url)
+    else:  # pool absent/empty: legacy resolver so a dead entry can't wedge aux
+        token = _pool_runtime_api_key(entry) if entry is not None else resolve_anthropic_token()
+    if not token:
+        return None, None
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
     if _aux_probe_active():

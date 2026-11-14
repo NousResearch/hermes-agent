@@ -67,6 +67,18 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
     return "thread"
 
 
+def _fresh_thread_overrides_origin_topic(pconfig) -> bool:
+    """``platforms.<p>.extra.cron_fresh_thread_per_run: true``: a continuable job created inside a
+    topic/thread opens a fresh thread per run instead of delivering back to its origin topic
+    (#76548). Off by default; any value but a boolean ``true`` keeps the origin topic and warns."""
+    extra = getattr(pconfig, "extra", None) or {}
+    raw = extra.get("cron_fresh_thread_per_run", False) if isinstance(extra, dict) else False
+    if isinstance(raw, bool):
+        return raw
+    logger.warning("cron_fresh_thread_per_run must be true or false, got %r; keeping the origin topic", raw)
+    return False
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job. Non-dict origins (provenance strings, hand-edited
     jobs.json) are treated as missing — otherwise every fire crashed on ``origin.get``.
@@ -1643,7 +1655,8 @@ def _prepare_target_delivery(
         and not in_channel_surface
         and runtime_adapter is not None
         and loop is not None
-        and not thread_id  # never override an explicit origin thread/topic
+        # Never override an origin thread/topic unless the platform opted in (#76548).
+        and (not thread_id or (origin_target and _fresh_thread_overrides_origin_topic(pconfig)))
     ):
         opened_thread_id = _open_continuable_cron_thread(
             job, runtime_adapter, chat_id, loop) or None

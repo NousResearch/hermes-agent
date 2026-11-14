@@ -327,6 +327,58 @@ def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
     return str(response.get("result", {}).get("output") or "")
 
 
+# /reasoning and /yolo change the LIVE agent's settings. The slash worker is a separate HermesCLI,
+# so a worker run reported "set" while the session kept its old effort and approvals. Both go
+# through the config.set branch Desktop (/reasoning) and Ink (Shift+Tab) already send.
+_REASONING_HEADLINES = {"show": "headline_on", "hide": "headline_off", "full": "headline_full",
+                        "clamp": "headline_clamped"}
+
+
+def _live_setting(sid: str, key: str, value: str, scope: str = "") -> Optional[dict]:
+    res = _methods["config.set"]("slash", {"session_id": sid, "key": key, "value": value,
+                                           **({"scope": scope} if scope else {})})
+    return None if "error" in res else res.get("result") or {}
+
+
+def _format_live_reasoning_output(sid: str, session: dict, arg: str) -> Optional[str]:
+    from agent.i18n import t
+    if _session_uses_compute_host(session):
+        return None
+    tokens = arg.strip().lower().split()
+    value = " ".join(tok for tok in tokens if tok not in ("--global", "--session"))
+    if not value:
+        got = _methods["config.get"]("slash", {"session_id": sid, "key": "reasoning"}).get("result") or {}
+        full = bool((_load_cfg().get("display") or {}).get("reasoning_full"))
+        display = t("cli.commands.reasoning.display_on" if got.get("display") == "show"
+                    else "cli.commands.reasoning.display_off")
+        return "\n".join((t("cli.commands.reasoning.effort_line", level=got.get("value", "medium")),
+                          t("cli.commands.reasoning.display_line", display=display, full=t(
+                              "cli.commands.reasoning.full_state_full" if full
+                              else "cli.commands.reasoning.full_state_clamped")),
+                          t("cli.commands.reasoning.usage")))
+    explicit_global = "--global" in tokens
+    result = _live_setting(sid, "reasoning", value, "global" if explicit_global else "")
+    if result is None:  # reset, a typo: the worker keeps answering those as before
+        return None
+    reported = str(result.get("value") or value)
+    if headline := _REASONING_HEADLINES.get(reported):
+        return t("cli.commands.reasoning.display_saved", headline=t(f"cli.commands.reasoning.{headline}"))
+    scope = t("cli.commands.shared.scope_saved" if explicit_global else "cli.commands.shared.scope_session")
+    return t("cli.commands.reasoning.effort_set", effort=reported, scope=scope)
+
+
+def _format_live_yolo_output(sid: str, session: dict, arg: str) -> Optional[str]:
+    from agent.i18n import t
+    from tools.approval import _YOLO_MODE_FROZEN
+    if _YOLO_MODE_FROZEN:
+        return t("cli.session.yolo_locked", state=t("cli.session.yolo_state_locked_on"))
+    if _session_uses_compute_host(session) or (result := _live_setting(sid, "yolo", arg.strip())) is None:
+        return None
+    on = str(result.get("value")) == "1"
+    return t("cli.session.yolo_on" if on else "cli.session.yolo_off",
+             state=t("cli.shared.label_on_upper" if on else "cli.shared.label_off_upper"))
+
+
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
 # A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
@@ -343,7 +395,8 @@ _LIVE_SLASH_OUTPUT = {
     "clear": (None, "Screen clear is terminal-only; desktop/TUI chat left unchanged."),
     "models": (None, "Use /model to view or switch the current model; desktop users can also open the model picker."),
     "rename": (None, "Use /title <name> to rename this session."),
-    "effort": (None, "Use /reasoning <effort> to change reasoning effort.")}
+    "effort": (None, "Use /reasoning <effort> to change reasoning effort."),
+    "reasoning": (None, _format_live_reasoning_output), "yolo": (None, _format_live_yolo_output)}
 
 
 def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg: str) -> Optional[str]:

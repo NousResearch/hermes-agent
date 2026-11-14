@@ -765,20 +765,9 @@ def execute_code(
             "(process-identity probe wedged); the code was not run. Retry the call."
         )
     if _probe.value:
-        from cron.lifecycle_guard import (
-            HOST_INTERPRETER_KILL_REJECTION,
-            contains_gateway_lifecycle_command,
-            contains_host_interpreter_kill,
-        )
-        if contains_gateway_lifecycle_command(code):
-            if contains_host_interpreter_kill(code):
-                return tool_error(HOST_INTERPRETER_KILL_REJECTION)
-            return tool_error(
-                "Blocked: cannot restart or stop the gateway from inside the "
-                "gateway process. The gateway would kill this script before "
-                "it could complete (SIGTERM propagates to child processes). "
-                "Run the lifecycle command from a shell outside the gateway."
-            )
+        from tools.code_execution_lifecycle import lifecycle_guard_rejection
+        if (_rejection := lifecycle_guard_rejection(code)) is not None:
+            return tool_error(_rejection)
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]

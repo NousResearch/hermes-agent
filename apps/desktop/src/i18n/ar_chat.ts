@@ -209,6 +209,7 @@ export const arChat = {
     running: 'قيد التشغيل',
     stop: 'إيقاف',
     dismiss: 'تجاهل',
+    stopped: 'متوقف',
     exit: code => `خروج ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `الجولة ${turn}/${maxTurns}`,

@@ -786,7 +786,14 @@ class _KanbanNotification:
 
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
-        async with self._owner_scope():
+        from gateway.profile_routing import ProfileRouteRejected
+        try:
+            owner_scope = self._owner_scope()
+        except ProfileRouteRejected:
+            # The subscriber profile is gone or parked: never ping/wake under the launch profile.
+            await self.rewind()
+            return
+        async with owner_scope:
             if not await self._send_pings():
                 return
             # All text pings delivered (or skipped for non-push / wake-only).

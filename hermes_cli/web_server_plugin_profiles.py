@@ -25,6 +25,7 @@ from urllib.parse import parse_qsl, urlencode
 from fastapi.responses import JSONResponse, Response
 from starlette import status
 from starlette._utils import get_route_path
+from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocket
 
 from hermes_cli.config import get_process_hermes_home
@@ -231,6 +232,14 @@ async def run_hosted_request(home: Path, name: str, call: Callable[[float], dict
         return JSONResponse({"detail": f"plugin {name!r} did not answer within {timeout:g}s"}, status_code=504)
 
 
+async def read_forwarded_body(request) -> Optional[bytes]:
+    """Read an upload, or return None if its client has disconnected."""
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        return None
+
+
 async def forward_secondary_plugin_request(request, name: str) -> Optional[Response]:
     """Serve ``/api/plugins/<name>/`` for a secondary profile through its own plugin host, or None
     when the in-process router answers (the launch profile, or a bundled plugin). Consent has been
@@ -245,7 +254,9 @@ async def forward_secondary_plugin_request(request, name: str) -> Optional[Respo
     query = urlencode([(k, v) for k, v in parse_qsl(request.url.query, keep_blank_values=True)
                        if k not in _GATEWAY_QUERY_KEYS])
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _GATEWAY_CREDENTIAL_HEADERS]
-    body = await request.body()
+    body = await read_forwarded_body(request)
+    if body is None:
+        return Response(status_code=499)
     from hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
     authenticated = admitted_for_sensitive_route(request)
 

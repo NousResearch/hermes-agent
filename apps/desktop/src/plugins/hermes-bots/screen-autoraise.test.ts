@@ -35,8 +35,8 @@ const roster = [
   { name: 'alfred', sourceScoped: true }
 ] as RosterRow[]
 
-const toolStart = (profile: string, name: string, connectionId?: string) =>
-  ({ type: 'tool.start', profile, connectionId, session_id: 's1', payload: { tool_id: 't', name } }) as never
+const toolStart = (profile: string, name: string, connectionId?: string, replayed?: boolean) =>
+  ({ type: 'tool.start', profile, connectionId, session_id: 's1', replayed, payload: { tool_id: 't', name } }) as never
 
 describe('screen auto-raise', () => {
   beforeEach(async () => {
@@ -80,5 +80,20 @@ describe('screen auto-raise', () => {
     // Same profile name on a different source is a different bot.
     expect(handleScreenToolStart(toolStart('parker', 'computer_use', 'ssh-box'), 5)).toBe(false)
     expect(opened).toEqual([])
+  })
+
+  it('never raises for a replayed tool.start, and leaves the wake budget for the live one', async () => {
+    const { handleScreenToolStart } = await import('./screen-autoraise')
+
+    const t0 = 2_000_000
+
+    // A reconnect replay re-dispatches history: the shared client tags it `replayed` because it is
+    // recovered work, not the bot touching its desktop now.
+    expect(handleScreenToolStart(toolStart('parker', 'computer_use', undefined, true), t0)).toBe(false)
+    expect(opened).toEqual([])
+
+    // The replay must not spend the per-bot budget either: the next live start still raises.
+    expect(handleScreenToolStart(toolStart('parker', 'browser_navigate'), t0 + 1_000)).toBe(true)
+    expect(opened).toEqual(['parker'])
   })
 })

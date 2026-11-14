@@ -24,6 +24,7 @@ from agent.redact_headers import (
     redact_header_credentials,
 )
 from agent.redact_pattern_shape import _pattern_structure
+from agent.redact_secret_sources import redact_secret_source_values
 
 logger = logging.getLogger(__name__)
 
@@ -1491,9 +1492,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not text:
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
-    text = redact_registered_vault_values(text)
+    text = redact_secret_source_values(redact_registered_vault_values(text))
     if not (force or _redact_enabled()):
         return text
+    return redact_credential_shapes(text, force=force, code_file=code_file, file_read=file_read,
+                                    secret_file=secret_file, redact_url_credentials=redact_url_credentials)
+
+
+def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool = False,
+                             file_read: bool = False, secret_file: bool = False,
+                             redact_url_credentials: bool = False) -> str:
+    """The pattern passes of ``redact_sensitive_text`` alone: no registered exact values, no preference
+    gate. A classifier (does this value have a credential shape?) must not read a registry, or another
+    profile's values would decide what this one treats as secret."""
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file

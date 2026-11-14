@@ -366,7 +366,7 @@ async def get_skills(profile: Optional[str] = None):
             config = load_config()
             disabled = get_disabled_skills(config)
             skills = find_all_skills(skip_disabled=True)
-            usage = load_usage()
+            usage = load_usage(recover=True)
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > external > agent.
             # "external" is mounted from skills.external_dirs and absent locally —

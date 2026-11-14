@@ -25,8 +25,16 @@ export HOME=/opt/data
 
 cd /opt/data
 
-dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+dash_host="${HERMES_DASHBOARD_HOST:-127.0.0.1}"
 dash_port="${HERMES_DASHBOARD_PORT:-9119}"
+
+# Loopback is the safe default: it matches the `hermes dashboard` CLI default
+# and never engages the auth gate on a providerless fresh container (#49567's
+# restart loop). To serve the dashboard beyond the container (published
+# `ports:` mapping, sidecar, reverse proxy) set HERMES_DASHBOARD_HOST=0.0.0.0
+# AND configure an auth provider (basic auth env vars below or OAuth) — a
+# providerless non-loopback bind is refused at startup (exit 78 → finish
+# parks the slot; no restart loop).
 
 # The dashboard's auth gate engages automatically on non-loopback binds and
 # REQUIRES a DashboardAuthProvider to be registered, else start_server fails

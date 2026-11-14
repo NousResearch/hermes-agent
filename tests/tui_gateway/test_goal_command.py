@@ -337,7 +337,85 @@ def test_iteration_limit_fallback_is_judged_and_can_continue(
     assert [p["status"] for p in completes] == ["complete", "complete"]
 
 
+def test_goal_judge_feedback_is_returned_for_the_next_tui_turn(server, monkeypatch):
+    """Regression for #137546: Desktop/TUI chains the actionable judge reason."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-judge-feedback-chain"
+    GoalManager(session_key).set("finish the current task")
+    feedback = "Include the exact test command and its passing result."
+    session = _turn_session(types.SimpleNamespace(session_id=session_key), session_key)
+    monkeypatch.setattr(
+        "hermes_cli.goals.judge_goal", lambda *_args, **_kwargs: ("continue", feedback, False, None, False),
+    )
+
+    followup = server._goal_followup_after_turn(
+        "sid", session, {"completed": True, "failed": False}, "complete", "The task is complete.",
+    )
+
+    assert feedback in followup
+
+
 # ── active-goal recovery after compression exhaustion ───────────────
+
+
+@pytest.mark.parametrize("change", ["unchanged", "contract", "subgoal", "gate", "new_judgment"])
+def test_compression_recovery_delivers_only_applicable_feedback(
+    server, turn_env, monkeypatch, change,
+):
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalContract, GoalManager
+
+    session_key = f"goal-feedback-recovery-{change}"
+    mgr = GoalManager(session_key)
+    mgr.set("finish the current task", contract=GoalContract(verification="old verification"))
+    mgr.add_subgoal("old criterion")
+    if change == "gate":
+        mgr.add_gate("verify")
+    monkeypatch.setattr(goals, "_gate_workspace", lambda: (None, None))
+    monkeypatch.setattr(goals, "run_gate", lambda *a, **k: (True, 0, ""))
+    old_feedback = "Show evidence for the old completion claim."
+    new_feedback = "Show evidence for the replacement completion claim."
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: ("continue", old_feedback, False, None, False))
+    assert old_feedback in mgr.evaluate_after_turn("done")["continuation_prompt"]
+
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        if len(seen_prompts) == 1:
+            current = GoalManager(session_key)
+            if change in ("contract", "new_judgment"):
+                current.set_contract(GoalContract(verification="replacement verification"))
+            elif change == "subgoal":
+                current.remove_subgoal(1)
+            elif change == "gate":
+                monkeypatch.setattr(goals, "run_gate", lambda *a, **k: (False, 1, "gate evidence"))
+                assert current.evaluate_after_turn("done")["verdict"] == "gate_failed"
+                monkeypatch.setattr(goals, "run_gate", lambda *a, **k: (True, 0, ""))
+            if change == "new_judgment":
+                monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: ("continue", new_feedback, False, None, False))
+                current.evaluate_after_turn("new claim")
+            monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: ("done", "verified", False, None, False))
+            return _compression_failure()
+        return {"final_response": "recovered work"}
+
+    agent = types.SimpleNamespace(
+        session_id=session_key, run_conversation=run_conversation, clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+    server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    assert len(seen_prompts) == 2
+    recovery_prompt = seen_prompts[1]
+    assert "finish the current task" in recovery_prompt
+    assert (old_feedback in recovery_prompt) == (change == "unchanged")
+    assert (new_feedback in recovery_prompt) == (change == "new_judgment")
+    if change in ("contract", "new_judgment"):
+        assert "replacement verification" in recovery_prompt
+        assert "old verification" not in recovery_prompt
+    if change == "subgoal":
+        assert "old criterion" not in recovery_prompt
 
 
 def test_active_goal_retries_once_without_judging_failed_turn(

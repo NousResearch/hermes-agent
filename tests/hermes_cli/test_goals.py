@@ -138,6 +138,48 @@ class TestGoalManager:
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
 
+    @pytest.mark.parametrize("shape", ("plain", "subgoals", "contract"))
+    def test_continue_reason_reaches_the_next_agent_turn(self, hermes_home, shape):
+        """Regression for #137546: the judge's rejection crosses the UI/agent boundary."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(session_id=f"judge-feedback-{shape}")
+        contract = GoalContract(verification="show the test output") if shape == "contract" else None
+        mgr.set("ship the fix", contract=contract)
+        if shape == "subgoals":
+            mgr.add_subgoal("include the migration result")
+        reason = "Show the exact test command and its passing result."
+
+        with patch.object(goals, "judge_goal", return_value=("continue", reason, False, None, False)):
+            decision = mgr.evaluate_after_turn("The task is complete.")
+
+        assert reason in decision["continuation_prompt"]
+        assert "rejected" in decision["continuation_prompt"].lower()
+        assert reason in GoalManager(mgr.session_id).next_continuation_prompt()
+
+    @pytest.mark.parametrize(
+        ("reason", "parse_failed", "transport_failed"),
+        (
+            ("judge reply was not JSON", True, False),
+            ("judge error: RuntimeError", False, True),
+        ),
+    )
+    def test_continuation_omits_judge_failure_diagnostics(
+        self, hermes_home, reason, parse_failed, transport_failed,
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=f"judge-failure-{parse_failed}-{transport_failed}")
+        mgr.set("ship the fix")
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", reason, parse_failed, None, transport_failed),
+        ):
+            decision = mgr.evaluate_after_turn("The task is complete.")
+
+        assert reason not in decision["continuation_prompt"]
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired

@@ -772,6 +772,16 @@ class TestEnvironmentHints:
         for leaked in ("User:", "Home:", "Working directory:", "alice", "/srv/secret"):
             assert leaked not in hint
 
+    def test_backend_probe_can_be_disabled_without_running_remote_probe(self, monkeypatch):
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setattr(_pb, "_config_readonly", lambda _what: {"agent": {"backend_probe": False}})
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _backend: pytest.fail("backend probe ran"))
+
+        hint = _pb._remote_backend_hint("docker")
+
+        assert "backend probe didn't respond" in hint
+
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.
 

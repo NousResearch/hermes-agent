@@ -1,6 +1,6 @@
 """In-memory coordination repository for the reference backend (test fixture only).
 
-Implements ``persistence.authority.coordination.CoordinationRepository`` in memory. Storage inside one scope store: ``coord_leases`` maps a session id to the compression lock ``(holder, expires_at)``; ``coord_turn_leases`` maps a conversation key to the turn lease ``(holder, expires_at)`` (the message, maintenance and worker references read both through ``_lease_fence``); ``hygiene_streaks`` maps a session key to its streak; ``handoffs`` maps a session id to its handoff columns (``status``, ``platform``, ``error``), which count only while the session row exists; ``async_delegations`` is the delegation ledger the worker references share (``coordination_delegations.py``); ``delivery_obligations`` is the obligation ledger (``coordination_obligations.py``).
+Implements ``persistence.authority.coordination.CoordinationRepository`` in memory. Storage inside one scope store: ``coord_leases`` maps a session id to the compression lock ``(holder, expires_at)``; ``coord_turn_leases`` maps a conversation key to the turn lease ``(holder, expires_at)`` (the message, maintenance and worker references read both through ``_lease_fence``); ``hygiene_streaks`` maps a session key to its streak; ``handoffs`` maps a session id to its handoff columns (``status``, ``platform``, ``error``), which count only while the session row exists; ``async_delegations`` is the delegation ledger the worker references share (``coordination_delegations.py``) and ``resumable_subagents`` its subagent records (``coordination_subagents.py``); ``delivery_obligations`` is the obligation ledger (``coordination_obligations.py``).
 
 The turn-lease key is the lineage root (:func:`conversation_key`); the dead-holder probe is :func:`_holder_process_is_dead` (strict namespace rule: on Linux a holder without this process's ``pidns=`` stamp is never probed).
 
@@ -32,6 +32,7 @@ from .._lineage_intent import direct_lineage_kind
 from ..backend import InMemoryBackend, register_repository
 from .coordination_delegations import DelegationLedger
 from .coordination_obligations import ObligationLedger
+from .coordination_subagents import SubagentRecords
 
 try:
     import psutil
@@ -134,7 +135,7 @@ def _claim_lease_row(leases: dict[str, tuple[str, float]], key: str, holder: str
     return leases[key][0] == holder
 
 
-class InMemoryCoordinationRepository(DelegationLedger, ObligationLedger):
+class InMemoryCoordinationRepository(SubagentRecords, DelegationLedger, ObligationLedger):
     """Reference implementation; see ``persistence/authority/coordination.py`` for the contract text."""
 
     def __init__(self, backend: InMemoryBackend) -> None:

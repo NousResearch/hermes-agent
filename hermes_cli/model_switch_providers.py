@@ -1386,6 +1386,22 @@ def _with_local_runtime_row(providers: list[dict], current_provider: str, curren
     return rows
 
 
+def _openrouter_row_is_pinned(row: dict) -> bool:
+    """Keep a ``providers.openrouter`` allowlist when ``discover_models`` is false.
+
+    The curated OpenRouter snapshot otherwise replaces that row and puts models back
+    on the picker that this host's pin list already dropped.
+    """
+    if not row.get("is_user_defined"):
+        return False
+    try:
+        from hermes_cli.config import load_config
+        cfg = (load_config().get("providers") or {}).get("openrouter")
+    except Exception:
+        return False
+    return isinstance(cfg, dict) and cfg.get("discover_models") is False and bool(cfg.get("models"))
+
+
 def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
@@ -1414,7 +1430,7 @@ def list_picker_providers(
 
     filtered: list[dict] = []
     for p in providers:
-        if str(p.get("slug", "")).lower() == "openrouter":
+        if str(p.get("slug", "")).lower() == "openrouter" and not _openrouter_row_is_pinned(p):
             try:
                 live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
             except Exception:

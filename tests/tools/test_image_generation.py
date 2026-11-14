@@ -182,6 +182,31 @@ class TestDefaults:
 
 
 
+
+    def test_krea3_and_flux3_klein_payloads_stay_inside_the_vendor_schemas(self, image_tool):
+        """Krea 3 and FLUX.3 Klein send only keys their FAL OpenAPI schemas declare (Oct 2026):
+        text-to-image carries the native preset size, edits omit it so the endpoint sizes from
+        the source, and Krea 3 pins the berry/low vendor defaults."""
+        cases = {
+            "krea/v3/text-to-image": {"prompt", "image_size", "seed", "negative_prompt", "output_format",
+                                      "reasoning_level", "model", "enable_safety_checker", "sync_mode",
+                                      "image_urls"},
+            "blackforestlabs/flux-3/klein/text-to-image": {"prompt", "image_size", "seed", "num_images",
+                                                           "output_format", "enable_prompt_expansion",
+                                                           "enable_safety_checker", "sync_mode",
+                                                           "bounding_boxes", "image_urls"},
+        }
+        for mid, declared in cases.items():
+            t2i = image_tool._build_fal_payload(mid, "p", "portrait", seed=7)
+            edit = image_tool._build_fal_edit_payload(mid, "p", ["https://x/a.png"], "portrait")
+            assert set(t2i) <= declared and set(edit) <= declared, (mid, t2i, edit)
+            assert t2i["image_size"] == "portrait_16_9" and t2i["seed"] == 7
+            assert "image_size" not in edit and edit["image_urls"] == ["https://x/a.png"]
+        krea = image_tool._build_fal_payload("krea/v3/text-to-image", "p", "square")
+        assert krea["model"] == "berry" and krea["reasoning_level"] == "low"
+        assert image_tool.FAL_MODELS["krea/v3/text-to-image"]["edit_endpoint"] == "krea/v3/edit"
+        assert image_tool.FAL_MODELS["blackforestlabs/flux-3/klein/text-to-image"]["edit_endpoint"] == \
+            "blackforestlabs/flux-3/klein/edit-image"
     def test_none_override_does_not_replace_default(self, image_tool):
         """None values from caller should be ignored (use default)."""
         p = image_tool._build_fal_payload(

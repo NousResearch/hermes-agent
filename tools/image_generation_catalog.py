@@ -52,6 +52,24 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=9,
     ),
+    # FLUX.3 Klein (Oct 14 2026): BFL's step-distilled FLUX 3 tier, ~4x cheaper than FLUX 3
+    # Image. FAL preset enum; prompt expansion off so the prompt is sent verbatim. Edits omit
+    # image_size so the endpoint sizes from the references. bounding_boxes (layout control)
+    # has no unified input and stays off the surface.
+    "blackforestlabs/flux-3/klein/text-to-image": _model(
+        "FLUX.3 Klein", "~3s", "FLUX 3 quality at Klein price, natural-language prompts, up to 10 references", "$0.009/image (1K)",
+        defaults={"num_images": 1, "output_format": "png", "enable_prompt_expansion": False},
+        supports={
+            "prompt", "image_size", "num_images", "seed", "output_format", "enable_prompt_expansion",
+            "enable_safety_checker", "sync_mode",
+        },
+        edit_endpoint="blackforestlabs/flux-3/klein/edit-image",
+        edit_supports={
+            "prompt", "image_urls", "num_images", "seed", "output_format", "enable_prompt_expansion",
+            "enable_safety_checker", "sync_mode",
+        },
+        max_reference_images=10,
+    ),
     "fal-ai/flux-2-pro": _model(
         "FLUX 2 Pro", "~6s", "Studio photorealism", "$0.03/MP",
         defaults={
@@ -234,6 +252,25 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         supports={
             "prompt", "aspect_ratio", "creativity", "seed", "image_style_references",
         },
+    ),
+    # Krea 3 on FAL (Oct 14 2026): instruction-following edit model that also does t2i; the
+    # native Krea API is early-access only, so FAL is the public route. Billed $0.025/MP incl.
+    # each reference. `model`: berry (quality, vendor default) / jam (speed). Edits omit
+    # image_size ("auto" follows the source). The safety checker is left at the vendor default
+    # because disabling it needs FAL account authorization.
+    "krea/v3/text-to-image": _model(
+        "Krea 3", "~5s", "Krea instruction-following edits, keeps what you don't ask to change", "$0.025/MP",
+        defaults={"model": "berry", "reasoning_level": "low", "output_format": "png"},
+        supports={
+            "prompt", "image_size", "seed", "negative_prompt", "output_format", "reasoning_level", "model",
+            "enable_safety_checker", "sync_mode",
+        },
+        edit_endpoint="krea/v3/edit",
+        edit_supports={
+            "prompt", "image_urls", "seed", "negative_prompt", "output_format", "reasoning_level", "model",
+            "enable_safety_checker", "sync_mode",
+        },
+        max_reference_images=8,
     ),
     # Entries below take endpoint ids, `supports` whitelists and enum defaults from
     # each model's FAL OpenAPI schema; paired `/edit` apps hang off their

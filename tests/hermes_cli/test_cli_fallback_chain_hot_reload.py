@@ -54,3 +54,20 @@ def test_chat_turn_adopts_chain_added_after_the_cli_opened_and_keeps_it_on_torn_
     # Torn mid-edit write: keep the last known-good chain rather than wiping it.
     _chat_turn(monkeypatch, shell, "fallback_providers: [\n  - provider: {{{\n")
     assert shell.agent._fallback_chain == FALLBACK
+
+
+def test_chat_turn_ignores_the_user_chain_under_ignore_user_config(monkeypatch):
+    """``--ignore-user-config`` / ``--safe-mode`` (#134954): startup skipped config.yaml, so the
+    per-turn sync must not re-adopt its ``fallback_providers`` and fail over to a user provider."""
+    monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+    startup_chain = shell._fallback_model
+    shell.agent = SimpleNamespace(
+        _fallback_chain=[], _fallback_model=None, _fallback_index=0,
+        _fallback_activated=False, _rate_limited_until=0, _unavailable_fallback_keys=set(),
+    )
+
+    _chat_turn(monkeypatch, shell, "fallback_providers:\n  - provider: xai-oauth\n    model: grok-4.6\n")
+
+    assert shell.agent._fallback_chain == []
+    assert shell._fallback_model == startup_chain

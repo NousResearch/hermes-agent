@@ -532,7 +532,8 @@ def _install_blocked(c: Console, bundle, message: str, verdict: str, detail: str
     """Print the blocked-install line, drop the quarantine copy, append the audit row."""
     c.print(f"{lead}[bold red]{label}[/] {message}")
     if q_path is not None:
-        shutil.rmtree(q_path, ignore_errors=True)
+        from tools.skills_hub_install import discard_quarantine
+        discard_quarantine(q_path)
     from tools.skills_hub import append_audit_log
     append_audit_log("BLOCKED", bundle.name, bundle.source, bundle.trust_level, verdict, detail)
 
@@ -805,10 +806,23 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
+    from contextlib import ExitStack
+
     from tools.skills_hub import HubLockFile
     from tools.skills_hub_install import hub_install_lock
 
-    with hub_install_lock():
+    with ExitStack() as stack:
+        # Held fetch→lock.json so a concurrent CLI/dashboard install can't swap the target between
+        # this install's scan and its move. A filesystem without flock degrades to unlocked, like
+        # HubLockFile._update; a held lock fails this install instead of queueing behind it.
+        try:
+            stack.enter_context(hub_install_lock())
+        except TimeoutError as exc:
+            (console or _console).print(f"[bold red]Not installed:[/] {exc}\n")
+            return False
+        except OSError:
+            logging.getLogger(__name__).warning("Installing %s without the hub install lock", identifier,
+                                                exc_info=True)
         fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
         attempt: dict = {}
         try:
@@ -834,7 +848,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     attempt = attempt if attempt is not None else {}
     attempt["registry"] = "none"
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
-    from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
+    from tools.skills_hub_install import discard_quarantine, install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
     ensure_hub_dirs()
     from tools.skills_sync_bundled_ops import bundled_skill_for_install
@@ -914,7 +928,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
 
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
     if not force and not skip_confirm and not _confirm_install(c, bundle, category):
-        shutil.rmtree(q_path, ignore_errors=True)
+        discard_quarantine(q_path)
         return bundle, None, None
 
     try:

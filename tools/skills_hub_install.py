@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import logging
 import hashlib
-import os
 import shutil
+from contextlib import suppress
 import tempfile
-from contextlib import contextmanager
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -70,7 +70,10 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     quarantine_dir = _quarantine_dir()
     if _is_path_redirect(quarantine_dir):
         raise ValueError(f"Unsafe quarantine directory: {quarantine_dir}")
-    dest = Path(tempfile.mkdtemp(prefix=f"{skill_name}-", dir=quarantine_dir))
+    # Per-request staging dir so concurrent installs/scans of one name never share a tree; the
+    # bundle keeps its own name inside it because the scanner reports ``skill_path.name``.
+    dest = Path(tempfile.mkdtemp(prefix=f"{skill_name}-", dir=quarantine_dir)) / skill_name
+    dest.mkdir()
     for rel_path, file_content in validated_files:
         file_dest = dest.joinpath(*rel_path.split("/"))
         file_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -83,44 +86,26 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     return dest
 
 
-@contextmanager
-def hub_install_lock():
-    """Hold one profile's Skills Hub install lock, or fail without waiting.
+def discard_quarantine(q_path: Path) -> None:
+    """Remove a quarantined bundle together with its per-request staging dir."""
+    from tools.skills_hub import _quarantine_dir
+    root, staging = _quarantine_dir().resolve(), q_path.parent.resolve()
+    shutil.rmtree(staging if staging != root and staging.is_relative_to(root) else q_path, ignore_errors=True)
 
-    The lock spans fetch through lock.json persistence so simultaneous CLI and
-    dashboard installs cannot replace a scanned bundle or lose provenance.
-    """
+
+_INSTALL_LOCK_HOLDER = threading.local()
+
+
+def hub_install_lock():
+    """One profile's Skills Hub install lock (fetch through lock.json persistence), so a CLI and a
+    dashboard install cannot interleave their target rmtree/move. Raises ``TimeoutError`` after a
+    short wait rather than queueing behind a long install."""
+    from hermes_cli.auth import _file_lock
     from tools.skills_hub import _hub_dir, ensure_hub_dirs
 
     ensure_hub_dirs()
-    lock_path = _hub_dir() / "install.lock"
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        try:
-            if os.name == "posix":
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            else:
-                import msvcrt
-                handle.seek(0)
-                if lock_path.stat().st_size == 0:
-                    handle.write(" ")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except (BlockingIOError, OSError) as exc:
-            raise RuntimeError(
-                "Another Skills Hub install is already running for this profile; try again shortly."
-            ) from exc
-        try:
-            yield
-        finally:
-            if os.name == "posix":
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            else:
-                import msvcrt
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    return _file_lock(_hub_dir() / "install.lock", _INSTALL_LOCK_HOLDER, 1.0,
+                      "Another Skills Hub install is already running for this profile; try again shortly")
 
 
 def _category_skill_dirs(directory: Path) -> list[str]:
@@ -227,6 +212,9 @@ def install_from_quarantine(
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
+    if quarantine_path.parent.resolve() != _quarantine_dir().resolve():
+        with suppress(OSError):
+            quarantine_path.parent.rmdir()
     installed_hash = content_hash(install_dir)
     HubLockFile().record_install(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,

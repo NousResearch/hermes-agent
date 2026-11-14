@@ -1,6 +1,6 @@
 name: look-at-this
 repo: https://github.com/Elshayib/look-at-this
-sha: 86deb89e4b491939674546db092423b49b9108ec
+sha: 31e4b2e64595da208a18530bdcc8566bc1f4deb9
 title: Look At This
 description: >-
   Instant active-window, region-snip, and UI-context capture for Hermes Agent and
@@ -21,6 +21,9 @@ category: desktop
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/Elshayib/look-at-this#readme
 version: "0.2.1"
+image: https://raw.githubusercontent.com/Elshayib/look-at-this/31e4b2e64595da208a18530bdcc8566bc1f4deb9/assets/look-at-this.png
+screenshots:
+  - https://raw.githubusercontent.com/Elshayib/look-at-this/31e4b2e64595da208a18530bdcc8566bc1f4deb9/assets/look-at-this.png
 readme: true
 platforms:
   - windows

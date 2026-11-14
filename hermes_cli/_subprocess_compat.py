@@ -59,9 +59,9 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exe
 
 def run(cmd, **kwargs) -> NoReturn:
     # Shim to suppress old updater work until relaunch. Do not start its installer.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli._subprocess_compat.run")
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:

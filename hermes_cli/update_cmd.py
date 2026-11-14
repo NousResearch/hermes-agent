@@ -27,7 +27,7 @@ from hermes_cli.update_completion import run_completion
 from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_cli._old_updater import stop_for_relaunch, stop_historical_updater
 from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pull_marker, is_object_id
 from hermes_cli import update_cmd_commit as _commit
 from hermes_cli import update_cmd_posix_pause as _posix_pause
@@ -92,7 +92,8 @@ from hermes_cli.update_cmd_validation import (
 from hermes_cli.old_updater_deps import (
     _capture_active_lazy_features, _npm_lockfile_changed, _path_uid,
     _rebuild_desktop_after_update, _refresh_active_lazy_features,
-    _refresh_active_memory_provider_dependencies, _update_node_dependencies)
+    _refresh_active_memory_provider_dependencies, _update_node_dependencies,
+    _write_update_incomplete_marker)
 from hermes_cli.update_cmd_git import (
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
@@ -124,27 +125,27 @@ logger = logging.getLogger(__name__)
 
 def get_default_hermes_root() -> NoReturn:
     # Shim to suppress old updater work until relaunch. No path is safe to invent.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd.get_default_hermes_root")
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not bootstrap uv.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd._ensure_uv_for_termux")
 
 
 def _ensure_venv_pip(pip_cmd: list, python_exe: str) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not bootstrap pip.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd._ensure_venv_pip")
 
 
 def _pip_install_prefix(uv_bin) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not form an install.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd._pip_install_prefix")
 
 
 def _refuse_update_for_contended_shims(exc: BaseException) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch. Write no markers.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd._refuse_update_for_contended_shims")
 
 
 def _shim_quarantine_error_type() -> type[Exception]:
@@ -513,14 +514,9 @@ def _print_called_process_error_tail(
 # scripts/write_install_stamp.py.
 
 
-def _write_update_incomplete_marker() -> None:
-    # Historical updater hook. PM's successful facts determine completion.
-    stop_for_relaunch()
-
-
 def _write_lazy_refresh_incomplete_marker() -> None:
     # Historical updater hook. There is no separate lazy-refresh transaction.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd._write_lazy_refresh_incomplete_marker")
 
 
 
@@ -528,7 +524,7 @@ def _filter_non_gateway_concurrent_instances(
     matches: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
     # Historical updater hook; PM never replaces a running venv's executables.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd._filter_non_gateway_concurrent_instances")
 
 
 def _log_only_write(text: str) -> None:

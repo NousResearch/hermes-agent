@@ -64,6 +64,15 @@ class TestCredentialStoreReads:
             assert self.WEAK not in out
             assert "machine b login v password" in out
 
+    @pytest.mark.parametrize("sep", [" = ", "="])
+    def test_aws_credential_process_command_stays_readable(self, sep):
+        # ``credential_process`` names the helper that fetches the credential; the secret beside it is masked.
+        text = f"[profile p]\ncredential_process{sep}aws-vault export prod --format=json\naws_session_token{sep}{self.WEAK}\n"
+        for out in (redact_sensitive_text(text, force=True, file_read=True, secret_file=True),
+                    redact_terminal_output(text, "cat ~/.aws/config", force=True)):
+            assert f"credential_process{sep}aws-vault export prod --format=json" in out
+            assert self.WEAK not in out
+
     def test_lookalikes_and_shell_rc_lines_are_left_alone(self):
         # ``credentials`` alone is too generic: only the ``.aws`` parent makes it a store.
         for path in ("docs/credentials", "~/credentials", "~/config", "notes/netrc.md"):

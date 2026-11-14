@@ -789,9 +789,17 @@ class _KanbanNotification:
         from gateway.profile_routing import ProfileRouteRejected
         try:
             owner_scope = self._owner_scope()
-        except ProfileRouteRejected:
-            # The subscriber profile is gone or parked: never ping/wake under the launch profile.
-            await self.rewind()
+        except ProfileRouteRejected as exc:
+            # Never ping/wake under the launch profile. A parked profile may be served again; a
+            # deleted one counts as a failure so its subscription is eventually dropped.
+            from hermes_cli.profiles import profile_exists
+            if profile_exists(self.sub_profile):
+                await self.rewind()
+            else:
+                await self.delivery_failed(
+                    "kanban notifier: profile of %s on %s is not served (attempt %d/%d): %s",
+                    (self.task_id, self.platform_str),
+                    "kanban notifier: dropping subscription %s on %s after %d refusals", exc, False)
             return
         async with owner_scope:
             if not await self._send_pings():

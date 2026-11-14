@@ -1082,6 +1082,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     platform, chat_id, thread_id, chat_type=getattr(source, "chat_type", None),
                     reply_to_message_id=reply_to_message_id, adapter=adapter,
                 )
+                from gateway.run import _async_profile_runtime_scope  # unserved profile: skip the chat
+                scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                         if source is not None else nullcontext())
             except Exception as e:
                 logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
                 continue
@@ -1096,9 +1099,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     notified.add(dedup_key)
                     delivered.add(dedup_key)
             from gateway.warning_notifications import present_notification
-            from gateway.run import _async_profile_runtime_scope
-            scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
-                     if source is not None else nullcontext())
             async with scope:
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:

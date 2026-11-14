@@ -21,7 +21,8 @@ def resolve_profile_home_for_source(runner, source) -> Path:
     keep the launch-home fallback."""
     from gateway.profile_routing import ProfileRouteRejected
     from gateway.session_identity import identity_of
-    from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
+    from hermes_cli.profiles import (
+        get_active_profile_name, get_profile_dir, normalize_profile_name, profile_exists)
     from hermes_constants import get_hermes_home
     identity = identity_of(source)
     if identity is not None:
@@ -37,7 +38,7 @@ def resolve_profile_home_for_source(runner, source) -> Path:
             name = get_active_profile_name() or "default"
         profile_dir = get_profile_dir(name)
         if explicit_profile and multiplexed and (
-                not profile_exists(name) or explicit_profile not in _served_names(config)):
+                not profile_exists(name) or normalize_profile_name(name) not in _served_names(config)):
             logger.warning("Refusing source %s/%s: profile %r is not served by this gateway",
                            *where, explicit_profile)
             raise ProfileRouteRejected(explicit_profile, explicit_profile)
@@ -61,3 +62,18 @@ def resolve_profile_home_for_source(runner, source) -> Path:
             *where, getattr(source, "guild_id", None),
             explicit_profile or "(no profile)", exc_info=True)
         return get_hermes_home()
+
+
+def completion_event_scope_or_refuse(runner, evt: dict, what: str):
+    """``runner._completion_event_scope(evt)``, or ``None`` when the event's profile is not served.
+
+    Such an event is refused for good on this gateway (never retried, never run under the launch
+    profile). Its durable ledger row, if any, lives in that profile's own store and replays when the
+    profile is served again."""
+    from gateway.profile_routing import ProfileRouteRejected
+    try:
+        return runner._completion_event_scope(evt)
+    except ProfileRouteRejected as exc:
+        logger.warning("Dropping %s for %s: profile %r is not served by this gateway",
+                       what, evt.get("session_key") or evt.get("session_id") or "<unknown>", exc.profile)
+        return None

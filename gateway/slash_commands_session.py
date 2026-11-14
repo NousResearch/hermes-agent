@@ -21,7 +21,13 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_topics import TopicLinkedElsewhere
-from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
+from gateway.session import (
+    SessionSource,
+    build_session_key,
+    effective_session_thread_id,
+    is_shared_multi_user_session,
+    resolve_runner_session_isolation,
+)
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_branch_thread import (
     BRANCH_THREAD_PLATFORMS, branch_dest_source, branch_thread_parent, format_thread_ref, parse_branch_args,
@@ -405,7 +411,9 @@ class GatewaySessionCommandsMixin:
         if _private_topic_lanes_of_one_chat(current, origin):
             return True
         # thread_id is part of every session key: threads of one chat are DIFFERENT sessions.
-        if _sattr(current, "thread_id") != _sattr(origin, "thread_id"):
+        if str(effective_session_thread_id(current) or "") != str(
+            effective_session_thread_id(origin) or ""
+        ):
             return False
         chat_type = _sattr(current, "chat_type").lower()
         if chat_type in _DM_CHAT_TYPES:
@@ -433,9 +441,12 @@ class GatewaySessionCommandsMixin:
     def _is_shared_session_source(self, source: SessionSource) -> bool:
         """Whether *source*'s session key is shared by every participant (not per-user); mirrors
         build_session_key's isolation rules so the guards stay in lock-step with the key."""
+        group_per_user, thread_per_user = resolve_runner_session_isolation(self, source)
         return is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+            source,
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
+        )
 
     def _row_is_shared_session(self, source: SessionSource, row: dict) -> bool:
         """Whether a same-chat persisted *row* is on a shared key. The caller's own ``shared_session``
@@ -481,8 +492,9 @@ class GatewaySessionCommandsMixin:
         if caller_dm and caller_dm == _telegram_private_chat_owner(
                 row_src, row.get("chat_type"), row.get("chat_id"), row.get("user_id")):
             return True  # another topic lane of the caller's own Telegram DM (#57821)
+        caller_thread = str(effective_session_thread_id(source) or "")
         if not (row_src and caller_src and str(row_src) == str(caller_src)
-                and row_thread == _sattr(source, "thread_id")):
+                and row_thread == caller_thread):
             return False  # blank/legacy source cannot prove the platform; other thread = other session
         row_uid = str(row.get("user_id") or "")
         row_chat = str(row.get("chat_id") or "")

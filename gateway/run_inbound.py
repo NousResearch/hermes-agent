@@ -35,7 +35,9 @@ from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
-from gateway.session import SessionSource, build_session_context, label_shared_sender
+from gateway.session import (
+    SessionSource, build_session_context, label_shared_sender, resolve_runner_session_isolation,
+)
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
@@ -1505,9 +1507,10 @@ class GatewayInboundMixin(
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
+        group_per_user, thread_per_user = resolve_runner_session_isolation(self, source)
         message_text = label_shared_sender(
-            source, message_text, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+            source, message_text, group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user)
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"

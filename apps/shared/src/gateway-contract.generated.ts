@@ -1129,6 +1129,7 @@ export interface ConnectionOperationTarget {
   missing_env?: string[] | null
   server_errors?: CatalogServerError[] | null
   already_installed?: boolean | null
+  upstream_repo?: string | null
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'

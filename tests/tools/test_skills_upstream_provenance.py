@@ -126,3 +126,8 @@ def test_headless_catalog_install_reports_upstream_repo(monkeypatch, tmp_path):
     row, detail = _installed_row(SimpleNamespace(kind="skill", extra={}), outcome)
     assert row["upstream_repo"] == "example-owner/brag"
     assert "https://github.com/example-owner/brag" in detail and "not maintained by Nous Research" in detail
+
+    # The row rides the gateway's connection.update / operation.status payloads, which forbid unknown keys.
+    from tui_gateway.contracts.connectors_operation import ConnectionOperationTarget
+    ConnectionOperationTarget.model_validate(
+        {"name": "brag", "kind": "skill", "action": "install", "state": "connected", **row, "detail": detail})

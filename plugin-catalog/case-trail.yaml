@@ -1,15 +1,15 @@
 name: case-trail
 title: Case Trail
 repo: https://github.com/flabanabba8/case-trail
-sha: 1a102f7879e72642a16686de17831f5f11b15d04
+sha: e1b9a0de5a6f8024954aab40ed73f2f56f04cc2f
 version: 0.4.4
 description: "Trace case-history and treatment research to actual opinion passages; analyze supplied sources without a required repository. Disclosure — Sends case search queries and Justia page URLs through the web search/extract provider you configured in Hermes, and can fetch one public OpenJurist case page you select after a robots.txt check (OpenJurist sees the URL and your IP). Reads local opinion files at paths given in chat, refusing kernel and device files, the Hermes home and key stores; the plugin setting opinion_folders can limit it to folders you list. Stores fetched text, review receipts and rendered pages privately in its plugin data folder. Novelty research tool, not legal advice; unaffiliated with Justia or OpenJurist."
 maintainer: flabanabba8
 tier: community
 category: web
 requires_hermes: ">=0.22.3"
-docs_url: https://github.com/flabanabba8/case-trail/blob/1a102f7879e72642a16686de17831f5f11b15d04/README.md
-image: https://raw.githubusercontent.com/flabanabba8/case-trail/1a102f7879e72642a16686de17831f5f11b15d04/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/case-trail/blob/e1b9a0de5a6f8024954aab40ed73f2f56f04cc2f/README.md
+image: https://raw.githubusercontent.com/flabanabba8/case-trail/e1b9a0de5a6f8024954aab40ed73f2f56f04cc2f/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:

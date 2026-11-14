@@ -2855,6 +2855,8 @@ export interface Translations extends NoticeTranslations {
     projectEmpty: string
     projectLoadFailed: string
     noSessions: string
+    startNewChat: string
+    discoverCommands: string
     storageCorrupt: {
       title: string
       body: (profiles: string) => string

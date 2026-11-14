@@ -3254,6 +3254,8 @@ export const en: Translations = {
     projectEmpty: 'No sessions yet',
     projectLoadFailed: 'Could not load sessions',
     noSessions: 'No sessions yet',
+    startNewChat: 'Start a new chat',
+    discoverCommands: 'Discover commands',
     storageCorrupt: {
       title: 'Session database is damaged',
       body: (profiles: string) =>

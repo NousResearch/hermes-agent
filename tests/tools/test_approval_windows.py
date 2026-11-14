@@ -426,6 +426,9 @@ class TestHardlineWindowsWipesAndDriveRootDeletes:
         r"ri -r -fo C:\ ",
         r"Get-Date; Remove-Item -Recurse C:\*.*",
         r"rm -rf C:/",
+        # A comma glued to the root ends the operand: PowerShell binds `-Path C:\*,D:\x` as an array.
+        r"Remove-Item -Recurse -Force -Path C:\*,D:\x",
+        r"Remove-Item -Recurse -Force C:\, D:\x",
     ])
     def test_windows_wipes_are_hardline(self, cmd):
         assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
@@ -441,6 +444,9 @@ class TestHardlineWindowsWipesAndDriveRootDeletes:
         r"Remove-Item C:\ ",
         r"del C:\*",
         r"rm -rf C:/work",
+        # A comma ends the operand only for PowerShell; bash reads `C:/,x` as one file name.
+        r"rm -rf C:/,x",
+        r"Remove-Item -Recurse C:\build,D:\x",
         r"Get-ChildItem -Recurse C:\ ",
     ])
     def test_prose_and_non_root_targets_not_hardline(self, cmd):

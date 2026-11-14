@@ -50,7 +50,7 @@ REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd",
 # each mapped package is in PACKAGES for its manager.
 BINARY_PACKAGES = {
     "apt": {"Xvnc": "tigervnc-standalone-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
-            "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
+            "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-daemon",
             "xauth": "xauth", "xdpyinfo": "x11-utils", "setxkbmap": "x11-xkb-utils", "xprop": "x11-utils"},
     # tigervnc-x11-server is the real package (tigervnc-server-minimal is only a Provides on it); dbus-run-session
     # is in dbus-daemon (dbus-x11 ships dbus-launch only).
@@ -64,7 +64,7 @@ BINARY_PACKAGES = {
 
 PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
-            "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
+            "xfce4-terminal", "dbus-daemon", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
             "fonts-dejavu-core"],
     "dnf": ["tigervnc-x11-server", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
             "xfce4-terminal", "dbus-daemon", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",

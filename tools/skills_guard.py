@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
-from tools.threat_patterns import FORGET_RULES_RE
+from tools.threat_patterns import FORGET_RULES_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v14"
+SCANNER_VERSION = "skills-guard-v15"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -277,7 +277,9 @@ THREAT_PATTERNS = [
      "role_pretend", "high", "injection", "attempts to make the agent assume a different identity"),
     (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection", "instructs agent to disregard its rules"),
-    (FORGET_RULES_RE, "forget_rules", "critical", "injection", "instructs agent to forget its instructions"),
+    # High, not critical: "forget" is ordinary English in migration notes ("forget your old rules for v1"), so a
+    # hit is a caution that --force can override rather than an unoverridable dangerous verdict.
+    (FORGET_RULES_RE, "forget_rules", "high", "injection", "instructs agent to forget its instructions"),
     (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection", "attempts to extract the system prompt"),
     (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',
@@ -792,9 +794,12 @@ def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Findi
     owners = _statement_owners(lines)  # per-file context for the demotion
     patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
     views = code_views(lines) if suffix == ".py" and (skill or docstring_lines) else None
+    forget_lines = mask_negated_forget("\n".join(lines)).split("\n")  # a negator may sit on the line above
     for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
-            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+            if pid == "forget_rules":
+                scan_line = forget_lines[i - 1]
+            elif pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
                 if suffix != ".py":
                     continue
                 # A triple-quoted token exempts its own columns, not executable code on the same line.

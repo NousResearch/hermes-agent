@@ -19,15 +19,28 @@ MAX_SCAN_CHARS = 65_536
 _FILLER = r"(?:\w+\s+){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
-# "forget your original instructions" (#26977); shared with tools/skills_guard.py. The word before `forget` is
-# consumed rather than looked behind so a "don't / never / do not forget" exclusion holds across any run of spaces
-# or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent` negate) and never reach
-# across a line break, so a heading line above the payload cannot suppress it.
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py and tools/cronjob_prompt_scan.py.
+# The word before `forget` is consumed rather than looked behind so a "don't / never / do not forget" exclusion holds
+# across any run of spaces or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent`
+# negate). `_` (Markdown emphasis) counts as punctuation, not as part of the neighbouring word.
 _NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
             r"|cannot|not|never)")
-FORGET_RULES_RE = (rf"(?:(?<![\w’'])(?!{_NEGATOR}[ \t])[\w’']+[ \t]+|(?:^|[^\w’' \t]|(?<!\w)[’'])[ \t]*)"
+FORGET_RULES_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’'])+[ \t]+"
+                   r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]*)"
                    r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
-                   r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)\b")
+                   r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)(?![^\W_])")
+# A negator hard-wrapped onto the line above (`Do not⏎forget …`), emphasised (`**Don't** forget`) or followed by
+# `ever` still negates: callers blank that `forget` before matching FORGET_RULES_RE. One line break at most, so a
+# heading separated from the payload by a blank line cannot suppress it. Same length and newlines, so offsets hold.
+_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*[ \t]*(?:\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
+                             r"forget(?![^\W_])", re.IGNORECASE)
+
+
+def mask_negated_forget(text: str) -> str:
+    """``text`` with every negated ``forget`` blanked; the input for FORGET_RULES_RE."""
+    return _NEGATED_FORGET.sub(lambda m: m[1] + " " * 6, text)
+
+
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
@@ -153,7 +166,9 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
-    findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
+    masked = mask_negated_forget(normalised)
+    findings.extend(pid for compiled, pid in patterns
+                    if compiled.search(masked if pid == "forget_rules" else normalised))
     return findings
 
 

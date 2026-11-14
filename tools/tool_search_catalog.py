@@ -11,7 +11,14 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-import snowballstemmer
+try:
+    import snowballstemmer
+except ImportError:  # e.g. installed on an interpreter the pyproject marker omits
+    snowballstemmer = None
+
+# Availability seam: tests monkeypatch this (or snowballstemmer) to simulate
+# an unavailable stemmer; production sets it once, at import time.
+_HAS_SNOWBALL = snowballstemmer is not None
 
 # Reserved bridge names: a user/plugin/MCP tool may not take them (registry override
 # protection rejects such registrations).
@@ -43,10 +50,22 @@ _thread_local = threading.local()
 def _stem(token: str) -> str:
     """Stem one token, memoized across stateless catalog rebuilds. Snowball stemmers carry
     mutable parsing state and bridge dispatch runs on parallel tool-call threads, so the
-    stemmer is one-per-thread, created lazily."""
-    if getattr(_thread_local, "stemmer", None) is None:
-        _thread_local.stemmer = snowballstemmer.stemmer("english")
-    return _thread_local.stemmer.stemWord(token)
+    stemmer is one-per-thread, created lazily.
+
+    A progressive-disclosure path degrades, never fails (#147946): when the
+    stemmer is unavailable, the token is returned unchanged, so BM25 still
+    scores on unstemmed tokens with slightly lower recall, and importing
+    this module no longer takes down the whole tool-search bridge."""
+    if not _HAS_SNOWBALL or snowballstemmer is None:
+        return token
+    stemmer = getattr(_thread_local, "stemmer", None)
+    if stemmer is None:
+        try:
+            stemmer = snowballstemmer.stemmer("english")
+        except Exception:
+            return token
+        _thread_local.stemmer = stemmer
+    return stemmer.stemWord(token)
 
 
 def _tokenize(text: str) -> list[str]:

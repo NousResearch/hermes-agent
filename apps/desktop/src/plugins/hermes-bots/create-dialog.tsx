@@ -547,7 +547,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     const target = createTarget
 
     const flight = singleFlight(flightRef, async () => {
-      const created = await requestForTarget<ProfilesCreateResult>('profiles.create', {
+      // The debounce may outlive this render's connection. Read the owner
+      // synchronously with dispatch, before the active gateway can switch again.
+      const owner = target || String(host.state?.connectionId?.get?.() || '').trim()
+
+      const created = await requestOnTarget<ProfilesCreateResult>(target, 'profiles.create', {
         name: slug,
         description: descriptionText,
         // Clone sources are profiles of the TARGET backend. The picker's
@@ -591,7 +595,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       createdRef.current = slug
       draftTargetRef.current = target
-      const owner = target || activeConnectionId
       draftReceiptRef.current = {
         owner,
         warning: created?.warnings?.length

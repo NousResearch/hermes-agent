@@ -112,6 +112,45 @@ def test_terminal_ids_reads_live_rows_and_tombstones(backend, scope_a):
     assert store.admissions.terminal_ids([queued.admission_id, retired.admission_id, settled.admission_id, "absent"]) == frozenset({retired.admission_id, settled.admission_id})
 
 
+def test_latest_admission_is_the_newest_row_carrying_the_marker(backend, scope_a):
+    store = backend.open(scope_a)
+    epoch = _seed(store, SESSION, "other")
+
+    def marked(text):
+        return {"native_text_v1": {"text": text}}
+
+    assert store.admissions.latest_admission(session_id=SESSION, payload_marker="native_text_v1") is None
+    _admit(store, epoch, "plain-0")
+    nested = _admit(store, epoch, "nested", payload={"wrapper": {"native_text_v1": {"text": "deep"}}})
+    # CONTRACT: the marker is a top-level key of the decoded payload; no such row is None.
+    assert store.admissions.latest_admission(session_id=SESSION, payload_marker="native_text_v1") is None
+    store.admissions.cancel(epoch=epoch, admission_id=nested.admission_id)
+    _settle_next(store, epoch)
+    settled = _admit(store, epoch, "settled", payload=marked("one"))
+    _settle_next(store, epoch)
+    started = _admit(store, epoch, "started", payload=marked("two"))
+    claimed = store.admissions.claim(epoch=epoch, session_id=SESSION)
+    assert claimed.admission_id == started.admission_id
+    assert store.admissions.latest_admission(session_id=SESSION, payload_marker="native_text_v1") == store.admissions.get(admission_id=started.admission_id)
+    store.admissions.mark_unknown(epoch=epoch, admission_id=started.admission_id, generation=claimed.generation)
+    _admit(store, epoch, "plain-1")
+    _admit(store, epoch, "elsewhere", session_id="other", payload=marked("other"))
+    # CONTRACT: newest by seq across every status, a newer row without the marker skipped, another session's rows ignored.
+    latest = store.admissions.latest_admission(session_id=SESSION, payload_marker="native_text_v1")
+    assert latest == store.admissions.get(admission_id=started.admission_id)
+    assert (latest.status, latest.payload) == ("unknown", marked("two"))
+    queued = _admit(store, epoch, "queued", payload=marked("three"))
+    assert store.admissions.latest_admission(session_id=SESSION, payload_marker="native_text_v1") == store.admissions.get(admission_id=queued.admission_id)
+    store.admissions.resolve_unknown(epoch=epoch, admission_id=started.admission_id, generation=claimed.generation)
+    store.admissions.cancel(epoch=epoch, admission_id=queued.admission_id)
+    # CONTRACT: terminal rows count; the newest of them by seq wins over an older terminal row.
+    assert store.admissions.latest_admission(session_id=SESSION, payload_marker="native_text_v1").admission_id == queued.admission_id
+    assert store.admissions.latest_admission(session_id=SESSION, payload_marker="text").request_id == "plain-1"
+    assert store.admissions.latest_admission(session_id="other", payload_marker="text") is None
+    assert store.admissions.latest_admission(session_id="absent", payload_marker="native_text_v1") is None
+    assert settled.seq < started.seq < queued.seq
+
+
 def test_compact_api_payloads_rewrites_the_settled_candidates(backend, scope_a):
     store = backend.open(scope_a)
     epoch = _seed(store)

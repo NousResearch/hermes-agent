@@ -35,10 +35,11 @@ _WHATIF_OTHER_HARDLINE_RE = re.compile(
 
 def whatif_preview_is_real(command: str) -> bool:
     """Whether every guarded cmdlet in ``command`` previews: each statement naming one carries its own real
-    ``-WhatIf`` and no other destructive verb appears anywhere (the -WhatIf exemption is per statement)."""
+    ``-WhatIf`` and no other destructive verb appears anywhere (the -WhatIf exemption is per statement).
+    PowerShell also ends a statement at NEL, U+2028 and U+2029, so those split too."""
     if _WHATIF_OTHER_HARDLINE_RE.search(command):
         return False
-    return not any(_WHATIF_STATEMENT_UNGUARDED_RE.search(s) for s in re.split(r'[\r\n;&|]', command))
+    return not any(_WHATIF_STATEMENT_UNGUARDED_RE.search(s) for s in re.split(r'[\r\n\x85\u2028\u2029;&|]', command))
 
 
 def windows_whatif_strict_patterns(cmdpos: str) -> dict[str, str]:

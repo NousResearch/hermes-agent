@@ -199,6 +199,11 @@ def test_quoted_cr_is_not_a_statement_break(cmd):
     'pwsh -c "Clear-Disk -Include *.tmp' + CR + 'Format-Volume -DriveLetter C -WhatIf"',
     "powershell -Command 'Clear-Disk,D:\\x" + LF + "Format-Volume -DriveLetter C -WhatIf -Confirm:$false'",
     'pwsh -c "Clear-Disk -Number 0' + CR + 'Get-Date -WhatIf"',
+    # PowerShell also breaks statements at NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR.
+    "Clear-Disk,D:\\x\u2028Get-Date -WhatIf",
+    "powershell -Command 'Clear-Disk -Include *.tmp\u2028Get-Date -WhatIf -Confirm:$false'",
+    'pwsh -c "Clear-Disk -Number 0\u2029Get-Date -WhatIf"',
+    'pwsh -c "Clear-Disk -Number 0\x85Get-Date -WhatIf"',
 ])
 def test_whatif_of_another_statement_does_not_exempt_clear_disk(cmd):
     assert detect_hardline_command(cmd)[0], cmd

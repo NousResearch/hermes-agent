@@ -1090,8 +1090,122 @@ def _kill_known_pids(proc, descendants) -> None:
             target.kill()
 
 
+class _CommandJob:
+    """Windows job object containing one terminal command's whole process tree.
+
+    ``taskkill /T`` walks recorded parent PIDs, but Git Bash (MSYS) emulates fork/exec
+    through short-lived stub processes: a pipeline stage such as ``find / ... | head``
+    ends up with a dead parent PID, so a timed-out command's grandchildren escaped the
+    tree kill and kept running (and burning CPU) forever. Job membership is inherited
+    at process creation regardless of parentage, so ``TerminateJobObject`` reaches them.
+
+    Deliberately NOT ``KILL_ON_JOB_CLOSE``: a command that finishes normally may leave
+    intentional background work (``server &``) running, which is not ours to kill.
+    ``close()`` only drops the handle; ``terminate()`` is the kill.
+    """
+
+    _api = None
+
+    @classmethod
+    def _kernel32(cls):
+        if cls._api is None:
+            import ctypes
+            from ctypes import wintypes
+            api = ctypes.WinDLL("kernel32", use_last_error=True)
+            for name, argtypes, restype in (
+                ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+                ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+                ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+                ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
+            ):
+                fn = getattr(api, name)
+                fn.argtypes, fn.restype = argtypes, restype
+            cls._api = api
+        return cls._api
+
+    def __init__(self):
+        import ctypes
+        self._lock = threading.Lock()
+        self._handle = self._kernel32().CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def assign(self, proc) -> None:
+        import ctypes
+        if not self._kernel32().AssignProcessToJobObject(self._handle, int(proc._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def terminate(self, exit_code: int = 1) -> bool:
+        with self._lock:
+            return bool(self._handle) and bool(self._kernel32().TerminateJobObject(self._handle, exit_code))
+
+    def close(self) -> None:
+        with self._lock:
+            if self._handle:
+                self._kernel32().CloseHandle(self._handle)
+                self._handle = None
+
+    def __del__(self):  # handed-over (yielded) jobs: free the handle with the Popen; never kills
+        with contextlib.suppress(Exception):
+            self.close()
+
+
+def _popen_in_job_windows(args, **kwargs) -> subprocess.Popen:
+    """Popen suspended, join a fresh _CommandJob, then resume: the command cannot spawn
+    anything before it is contained. Falls back to a plain Popen if the job machinery
+    is unavailable (the legacy taskkill /T path still applies then)."""
+    try:
+        job = _CommandJob()
+    except Exception:
+        logger.debug("terminal job object unavailable; using plain spawn", exc_info=True)
+        return subprocess.Popen(args, **kwargs)
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED
+    proc = subprocess.Popen(args, **kwargs)
+    if not isinstance(getattr(proc, "pid", None), int):  # not a real process (test double)
+        job.close()
+        return proc
+    try:
+        job.assign(proc)
+        proc._hermes_job = job
+    except Exception:
+        logger.debug("could not assign terminal command to job object", exc_info=True)
+        job.close()
+    try:
+        import psutil
+        psutil.Process(proc.pid).resume()
+    except Exception:
+        # Never leave a command frozen in CREATE_SUSPENDED: kill it and surface the error.
+        with contextlib.suppress(Exception):
+            proc.kill()
+        _release_command_job(proc)
+        raise
+    return proc
+
+
+def _terminate_command_job(proc) -> bool:
+    """Kill everything the command spawned (MSYS orphans included); True if the job ran."""
+    job = getattr(proc, "_hermes_job", None)
+    if job is None:
+        return False
+    try:
+        return job.terminate()
+    except Exception:
+        logger.debug("TerminateJobObject failed", exc_info=True)
+        return False
+
+
+def _release_command_job(proc) -> None:
+    """Drop the job handle without killing (normal completion / handoff to background)."""
+    job = getattr(proc, "_hermes_job", None)
+    if job is not None:
+        proc._hermes_job = None
+        job.close()
+
+
 def _kill_process_windows(proc) -> None:
-    """Identity-checked terminate (start time guards against PID reuse), else kill."""
+    """Terminate the command's job (whole tree, MSYS-orphaned grandchildren included),
+    then the identity-checked taskkill /T as a belt-and-braces fallback."""
+    _terminate_command_job(proc)
     try:
         from gateway.status import get_process_start_time, terminate_pid
         terminate_pid(proc.pid, force=True, expected_start_time=get_process_start_time(proc.pid))
@@ -1214,7 +1328,8 @@ class LocalEnvironment(BaseEnvironment):
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
-        proc = subprocess.Popen(
+        popen = _popen_in_job_windows if _IS_WINDOWS else subprocess.Popen
+        proc = popen(
             args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
@@ -1243,9 +1358,17 @@ class LocalEnvironment(BaseEnvironment):
         command returned, what it left running in the background (`server &`) is not ours to kill,
         exactly as on a graceful exit. A command that yielded to background took the group with it
         (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``)."""
+        result = None
         try:
-            return super()._wait_for_process(proc, *args, **kwargs)
+            result = super()._wait_for_process(proc, *args, **kwargs)
+            return result
         finally:
+            # Windows: drop the command's job handle WITHOUT terminating it (no KILL_ON_JOB_CLOSE),
+            # so intentional background work survives; a timeout already ran _kill_process first.
+            # A command that yielded to background keeps its job: the process registry's kill
+            # terminates it (see ProcessRegistry._signal_kill) and the session releases it.
+            if not (isinstance(result, dict) and result.get("yielded_session_id")):
+                _release_command_job(proc)
             if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
                 proc._hermes_owned_pgid = None
                 release_process_groups([owned_pgid])

@@ -1185,7 +1185,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if not filename:
             return None
         target = filename_match_key(filename)
-        ls_result = self._exec(f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null")
+        ls_result = self._exec(f"ls -1 -- {self._escape_shell_arg(dir_path)} 2>/dev/null")
         if ls_result.exit_code != 0 or not ls_result.stdout.strip():
             return None
         candidates = [
@@ -1202,7 +1202,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         basename_no_ext = os.path.splitext(filename)[0].lower()
         ext = os.path.splitext(filename)[1].lower()
         lower_name = filename.lower()
-        ls_result = self._exec(f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50")
+        ls_result = self._exec(f"ls -1 -- {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50")
         scored: list = []  # (score, filepath) — higher is better
         if ls_result.exit_code == 0 and ls_result.stdout.strip():
             for f in ls_result.stdout.strip().split('\n'):

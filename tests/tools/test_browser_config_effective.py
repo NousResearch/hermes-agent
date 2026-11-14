@@ -4,6 +4,7 @@ loaders). A raw read would launch Chromium on a literal ``${HOME}/...`` dir unde
 an administrator's pinned profile and flags."""
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -52,7 +53,9 @@ def test_user_data_dir_and_chromium_args_expand_env_references(homes, tmp_path, 
           user_data_dir: ${FIXTURE_PROFILE_ROOT}/chrome-profile
           chromium_args: ["--lang=${FIXTURE_LANG}"]
         """)
-    assert user_data_dir() == str(tmp_path / "profiles" / "chrome-profile")
+    # ``${VAR}/chrome-profile`` keeps its literal ``/``; compare as paths so the mixed-separator
+    # form a Windows host expands to still equals the expected directory.
+    assert Path(user_data_dir()) == tmp_path / "profiles" / "chrome-profile"
     assert chromium_args() == ["--lang=de"]
 
 

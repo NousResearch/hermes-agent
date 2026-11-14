@@ -254,6 +254,10 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     assert "unset SERVICE_TOKEN" in second_cmd[-1]
 
 
+# The fake ``docker exec`` runs the container-side script in a local bash, so the snapshot and cwd
+# paths must be POSIX paths that bash resolves; on Windows ``bash`` may be WSL, which reads a
+# ``C:\...`` snapshot path as a relative filename and writes ``snapshot.sh.tmp.*`` into the CWD.
+@pytest.mark.platforms("posix")
 def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):
     """The shared snapshot must not resurrect an explicit forward-only value."""
     from agent import secret_scope as ss

@@ -964,7 +964,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
     """
 
     def _drive_server(self, rpc_token, requests):
-        """Run _rpc_server_loop against a real AF_UNIX socketpair.
+        """Run _rpc_server_loop against a real connected socketpair.
 
         Sends each dict in *requests* as a newline-delimited JSON message
         and returns the list of decoded JSON responses.
@@ -972,8 +972,10 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         from tools.code_execution_rpc import _rpc_server_loop
 
         # socketpair gives us a connected client end and a "server" end we
-        # can hand to accept() by wrapping it in a tiny listener shim.
-        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        # can hand to accept() by wrapping it in a tiny listener shim. The
+        # default family is AF_UNIX on POSIX and loopback AF_INET on Windows,
+        # matching the transport the parent picks on each host.
+        srv, cli = socket.socketpair()
 
         class _OneShotListener:
             """Minimal object exposing the .accept()/.settimeout() the loop uses."""

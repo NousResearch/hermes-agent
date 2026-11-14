@@ -5,8 +5,8 @@ subprocess — no mocks. They pin the round-trip byte contract (utf-8 +
 surrogateescape is the inverse of the decode that produced the content) and
 the always-close / error-capture guarantees of the writer thread.
 """
-import shlex
 import subprocess
+import sys
 import time
 from unittest.mock import MagicMock
 
@@ -17,10 +17,20 @@ from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
 
+# Python children, not ``bash``: on Windows a bare ``bash`` can resolve to WSL's System32 launcher,
+# which reads ``C:\...`` as a relative filename (writing it into the CWD, not ``out_path``) and
+# can take longer than the wait bound to boot.
+_COPY_STDIN_TO_FILE = (
+    "import shutil, sys\n"
+    "with open(sys.argv[1], 'wb') as out:\n"
+    "    shutil.copyfileobj(sys.stdin.buffer, out)\n"
+)
+
+
 def _cat_to_file_proc(out_path):
     """A real child that copies its stdin to a file, byte for byte."""
     return subprocess.Popen(
-        ["bash", "-c", f"cat > {shlex.quote(str(out_path))}"],
+        [sys.executable, "-c", _COPY_STDIN_TO_FILE, str(out_path)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -190,12 +200,7 @@ class TestPipeStdinRemainingBranches:
 
     def test_bytes_input_passes_through_untouched(self, tmp_path):
         out = tmp_path / "out.bin"
-        proc = subprocess.Popen(
-            ["bash", "-c", f"cat > {shlex.quote(str(out))}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace",
-        )
+        proc = _cat_to_file_proc(out)
         try:
             _pipe_stdin(proc, b"\x00\x01\xfe")
             _wait_or_kill(proc)
@@ -208,7 +213,7 @@ class TestPipeStdinRemainingBranches:
 
     def test_stdin_none_records_runtime_error(self, tmp_path):
         proc = subprocess.Popen(
-            ["bash", "-c", "exit 0"],
+            [sys.executable, "-c", "pass"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace",

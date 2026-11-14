@@ -596,9 +596,56 @@ def _statement_owners(lines: list) -> list:
     return owners
 
 
-def _demote_inert_path_reference(pid: str, severity: str, description: str, line: str, owner_line: str,
-                                 suffix: str) -> tuple[str, str]:
-    """``(severity, description)`` for a path-token match, lowered when the line cannot act where it sits."""
+# ── Suppressed named-variable existence checks (#151110) ──
+# Bare ``printenv`` dumps the whole environment, but ``printenv NAME >/dev/null 2>&1`` asks whether ONE
+# variable is set and throws the value away — the shell idiom behind "is IDENTITY configured?" checks,
+# which discloses nothing. Every dump shape keeps full severity: no operand or flags only, a printed
+# value, a stderr-only redirect, a pipe to another command, and any second ``printenv`` on the line that
+# is not suppressed (one suppressed call does not launder the line).
+_PRINTENV_RE = re.compile(r'(?<![A-Za-z0-9_])printenv\b')
+# A shell command ends at ``&&``/``||``, a pipe, ``;``, a subshell paren, a backtick or ``$(`` — a bare
+# ``&`` too, but not the one inside ``&>`` or ``2>&1``.
+_COMMAND_SEGMENT_END_RE = re.compile(r'\|\||(?<![>&])&(?!>)|[|;()]|`|\$\(')
+# Stdout discarded to ``/dev/null``, and NOT restored afterwards: a later ``>file`` or ``>&2`` re-points
+# stdout, so the value still escapes (``printenv HOME >/dev/null > out.txt`` writes it to ``out.txt``).
+# Only the last stdout-affecting redirect decides; ``2>`` and ``2>&1`` are stderr and leave stdout alone.
+_STDOUT_REDIRECT_RE = re.compile(r"(?P<fd>\d*)(?P<op>&>>?|>>?|>&)(?P<target>\s*['\"]?[^\s;|&<>'\"]*['\"]?)")
+_REDIRECTION_RE = re.compile(r'\d?&?>>?\s*[\'"]?[^\s;|&<>]+[\'"]?|\d?>&\d')
+
+
+def _stdout_destination(segment: str) -> str:
+    """Where *segment* leaves stdout: a path, ``fd:<n>`` for a duplication, or ``""`` when unparsed."""
+    destination = ""
+    for redirect in _STDOUT_REDIRECT_RE.finditer(segment):
+        fd, op, target = redirect.group("fd"), redirect.group("op"), redirect.group("target")
+        if not op.startswith("&") and fd not in ("", "1"):
+            continue  # another descriptor, or a duplication out of one: stdout is untouched
+        if op == ">&" and target.strip().isdigit():
+            destination = f"fd:{target.strip()}"
+        else:
+            destination = target.strip().strip("'\"")
+    return destination
+
+
+def _suppressed_named_printenv(line: str) -> bool:
+    """Every ``printenv`` on *line* names at least one variable and leaves stdout on ``/dev/null``."""
+    invocations = list(_PRINTENV_RE.finditer(line))
+    for invocation in invocations:
+        rest = line[invocation.end():]
+        boundary = _COMMAND_SEGMENT_END_RE.search(rest)
+        segment = rest[:boundary.start()] if boundary else rest
+        if _stdout_destination(segment) != "/dev/null":
+            return False
+        if not any(not word.startswith("-") for word in _REDIRECTION_RE.sub(" ", segment).split()):
+            return False
+    return bool(invocations)
+
+
+def _contextual_severity(pid: str, severity: str, description: str, line: str, owner_line: str,
+                         suffix: str) -> tuple[str, str]:
+    """``(severity, description)`` for a match, lowered when the line's own context makes it inert."""
+    if pid == "dump_all_env" and _suppressed_named_printenv(line):
+        return "low", "named-variable existence check with output discarded (not an environment dump)"
     if pid not in _PATH_REFERENCE_PATTERN_IDS:
         return severity, description
     if line.lstrip().startswith(_COMMENT_PREFIX.get(suffix, ())):
@@ -804,7 +851,7 @@ def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Findi
                              else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
             if pattern.search(scan_line):
                 text = line.strip()
-                line_severity, line_description = _demote_inert_path_reference(
+                line_severity, line_description = _contextual_severity(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))

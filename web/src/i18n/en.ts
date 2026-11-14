@@ -112,6 +112,8 @@ export const en: Translations = {
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
     multiplexStandaloneBanner:
       "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
+    configParseErrorBanner:
+      "Your config.yaml {error}. Hermes is running on fallback settings, so your saved settings are not applied. Fix: hermes config edit, then hermes config check",
     dismiss: "Dismiss",
     sharedMetricsTitle: "Help improve Hermes?",
     sharedMetricsBody:

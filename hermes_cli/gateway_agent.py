@@ -29,6 +29,8 @@ _POLL = 0.1
 # ``steer()`` / ``redirect()``'s reply when the owner consumed the text as a typed voice stop (TUI-26):
 # truthy, so a caller that only asks "taken?" never re-queues it.
 VOICE_STOPPED = "voice_stopped"
+# _pump: this turn's admission was fenced behind a lost (``unknown``) turn after it was submitted.
+_BLOCKED = object()
 
 _RESULT_DEFAULTS = {
     "final_response": "", "failed": False, "partial": False, "error": None, "failure_reason": None,
@@ -807,6 +809,15 @@ class GatewayAgent:
         finally:
             if self._owns(turn):
                 self._generation_done()
+        if outcome is _BLOCKED:
+            # Fenced after _prepare_submit's check (the owner restarted mid-submit): this prompt
+            # would wait behind the lost turn forever, so withdraw it and name the recovery.
+            try:
+                self.connection.call("prompt.cancel", session_id=self.session_id, admission_id=self._admission)
+            except GatewayClientError as exc:
+                logger.debug("prompt.cancel behind a lost turn failed: %s", exc)
+            return self._failed(history, user_message, f"Your message was not run.\n{self._lost_turn_notice()}",
+                                failure_reason="unknown_execution")
         if isinstance(outcome, Exception) and self._owns(turn):
             return self._failed(history, user_message, str(outcome) or DISCONNECTED,
                                 failure_reason="gateway_connection")
@@ -870,13 +881,39 @@ class GatewayAgent:
         pending = self._state().pending
         return "\n".join(pending_lines(pending)) if any(row["status"] == "unknown" for row in pending) else ""
 
+    def _queued_behind_lost(self):
+        """This turn's admission still waits in a FIFO a lost turn holds (``session.info`` pending)."""
+        own = next((row.get("status") for row in self._state().pending
+                    if row.get("admission_id") == self._admission), None)
+        return own == "queued" and any(row.get("status") == "unknown" for row in self._state().pending)
+
+    def _running_ahead(self):
+        """The admission another viewer (an automation, a resumed earlier prompt) is running while
+        this turn's admission waits queued behind it; None when this turn is not waiting on one."""
+        pending = self._state().pending
+        own = next((row.get("status") for row in pending if row.get("admission_id") == self._admission), None)
+        if own != "queued":
+            return None
+        return next((row.get("admission_id") for row in pending
+                     if row.get("status") == "started" and row.get("admission_id") != self._admission), None)
+
     def _pump(self, stream_callback, starts, turn):
         """Dispatch frames until this admission's ``message.complete``; returns its payload, or the
         transport error (disconnect)."""
         events = self.connection.events
+        told_queued = False
         while self._owns(turn):
             if self._expired():
                 return {"status": "interrupted", "outcome": "cancelled", "_settle_timeout": True}
+            if self._queued_behind_lost():
+                return _BLOCKED
+            ahead = None if told_queued else self._running_ahead()
+            if ahead:
+                # Its frames belong to that admission and are not this turn's reply; say why this
+                # one is silent instead of leaving the user to resend into the same queue.
+                told_queued = True
+                self._emit_print(f"Queued: another turn is still running in this session ({ahead}); "
+                                 "your message runs when it finishes. Do not resend it.")
             try:
                 frame = events.get(timeout=_POLL)
             except queue.Empty:

@@ -319,12 +319,32 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
+# Open-weight vision families by name, for ids no catalog lists (local quants, HF repo ids on
+# vLLM/TGI/llama.cpp). Matched on the last path segment with any Ollama ``:tag`` dropped; the
+# capability tokens (``vl``/``vision``/``omni``) must be whole ``-_.`` words so ``devstral``
+# or ``envision-7b`` stay text. Families from QwenLM/qwen-code#16247/#16309/#16311.
+_VISION_NAME_RE = re.compile(
+    r"(?:^|[-_.])(?:vl|vision|omni)(?:$|[-_.])"
+    r"|^qwen\d*(?:\.\d+)?-?vl(?:$|[-_.])|^qvq(?:$|[-_.])"
+    r"|^llama-?4(?:$|[-_.])|^(?:bak)?llava|^pixtral|^mistral-small-?3\.[12](?:$|[-_.])"
+)
+
+
+def _probe_model_name(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+    """Last resort when no catalog or server knows the model: True for a vision-shaped id, else
+    unknown. Never False, so a known text-only verdict above it always wins; a wrong True is
+    recovered by the image-rejection strip-and-retry path."""
+    tail = (model or "").strip().lower().rsplit("/", 1)[-1].split(":", 1)[0]
+    return True if tail and _VISION_NAME_RE.search(tail) else None
+
+
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
+    ("model-name heuristic", _probe_model_name),
 )
 
 
@@ -338,7 +358,7 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe). A plugin's
+    (managed local runtime → models.dev catalog → Ollama probe → model-name heuristic). A plugin's
     per-model ``ProviderProfile.model_capabilities`` reaches this through the
     catalog probe. The provider-wide ``ProviderProfile.supports_vision`` flag is
     deliberately NOT consulted: it declares that tool-result messages may carry

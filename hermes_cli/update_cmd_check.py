@@ -283,7 +283,7 @@ def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
     create-only: a fork or mirror without the tag still updates, and an existing local tag
     never moves (the stable pin contract). Only that one tag: others drag in their histories.
     """
-    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+    from hermes_cli._subprocess_compat import git_failure_line, no_prompt_git_kwargs
     from hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
 
     tag = request.get("release_tag")
@@ -294,15 +294,14 @@ def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
             return
         fetched = _git(git_cmd, root, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
                        timeout=NETWORK_GIT_TIMEOUT_SECONDS, **no_prompt_git_kwargs())
-        detail = (fetched.stderr or "").strip().splitlines()[-1:] if fetched.returncode else None
+        detail = git_failure_line(fetched) if fetched.returncode else None
     except (OSError, subprocess.SubprocessError) as exc:  # custody refusals are OSErrors too
-        detail = [str(exc)]
+        detail = git_failure_line(exc)
     if detail is not None:
         # Not fatal (a mirror may lack the tag), but say so: without it every version reader keeps
         # naming the previous release, the symptom this fetch exists to prevent.
-        reason = detail[0] if detail else "git fetch failed"
-        logger.warning("Could not fetch release tag %s: %s", tag, reason)
-        print(f"⚠ Could not fetch the {tag} tag ({reason}); the version shown may name the previous "
+        logger.warning("Could not fetch release tag %s: %s", tag, detail)
+        print(f"⚠ Could not fetch the {tag} tag ({detail}); the version shown may name the previous "
               "release until the next update fetches it.")
 
 

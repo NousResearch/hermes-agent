@@ -14,6 +14,7 @@ import time as _time
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import git_failure_line
 from hermes_cli.update_cmd_common import _best_effort
 from datetime import UTC
 
@@ -1033,8 +1034,8 @@ def _run_post_update_maintenance(
         if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
             print("  ✓ Fetched release history (commits only) for version identity")
     except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
-        print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+        print(f"  ⚠ Could not refresh release history ({git_failure_line(exc)}); "
+              "the version label may be stale or unknown until the next update")
     # Keeps every later version lookup off a full history walk; detached, so it never delays this run.
     with _best_effort('Commit-graph refresh failed to start: %s'):
         from hermes_cli.git_commit_graph import spawn_commit_graph_refresh

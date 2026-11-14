@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import NoReturn
 
 # Old updaters load _no_prompt_git_kwargs from here after the checkout swap (frozen surface).
-from hermes_cli._subprocess_compat import no_prompt_git_kwargs as _no_prompt_git_kwargs
+from hermes_cli._subprocess_compat import (
+    git_failure_line,
+    no_prompt_git_kwargs as _no_prompt_git_kwargs,
+)
 from hermes_cli.config import get_hermes_home
 from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort, _record_stop
@@ -302,8 +305,8 @@ def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
         if heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()):
             print("  ✓ Fetched the commit history this shallow checkout was missing")
     except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
-        print(f"  ⚠ Could not fetch the missing commit history ({detail[0]}); a very stale install may time out")
+        print(f"  ⚠ Could not fetch the missing commit history ({git_failure_line(exc)}); "
+              "a very stale install may time out")
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:

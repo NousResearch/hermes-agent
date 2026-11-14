@@ -24,6 +24,7 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "expose_pm_git",
+    "git_failure_line",
     "noninteractive_git_env",
     "noninteractive_repo_git_env",
     "pid_exists_stdlib",
@@ -239,6 +240,31 @@ def no_prompt_git_kwargs() -> dict:
     # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
     # desktop backend on Windows; hide the per-spawn console (#117781).
     return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
+
+
+def git_failure_line(failure: object) -> str:
+    """The one line of a failed git run that names the cause, for a ⚠ notice on a step it blocked.
+
+    git separates its follow-up ADVICE with a blank line. Remote stderr can include its own
+    informational paragraph before the local refusal, so the cause is not always first. The measured
+    shape (#154940) is a stale ``.git/shallow.lock``: ``fatal: Unable to create '<path>': File
+    exists.``, a blank line, then advice ending in "remove the file manually to continue." — so a
+    notice built from the LAST line told users to remove a file it never named. For a cause and
+    an advice stanza use the first; if a remote paragraph precedes those two, use the penultimate.
+    A single stanza still uses its last line (fetch progress followed by one fatal line). No English
+    words are matched: git translates the advice and ``fatal:`` prefix.
+    """
+    stderr = getattr(failure, "stderr", None)
+    if isinstance(stderr, (bytes, bytearray)):
+        stderr = bytes(stderr).decode("utf-8", "replace")
+    text = (stderr or "").strip() or str(failure).strip()
+    stanzas = [[line.strip() for line in stanza.splitlines() if line.strip()]
+               for stanza in re.split(r"\n\s*\n", text)]
+    stanzas = [stanza for stanza in stanzas if stanza]
+    lines = stanzas[-2] if len(stanzas) > 2 else (stanzas[0] if stanzas else [])
+    if not lines:
+        return type(failure).__name__ if isinstance(failure, BaseException) else "git failed"
+    return lines[-1]
 
 def suppress_platform_ver_console() -> None:
     """Stub ``platform._syscmd_ver`` on Windows so it never flashes a console. No-op elsewhere.

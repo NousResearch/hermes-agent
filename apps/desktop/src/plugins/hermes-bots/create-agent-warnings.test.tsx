@@ -47,7 +47,9 @@ describe('profile creation warnings', () => {
       }
 
       if (method === 'profiles.configure') {
-        return new Promise(resolve => { finishConfigure = () => resolve({}) })
+        return new Promise(resolve => {
+          finishConfigure = () => resolve({})
+        })
       }
 
       return base(method, params)
@@ -66,104 +68,125 @@ describe('profile creation warnings', () => {
     ])
   })
 
-  it.each(['pending', 'ready'])('shows warnings once for a %s lazy create and keeps them after the dialog closes', async state => {
-    const base = mocks.request.getMockImplementation()!
-    let finishCreate!: () => void
-    mocks.request.mockImplementation((method: string, params?: unknown) =>
-      method === 'profiles.create'
-        ? new Promise(resolve => { finishCreate = () => resolve({ warnings }) })
-        : base(method, params)
-    )
-    const dialog = await renderDialog(true)
-    await showNotifications()
-    const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
-    mocks.createCanonicalChat.mockImplementationOnce(async () => {
-      clearResumeToasts(undefined)
+  it.each(['pending', 'ready'])(
+    'shows warnings once for a %s lazy create and keeps them after the dialog closes',
+    async state => {
+      const base = mocks.request.getMockImplementation()!
+      let finishCreate!: () => void
+      mocks.request.mockImplementation((method: string, params?: unknown) =>
+        method === 'profiles.create'
+          ? new Promise(resolve => {
+              finishCreate = () => resolve({ warnings })
+            })
+          : base(method, params)
+      )
+      const dialog = await renderDialog(true)
+      await showNotifications()
+      const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
+      mocks.createCanonicalChat.mockImplementationOnce(async () => {
+        clearResumeToasts(undefined)
 
-      return 'session-1'
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await waitFor(() => expect(createCalls()).toHaveLength(1))
-    expect(screen.queryByText(/Subscription logins/)).toBeNull()
-
-    if (state === 'ready') {
-      finishCreate()
-      await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+        return 'session-1'
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+      await waitFor(() => expect(createCalls()).toHaveLength(1))
       expect(screen.queryByText(/Subscription logins/)).toBeNull()
+
+      if (state === 'ready') {
+        finishCreate()
+        await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+        expect(screen.queryByText(/Subscription logins/)).toBeNull()
+      }
+
+      fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+
+      if (state === 'pending') {
+        finishCreate()
+      }
+
+      await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+      dialog.unmount()
+      // Route-driven resume may clear again after the canonical opener returns.
+      await act(async () => clearResumeToasts(undefined))
+      const { $notifications } = await import('@/store/notifications')
+      expect($notifications.get().filter(notice => notice.message === warnings.join('\n'))).toHaveLength(1)
+
+      for (const warning of warnings) {
+        expect(screen.getByText(text => text.includes(warning))).toBeTruthy()
+      }
+
+      expect(createCalls()).toHaveLength(1)
+      expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toEqual([
+        [expect.objectContaining({ title: 'inbox-triage — local', message: warnings.join('\n'), persistent: true })]
+      ])
+      expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
     }
+  )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+  it.each(['cancel', 'target', 'name'])(
+    'retires completed draft warnings on %s and never adopts them into a replacement',
+    async replacement => {
+      mocks.connections.mockResolvedValue([
+        { id: 'local', label: 'This Mac' },
+        { id: 'studio', label: 'Studio' }
+      ])
+      const base = mocks.request.getMockImplementation()!
+      mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+        method === 'profiles.create' ? { warnings } : base(method, params)
+      )
+      await renderDialog(true)
+      await showNotifications()
+      fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+      await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+      expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(0)
+      mocks.request.mockImplementation(base)
 
-    if (state === 'pending') {
-      finishCreate()
+      if (replacement === 'target') {
+        fireEvent.click(controlUnder('Create on'))
+        fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+      } else if (replacement === 'cancel') {
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      }
+
+      fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'replacement' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+      await waitFor(() =>
+        expect(mocks.notify).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'success', message: expect.stringContaining('Replacement') })
+        )
+      )
+      expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(0)
     }
-
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
-    dialog.unmount()
-    // Route-driven resume may clear again after the canonical opener returns.
-    await act(async () => clearResumeToasts(undefined))
-    const { $notifications } = await import('@/store/notifications')
-    expect($notifications.get().filter(notice => notice.message === warnings.join('\n'))).toHaveLength(1)
-
-    for (const warning of warnings) {
-      expect(screen.getByText(text => text.includes(warning))).toBeTruthy()
-    }
-
-    expect(createCalls()).toHaveLength(1)
-    expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toEqual([
-      [expect.objectContaining({ title: 'inbox-triage — local', message: warnings.join('\n'), persistent: true })]
-    ])
-    expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
-  })
-
-  it.each(['cancel', 'target', 'name'])('retires completed draft warnings on %s and never adopts them into a replacement', async replacement => {
-    mocks.connections.mockResolvedValue([
-      { id: 'local', label: 'This Mac' },
-      { id: 'studio', label: 'Studio' }
-    ])
-    const base = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
-      method === 'profiles.create' ? { warnings } : base(method, params)
-    )
-    await renderDialog(true)
-    await showNotifications()
-    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
-    expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(0)
-    mocks.request.mockImplementation(base)
-
-    if (replacement === 'target') {
-      fireEvent.click(controlUnder('Create on'))
-      fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
-    } else if (replacement === 'cancel') {
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    }
-
-    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'replacement' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await waitFor(() => expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success', message: expect.stringContaining('Replacement') })))
-    expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(0)
-  })
+  )
 
   it('attributes an adopted remote warning to the captured profile and machine', async () => {
     mocks.connections.mockResolvedValue([
       { id: 'local', label: 'This Mac' },
       { id: 'studio', label: 'Studio' }
     ])
-    mocks.requestProfile.mockImplementation(async (_route, method) => method === 'profiles.create' ? { warnings } : {})
+    mocks.requestProfile.mockImplementation(async (_route, method) =>
+      method === 'profiles.create' ? { warnings } : {}
+    )
     await renderDialog(true)
     await showNotifications()
     await screen.findByText('Create on')
     fireEvent.click(controlUnder('Create on'))
     fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedConnection: 'studio', fixedProfile: 'inbox-triage' }))
+    await waitFor(() =>
+      expect(mocks.skillsView.at(-1)).toMatchObject({ fixedConnection: 'studio', fixedProfile: 'inbox-triage' })
+    )
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(0)
     fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Changed title' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await waitFor(() => expect(mocks.notify).toHaveBeenCalledWith({
-      kind: 'warning', title: 'inbox-triage — Studio (studio)', message: warnings.join('\n'), persistent: true
-    }))
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith({
+        kind: 'warning',
+        title: 'inbox-triage — Studio (studio)',
+        message: warnings.join('\n'),
+        persistent: true
+      })
+    )
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(1)
   })
 
@@ -176,7 +199,9 @@ describe('profile creation warnings', () => {
       }
 
       if (method === 'setup.runtime_check') {
-        return new Promise(resolve => { finishReadiness = () => resolve({ ok: true }) })
+        return new Promise(resolve => {
+          finishReadiness = () => resolve({ ok: true })
+        })
       }
 
       return base(method, params)
@@ -198,8 +223,10 @@ describe('profile creation warnings', () => {
   it('keeps the model setup notice and action available when creation also returned warnings', async () => {
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) =>
-      method === 'profiles.create' ? { warnings }
-        : method === 'setup.runtime_check' ? { ok: false, error: 'No usable credentials.' }
+      method === 'profiles.create'
+        ? { warnings }
+        : method === 'setup.runtime_check'
+          ? { ok: false, error: 'No usable credentials.' }
           : base(method, params)
     )
     const configure = vi.fn()
@@ -220,16 +247,21 @@ describe('profile creation warnings', () => {
     expect(screen.getByText(text => text.includes(warnings[0]))).toBeTruthy()
     fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
     expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage' }))
-    expect(mocks.notify).toHaveBeenLastCalledWith(expect.objectContaining({
-      kind: 'warning', title: 'Bot "Inbox Triage" created', detail: 'No usable credentials.'
-    }))
+    expect(mocks.notify).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'warning',
+        title: 'Bot "Inbox Triage" created',
+        detail: 'No usable credentials.'
+      })
+    )
   })
 
   it('opens Configure model on the live roster row of the creating connection, after a gateway switch', async () => {
     mocks.activeConnection.value = 'gateway-a'
     const base = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
-      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? { ok: false, error: 'No credentials.' } : base(method, params)
+    )
     const configure = vi.fn()
     const dialog = await renderDialog(true, configure)
     await showNotifications()
@@ -240,13 +272,18 @@ describe('profile creation warnings', () => {
     const { $lastRoster } = await import('./data')
 
     const live: RosterRow = {
-      name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true,
+      name: 'inbox-triage',
+      connectionId: 'gateway-a',
+      sourceScoped: true,
       route: { connectionId: 'gateway-a', mode: 'remote', profile: 'inbox-triage', targetProfile: 'inbox-triage' }
     }
 
     const previous = $lastRoster.get()
     // A same-named bot on the gateway switched to must not be picked.
-    $lastRoster.set([{ ...live, connectionId: 'gateway-b', route: { ...live.route!, connectionId: 'gateway-b' } }, live])
+    $lastRoster.set([
+      { ...live, connectionId: 'gateway-b', route: { ...live.route!, connectionId: 'gateway-b' } },
+      live
+    ])
 
     try {
       const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
@@ -261,8 +298,9 @@ describe('profile creation warnings', () => {
   it('pins Configure model to the creating connection when the roster does not list the bot after a switch', async () => {
     mocks.activeConnection.value = 'gateway-a'
     const base = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
-      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? { ok: false, error: 'No credentials.' } : base(method, params)
+    )
     const configure = vi.fn()
     const dialog = await renderDialog(true, configure)
     await showNotifications()
@@ -273,18 +311,26 @@ describe('profile creation warnings', () => {
     const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
     await act(async () => clearResumeToasts(undefined))
     fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
-    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true }))
+    expect(configure).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true })
+    )
   })
 
   it('drops the warnings of a bot a target change discarded during readiness', async () => {
-    mocks.connections.mockResolvedValue([{ id: 'local', label: 'This Mac' }, { id: 'studio', label: 'Studio' }])
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
     const base = mocks.request.getMockImplementation()!
     let finishReadiness!: () => void
-    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'profiles.create'
-      ? Promise.resolve({ warnings })
-      : method === 'setup.runtime_check'
-        ? new Promise(resolve => { finishReadiness = () => resolve({ ok: true }) })
-        : base(method, params)
+    mocks.request.mockImplementation((method: string, params?: unknown) =>
+      method === 'profiles.create'
+        ? Promise.resolve({ warnings })
+        : method === 'setup.runtime_check'
+          ? new Promise(resolve => {
+              finishReadiness = () => resolve({ ok: true })
+            })
+          : base(method, params)
     )
     await renderDialog(true)
     await screen.findByText('Create on')
@@ -298,14 +344,20 @@ describe('profile creation warnings', () => {
   })
 
   it('drops the warnings of a bot replaced under the same name during readiness', async () => {
-    mocks.connections.mockResolvedValue([{ id: 'local', label: 'This Mac' }, { id: 'studio', label: 'Studio' }])
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
     const base = mocks.request.getMockImplementation()!
     let finishReadiness!: () => void
-    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'profiles.create'
-      ? Promise.resolve({ warnings })
-      : method === 'setup.runtime_check'
-        ? new Promise(resolve => { finishReadiness = () => resolve({ ok: true }) })
-        : base(method, params)
+    mocks.request.mockImplementation((method: string, params?: unknown) =>
+      method === 'profiles.create'
+        ? Promise.resolve({ warnings })
+        : method === 'setup.runtime_check'
+          ? new Promise(resolve => {
+              finishReadiness = () => resolve({ ok: true })
+            })
+          : base(method, params)
     )
     await renderDialog(true)
     await screen.findByText('Create on')
@@ -315,7 +367,9 @@ describe('profile creation warnings', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
     // A same-named replacement draft materializes on the new target.
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await waitFor(() => expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1))
+    await waitFor(() =>
+      expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1)
+    )
     await act(async () => finishReadiness())
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.message === warnings.join('\n'))).toEqual([])
@@ -324,8 +378,9 @@ describe('profile creation warnings', () => {
   it('pins Configure model to the connection the draft was created on, not the one active at Create', async () => {
     mocks.activeConnection.value = 'gateway-a'
     const base = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
-      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? { ok: false, error: 'No credentials.' } : base(method, params)
+    )
     const configure = vi.fn()
     const dialog = await renderDialog(true, configure)
     await showNotifications()
@@ -342,13 +397,20 @@ describe('profile creation warnings', () => {
     const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
     await act(async () => clearResumeToasts(undefined))
     fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
-    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true }))
+    expect(configure).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true })
+    )
   })
 
   it('explicit Clear all dismisses persistent creation and needs-model cards', async () => {
     const base = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'profiles.create'
-      ? { warnings } : method === 'setup.runtime_check' ? { ok: false, error: 'No credentials.' } : base(method, params))
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'profiles.create'
+        ? { warnings }
+        : method === 'setup.runtime_check'
+          ? { ok: false, error: 'No credentials.' }
+          : base(method, params)
+    )
     const dialog = await renderDialog(true, vi.fn())
     await showNotifications()
     fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
@@ -395,7 +457,9 @@ describe('profile creation warnings', () => {
       }
 
       if (method === 'profiles.configure') {
-        return new Promise(resolve => { finishConfigure = () => resolve({}) })
+        return new Promise(resolve => {
+          finishConfigure = () => resolve({})
+        })
       }
 
       return base(method, params)
@@ -415,7 +479,9 @@ describe('profile creation warnings', () => {
       dialog.unmount()
     }
 
-    await act(async () => { finishConfigure() })
+    await act(async () => {
+      finishConfigure()
+    })
     expect(mocks.saveBotMeta).not.toHaveBeenCalled()
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toHaveLength(0)
     expect(screen.queryByText(text => text.includes(warnings[0]))).toBeNull()
@@ -426,7 +492,9 @@ describe('profile creation warnings', () => {
     let finishCreate!: () => void
     mocks.request.mockImplementation((method: string, params?: unknown) =>
       method === 'profiles.create'
-        ? new Promise(resolve => { finishCreate = () => resolve({ warnings }) })
+        ? new Promise(resolve => {
+            finishCreate = () => resolve({ warnings })
+          })
         : base(method, params)
     )
     await renderDialog(true)

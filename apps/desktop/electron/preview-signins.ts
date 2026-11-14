@@ -93,7 +93,11 @@ export function runSigninExport(
     }
 
     const env = { ...parentEnv, HERMES_HOME: home, ...backend.env }
-    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
+    const child = spawn(
+      windowsShellCommand(backend.command, Boolean(backend.shell)),
+      backend.args,
+      hiddenWindowsChildOptions({ cwd, env, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] })
+    )
     const chunks: Buffer[] = []
     let size = 0
     let stderr = ''
@@ -135,14 +139,23 @@ export function runSigninExport(
       const verdict = parseExportVerdict(Buffer.concat(chunks).toString('utf8'))
       const lastStderr = stderr.trim().split(/\r?\n/).filter(Boolean).pop()
 
-      resolve(verdict ?? { status: 'error', error: lastStderr || `sign-in export exited ${code ?? 'abnormally'} without a result` })
+      resolve(
+        verdict ?? {
+          status: 'error',
+          error: lastStderr || `sign-in export exited ${code ?? 'abnormally'} without a result`
+        }
+      )
     })
   })
 }
 
 /** The last JSON line of the child's stdout (a CLI may print notices before it). */
 export function parseExportVerdict(stdout: string): ExportVerdict | null {
-  const line = stdout.trim().split(/\r?\n/).reverse().find(l => l.startsWith('{'))
+  const line = stdout
+    .trim()
+    .split(/\r?\n/)
+    .reverse()
+    .find(l => l.startsWith('{'))
 
   if (!line) {
     return null
@@ -169,7 +182,11 @@ export function parseExportVerdict(stdout: string): ExportVerdict | null {
   return null
 }
 
-const SAME_SITE: Record<string, CookiesSetDetails['sameSite']> = { Lax: 'lax', None: 'no_restriction', Strict: 'strict' }
+const SAME_SITE: Record<string, CookiesSetDetails['sameSite']> = {
+  Lax: 'lax',
+  None: 'no_restriction',
+  Strict: 'strict'
+}
 
 /** Electron `cookies.set` details for one exported cookie, or null when it cannot be represented. */
 export function cookieSetDetails(cookie: ExportedCookie): CookiesSetDetails | null {
@@ -214,7 +231,8 @@ export function identityOf(details: CookiesSetDetails): CookieIdentity {
   }
 }
 
-const identityKey = (id: CookieIdentity) => `${id.url}\u0000${id.name}\u0000${id.domain}\u0000${id.path}\u0000${id.hostOnly ? 'h' : 'd'}`
+const identityKey = (id: CookieIdentity) =>
+  `${id.url}\u0000${id.name}\u0000${id.domain}\u0000${id.path}\u0000${id.hostOnly ? 'h' : 'd'}`
 
 type RecordFile = Record<string, CookieIdentity[]>
 
@@ -265,7 +283,11 @@ async function stillOurs(jar: Session, id: CookieIdentity): Promise<boolean> {
  * that could NOT be removed (a `cookies.remove` failure) so the caller retains the claim: a retry must
  * still find them, never orphan a cookie by dropping its ownership record while it is installed.
  */
-async function removeIdentities(jar: Session, ids: CookieIdentity[], keep: Set<string>): Promise<{ removed: number; retained: CookieIdentity[] }> {
+async function removeIdentities(
+  jar: Session,
+  ids: CookieIdentity[],
+  keep: Set<string>
+): Promise<{ removed: number; retained: CookieIdentity[] }> {
   let removed = 0
   const retained: CookieIdentity[] = []
 
@@ -297,7 +319,11 @@ async function removeIdentities(jar: Session, ids: CookieIdentity[], keep: Set<s
   return { removed, retained }
 }
 
-export async function clearImportedSignins(jar: Session, store: PreviewSigninsRecord, profile: string): Promise<number> {
+export async function clearImportedSignins(
+  jar: Session,
+  store: PreviewSigninsRecord,
+  profile: string
+): Promise<number> {
   const record = store.read()
   const mine = Array.isArray(record[profile]) ? record[profile] : []
 
@@ -407,7 +433,10 @@ export function previewRecordKey(profile: string | null | undefined): string {
   return (profile ?? '').trim() || 'default'
 }
 
-const empty = (status: PreviewSigninsResult['status'], extra: Partial<PreviewSigninsResult> = {}): PreviewSigninsResult => ({
+const empty = (
+  status: PreviewSigninsResult['status'],
+  extra: Partial<PreviewSigninsResult> = {}
+): PreviewSigninsResult => ({
   status,
   imported: 0,
   skipped: 0,
@@ -458,7 +487,9 @@ export async function syncPreviewSignins(
   }
 
   const { imported, failed } = await applyImportedSignins(jar, deps.store, key, verdict.cookies)
-  deps.log(`[preview-signins] imported ${imported} cookie(s) for "${key}" (${failed} failed, ${verdict.skipped ?? 0} skipped)`)
+  deps.log(
+    `[preview-signins] imported ${imported} cookie(s) for "${key}" (${failed} failed, ${verdict.skipped ?? 0} skipped)`
+  )
 
   return empty('imported', { imported, failed, skipped: verdict.skipped ?? 0 })
 }
@@ -570,7 +601,8 @@ export function registerPreviewSigninsIpc(ipc: Pick<Electron.IpcMain, 'handle'>,
   ipc.handle('hermes:preview-signins:sync', (event, payload: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const profile = typeof body.profile === 'string' && body.profile.trim() ? body.profile.trim() : null
-    const connectionId = typeof body.connectionId === 'string' && body.connectionId.trim() ? body.connectionId.trim() : null
+    const connectionId =
+      typeof body.connectionId === 'string' && body.connectionId.trim() ? body.connectionId.trim() : null
     const request = { connectionId, enabled: body.enabled === true, profile }
 
     return serialize(() => syncPreviewSignins(deps, event.sender, request)).catch((error: unknown) =>

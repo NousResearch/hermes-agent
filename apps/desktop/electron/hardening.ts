@@ -363,7 +363,9 @@ function credentialStoreRel(normalized: string, root: string): null | string {
 }
 
 function isCredentialStoreRel(rel: string): boolean {
-  return HERMES_CREDENTIAL_FILES.has(rel) || HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
+  return (
+    HERMES_CREDENTIAL_FILES.has(rel) || HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
+  )
 }
 
 // Where each home's and profile's stores really live: a symlinked profile home,

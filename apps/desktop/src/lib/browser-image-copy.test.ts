@@ -101,9 +101,9 @@ describe('copyImageFromUrl', () => {
 
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } })
     Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem })
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('png-bytes', { headers: { 'Content-Type': 'image/png' }, status: 200 })
-    )
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('png-bytes', { headers: { 'Content-Type': 'image/png' }, status: 200 }))
 
     const ok = await copyImageFromUrl('/api/fs/stream?path=chart.png')
 
@@ -124,9 +124,9 @@ describe('copyImageFromUrl', () => {
 
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } })
     Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem })
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('jpeg-bytes', { headers: { 'Content-Type': 'image/jpeg' }, status: 200 })
-    )
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('jpeg-bytes', { headers: { 'Content-Type': 'image/jpeg' }, status: 200 }))
 
     const ok = await copyImageFromUrl('/api/fs/stream?path=photo.jpg')
 
@@ -146,9 +146,9 @@ describe('copyImageFromUrl', () => {
 
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } })
     Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem })
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('<svg></svg>', { headers: { 'Content-Type': 'image/svg+xml' }, status: 200 })
-    )
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('<svg></svg>', { headers: { 'Content-Type': 'image/svg+xml' }, status: 200 }))
 
     const ok = await copyImageFromUrl('/api/fs/stream?path=tainted.svg')
 
@@ -167,9 +167,9 @@ describe('copyImageFromUrl', () => {
 
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } })
     Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem })
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('bad-jpeg', { headers: { 'Content-Type': 'image/jpeg' }, status: 200 })
-    )
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('bad-jpeg', { headers: { 'Content-Type': 'image/jpeg' }, status: 200 }))
 
     expect(await copyImageFromUrl('/api/fs/stream?path=broken.jpg')).toBe(false)
     expect(notifySpy).toHaveBeenCalledTimes(1)
@@ -239,9 +239,11 @@ describe('copyImageFromUrl', () => {
 
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } })
       Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem })
-      globalThis.fetch = vi.fn().mockImplementation(
-        () => new Promise((_, reject) => setTimeout(() => reject(new Error('late network failure')), 10))
-      )
+      globalThis.fetch = vi
+        .fn()
+        .mockImplementation(
+          () => new Promise((_, reject) => setTimeout(() => reject(new Error('late network failure')), 10))
+        )
 
       const ok = await copyImageFromUrl('/api/fs/stream?path=slow.png')
 

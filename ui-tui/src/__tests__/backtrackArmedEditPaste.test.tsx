@@ -51,7 +51,14 @@ it('an armed edit holding a paste and an image sends the pasted text and the att
   const slash = createSlashHandler({
     slashFlightRef: { current: 0 },
     gateway: { gw, rpc: request },
-    transcript: { page: vi.fn(), panel: vi.fn(), send, sys: vi.fn(), setHistoryItems: vi.fn(), trimLastExchange: (i: unknown[]) => i },
+    transcript: {
+      page: vi.fn(),
+      panel: vi.fn(),
+      send,
+      sys: vi.fn(),
+      setHistoryItems: vi.fn(),
+      trimLastExchange: (i: unknown[]) => i
+    },
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
     session: { newSession: vi.fn(), resumeById: vi.fn() },
     composer: { enqueue: vi.fn(), setInput: vi.fn() },
@@ -82,7 +89,13 @@ it('an armed edit holding a paste and an image sends the pasted text and the att
   function Harness() {
     submission = useSubmission({
       appendMessage: noop,
-      composerActions: { clearIn: () => { tokensRef.current = [] }, enqueue: noop, pushHistory: noop } as any,
+      composerActions: {
+        clearIn: () => {
+          tokensRef.current = []
+        },
+        enqueue: noop,
+        pushHistory: noop
+      } as any,
       composerRefs: { queueEditRef: { current: null }, queueRef: { current: [] }, tokensRef } as any,
       composerState: { completions: [], input: '', inputBuf: [] } as any,
       gw,

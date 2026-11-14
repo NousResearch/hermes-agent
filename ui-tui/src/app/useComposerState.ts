@@ -4,11 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { useStdin, withInkSuspended } from '@hermes/ink'
-import type {
-  ClipboardPasteResponse,
-  ImageAttachResponse,
-  InputDetectDropResponse
-} from '@hermes/shared/gateway-types'
+import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
@@ -175,11 +171,14 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const isFresh = useCallback((draft: DraftMark) => draft.revision === composerRevision.current, [])
 
-  const setInputBuf = useCallback<StateSetter<string[]>>(next => {
-    bumpRevision()
-    inputBufRef.current = typeof next === 'function' ? next(inputBufRef.current) : next
-    setInputBufState(inputBufRef.current)
-  }, [bumpRevision])
+  const setInputBuf = useCallback<StateSetter<string[]>>(
+    next => {
+      bumpRevision()
+      inputBufRef.current = typeof next === 'function' ? next(inputBufRef.current) : next
+      setInputBufState(inputBufRef.current)
+    },
+    [bumpRevision]
+  )
 
   const [tokens, setTokens] = useState<ComposerToken[]>([])
   // Tokens and the input line are read from keystroke handlers that run several
@@ -198,26 +197,29 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     setPasteExpanded(Boolean(span))
   }, [])
 
-  const setInput = useCallback<StateSetter<string>>(next => {
-    const prev = inputRef.current
-    inputRef.current = typeof next === 'function' ? next(prev) : next
+  const setInput = useCallback<StateSetter<string>>(
+    next => {
+      const prev = inputRef.current
+      inputRef.current = typeof next === 'function' ? next(prev) : next
 
-    if (!inputRef.current.startsWith(prev) || !inputRef.current) {
-      draftLife.current++
-    }
+      if (!inputRef.current.startsWith(prev) || !inputRef.current) {
+        draftLife.current++
+      }
 
-    if (inputRef.current !== landingValue.current) {
-      bumpRevision()
-    }
+      if (inputRef.current !== landingValue.current) {
+        bumpRevision()
+      }
 
-    landingValue.current = null
+      landingValue.current = null
 
-    if (pasteSpanRef.current) {
-      setPasteSpan(shiftSpan(prev, inputRef.current, pasteSpanRef.current))
-    }
+      if (pasteSpanRef.current) {
+        setPasteSpan(shiftSpan(prev, inputRef.current, pasteSpanRef.current))
+      }
 
-    setInputState(inputRef.current)
-  }, [bumpRevision, setPasteSpan])
+      setInputState(inputRef.current)
+    },
+    [bumpRevision, setPasteSpan]
+  )
 
   const setComposerTokens = useCallback<StateSetter<ComposerToken[]>>(next => {
     tokensRef.current = typeof next === 'function' ? next(tokensRef.current) : next
@@ -365,7 +367,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const insertLanding = useCallback(
     (draft: DraftMark, value: string, cursor: number, text: string, spaced: boolean, token?: ComposerToken) => {
       const insert = (into: string, at: number) =>
-        spaced ? insertAtCursor(into, at, text) : { cursor: at + text.length, value: into.slice(0, at) + text + into.slice(at) }
+        spaced
+          ? insertAtCursor(into, at, text)
+          : { cursor: at + text.length, value: into.slice(0, at) + text + into.slice(at) }
 
       if (token) {
         unlanded.current.add(token)
@@ -395,9 +399,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         // are part of `cursor`.
         const at = Math.min(
           current.length,
-          landings.current
-            .slice(draft.seen)
-            .reduce((pos, prior) => (prior.at <= pos ? pos + prior.len : pos), cursor)
+          landings.current.slice(draft.seen).reduce((pos, prior) => (prior.at <= pos ? pos + prior.len : pos), cursor)
         )
 
         const next = insert(current, at)
@@ -633,7 +635,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       return inserted
     },
-    [attachImageToken, captureDraft, gw, insertLanding, isFresh, pasteClipboardImage, resolveAttachment, setComposerTokens]
+    [
+      attachImageToken,
+      captureDraft,
+      gw,
+      insertLanding,
+      isFresh,
+      pasteClipboardImage,
+      resolveAttachment,
+      setComposerTokens
+    ]
   )
 
   const handleTextPaste = useCallback(
@@ -723,10 +734,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       // Unchanged since our last write or, following typing, the same draft only added to at the end.
       const current = () =>
-        isCurrentDestination(destination) &&
-        (isFresh(draft) || (followTyping && life === draftLife.current))
+        isCurrentDestination(destination) && (isFresh(draft) || (followTyping && life === draftLife.current))
 
-      const dropped = (count: number) => followTyping && isCurrentDestination(destination) && sys(t('canonical.queue.imagesNotRestored', count))
+      const dropped = (count: number) =>
+        followTyping && isCurrentDestination(destination) && sys(t('canonical.queue.imagesNotRestored', count))
 
       for (const [done, path] of paths.entries()) {
         if (!destination.sid || !path.trim()) {

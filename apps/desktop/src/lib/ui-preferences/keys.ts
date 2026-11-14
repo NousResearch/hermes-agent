@@ -60,6 +60,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   'hermes.desktop.capabilities.catalogCardView',
   'hermes.desktop.composerPopout.enabled',
   'hermes.desktop.composerPopout.gesturesEnabled',
+  'hermes.desktop.focusFollowsMouse',
   'hermes.desktop.files.showIgnored',
   'hermes.desktop.keybinds',
   'hermes.desktop.layoutPresets.v2',

@@ -18,6 +18,8 @@ import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
+import { requestPaneFocus, treeGroupOfEvent } from '../pane-focus'
+
 import {
   allPaneIds,
   anchorsFirst,
@@ -539,12 +541,6 @@ function tabTargetGroup(eligible: (group: GroupNode) => boolean): GroupNode | nu
   return main && eligible(main) ? main : null
 }
 
-const treeGroupOfEvent = (event: Event): null | string => {
-  const el = event.target instanceof HTMLElement ? event.target : null
-
-  return el?.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup ?? null
-}
-
 /** Install the zone trackers (call once from the tree root). Records the
  *  `[data-tree-group]` under each pointerdown / focusin so ⌘W knows which
  *  zone's tab to close even when nothing is DOM-focused, and the one under the
@@ -885,6 +881,7 @@ export function activateTreeTabSlot(slot: number): null | string {
   }
 
   activateTreePane(group.id, panes[slot - 1])
+  requestPaneFocus(panes[slot - 1])
 
   return panes[slot - 1]
 }
@@ -914,6 +911,7 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): null | string {
   const idx = panes.includes(group.active ?? '') ? current : 0
   const nextId = panes[(idx + direction + panes.length) % panes.length]
   activateTreePane(group.id, nextId)
+  requestPaneFocus(nextId)
 
   // No strip repair here: cycling needs two shown tabs, which is exactly when
   // auto shows a strip anyway. The old force-show existed because a stray

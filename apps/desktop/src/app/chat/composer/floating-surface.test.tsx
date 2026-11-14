@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 
 import { PaneGroupContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $composerPopout, $composerPopoutGesturesEnabled, setComposerPoppedOut } from '@/store/composer-popout'
+import { setFocusFollowsMouse } from '@/store/focus-follows-mouse'
 
 import { FloatingComposerSurface } from './floating-surface'
 import { claimFloatingComposer, pinFloatingComposerCapture } from './floating-target'
@@ -40,6 +41,7 @@ beforeEach(() => $composerPopoutGesturesEnabled.set(true))
 afterEach(async () => {
   cleanup()
   await act(async () => {})
+  setFocusFollowsMouse(true)
   $composerPopout.set({ poppedOut: false, position: { bottom: 24, right: 24 } })
 })
 
@@ -127,3 +129,34 @@ it('hands the floating recipient to a visible tab when its old tab hides or clos
   expect(screen.getByLabelText('Draft b').closest<HTMLElement>('[data-composer-owner]')!.style.display).toBe('contents')
   expect(screen.queryByLabelText('Draft a')).not.toBeNull()
 })
+
+// The opt-out applies to the popped-out surface too: the visible composer stays
+// with the chat the reader clicked, through pointer transit and a delayed focus
+// callback from another pane.
+it.each([false, true])(
+  'keeps the click-selected owner through pointer transit when hover focus is off (floating=%s)',
+  floating => {
+    setFocusFollowsMouse(false)
+    render(
+      <>
+        <Surface id="a" />
+        <Surface id="b" />
+      </>
+    )
+    act(() => setComposerPoppedOut(floating))
+    act(() => markActiveComposer('a'))
+
+    const paneB = screen.getByTestId('pane-b')
+    fireEvent.pointerOver(paneB, { clientX: 500, clientY: 100 })
+    fireEvent.pointerMove(paneB, { clientX: 500, clientY: 100 })
+    expect(getActiveComposer()).toBe('a')
+
+    fireEvent.pointerDown(paneB)
+    fireEvent.pointerUp(paneB)
+    expect(getActiveComposer()).toBe('b')
+
+    fireEvent.pointerOver(screen.getByTestId('pane-a'), { clientX: 500, clientY: 100 })
+    fireEvent.focusIn(screen.getByRole('button', { name: 'Focus a' }))
+    expect(getActiveComposer()).toBe('b')
+  }
+)

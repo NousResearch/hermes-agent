@@ -128,6 +128,7 @@ fields; callers may initialize a provider without an agent or a session database
 | `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
+| `thread_id`, `parent_chat_id` | Messaging thread the session runs in, and the channel that thread hangs off (Discord/Slack/Telegram topics), included when present. Use `parent_chat_id` to share memory between a channel and the threads Hermes opens from it. |
 | `agent_identity` | Active profile name, when available. |
 | `resumed` | `True` when an earlier turn of this session id ran (the agent continues a stored transcript: `--resume`, a gateway chat after a restart, a reopened Desktop/TUI session). `False` for a new session id: a subagent, a cron run, a fresh chat. A `/branch` child seeded with copied history is `True`. A mid-process `/resume` arrives through `on_session_switch()` instead. |
 | `message_count` | Messages already stored for this session id. On TUI/Desktop it can include the prompt being submitted, so a fresh chat may report `1` with `resumed` `False`. |

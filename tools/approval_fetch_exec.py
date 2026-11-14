@@ -21,6 +21,11 @@ _TARGET_RE = re.compile(
 )
 _TERMINATOR = r"(?=[\s;&|)`'\"]|$)"
 _SCRIPT_INTERPRETERS_RE = r"python[0-9.]*+|perl|ruby|node|php"
+# Syntax-check-only runs parse FILE without running it: every flag must be the check flag
+# (`bash -n f`, `sh -xn f`, `node --check f`, `ruby -wc f`, `php -l f`). `perl -c` is not one: it runs
+# BEGIN/use blocks.
+_SHELL_CHECK_FLAG = r"-[vx]*+n[nvx]*+"
+_CHECK_ONLY_FLAGS = {"node": r"-c|--check", "ruby": r"-w?c[cw]*+", "php": r"-l"}
 # curl -O / --remote-name saves under the URL's basename, not an operand: `curl -fsSLO URL`.
 _CURL_REMOTE_NAME_RE = re.compile(r"\s(?:-([A-Za-z]++)|--remote-name(?:-all)?)(?=\s|$)")
 _URL_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*+://[^\s;&|<>'\"`()]++", re.IGNORECASE)
@@ -38,11 +43,19 @@ class DownloadThenRunMatcher:
         self._writer_re = writer_re
         # Launchers and script interpreters run FILE too (`env bash f`, `nohup sh f`, `python3 f`).
         self._run_re = re.compile(
-            r"(?:;|&&|\|\||\n)\s*+(?:(?:sudo|env|exec|nohup|command)\s++(?:-\S++\s++|\w++=\S*+\s++)*+)*+"
-            rf"(?:(?:{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})\s++(?:-\S++\s++)*+|(?:source|\.)\s++)?"
-            rf"['\"]?(?:\./)?([^\s;&|<>'\"`()]++){_TERMINATOR}",
+            # `command -v`/`-V` only looks the name up (`&& command -v tool` after installing tool).
+            r"(?:;|&&|\|\||\n)\s*+(?:(?:sudo|env|exec|nohup|command(?!(?:\s+-[a-uw-zA-UW-Z]+)*\s+-[a-zA-Z]*[vV]))"
+            r"\s++(?:-\S++\s++|\w++=\S*+\s++)*+)*+"
+            rf"(?:(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})\s++(?P<flags>(?:-\S++\s++)*+)|(?:source|\.)\s++)?"
+            rf"['\"]?(?:\./)?(?P<file>[^\s;&|<>'\"`()]++){_TERMINATOR}",
             re.IGNORECASE,
         )
+        self._check_flags = {**{name: _SHELL_CHECK_FLAG for name in shell_names_re.split("|")}, **_CHECK_ONLY_FLAGS}
+
+    def _syntax_check_only(self, run: re.Match) -> bool:
+        flag = self._check_flags.get((run.group("tool") or "").lower())
+        flags = run.group("flags").split() if flag and run.group("flags") else ()
+        return bool(flags) and all(re.fullmatch(flag, f) for f in flags)
 
     def search(self, text: str):
         targets: dict[str, int] = {}  # downloaded FILE -> where its download ends
@@ -63,7 +76,7 @@ class DownloadThenRunMatcher:
         if not targets:
             return None
         for run in self._run_re.finditer(text, min(targets.values())):
-            if run.start() >= targets.get(_base(run.group(1)), len(text)):
+            if run.start() >= targets.get(_base(run.group("file")), len(text)) and not self._syntax_check_only(run):
                 return run
         return None
 

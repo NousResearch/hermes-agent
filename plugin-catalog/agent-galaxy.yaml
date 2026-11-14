@@ -1,0 +1,17 @@
+name: agent-galaxy
+repo: https://github.com/kurenn/agent-galaxy
+sha: dde368258f6ee6a3183cd81b8f119ddd50dd5549
+title: Agent Galaxy
+description: "Dashboard-only: an interactive 3D galaxy of your agent — tools, skills, memory, projects and channels as stars, with particles along the paths it actually takes. Read-only over state.db and memory_store.db; loads 3d-force-graph from jsDelivr, SRI-pinned. Disclosure — reads <HERMES_HOME>/state.db and memory_store.db read-only to build the graph, and the dashboard tab loads the 3d-force-graph library from cdn.jsdelivr.net (SRI-pinned); the optional static export also loads React from jsDelivr."
+maintainer: kurenn
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/kurenn/agent-galaxy#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/kurenn/agent-galaxy/dde368258f6ee6a3183cd81b8f119ddd50dd5549/docs/banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

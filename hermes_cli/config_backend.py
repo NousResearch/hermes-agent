@@ -355,7 +355,7 @@ def _backend_for(kind: str) -> ConfigBackend:
         try:
             module = importlib.import_module(name)
         except ImportError as exc:
-            if exc.name not in (name, _BACKENDS_PACKAGE, "plugins"):
+            if exc.name != name and not name.startswith(f"{exc.name}."):
                 raise  # the backend exists but is broken: show that, not "unknown"
             raise ConfigBackendUnavailable(unknown) from exc
     get_backend = getattr(module, "get_backend", None)

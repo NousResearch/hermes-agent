@@ -1257,6 +1257,10 @@ class GatewayBusySessionMixin:
         if not accepted:
             return t("gateway.steer.rejected_empty")
         self._fold_into_running_turn(running_agent, quick_key, event)
+        # A pending clarify owns the turn: the agent is parked inside that tool, so no iteration
+        # prep runs and the accepted steer cannot arrive until the prompt times out (#145161).
+        # Released only once the steer is queued: the woken agent must find it at its next prep.
+        await self._release_clarify_owning_turn(quick_key, source)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = (t("gateway.steer.target_subagents") if self._agent_has_active_subagents(running_agent)
                   else t("gateway.steer.target_run"))

@@ -293,6 +293,7 @@ print('reached-pm')
 @pytest.mark.parametrize("path", [
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
+    "agent/managed_worker.py", "hermes_cli/kanban_worker_client.py",
 ])
 @pytest.mark.parametrize("bootstrap,expected", [
     (None, "proceeded"),

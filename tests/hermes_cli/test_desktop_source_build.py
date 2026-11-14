@@ -24,13 +24,13 @@ def test_desktop_build_only_prepares_once_and_keeps_fresh_launch_fast(desktop_so
     app = root / "apps/desktop/release/linux-unpacked/hermes"
     assert app.read_text() == "desktop"
     assert [event["step"] for event in _events(root)] == ["deps", "icons", "desktop"]
-    assert acquired == ["npm"]
-    assert (root / "node_modules/ui-tui").exists()
-    assert (root / "node_modules/web").exists()
-    assert (root / "node_modules/apps-desktop").exists()
-    assert not (root / "node_modules/unrelated").exists()
+    assert acquired == ["pnpm"]
+    assert (root / "ui-tui/node_modules").exists()
+    assert (root / "web/node_modules").exists()
+    assert (root / "apps/desktop/node_modules").exists()
+    assert not (root / "unrelated/node_modules").exists()
     main_desktop.cmd_gui(Namespace(build_only=True))
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert len(_events(root)) == 3
 
 
@@ -45,7 +45,7 @@ def test_failed_pack_exits_without_launching_or_replacing_the_app(desktop_source
         main_desktop.cmd_gui(Namespace(build_only=True))
     assert error.value.code != 0
     assert app.read_text() == "previous app"
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert [event["step"] for event in _events(root)] == ["deps", "icons", "desktop"]
     assert not list((root / "apps/desktop").glob(".staging-*"))
 
@@ -59,7 +59,7 @@ def test_skip_build_source_checks_artifacts_without_provisioning(desktop_source)
     dist = root / "apps/desktop/dist"
     dist.mkdir()
     (dist / "index.html").write_text("prepared renderer")
-    electron = root / "node_modules/electron"
+    electron = root / "apps/desktop/node_modules/electron"
     electron.mkdir(parents=True)
     (electron / "package.json").write_text('{}')
     main_desktop.cmd_gui(Namespace(source=True, skip_build=True, build_only=True))

@@ -1165,9 +1165,6 @@ platform:
     approved: "✅ Approuvé."
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
-  yuanbao:
-    slow_response_notice: "Cette tâche est un peu complexe — je m'en occupe encore, merci de patienter..."
-    owner_command_denied: "⚠️ {command} n'est disponible que pour le créateur en mode discussion privée"
   shared:
     truncated_suffix: |2-
 
@@ -1962,10 +1959,10 @@ slash:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
   backtrack:
-    title: "↺ Rembobiner — choisir un prompt précédent"
-    keys_hint: "↑/↓ choisir · Enter modifier et renvoyer · f bifurquer d'ici · Esc fermer"
-    preview_label: "Prompt {number} sur {total} :"
-    more_lines: "… ({count} lignes de plus)"
+    title: "↺ Transcription — choisir un prompt à modifier"
+    keys_hint: "Parcours de la transcription · ↑↓/jk défiler · ←→/hl prompts · ↵ modifier · f bifurquer · esc retour"
+    prime_hint: "esc à nouveau pour modifier le message précédent"
+    no_previous: "Aucun message précédent à modifier."
     editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
     edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
     rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."
@@ -4306,3 +4303,8 @@ plan_usage:
   large_notice_limit: "Grand modèle : votre limite {name} est atteinte ({resets})."
   large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
   large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Fichiers modifiés dans les tours annulés : {files}. Lancez /rollback pour lister les checkpoints et en restaurer un."
+    more: "+{count} de plus"

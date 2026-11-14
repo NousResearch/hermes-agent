@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -690,13 +690,17 @@ compression:
   # durable checkpoint (default: false). With this on and no checkpoint, the
   # compaction attempt errors with BLOCKED_MISSING_PREREQUISITE and the
   # uncompressed transcript is preserved for a later retry. The gate binds to
-  # every compaction authority: server-side native compaction
+  # every compaction authority the host runs: server-side native compaction
   # (codex_responses_native) is suppressed while armed, post-turn
-  # micro-compaction is forced off (no checkpoint hook in its path), and the
-  # codex_app_server API mode is refused at agent init (the codex agent
-  # compacts its own thread — no checkpoint can be guaranteed there). Only
-  # enable it with a checkpoint-capable provider configured — see
-  # website/docs/developer-guide/memory-provider-plugin.md
+  # micro-compaction is forced off (no checkpoint hook in its path), the
+  # proactive tool-result prune (proactive_prune_tokens) is suppressed at its
+  # call site, and the codex_app_server API mode is refused at agent init (the
+  # codex agent compacts its own thread — no checkpoint can be guaranteed
+  # there). Not covered: a plugin context engine that removes or rewrites
+  # host-transcript messages outside compress() (from on_turn_complete(),
+  # say); the host cannot checkpoint that path and does not refuse such an
+  # engine yet. Only enable it with a checkpoint-capable provider configured
+  # — see website/docs/developer-guide/memory-provider-plugin.md
   # ("Pre-Compress Checkpoints").
   checkpoint_required: false
 
@@ -1480,7 +1484,6 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   qqbot: [hermes-qqbot]
-  yuanbao: [hermes-yuanbao]
   # Plugin platforms (teams, google_chat, ...) need no row: they default to hermes-<platform> once loaded.
 
 # =============================================================================
@@ -2272,10 +2275,12 @@ updates:
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true
-  # Create a full HERMES_HOME zip before every `hermes update`.
-  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
-  # Off by default because large homes can add minutes to every update.
-  pre_update_backup: false
+  # Backup taken before every `hermes update`:
+  #   quick - snapshot of small critical state (pairing, cron jobs, config.yaml,
+  #           .env, auth.json, profile databases) in state-snapshots/ (default)
+  #   full  - quick plus a zip of HERMES_HOME in backups/; slow on large homes
+  #   off   - no backup
+  # pre_update_backup: quick
 
   # Number of pre-update backup zips to retain.
   backup_keep: 5

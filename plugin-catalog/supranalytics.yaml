@@ -1,0 +1,18 @@
+name: supranalytics
+title: SuprAnalytics
+repo: https://github.com/aniketmohite/supranalytics-plugin
+sha: 269d1aca92f98d4018beceedccd8543fe1148b24
+version: "1.2.0"
+description: "Five analytics workflow skills for SuprAnalytics: weekly performance reports, traffic source analysis, funnel drop-off analysis, revenue attribution, and Core Web Vitals / audit review. Connects to the SuprAnalytics remote MCP server via OAuth. All access is read-only. Network destination: https://supranalytics.app/mcp. No credentials are stored in the plugin. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — Agent Plugins v1 package (plugin.json + mcp.json + five skills), configuration only, no code; every tool call goes to the SuprAnalytics remote MCP server at https://supranalytics.app/mcp, which records usage per its privacy policy (https://supranalytics.app/privacy); the tool set is served by the remote server at runtime and is not covered by the pinned sha. The bundled mcp.json alone gets 401 under Hermes: sign-in needs a native `mcp_servers.supranalytics` entry with `auth: oauth` and `hermes mcp login supranalytics`, after which Hermes stores and refreshes the OAuth tokens. The skills only read analytics data."
+maintainer: aniketmohite
+tier: community
+category: tools
+docs_url: https://supranalytics.app/docs/mcp
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

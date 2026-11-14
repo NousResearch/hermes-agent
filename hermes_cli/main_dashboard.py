@@ -17,7 +17,7 @@ from typing import NoReturn
 from hermes_cli.cli_output import line_input
 from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
-_PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
+_PRE_BUILD_HINT = "  Pre-build first:  pnpm install --frozen-lockfile --filter web... && pnpm --dir web run build"
 
 
 def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,

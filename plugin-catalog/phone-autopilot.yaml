@@ -1,0 +1,20 @@
+name: phone-autopilot
+repo: https://github.com/jupist/phone-autopilot
+sha: 416067aa70a0f5f9e675b61c65c99a1589d4f7e0
+title: Phone Autopilot
+description: "Teach your phone a task once and replay it with no model in the loop: routines with checkpoints, repairs through the agent when an app changes, a daily automation blueprint and a live phone pane. Builds on phone-harness. Disclosure — runs model-written routines (Python you approve per version) on this computer with your user's permissions through the phone-harness package, which taps, types and runs adb shell commands on your real phone; its pre_tool_call hook puts every save and first run through Hermes's approval prompt and prepends a foreground-app guard to phone_exec scripts, which stops at Android permission dialogs and, only if you turn on ask_before_apps, pauses to ask before any app you have not allowed; the guard runs inside the script as a guard rail, not a sandbox; run environments drop variables ending in _KEY, _TOKEN, _SECRET or _PASSWORD and keep the rest; stores routines, image refs, run records with screenshots and your app answers in its plugin data folder, reads the screenshot files the agent names when saving image refs, reads its settings from config.yaml and changes them only through Hermes's plugin settings writers; the dashboard phone pane can tap, swipe and press keys on the phone when you use it; no network calls or telemetry of its own (phone-harness telemetry is switched off for routine runs); Pop out starts scrcpy if installed."
+maintainer: jupist
+tier: community
+category: automation
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/jupist/phone-autopilot#readme
+platforms: []
+capabilities:
+  provides_tools:
+  - routine
+  provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,24 @@
+name: grokbot-staff
+repo: https://github.com/leoresendedop-sys/grokbot-staff
+sha: 30840dcbbecefc659112acfd21609beaa0efc85c
+description: "A chief-of-staff and specialist team inside Hermes (chief, saas, design, vision-agents, computer-vision, x — or a team you configure), plus an optional fail-closed bridge that hands long-running work to your own Grok Bot. Local staff answers with your current Hermes model via ctx.llm. Slash commands /staff and /grokbot, a staff delegation backend for delegate_task, a bundled skill, and a Desktop pane for the roster, pending handoffs and recent jobs. The bridge does not call any Grok Bot API (there is none); it POSTs a JSON handoff to a webhook URL you set and/or writes handoffs/<id>.json in a folder you set, then collects results/<id>.json|.md|.txt or a pasted answer. Not an importer and not Grok Bot calling Hermes — Hermes delegating to Grok Bot. Disclosure — Answers staff tasks with your current Hermes model through ctx.llm whenever a staff tool or slash command runs. When grokbot_delegate runs, POSTs the task as JSON only to the webhook URL you configure (stored as the GROKBOT_STAFF_WEBHOOK_URL secret; https only, http allowed for localhost; redirects refused) and/or writes handoffs/<id>.json in the inbox folder you set, then reads results/<id>.json|.md|.txt from that folder (symlinks and files over 2 MB ignored) and returns that text to the agent. A specialist you map to a Hermes profile makes the `staff` delegation backend run delegated tasks as that profile, with its credentials. Job tasks, answers and collected results are stored in the plugin's own data folder. The Desktop pane polls a read-only /overview dashboard route every 10 seconds. No shell commands, no background processes, no telemetry."
+maintainer: leoresendedop-sys
+tier: community
+category: automation
+docs_url: https://github.com/leoresendedop-sys/grokbot-staff#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "This pin has passed hermes plugins validate, doctor, and unit tests. The Desktop pane and staff tools have not yet been recorded in a live Hermes Desktop session with a real model."
+capabilities:
+  provides_tools:
+    - staff_assign
+    - staff_status
+    - grokbot_delegate
+    - grokbot_collect
+    - grokbot_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.5"

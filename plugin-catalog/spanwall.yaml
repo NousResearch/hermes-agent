@@ -1,0 +1,24 @@
+name: spanwall
+repo: https://github.com/tuanpv47/spanwall
+sha: dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa
+subdir: plugin/spanwall
+title: SpanWall
+description: "One Kanban wall for every Hermes session, across every profile: Needs you, Running, Idle, Done (24h) and Failed columns, one card per session. Approve requests, answer clarify, sudo and secret prompts, chat, steer and stop agents right from the card. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware or env vars. Disclosure — acts on the sessions of every watched profile, not only the active one: approving or rejecting requests, sending prompts, steering, interrupting and creating sessions there, each only on an explicit click (nothing is approved automatically). Sudo passwords and secrets typed into a card go straight to the owning gateway and are not stored. Polls every watched profile's gateway every 3 s, which may start that profile's backend. Keeps UI preferences and a 24-hour archive of finished turns (title, model, tools used, the last 600 characters of the reply) in the Desktop's plugin storage. No network calls outside the Hermes gateways, no telemetry."
+maintainer: tuanpv47
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/tuanpv47/spanwall#readme
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/tuanpv47/spanwall/dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa/assets/spanwall-light.png
+  - https://raw.githubusercontent.com/tuanpv47/spanwall/dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa/assets/new-task-light.png
+platforms: []
+known_issues:
+  - Developed and tested on Windows 10 only; macOS and Linux are untested.
+  - Polling a watched profile can start its backend. Untick profiles you don't need in Settings -> Plugins -> SpanWall.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

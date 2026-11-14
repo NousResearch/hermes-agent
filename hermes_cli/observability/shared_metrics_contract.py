@@ -162,10 +162,10 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
 BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
-# Core tools a stable release shipped that core no longer has: setup_choose/start_chat with the old setup
-# flow; the built-in browser_* tools with agent-browser (the camofox plugin's same-named tools record as
-# ``plugin``); the five browser_vault_* tools folded into one browser_vault; spotify_* when Spotify left core
-# for its catalog plugin. v4 only adds values, and rows older releases saved with these names must still
+# Core tools a stable release shipped that core no longer has: setup_choose/start_chat with the old setup flow;
+# the built-in browser_* tools with agent-browser (the camofox plugin's same-named tools record as ``plugin``);
+# the five browser_vault_* tools folded into one browser_vault; spotify_* / yb_* when Spotify and Yuanbao left
+# core for their catalog plugins. v4 only adds values, and rows older releases saved with these names must still
 # package; recording maps through the live sets (tool_metric_name, toolset_metric_name).
 RETIRED_TOOL_NAMES = frozenset({
     "setup_choose", "start_chat",
@@ -174,9 +174,9 @@ RETIRED_TOOL_NAMES = frozenset({
     "browser_vault_enter_code", "browser_vault_fill", "browser_vault_list", "browser_vault_save_login",
     "browser_vault_unlock",
     "spotify_albums", "spotify_devices", "spotify_library", "spotify_playback", "spotify_playlists",
-    "spotify_queue", "spotify_search",
-})
-RETIRED_TOOLSET_NAMES = frozenset({"setup", "spotify", "start_chat"})
+    "spotify_queue", "spotify_search", "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
+    "yb_send_dm", "yb_send_sticker"})
+RETIRED_TOOLSET_NAMES = frozenset({"hermes-yuanbao", "setup", "spotify", "start_chat", "yuanbao"})
 _LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
 TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
 TOOL_ERROR_CLASSES = frozenset({

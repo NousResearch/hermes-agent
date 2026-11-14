@@ -38,6 +38,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_agent.compat.finder import Finder as _CompatFinder
+from hermes_agent.compat.moves import MOVES as _COMPAT_MOVES
+
+# In-repo code must use current module names; an old name fails here instead of being aliased.
+sys.meta_path.insert(0, _CompatFinder(_COMPAT_MOVES, strict=True))
+
 # Every test file runs in its own process, and in a checkout without an install stamp
 # get_version_info() shells out to git 7 times (~0.55 s per process in a large local
 # clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow

@@ -1,0 +1,21 @@
+# Catalog entry for the Hermes plugin catalog. The sha is the v0.1.1 release commit.
+name: faxforagents
+title: Fax for Agents
+repo: https://github.com/faxforagents/hermes-integration
+sha: "7e84172450bda636d655de6b50bfb75a0f35641f"
+version: "0.1.1"
+description: "Fax preparation, quotes, approved sending, delivery status, cancellation, and inbox reading. The portable package starts faxforagents-mcp 0.4.1 through npx and sends data to api.faxforagents.com. MCP also exposes guidance, capabilities, balance, document previews, review requests, and billed extraction. Write-capable calls use the Hermes untrusted gate. Live sends require quote-bound approval or an allowing delegated policy and spend wallet funds. Disclosure — first start downloads the pinned faxforagents-mcp 0.4.1 from npm through npx and runs it as a local child process with only FAXFORAGENTS_API_KEY from your profile; it sends the documents, destination numbers and fax requests you or the agent give it to Fax for Agents' API (api.faxforagents.com) and reads received faxes and their extracted text from it. The server is marked untrusted, so every write-capable call asks first; live sends and paid extraction spend your prepaid wallet, and a delegated policy you set in the Fax for Agents dashboard lets a live send go out without its quote-bound human approval. The tool list comes from the npm package, so the pinned commit doesn't cover it. The README's optional workaround for a Hermes OAuth login stall edits a core file (tools/mcp_oauth.py) by hand."
+maintainer: faxforagents
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/faxforagents/hermes-integration#readme
+readme: true
+platforms: []
+capabilities:
+  # MCP tools are discovered at runtime. No native tools or hooks register.
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - FAXFORAGENTS_API_KEY

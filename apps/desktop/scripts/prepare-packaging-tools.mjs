@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { lockImporters } from '../../../scripts/build/pnpm-lock.mjs'
 import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
@@ -20,9 +21,10 @@ export function pinnedPackageRoot(source, name) {
     directory = parent
   }
   const installed = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'))
-  const lock = JSON.parse(fs.readFileSync(path.join(source, 'package-lock.json'), 'utf8'))
-  const key = path.relative(source, directory).split(path.sep).join('/')
-  if (!lock.packages?.[key] || lock.packages[key].version !== installed.version || installed.name !== name) {
+  const desktop = lockImporters(fs.readFileSync(path.join(source, 'pnpm-lock.yaml'), 'utf8'))['apps/desktop'] ?? {}
+  const locked = desktop.devDependencies?.[name] ?? desktop.dependencies?.[name]
+  // A locked version carries its peer resolution as a suffix: 1.2.3(react@19.3.0).
+  if (!locked || locked.version.replace(/\(.*$/, '') !== installed.version || installed.name !== name) {
     throw new Error(`Installed ${name} is not the source's lock-pinned package; prepare Node dependencies first`)
   }
   return directory

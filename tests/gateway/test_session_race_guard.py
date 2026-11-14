@@ -46,7 +46,6 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}

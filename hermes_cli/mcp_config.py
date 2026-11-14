@@ -48,7 +48,7 @@ _PROBE_REDACTION_RES: Optional[tuple[re.Pattern[str], ...]] = None
 
 
 def _credential_header_names() -> str:
-    from agent.redact import _SECRET_HEADER_NAMES
+    from agent.redact_headers import _SECRET_HEADER_NAMES
 
     return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
 
@@ -122,7 +122,7 @@ def redact_mcp_probe_text(text: object) -> str:
     """Fully redact MCP probe/display strings before they leave the process.
 
     Recognized credential header fields (Authorization / Proxy-Authorization
-    and ``agent.redact._SECRET_HEADER_NAMES``) have their complete associated
+    and ``agent.redact_headers._SECRET_HEADER_NAMES``) have their complete associated
     value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
     covered the same way. The generic secret redactor then runs with
     ``force=True`` as defense in depth.

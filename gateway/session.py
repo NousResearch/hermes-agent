@@ -365,11 +365,6 @@ _STATIC_PLATFORM_NOTES = {
         "1–3 sentences each. If the user needs a detailed answer, give the short version first and "
         "offer to elaborate."
     ),
-    Platform.YUANBAO: (
-        "**Platform notes:** You are running inside Yuanbao. To send a private (DM) message to a "
-        "user in the current group, use the yb_send_dm tool (look up the recipient by name or pass "
-        "their user_id). Your normal reply is delivered to the group you are responding in."
-    ),
 }
 
 # Platform -> extra "Platform notes" lines for the session-context prompt.

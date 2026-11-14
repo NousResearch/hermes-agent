@@ -110,6 +110,9 @@ class GatewayBackgroundMixin:
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # Built outside the turn wiring, so it takes its chat's Daybreak verdicts here.
+                agent.daybreak_surface = self._daybreak_surface(source) is True
+                agent.daybreak = self._load_daybreak(source) is True
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:

@@ -36,7 +36,6 @@ def _make_runner(hermes_home=None):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
-    runner._update_prompt_pending = {}
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
@@ -310,7 +309,7 @@ class TestUpdatePromptInterception:
 
         event = _make_event(text="/new", chat_id="67890")
         session_key = "agent:main:telegram:dm:67890"
-        runner._update_prompt_pending[session_key] = True
+        runner._session_state(session_key).persistent.update_prompt_pending = True
         runner._is_user_authorized = MagicMock(return_value=True)
         runner._session_key_for_source = MagicMock(return_value=session_key)
         runner._handle_reset_command = AsyncMock(return_value="reset ok")
@@ -330,7 +329,7 @@ class TestUpdatePromptInterception:
         assert not (hermes_home / ".update_prompt.json").exists()
         # Pending flag is cleared so stray future input won't be
         # re-intercepted for a prompt that is no longer outstanding.
-        assert session_key not in runner._update_prompt_pending
+        assert not runner._session_state(session_key).persistent.update_prompt_pending
 
 # ---------------------------------------------------------------------------
 # cmd_update --gateway flag

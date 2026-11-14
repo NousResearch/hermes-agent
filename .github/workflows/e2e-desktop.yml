@@ -55,18 +55,18 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
-      # Full npm ci (not --ignore-scripts): native addons need lifecycle scripts;
+      # Full install (not --ignore-scripts): native addons need lifecycle scripts;
       # Electron's binary is prepared explicitly below.
       # node-pty's native build is needed for the terminal pane.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: pnpm install --frozen-lockfile
 
       - name: Prepare locked Electron runtime
         run: node scripts/build/electron-runtime.mjs --source .
 
       # ── Build desktop app ─────────────────────────────────────────────
-      # The Playwright step below runs `npm run build` before testing so
+      # The Playwright step below runs `pnpm run build` before testing so
       # dist/ is always fresh — no separate build step needed here.
 
       # ── Restore visual baseline screenshots from main ──────────────────
@@ -88,7 +88,7 @@ jobs:
       # xvfb runs at a fixed 1280x1024 screen so the 1220x800 Electron
       # window always has a consistent viewport for screenshot comparison.
       # On main, we run with --update-snapshots to generate baselines.
-      # `npm run test:e2e` builds dist/ as a pretest hook so the renderer
+      # `pnpm run test:e2e` builds dist/ as a pretest hook so the renderer
       # is always fresh — no separate build step needed.
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
@@ -96,12 +96,12 @@ jobs:
           # A stable run is on main too, but it tests a candidate. It compares and never rewrites baselines.
           if [ "${{ github.ref_name }}" = "main" ] && [ -z "${{ inputs.commit }}" ]; then
             echo "On main — generating/updating baseline screenshots"
-            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
-              npx playwright test --reporter=list --update-snapshots
+            pnpm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+              pnpm exec playwright test --reporter=list --update-snapshots
           else
             echo "On PR — comparing against cached baselines"
-            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
-              npx playwright test --reporter=list
+            pnpm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+              pnpm exec playwright test --reporter=list
           fi
         env:
           CI: 'true'
@@ -235,7 +235,7 @@ jobs:
             echo "- [visual-diffs]($DIFFS_URL) — just the diffed screenshots (small, fast to review)"
           fi
           echo ""
-          echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`npx playwright test --update-snapshots\` locally."
+          echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`pnpm exec playwright test --update-snapshots\` locally."
 
           # Also parse the JSON report for pass/fail counts
           if [ -f playwright-report/results.json ]; then

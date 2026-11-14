@@ -58,7 +58,6 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = AsyncSessionDB(MagicMock())
@@ -516,7 +515,7 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
 
     async def _stale_result(**kwargs):
         # Simulate a newer run claiming the callback slot before the stale run unwinds.
-        runner._session_run_generation[session_key] = 2
+        runner._session_state(session_key).persistent.run_generation = 2
         adapter._post_delivery_callbacks[session_key] = (2, lambda: None)
         return {
             "final_response": "late reply",

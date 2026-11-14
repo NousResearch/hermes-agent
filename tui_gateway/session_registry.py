@@ -422,18 +422,10 @@ def _any_live_session_claims_key(target: str) -> bool:
 
 
 def _with_checkpoints(session, fn):
-    return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
-
-
-def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
-    try:
-        checkpoints = mgr.list_checkpoints(cwd)
-        idx = int(ref) - 1
-    except ValueError:
-        return ref
-    if 0 <= idx < len(checkpoints):
-        return checkpoints[idx].get("hash", ref)
-    raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+    """``fn(mgr, cwd)`` under the session's profile scope: the store is ``<profile home>/checkpoints``
+    (``_resolve_checkpoint_base`` reads the bound HERMES_HOME), the one the session's turns wrote to."""
+    with _session_profile_runtime_scope(session, hydrate_secrets=False):
+        return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
 
 
 # ── Methods: session ─────────────────────────────────────────────────

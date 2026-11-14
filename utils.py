@@ -730,11 +730,6 @@ def env_float(key: str, default: float = 0.0) -> float:
     return _env_number(key, default, float)
 
 
-def env_bool(key: str, default: bool = False) -> bool:
-    """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
-
-
 _PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
 _NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
 

@@ -54,7 +54,6 @@ def _make_runner():
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_approvals = {}
     runner._agent_cache = {}

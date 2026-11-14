@@ -311,6 +311,21 @@ def test_photon_e164_target_is_explicit() -> None:
     assert is_explicit is True
 
 
+def test_telegram_named_private_dm_topic_is_parsed() -> None:
+    """``telegram:<positive_chat_id>:<topic_name>`` splits into chat + topic name (#80483);
+    numeric topics keep their shape and a named topic on a group id stays unparsed."""
+    assert _parse_target_ref("telegram", "722341991:Debug") == ("722341991", "Debug", True)
+    assert _parse_target_ref("telegram", "722341991:17") == ("722341991", "17", True)
+    assert _parse_target_ref("telegram", "-1001234567890:Debug") == (None, None, False)
+    # Only the live cron router resolves the name; the REST sender (send_message, cron's
+    # standalone fallback) must say so instead of failing on int("Debug").
+    pconfig, bot = SimpleNamespace(token="token", extra={}), AsyncMock()
+    with patch("tools.send_message_senders._telegram_bot", return_value=bot), \
+            patch("tools.send_message_senders._telegram_format", return_value=("hi", None, False)):
+        result = asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "722341991", "hi", thread_id="Debug"))
+    assert "numeric thread id" in result["error"] and not bot.send_message.called
+
+
 def test_e164_target_still_requires_phone_platform() -> None:
     assert _parse_target_ref("matrix", "+15551234567")[2] is False
 

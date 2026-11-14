@@ -2792,10 +2792,10 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
-  // The rail is a profile-keyed family too: a deleted profile's tabs must not
-  // outlive it, or a later profile of the same name inherits them.
-  dropPreviewTabsForProfile(name)
-  dropBrowserProfilePrefs(name)
+  // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
+  // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
+  dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
+  dropBrowserProfilePrefs(name, route?.connectionId?.trim() || undefined)
 }
 
 /**

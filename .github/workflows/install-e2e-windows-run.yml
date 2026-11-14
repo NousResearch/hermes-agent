@@ -86,8 +86,8 @@ on:
         required: false
         type: number
         # Green legs take up to ~40 min; from v2026.9.24 the update alone runs the venv->PM
-        # takeover plus npm ci and a Desktop rebuild (24 min in 108542725043, 11 of them one
-        # npm ci), and the app-update driver may wait 30 min. pty-run.py's deadline and the
+        # takeover plus the JS install and a Desktop rebuild (24 min in 108542725043, 11 of them
+        # one npm ci), and the app-update driver may wait 30 min. pty-run.py's deadline and the
         # per-step budgets bound real hangs, so the job cap only has to clear a slow runner.
         default: 90
       bundle-manifest-url:
@@ -128,7 +128,7 @@ jobs:
           cache-node: false
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
       - name: Verify native helpers
         shell: pwsh
         run: |
@@ -217,7 +217,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
       # A released tag prints its one-shot chat through prompt_toolkit, whose Windows
       # output object needs a console screen buffer -- piping the CLI's stdout into the

@@ -368,6 +368,9 @@ async def _start_gateway_start_control_socket(runner):
                            # mints Team Gateway link codes through it.
                            "relay-link": relay_link_verb})
         _control_server.ticket_store = runner.session_ticket_store
+        # The public client lookup answers from the same descriptor ``identify`` does.
+        from gateway.control_resolve import resolve_profile_handler
+        _control_server.resolve_handler = resolve_profile_handler(_identify_runtime)
         # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
         # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
         from gateway.webapp_listener import register_control_verbs
@@ -543,6 +546,10 @@ def _launch_home_may_multiplex(config=None) -> bool:
             f"profile {name!r} launched the gateway, and only the default profile runs the multiplexer "
             "(start it with `hermes gateway run` from the default profile to serve every profile)")
         config.multiplex_profiles = False
+        # The first load armed fail-closed secret reads for a multiplexer; boot work before the
+        # runner (the left-core install) reads this profile's own env, unscoped.
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(False)
         log_multiplex_decision(decision)
         return True
     from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -553,6 +560,27 @@ def _launch_home_may_multiplex(config=None) -> bool:
         "default profile (`hermes gateway run`), which serves this profile too.", name)
     _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason="multiplex_requires_default_profile")
     raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
+def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayConfig:
+    """Re-read platform config after the left-core migration installed a platform plugin (the first
+    load predates it) without deciding multiplex again: the boot already settled it, including the
+    named-launch downgrade ``_launch_home_may_multiplex`` applied in place, and reserved homes to
+    match. A second ``resolve_multiplex_mode`` would re-enable an implicit default and serve
+    profiles this process never reserved."""
+    from gateway.config import load_gateway_config
+    if getattr(first, "multiplex_profiles", False):
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_default_hermes_root
+        with _profile_runtime_scope(Path(get_default_hermes_root())):
+            reloaded = load_gateway_config()
+    else:
+        reloaded = load_gateway_config()
+    reloaded.multiplex_profiles = first.multiplex_profiles
+    reserved = getattr(first, "_runtime_profile_homes", None)
+    if reserved:
+        reloaded._runtime_profile_homes = reserved
+    return reloaded
 
 
 def _start_gateway_resolve_terminal_cwd() -> None:
@@ -748,6 +776,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     if profile_homes and not getattr(resolved_config, 'multiplex_profiles', False):
         profile_homes = []  # implicit default downgraded: this named launch serves only itself
+        if config is None:  # the first load read the default root's platforms under its scope
+            resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
@@ -783,7 +813,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _start_gateway_configure_logging(verbosity)
 
         from gateway.run_startup import recover_left_core_at_gateway_start
-        await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
+        if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
+            resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
         _launch_store_pin = await asyncio.to_thread(pin_launch_store)
@@ -848,6 +879,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _log_standalone_profiles_at_boot(runner)
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
+        from gateway.run_api import await_session_socket_preload, preload_session_socket
+        ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
 
         def _lifecycle_record_startup() -> Optional[dict]:
             # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
@@ -866,6 +899,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
         if _early_verdict is not None:
+            await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict
         if _unclean_exit is not None:
             _start_deferred_state_db_integrity_check(_unclean_exit)
@@ -876,6 +910,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # which stops the cron ticker and housekeeping before the adapters they deliver through close.
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
+            await await_session_socket_preload(ws_preload)
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()

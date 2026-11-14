@@ -20,7 +20,8 @@
 const path = require('node:path')
 const fs = require('node:fs')
 
-const { _electron } = require('@playwright/test')
+// The checkout's tests-js declares the driver's Playwright.
+const { _electron } = require(require.resolve('@playwright/test', { paths: [path.join(__dirname, '../../../tests-js')] }))
 const { prepareWindowForInput } = require('./window-input.cjs')
 const { observeProcessClose } = require('./process-close.cjs')
 const { pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } = require('./update-ui.cjs')

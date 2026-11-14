@@ -81,6 +81,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
                 try:
                     resp = _handle_admitted_request(req)
                 except Exception as exc:
+                    logger.exception("pool RPC handler failed for method=%r id=%r", normalized[1], req.get("id"))
                     resp = _err(req.get("id"), -32000, f"handler error: {exc}")
                 if resp is not None:
                     t.write(resp)

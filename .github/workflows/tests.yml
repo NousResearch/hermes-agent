@@ -72,6 +72,9 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
+          # Tests that drive the real scripts/build/node-deps.mjs need pnpm (and
+          # with it PM's Node) on PATH.
+          packages: pnpm
           extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
@@ -173,7 +176,7 @@ jobs:
         # HERMES_E2E_REQUIRE_TUI=1 below turns a missing build into a failure.
         uses: ./.github/actions/retry
         with:
-          command: npm ci --workspace ui-tui --ignore-scripts --no-audit --no-fund && npm run build --workspace ui-tui
+          command: pnpm install --frozen-lockfile --filter "{./ui-tui}..." --ignore-scripts && pnpm --dir ui-tui run build
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -326,7 +329,7 @@ jobs:
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
-          # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
+          # The upgrade start version is the newest release behind HEAD (tests/e2e/core/upgrade/_install_helpers.upgrade_base).
           fetch-depth: 0
           fetch-tags: true
 

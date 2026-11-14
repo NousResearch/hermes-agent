@@ -974,9 +974,6 @@ platform:
     approved: "✅ Aprobado."
     denied: "❌ Denegado."
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
-  yuanbao:
-    slow_response_notice: "Esta tarea es algo compleja — sigo trabajando en ella, un momento por favor..."
-    owner_command_denied: "⚠️ {command} solo está disponible para el creador en modo de chat privado"
   shared:
     truncated_suffix: "\n...(truncado)"
     unknown: "desconocido"
@@ -1710,10 +1707,10 @@ slash:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
   backtrack:
-    title: "↺ Rebobinar — elige un prompt anterior"
-    keys_hint: "↑/↓ elegir · Enter editar y reenviar · f bifurcar desde aquí · Esc cerrar"
-    preview_label: "Prompt {number} de {total}:"
-    more_lines: "… ({count} líneas más)"
+    title: "↺ Transcripción — elige un prompt para editar"
+    keys_hint: "Explorando la transcripción · ↑↓/jk desplazar · ←→/hl prompts · ↵ editar · f bifurcar · esc volver"
+    prime_hint: "esc otra vez para editar el mensaje anterior"
+    no_previous: "No hay ningún mensaje anterior que editar."
     editing_hint: "↺ Editando el prompt {number} — Enter rebobina hasta aquí y envía · Esc Esc cancela"
     edit_cancelled: "↺ Rebobinado cancelado; no se eliminó nada."
     rewound: "↺ Rebobinado al prompt {number} ({count} mensaje(s) archivado(s)); enviando la edición."
@@ -3981,3 +3978,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: alcanzaste tu límite {name} ({resets})."
   large_notice_limit_stops: "Modelo grande: alcanzaste tu límite {name} ({resets}), así que no se ejecutará hasta entonces."
   large_notice_percent: "Modelo grande: usa más del uso de tu plan por mensaje. Límite mensual de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Archivos cambiados en los turnos deshechos: {files}. Ejecuta /rollback para listar los checkpoints y restaurar uno."
+    more: "+{count} más"

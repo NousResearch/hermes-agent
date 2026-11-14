@@ -58,6 +58,19 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 DATA_USE = "data_use"
 
 
+def _set_display_metadata_key(message: MutableMapping[str, Any], key: str, value: Any) -> None:
+    """Set *key* in *message*'s ``display_metadata`` as a new dict (a non-dict value starts empty)."""
+    metadata = message.get("display_metadata")
+    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), key: value}
+
+
+def _display_metadata_str(message: Any, key: str) -> Optional[str]:
+    """*message*'s ``display_metadata[key]`` when it is a string, else None."""
+    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
+    value = metadata.get(key) if isinstance(metadata, Mapping) else None
+    return value if isinstance(value, str) else None
+
+
 def data_use_requirement(messages: Any) -> frozenset[str]:
     """The union of ``data_use`` over *messages*: what the model receiving them must guarantee."""
     return frozenset(r for m in messages or () if isinstance(m, Mapping) for r in m.get(DATA_USE) or ())
@@ -69,8 +82,7 @@ def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> No
     if not requires:
         return
     message[DATA_USE] = list(requires)
-    metadata = message.get("display_metadata")
-    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
+    _set_display_metadata_key(message, DATA_USE, list(requires))
 
 
 # What the user typed on a turn a ``pre_llm_call`` hook vetoed, kept inside ``display_metadata``. The row's
@@ -81,11 +93,33 @@ WITHHELD_PROMPT = "withheld_prompt"
 PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
 
 
+# The ask of a multimodal turn (the text of its persisted parts: image-path hints, not ``[screenshot]``), kept inside
+# ``display_metadata`` when the turn's injected context (recalled memory, ``pre_llm_call`` and gateway notes)
+# is appended to ``content`` as a text part: the DB stores that content as one flattened string, so nothing
+# else can tell the ask from the injection.
+TYPED_ASK = "typed_ask"
+
+
+def stamp_typed_ask(message: MutableMapping[str, Any], text: str) -> None:
+    """Record *text* as the ask ``previous_message`` reads for *message*."""
+    _set_display_metadata_key(message, TYPED_ASK, text)
+
+
+def drop_typed_ask(message: MutableMapping[str, Any]) -> None:
+    """Forget the typed-ask stamp on a row whose content no longer is that one ask (a fold, a redaction)."""
+    metadata = message.get("display_metadata")
+    if isinstance(metadata, dict) and TYPED_ASK in metadata:
+        message["display_metadata"] = {k: v for k, v in metadata.items() if k != TYPED_ASK}
+
+
+def typed_ask_text(message: Any) -> Optional[str]:
+    """The typed ask stamped on *message*, else None."""
+    return _display_metadata_str(message, TYPED_ASK)
+
+
 def withheld_prompt_text(message: Any) -> Optional[str]:
     """The typed text a transcript view shows for a vetoed user row, else None."""
-    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
-    text = metadata.get(WITHHELD_PROMPT) if isinstance(metadata, Mapping) else None
-    return text if isinstance(text, str) else None
+    return _display_metadata_str(message, WITHHELD_PROMPT)
 
 
 def typed_prompt_content(content: Any, message: Any) -> Any:
@@ -181,8 +215,7 @@ INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
 
 
 def mark_inflight_restatement(msg: MutableMapping[str, Any]) -> None:
-    metadata = msg.get("display_metadata")
-    msg["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), INFLIGHT_TASK_RESTATEMENT: True}
+    _set_display_metadata_key(msg, INFLIGHT_TASK_RESTATEMENT, True)
 
 
 def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
@@ -192,6 +225,22 @@ def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
     fields: dict = {"_compressed_summary": True} if msg.get("_compressed_summary") else {}
     if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_RESTATEMENT):
         fields["display_metadata"] = {INFLIGHT_TASK_RESTATEMENT: True}
+    return fields
+
+
+def typed_ask_fields(msg: Mapping[str, Any]) -> Optional[dict]:
+    """``{TYPED_ASK: ...}`` when *msg* carries the stamp, else None: the only key a row rewrite that backfills
+    the stamp writes (merge-patched, so other writers' keys stay as committed)."""
+    typed = typed_ask_text(msg)
+    return None if typed is None else {TYPED_ASK: typed}
+
+
+def replay_metadata_fields(msg: Mapping[str, Any]) -> dict:
+    """``scaffolding_replay_fields`` plus the typed-ask stamp (``previous_message`` must not read a
+    multimodal turn's flattened injected context back)."""
+    fields = scaffolding_replay_fields(msg)
+    if (typed := typed_ask_text(msg)) is not None:
+        fields["display_metadata"] = {**fields.get("display_metadata", {}), TYPED_ASK: typed}
     return fields
 
 
@@ -226,6 +275,11 @@ def message_identity(msg: MutableMapping[str, Any], *, with_tool_uids: bool = Fa
     return identity
 
 
+def _is_empty_content(content: Any) -> bool:
+    """Nothing to fold: any part (an image too) is content, unlike ``is_content_blank``'s text-only test."""
+    return content is None or content == [] or (isinstance(content, str) and not content.strip())
+
+
 def record_absorbed_message(
     survivor: MutableMapping[str, Any], dropped: Mapping[str, Any], *, dropped_leads: bool = False,
 ) -> None:
@@ -236,8 +290,12 @@ def record_absorbed_message(
     text leads; with *dropped_leads* the dropped dict's text was put first (the real user anchor folded
     into a scaffolding turn), so its uid becomes the survivor's and the survivor's former uid is recorded.
     A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
-    leaves the survivor untouched.
+    leaves the survivor untouched. The survivor's typed-ask stamp goes when *dropped* brought content (the row
+    now holds more than that one ask, so ``previous_message`` reads it as before stamps existed); an empty
+    turn leaves the content, and so the stamp, as they were.
     """
+    if not _is_empty_content(dropped.get("content")):
+        drop_typed_ask(survivor)
     survivor_uid = message_uid_or_none(survivor)
     dropped_uid = message_uid_or_none(dropped)
     own = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS))

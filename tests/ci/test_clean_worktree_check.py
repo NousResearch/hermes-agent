@@ -40,7 +40,7 @@ def _checkout_jobs():
 
 def test_every_checkout_job_ends_with_the_clean_worktree_step():
     jobs = list(_checkout_jobs())
-    assert len(jobs) >= 10, [label for label, *_ in jobs]  # tests 4, tests-os 2, lint 4, js 1
+    assert len(jobs) >= 7, [label for label, *_ in jobs]  # tests 4, tests-os 2, lint 1, js 1
     problems = []
     for label, job, steps in jobs:
         last = steps[-1]

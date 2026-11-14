@@ -526,6 +526,18 @@ class GatewayTurnPersistenceMixin:
 
         if is_context_overflow_failure:
             pass  # Skip all transcript writes — don't grow a broken session
+        elif agent_result.get("failure_reason") == "content_policy_blocked":
+            # A safety refusal is deterministic for the unchanged conversation (the filter judges the
+            # whole thread), so a persisted refused turn re-trips the filter on every later message and
+            # locks the chat — the "stuck session" report. The agent flushed the user row at turn start;
+            # drop that turn now that the lease is released (soft-delete, the same rewind /undo uses) so
+            # the next turn rebuilds from a clean transcript. The refusal was already delivered to the
+            # user. Only when the agent persisted the turn (``agent_persisted``) is there a durable row to
+            # drop; a non-persisting runtime wrote nothing, so rewinding would hit a prior accepted turn.
+            # Mirrors the context_overflow no-grow rule (#1630); only a non-retryable block drops.
+            if agent_persisted:
+                await self._hmwa_retain_content_policy_refused_turn(
+                    sid, session_key, agent_result.get("refused_turn_boundary_row_id"))
         else:
             if not history and source.platform != Platform.LOCAL:
                 # Fresh session: the tool definitions (as sent in the API request) make the transcript
@@ -594,6 +606,45 @@ class GatewayTurnPersistenceMixin:
         # the coherence guard snapshots at agent-BUILD time, so our own writes would otherwise
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
+
+    async def _hmwa_retain_content_policy_refused_turn(self, sid, session_key, boundary_row_id=None):
+        """Retain a safety-refused turn for display while forcing the next turn to rebuild from the
+        clean (model) transcript. The ONE owner-side refusal cleanup for every durable gateway owner:
+        the in-process runner (this persist path), the managed worker (Bot Chat / safe-mode, via
+        ``execute_managed``) and the standalone tui_gateway finish path all funnel here so none can be
+        missed (#149708 review).
+
+        The agent flushed the turn-start user row before the refusal was known (a managed worker's
+        subprocess flushes to the SAME shared transcript, then exits); now that the turn lease is
+        released, take that whole turn out of the MODEL context owner-side — the same soft-delete
+        ``/undo`` uses — but KEEP the user's message visible in the chat as a greyed refused notice,
+        and evict any cached agent so the next turn rebuilds from the active-only transcript.
+        Otherwise the refused turn stays in the next build's in-memory history and the deterministic
+        filter re-refuses every later message (the "stuck session" report). The refusal was already
+        delivered to the user. ``boundary_row_id`` (the refused run's original durable boundary,
+        captured by the refusal handler) is the precise rewind target; without it the newest user
+        turn is guessed. ``session_key`` is ``None`` for the managed worker (its subprocess holds no
+        cached owner agent to evict).
+
+        ``retain_refused_turn_for_display`` reports failure by returning ``None`` (it swallows its own
+        errors), so only evict on a confirmed retention and warn otherwise — a silently-failed
+        un-stick leaves the chat locked, and that is the one outcome worth a visible signal.
+        """
+        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+        try:
+            outcome = await self.async_session_store.retain_refused_turn_for_display(
+                sid, notice=CONTENT_REFUSED_NOTICE, boundary_row_id=boundary_row_id)
+        except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash turn teardown
+            logger.warning("content-policy refusal: retaining the refused turn for %s raised: %s", sid, e)
+            return
+        if outcome is None:
+            logger.warning(
+                "content-policy refusal: could not retain the refused turn for %s (rewind found none); "
+                "the chat may stay locked until the user runs /undo", sid)
+            return
+        if session_key is not None:
+            with suppress(Exception):
+                self._evict_cached_agent(session_key)
 
     @staticmethod
     def _usage_window_chat_wording(agent_result: dict, response: str) -> str:

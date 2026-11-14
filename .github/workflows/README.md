@@ -33,12 +33,9 @@ pull_request / push main
  │                             ├─ remote-backends.yml, bootstrap-installer.yml, docs-site-checks.yml
  │                             ├─ e2e-desktop-core.yml, e2e-desktop-update.yml (release/dispatch only)
  │                             ├─ e2e-desktop.yml (disabled: `if: false`)
- │                             ├─ uv-lockfile-check.yml, contributor-check.yml, docker-lint.yml
- │                             ├─ always: infographic, profile-artifact, icons-freshness,
- │                             │          case-collision, blob-size, lazy-deps-guard
- │                             ├─ PR only: history-check, lockfile-diff, prompt-surface-diff,
- │                             │           supply-chain-audit
+ │                             ├─ repo-guards.yml (one job: every cheap guard as a lane-gated step)
  │                             └─ all-checks-pass  ← the ONLY required branch-protection check
+ │                                                   (+ the CI timing report steps)
  ├─ docker.yml   (own run; build/test, push :main on main)
  ├─ nix.yml      (own run; nix flake check)
  └─ path-filtered: pm-bundle, termux-verify, plugin-catalog-ci, sandbox-image, windows-bundle-sdk
@@ -187,7 +184,7 @@ Then a gate step in `ci.yaml` rewrites the result:
 |---|---|
 | `python` | anything not provably irrelevant to Python (includes `skills/`, `website/docs/`, `website/scripts/`, `website/static/oauth/`) |
 | `python_prod` | as `python`, excluding `tests/` |
-| `frontend` | `ui-tui/`, `web/`, `apps/`, `tests-js/`, root npm manifests, the WhatsApp bridge, JS under `scripts/build/` |
+| `frontend` | `ui-tui/`, `web/`, `apps/`, `tests-js/`, root pnpm manifests (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`), the WhatsApp bridge, JS under `scripts/build/` |
 | `rust` | `.rs`, Cargo files, bootstrap-installer crate paths |
 | `catalog` | `plugin-catalog/*.yaml`, `contributors/emails/` (a diff with only these runs catalog tests **instead of** the Python suite) |
 | `site` | the Docusaurus site |
@@ -197,7 +194,7 @@ Then a gate step in `ci.yaml` rewrites the result:
 | `uv_lock` | `pyproject.toml` or `uv.lock` |
 | `deps` | `pyproject.toml` |
 | `scan` | Python files, `.pth`, setup hooks |
-| `npm_lock` | any `package-lock.json` |
+| `npm_lock` | `pnpm-lock.yaml` or any `package-lock.json` |
 | `docker_meta` | Dockerfiles and Docker scripts |
 | `docker`, `nix` | slow lanes, read by `docker.yml` and `nix.yml` (not by `ci.yaml`) |
 | `e2e`, `e2e_upgrade`, `e2e_desktop_core`, `e2e_desktop_update` | computed, then forced off except on release or dispatch |
@@ -218,10 +215,10 @@ of every suite that reads it.
 | ↳ macOS (2 slices), Windows x64, Windows arm64 (2 slices) | | always inside `tests-os.yml`; the real Windows hand-off tests only with `desktop_updater` | |
 | ↳ Windows install + update E2E | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
 | ↳ Windows E2E (real processes) | | `e2e` (release or dispatch) | PRs and pushes |
-| Python lints | `lint.yml` | `python` or `frontend` | neither |
-| ↳ ruff + ty diff | | PR and `python` | push, or frontend-only |
-| ↳ ruff enforcement / Windows footguns | | `python` | frontend-only |
-| ↳ code health ratchet | | PR (Python and TS) | push / dispatch / release |
+| Python lints | `lint.yml` (one job) | `python` or `frontend`; the job itself skips a frontend-only push | neither |
+| ↳ Windows footguns + sibling guards, `ruff check .` (steps) | | `python` | frontend-only |
+| ↳ code health ratchet (step) | | PR (Python and TS) | push / dispatch / release |
+| ↳ ruff + ty diff (advisory steps) | | PR and `python` | push, or frontend-only |
 | JS & TS checks | `js-tests.yml` | `frontend` | no frontend change |
 | Rust tests | `rust-tests.yml` | `rust` | no Rust change |
 | Catalog tests | `catalog-tests.yml` | `catalog` | no catalog data change |
@@ -231,16 +228,23 @@ of every suite that reads it.
 | Desktop core E2E | `e2e-desktop-core.yml` | `e2e_desktop_core` (release or dispatch) | PRs and pushes |
 | Desktop update E2E | `e2e-desktop-update.yml` | `e2e_desktop_update` (release or dispatch) | PRs and pushes |
 | Docs Site | `docs-site-checks.yml` | `site` | no site change |
-| Deny unrelated histories | `history-check.yml` | `pull_request` only | push, dispatch, release |
-| Check contributors | `contributor-check.yml` | `python` or `catalog` | neither |
-| Check uv.lock | `uv-lockfile-check.yml` | `uv_lock` | neither lockfile nor pyproject changed |
-| No committed infographics / profile archives / case collisions / large blobs / lazy_deps imports / stale icons | `infographic-check.yml`, `profile-artifact-check.yml`, `case-collision-check.yml`, `blob-size-check.yml`, `lazy-deps-guard.yml`, `icons-freshness-check.yml` | **always** | never |
-| package-lock.json diff | `lockfile-diff.yml` | PR and `npm_lock` | push, or no lockfile change |
-| Prompt surface diff | `prompt-surface-diff.yml` | PR and `python` (advisory) | push, or no Python change |
-| Lint Docker scripts | `docker-lint.yml` | `docker_meta` | no Docker meta change |
-| Supply-chain scan | `supply-chain-audit.yml` | PR and (`scan` or `deps`) | push, or neither lane |
+| Repository guards | `repo-guards.yml` (one job) | **always** | never |
+| ↳ No committed infographics / profile archives / case collisions / large blobs / lazy_deps imports / stale icons (steps) | | always | never |
+| ↳ Deny unrelated histories (step) | | `pull_request` only | push, dispatch, release |
+| ↳ Check contributors (step) | | `python` or `catalog` | neither |
+| ↳ Check uv.lock (step) | | `uv_lock` | neither lockfile nor pyproject changed |
+| ↳ JS lockfile diff, `pnpm-lock.yaml` and `package-lock.json` (advisory steps) | | PR and `npm_lock` | push, or no lockfile change |
+| ↳ Prompt surface diff (advisory steps) | | PR and `python` | push, or no Python change |
+| ↳ Lint Docker scripts (steps) | | `docker_meta` | no Docker meta change |
+| ↳ Supply-chain scan / PyPI upper bounds (steps) | | PR and `scan` / `deps` | push, or neither lane |
 | All required checks pass (v2) | inline | `always()` | never |
-| CI timing report | inline | `always()`. Saves a baseline on `main`; makes a diff report on PRs | never |
+| ↳ CI timing report (advisory steps of the gate job) | | `always()`. Saves a baseline on `main`; makes a diff report on PRs | never |
+
+Steps inside one job keep what told the old jobs apart: the lane gate is the step's
+`if:`, each guard runs whether or not an earlier one failed (`!cancelled()`), any red
+step fails the job, and the `review-status-*` artifacts the live PR comment reads keep
+their names. The jobs were split only by history: each paid its own checkout and a
+full billed minute for a few seconds of work.
 
 Not part of `ci.yaml`: the Docker image build, `nix flake check`, and the OSV
 scan. Docker and Nix run in their own workflows. A reusable-workflow call
@@ -257,9 +261,9 @@ ones. OSV runs on a weekly schedule.
   the lane-bound consumers `tests`, `tests-os`, `e2e-desktop-update`,
   `remote-backends` and `catalog-tests`: when `detect` selected their lane,
   they must succeed.
-- **Release mode:** every required job must be `success`. Only the PR-only
-  jobs (`history-check`, `lockfile-diff`, `prompt-surface-diff`,
-  `supply-chain`) and the deferred `e2e-desktop` may skip.
+- **Release mode:** every required job must be `success`. Only the deferred
+  `e2e-desktop` may skip. The PR-only checks are steps of `repo-guards`, which
+  runs on every event, so they never reach the gate as a skip.
 
 Branch protection requires only this check. The `(v2)` suffix is deliberate.
 When a new job joins the required set, bump the version here and in the
@@ -302,7 +306,7 @@ branch protection.
 
 | Workflow | Triggers | Runs / skips | Manual trigger |
 |---|---|---|---|
-| `docker.yml`, **Docker Build, Test, and Publish** | `pull_request`, `push: main`, `workflow_call` (stable) | **PR:** `detect` → `build` only when the `docker` slow lane is on (Docker meta, dependency manifests, `pm/`, `tests/docker/`, webapp build recipe, or the `run-e2e` label). Builds slim+desktop × amd64+arm64 and runs the docker integration tests. Never pushes. **Push to `main` on the upstream repo:** always builds, then `publish` (env `container-publish`) and `merge` push `:main` / `:main-desktop` only (never `:latest`). **Stable `release-phase: test`:** builds the claim commit, tests it (unless the claim has no `docker-tests` lane), and archives the exact image. **`release-phase: publish`:** pushes the archived bytes under the attempt ref and returns the manifest digest. No `release: published` trigger, on purpose. | none (`gh run rerun`) |
+| `docker.yml`, **Docker Build, Test, and Publish** | `pull_request`, `push: main`, `workflow_call` (stable) | **PR:** `mode` (phase + classification, one job) → `build` only when the `docker` slow lane is on (Docker meta, dependency manifests, `pm/`, `tests/docker/`, webapp build recipe, or the `run-e2e` label). Builds slim+desktop × amd64+arm64 and runs the docker integration tests. Never pushes. **Push to `main` on the upstream repo:** always builds, then `publish` (env `container-publish`) and `merge` push `:main` / `:main-desktop` only (never `:latest`). **Stable `release-phase: test`:** builds the claim commit, tests it (unless the claim has no `docker-tests` lane), and archives the exact image. **`release-phase: publish`:** pushes the archived bytes under the attempt ref and returns the manifest digest. No `release: published` trigger, on purpose. | none (`gh run rerun`) |
 | `nix.yml`, **Nix flake check** | `pull_request`, `push: main`, `workflow_call` | `flake-check` runs when the `nix` lane is on (`nix/`, `flake.*`, dependency/npm manifests, `.github/`, `run-e2e` label). Every push to `main` turns it on. `release: true` forces it. | none |
 | `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on darwin-arm64, win32-x64, win32-arm64. Linux targets are commented out; there is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
 | `termux-verify.yml`, **Termux verification** | `push: main` / `pull_request` on `scripts/termux/**`, `pm/**` (not `*.md`), `tests/scripts/test_termux*`, itself; `workflow_dispatch`; `workflow_call` (stable) | `contracts` and `tui` always run. `r2-provisioned` is skipped on PRs. `native-runtime` (arm64) runs only when R2 secrets exist or `release: true`. A release run fails loudly without R2. | `gh workflow run termux-verify.yml` |
@@ -340,7 +344,7 @@ branch protection.
 | `skills-index.yml` | 06:00, 18:00 | push, dispatch | See above |
 | `skills-index-freshness.yml` | every 4 h | dispatch | Upstream only. Opens an issue if `/docs/api/skills-index.json` is more than 26 h stale, missing, or a source collapsed. Also checks CORS on `/docs/api/plugins.json`. |
 | `docs-search-monitor.yml` | every 6 h at :17 | `workflow_run` after every **Deploy Site**; dispatch | Upstream only. Live Algolia and headless-browser probe of docs search. A red run is the alert. |
-| `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock` and `package-lock.json`. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
+| `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock`, `pnpm-lock.yaml` and the nested `package-lock.json` files. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
 
 ---
 
@@ -527,28 +531,21 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | File | Name | Triggers | Called by |
 |---|---|---|---|
 | `archive-inputs.yml` | Archive pinned PM inputs | main (paths), dispatch, call | none |
-| `blob-size-check.yml` | Blob Size Check | R | ci |
 | `bootstrap-installer-build.yml` | Bootstrap installer build | dispatch | none |
 | `bootstrap-installer.yml` | Bootstrap installer | R | ci |
 | `canary-release.yml` | Canary Release | cron daily 06:41, dispatch | none |
-| `case-collision-check.yml` | Case Collision Check | R | ci |
 | `catalog-tests.yml` | Catalog tests | R | ci |
 | `ci-review-comment.yml` | CI review comment | workflow_run(CI in_progress) | none |
 | `ci.yaml` | CI | PR, main, dispatch, call | stable |
-| `contributor-check.yml` | Contributor Attribution Check | R | ci |
 | `deploy-site.yml` | Deploy Site | main (paths), release published, dispatch | skills-index (dispatch) |
 | `desktop-bundled-release.yml` | Desktop Bundled Release | dispatch, call | stable; canary/release.py (dispatch) |
 | `desktop-bundle-smoke.yml` | Desktop bundle smoke | dispatch, call | desktop-bundled-release |
-| `docker-lint.yml` | Docker / shell lint | R | ci |
 | `docker.yml` | Docker Build, Test, and Publish | PR, main, call | stable |
 | `docs-search-monitor.yml` | Docs Search Monitor | cron 6 h, workflow_run(Deploy Site), dispatch | none |
 | `docs-site-checks.yml` | Docs Site Checks | R | ci |
 | `e2e-desktop-core.yml` | E2E Desktop core | R | ci |
 | `e2e-desktop-update.yml` | E2E Desktop update | R | ci |
 | `e2e-desktop.yml` | E2E Desktop | R | ci (disabled) |
-| `history-check.yml` | History Check | R | ci |
-| `icons-freshness-check.yml` | Icon Assets Freshness | R | ci |
-| `infographic-check.yml` | Infographic Check | R | ci |
 | `install-e2e-macos-run.yml` | install-e2e macos leg | R | install-e2e, stable |
 | `install-e2e-red.yml` | Install & Update E2E red tracker | workflow_run(Install & Update E2E), dispatch | none |
 | `install-e2e-run.yml` | Install & Update E2E (reusable) | R | install-e2e, macos leg |
@@ -557,28 +554,23 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `js-autofix.yml` | auto-fix lint issues & formatting | main (paths), dispatch | none |
 | `js-tests.yml` | JS Tests | R | ci |
 | `label-rerun.yml` | Label rerun | PR labeled | none |
-| `lazy-deps-guard.yml` | Lazy-deps import guard | R | ci |
 | `lint.yml` | Lint (ruff + ty) | R | ci |
 | `live-providers.yml` | Live provider canaries | tags `v*`, dispatch | none |
-| `lockfile-diff.yml` | Lockfile diff | R | ci |
 | `nix.yml` | Nix flake check | PR, main, call | stable |
 | `osv-scanner.yml` | OSV-Scanner | cron Mon 09:00, dispatch | none |
 | `plugin-catalog-ci.yml` | Plugin Catalog CI | PR (paths) | none |
 | `pm-bundle.yml` | PM Bundle | PR (paths), dispatch, call | stable |
-| `profile-artifact-check.yml` | Profile Artifact Boundary | R | ci |
-| `prompt-surface-diff.yml` | Prompt surface diff | R | ci |
 | `remote-backends.yml` | Remote terminal backends | R | ci |
+| `repo-guards.yml` | Repository guards | R | ci |
 | `rust-tests.yml` | Rust tests | R | ci |
 | `sandbox-image.yml` | Sandbox desktop image | PR (paths), release published, dispatch | none |
 | `skills-index-freshness.yml` | Skills Index Freshness Check | cron 4 h, dispatch | none |
 | `skills-index.yml` | Build Skills Index | cron 06:00/18:00, main (paths), dispatch | none |
 | `stable-release-publication.yml` | Stable Release Publication | workflow_run(Stable Release completed), dispatch | none |
 | `stable-release.yml` | Stable Release | dispatch | release.py |
-| `supply-chain-audit.yml` | Supply Chain Audit | R | ci |
 | `termux-verify.yml` | Termux verification | PR/main (paths), dispatch, call | stable |
 | `tests-os.yml` | OS-specific tests | R | ci |
 | `tests.yml` | Tests | R | ci |
-| `uv-lockfile-check.yml` | uv.lock check | R | ci |
 | `windows-bundle-sdk.yml` | Windows bundle SDK | PR (paths), dispatch | none |
 | `windows-desktop-attach-e2e.yml` | Windows Desktop attach E2E | push `wine2e-desktop/**`, dispatch | none |
 | `windows-install-update-e2e.yml` | Windows install + update E2E | push `wine2e-install/**`, dispatch, call | tests-os |

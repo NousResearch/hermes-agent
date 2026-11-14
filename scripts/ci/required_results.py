@@ -6,9 +6,10 @@ Behavior tests: tests/ci/test_required_results.py
 Input: the JSON ``toJSON(needs)`` of the all-checks-pass job on stdin.
 Failures always fail the gate. A skipped or missing update/E2E consumer also
 fails whenever ``detect.outputs`` selects its lane. Other skips additionally
-fail in release mode unless the job is in :data:`EXCLUDED_JOBS` (PR-only jobs
-that cannot run on a tag event, plus the deferred Desktop E2E). The OSV scan
-is advisory in its findings only — its execution is required.
+fail in release mode unless the job is in :data:`EXCLUDED_JOBS` (the deferred
+Desktop E2E). The PR-only checks are steps of ``repo-guards``, a job that runs
+on every event, so none of them reaches the gate as a skip. The OSV scan is
+advisory in its findings only — its execution is required.
 
     echo "$NEEDS" | python3 scripts/ci/required_results.py [--release]
 """
@@ -21,11 +22,9 @@ import os
 import sys
 from typing import Any
 
-# Jobs that can never run on a release (push/tag) event, plus the deferred
-# Desktop E2E. These are the only skips a strict run tolerates.
-PR_ONLY_JOBS = ("history-check", "lockfile-diff", "prompt-surface-diff", "supply-chain")
+# The deferred Desktop E2E: the only skip a strict run tolerates.
 DEFERRED_JOBS = ("e2e-desktop",)
-EXCLUDED_JOBS = frozenset((*PR_ONLY_JOBS, *DEFERRED_JOBS))
+EXCLUDED_JOBS = frozenset(DEFERRED_JOBS)
 
 NEEDS_JSON_OUTPUT = "needs-json"
 

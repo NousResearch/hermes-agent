@@ -1018,9 +1018,6 @@ platform:
     approved: "✅ Approved."
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
-  yuanbao:
-    slow_response_notice: "This task is a bit involved — still working on it, please hang on..."
-    owner_command_denied: "⚠️ {command} is only available to the creator in private chat mode"
   shared:
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
@@ -1781,10 +1778,10 @@ slash:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
   backtrack:
-    title: "↺ Rewind — pick an earlier prompt"
-    keys_hint: "↑/↓ choose · Enter edit & resend · f fork from here · Esc close"
-    preview_label: "Prompt {number} of {total}:"
-    more_lines: "… ({count} more lines)"
+    title: "↺ Transcript — pick a prompt to edit"
+    keys_hint: "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back"
+    prime_hint: "esc again to edit previous message"
+    no_previous: "No previous message to edit."
     editing_hint: "↺ Editing prompt {number} — Enter rewinds here and sends · Esc Esc cancels"
     edit_cancelled: "↺ Rewind cancelled; nothing was removed."
     rewound: "↺ Rewound to prompt {number} ({count} message(s) archived); sending the edit."
@@ -4096,3 +4093,8 @@ plan_usage:
   large_notice_limit: "Large model: your {name} limit is reached ({resets})."
   large_notice_limit_stops: "Large model: your {name} limit is reached ({resets}), so it won't run until then."
   large_notice_percent: "Large model: uses more of your plan's usage per message. Monthly large-model limit: {percent} used."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Files changed in the undone turns: {files}. Run /rollback to see checkpoints and restore them."
+    more: "+{count} more"

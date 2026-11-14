@@ -86,6 +86,8 @@ def _resolve_checkpoint_base() -> Path:
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
+# Commit-body line carrying a snapshot's exact take time (listings read only the subject).
+TAKEN_AT_TRAILER = "Hermes-Taken-At"
 _INDEXES_DIRNAME = "indexes"
 _PROJECTS_DIRNAME = "projects"
 _LEDGERS_DIRNAME = "ledgers"
@@ -1668,10 +1670,12 @@ class CheckpointManager:
                 line.strip() for line in reason.splitlines() if line.strip()
             ) + _uncaptured_note(nested_repos)
 
-        # Build commit (parent = current ref tip, if any).
-        commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]
+        # Build commit (parent = current ref tip, if any). The body's exact take time lets a whole-tree
+        # /rollback tell a turn after the snapshot from one before it in the same git second.
+        message = f"{reason}\n\n{TAKEN_AT_TRAILER}: {time.time():.6f}"
+        commit_args = ["commit-tree", tree_sha, "-m", message, "--no-gpg-sign"]
         if has_ref:
-            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", reason, "--no-gpg-sign"]
+            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", message, "--no-gpg-sign"]
         ok_commit, new_sha, err = _run_git(
             commit_args, store, working_dir,
             index_file=index_file,

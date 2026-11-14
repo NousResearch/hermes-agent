@@ -58,9 +58,9 @@ def release_version(_repo: Path, tag: str) -> str:
     return tag[1:]
 
 
-def npm_command(node: str) -> list[str]:
-    # Dependency preparation and packaging must resolve the same npm identity.
-    return [node, str(ROOT / "scripts/build/node-deps.mjs"), "--npm"]
+def pnpm_command(node: str) -> list[str]:
+    # Dependency preparation and packaging must resolve the same pnpm identity.
+    return [node, str(ROOT / "scripts/build/node-deps.mjs"), "--pnpm"]
 
 
 def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],

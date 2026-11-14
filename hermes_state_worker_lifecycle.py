@@ -2,6 +2,7 @@
 import json
 import time
 
+from hermes_state_common import _MERGE_DISPLAY_META
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -183,7 +184,7 @@ def worker_user_content(db, conn, session_id, payload):
             "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
             (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
     return {'value': conn.execute(
-        "UPDATE messages SET content=?, api_content=NULL, display_metadata=? "
+        f"UPDATE messages SET content=?, api_content=NULL, display_metadata={_MERGE_DISPLAY_META} "
         "WHERE id=? AND session_id=? AND role='user' AND active=1",
         (db._encode_content(payload['content']), db._encode_display_metadata(payload['display_metadata']),
          _row_id(payload), session_id)).rowcount}

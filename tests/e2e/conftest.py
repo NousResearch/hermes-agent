@@ -214,7 +214,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._busy_input_mode = "interrupt"
     runner._running_agents_ts = {}
     runner._pending_model_notes = {}
-    runner._update_prompt_pending = {}
     runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None

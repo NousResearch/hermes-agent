@@ -121,7 +121,7 @@ def _gateway_runner():
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
-    runner._session_model_overrides, runner._session_reasoning_overrides = {}, {}
+    runner._session_model_overrides = {}
     runner._pending_model_notes, runner._background_tasks = {}, set()
     key = build_session_key(source)
     entry = SessionEntry(session_key=key, session_id="sess-1", created_at=datetime.now(),

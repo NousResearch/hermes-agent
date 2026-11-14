@@ -35,6 +35,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 
 import { platformDefaultHermesHome } from './data-paths'
 import { type ControlMasterHolders, sharedControlMasterHolders } from './ssh-control-master-holders'
@@ -529,6 +530,8 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
 
     let stdout = ''
     let stderr = ''
+    const stdoutDecoder = new StringDecoder('utf8')
+    const stderrDecoder = new StringDecoder('utf8')
     let settled = false
 
     const timer: any = setTimeout(() => {
@@ -580,10 +583,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
     }
 
     child.stdout?.on('data', d => {
-      stdout += d.toString()
+      stdout += stdoutDecoder.write(d)
     })
     child.stderr?.on('data', d => {
-      stderr += d.toString()
+      stderr += stderrDecoder.write(d)
     })
     child.on('error', error => {
       if (settled) {
@@ -603,6 +606,8 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
+      stdout += stdoutDecoder.end()
+      stderr += stderrDecoder.end()
       resolve({ code, signal: closeSignal || null, stdout, stderr })
     })
   })
@@ -1070,6 +1075,7 @@ class SshConnection {
       const child = this._spawnFn(this.sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
       tunnel.child = child
       let stderr = ''
+      const stderrDecoder = new StringDecoder('utf8')
       let readyConfirmed = false
       let settled = false
       let downHandled = false
@@ -1123,7 +1129,7 @@ class SshConnection {
           return
         }
 
-        stderr = `${stderr}${String(d)}`.slice(-16_384)
+        stderr = `${stderr}${stderrDecoder.write(d)}`.slice(-16_384)
 
         if (readyPattern.test(stderr)) {
           readyConfirmed = true
@@ -1134,9 +1140,12 @@ class SshConnection {
       child.on('exit', (code: any) =>
         onDown(`tunnel process exited with code ${code}`, new Error(`tunnel process exited with code ${code}`))
       )
-      child.on('close', (code: any) =>
+      child.on('close', (code: any) => {
+        // Flush only on 'close': 'exit' can fire before stderr is drained, and
+        // ending the decoder there turns a still-arriving character into U+FFFD.
+        stderr = `${stderr}${stderrDecoder.end()}`.slice(-16_384)
         onDown(`tunnel process closed with code ${code}`, new Error(`tunnel process closed with code ${code}`))
-      )
+      })
     })
   }
 

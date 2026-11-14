@@ -559,7 +559,16 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         return d
 
     def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
-        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600)
+        root = get_dir()
+        n = unlink_files_older_than(root, "*", max_age_hours * 3600)
+        # Per-conversation buckets (images/<platform>/<chat>/… etc.) must age out too;
+        # native-inputs is replay-owned (content-addressed digests) and never swept here.
+        with contextlib.suppress(OSError):
+            for sub in root.iterdir():
+                if sub.is_dir() and sub.name != "native-inputs":
+                    for dirpath, _dirs, _files in os.walk(sub):
+                        n += unlink_files_older_than(dirpath, "*", max_age_hours * 3600)
+        return n
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
     return get_dir, cleanup
@@ -604,6 +613,34 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("media cache dir creation failed for %s: %s", cache_dir, exc)
         cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_path_segment(raw: str, pattern: str = r"[^A-Za-z0-9._@+-]") -> str:
+    """One filesystem-safe directory segment: substitution class, then strip leading/trailing
+    dots so no segment can be '.' or '..' (interior dots stay — real chat ids contain them)."""
+    seg = re.sub(pattern, "_", raw).strip(".")
+    return seg or "_"
+
+
+def _bucket_inbound_media(path: str, platform: str, chat_id: str) -> str:
+    """Move a cached inbound media file into ``<root>/<platform>/<chat>/`` so "the file the
+    user just sent" is addressable per channel + conversation instead of a shared flat dir.
+    Covers every inbound cache root (images/documents/audio/videos). Files already bucketed
+    (parent is not a cache root) are skipped, keeping merged/flushed re-delivery idempotent.
+    Best-effort: any OSError leaves the original path."""
+    if not chat_id:
+        return path
+    try:
+        p = Path(path)
+        if p.parent.name not in ("images", "documents", "audio", "videos"):
+            return path
+        bucket = p.parent / _safe_path_segment(platform.lower()[:32], r"[^a-z0-9-]") / _safe_path_segment(chat_id[:64])
+        bucket.mkdir(parents=True, exist_ok=True)
+        dest = bucket / p.name
+        p.replace(dest)
+        return str(dest)
+    except OSError:
+        return path
 
 
 def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
@@ -3895,6 +3932,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
+        if getattr(event, "media_urls", None):
+            _src = event.source
+            _plat = getattr(getattr(_src, "platform", None), "name", None) or str(getattr(_src, "platform", "") or self.name)
+            _chat = str(getattr(_src, "chat_id", "") or "")
+            event.media_urls = [_bucket_inbound_media(u, _plat, _chat) for u in event.media_urls]
         if not self._message_handler:
             # No handler = every inbound silently discarded on an adapter that still polls and sends;
             # say so once per adapter (#102260).

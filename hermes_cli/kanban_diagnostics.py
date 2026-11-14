@@ -807,6 +807,45 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_stranded_in_review(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Assigned review waiting without a live claim for the stranded threshold.
+
+    Review is a dispatchable correction lane, not a terminal state.  Keeping it
+    separate from ready makes the operator-facing cause truthful while sharing
+    the same deterministic age/claim semantics as ``stranded_in_ready``.
+    """
+    threshold_seconds = float(cfg.get("stranded_threshold_seconds", 30 * 60))
+    if _task_field(task, "status") != "review" or _task_field(task, "claim_lock"):
+        return []
+    assignee = (_task_field(task, "assignee") or "").strip()
+    if not assignee:
+        return []
+    review_at = _latest_event_ts(events, {"review_requested", "status", "promoted"})
+    if review_at == 0:
+        review_at = int(_task_field(task, "created_at", default=0) or 0)
+    age_seconds = now - review_at
+    if review_at == 0 or age_seconds < threshold_seconds:
+        return []
+    severity = "critical" if age_seconds >= threshold_seconds * 6 else (
+        "error" if age_seconds >= threshold_seconds * 2 else "warning"
+    )
+    age_str = f"{age_seconds / 3600:.1f}h" if age_seconds >= 3600 else f"{int(age_seconds / 60)}m"
+    return [Diagnostic(
+        kind="stranded_in_review", severity=severity,
+        title=f"Review waiting for {age_str} with no worker",
+        detail=f"This review has been assigned to {assignee!r} for {age_str} but no worker has claimed it. "
+               "Confirm the reviewer profile is available and the dispatcher is polling its lane.",
+        actions=[
+            DiagnosticAction(kind="reassign", label="Reassign to a different reviewer",
+                             payload={"current_assignee": assignee}),
+            _cli_hint("Check dispatcher status", "hermes kanban diagnostics"),
+        ],
+        first_seen_at=review_at, last_seen_at=review_at, count=1,
+        data={"review_since": review_at, "age_seconds": int(age_seconds), "assignee": assignee,
+              "threshold_seconds": int(threshold_seconds)},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -820,6 +859,7 @@ _RULES: list[RuleFn] = [
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
     _rule_stale_running,
+    _rule_stranded_in_review,
 ]
 
 

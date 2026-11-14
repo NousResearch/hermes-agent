@@ -116,7 +116,9 @@ def admission_result(db, admission_id):
             return None
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
-        return load_result(saved[0]) if saved else None
+        # Message fields stored by reference reload from their transcript rows, redacted at this
+        # boundary like the stored copy itself (``hermes_state_terminal.reference_transcript_rows``).
+        return load_result(saved[0], conn=conn, transform=_redacted) if saved else None
 
 
 def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, display_metadata=None):

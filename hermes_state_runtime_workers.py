@@ -45,6 +45,12 @@ def discard_orphan_workers_on_reset(conn, session_ids):
 
 
 RETIRED_RECEIPT = {'retired': True}
+# A receipt answers one exact (execution, sequence, digest) re-send — a lost response. A terminal
+# execution can only be re-sent its newest publications (the closing ``execution.finish`` almost
+# always), so it keeps this many and no more; a live one keeps every receipt, they are the retries
+# in flight. A store held 149,564 receipts for 328 terminal executions before this bound existed.
+TERMINAL_RECEIPT_KEEP = 32
+
 # A delegated child's execution id is its parent's plus this and a random suffix, so every
 # descendant of an execution is one prefix probe away (gateway/session_worker_child.py).
 CHILD_SEPARATOR = '/child:'
@@ -110,3 +116,34 @@ def _compact(conn, execution_id):
 
 def retired_receipt(result_json):
     return json.loads(result_json) == RETIRED_RECEIPT
+
+
+def reclaim_worker_receipts(conn, *, older_than_days):
+    """Reclaim the receipts no retry can still resolve, without touching an execution in flight.
+
+    ``compact_terminal_receipts`` already drops a terminal execution's read *payloads*; the rows
+    stayed, one per publication, forever — session retirement deletes only the executions of a
+    session it is already deleting, and nothing else ages this table. A terminal execution keeps
+    its newest ``TERMINAL_RECEIPT_KEEP`` receipts (the closing one still replays byte-exact); one
+    whose session is inactive beyond ``older_than_days`` keeps none. ``registered``/``running``/
+    ``unknown`` executions are skipped: their receipts are the retries in flight.
+
+    ``older_than_days`` is the caller's retention window, not a second policy: the session that
+    owns an execution is what prune measures, so its receipts die on the same clock.
+    """
+    import time
+    from hermes_state_common import _sql_session_last_active_by_id
+    conn.execute('DELETE FROM worker_receipts WHERE NOT EXISTS (SELECT 1 FROM worker_executions e '
+                 'WHERE e.execution_id=worker_receipts.execution_id)')
+    if older_than_days is not None:
+        cutoff = time.time() - float(older_than_days) * 86400
+        active = _sql_session_last_active_by_id('e.session_id')
+        conn.execute(f"DELETE FROM worker_receipts WHERE execution_id IN (SELECT e.execution_id FROM "
+                     f"worker_executions e WHERE e.status='terminal' AND COALESCE({active}, 0) < ?)", (cutoff,))
+    over = conn.execute(
+        "SELECT e.execution_id, MAX(r.sequence) FROM worker_executions e JOIN worker_receipts r "
+        "ON r.execution_id=e.execution_id WHERE e.status='terminal' "
+        "GROUP BY e.execution_id HAVING MAX(r.sequence) > ?", (TERMINAL_RECEIPT_KEEP,)).fetchall()
+    for execution_id, last in over:
+        conn.execute('DELETE FROM worker_receipts WHERE execution_id=? AND sequence<=?',
+                     (execution_id, last - TERMINAL_RECEIPT_KEEP))

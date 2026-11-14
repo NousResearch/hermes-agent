@@ -657,15 +657,25 @@ def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
     return None
 
 
+def _suspicious_mcp_issues(name: str, cfg: Any) -> list[str]:
+    """Exfiltration/persistence-shaped findings for one entry. Run it on the RENDERED config: a
+    ``${VAR}`` expands into the command the transport actually spawns."""
+    from hermes_cli.mcp_security import validate_mcp_server_entry  # an import failure fails closed: no spawn
+    if not isinstance(cfg, dict):
+        return []
+    issues = validate_mcp_server_entry(name, cfg)
+    command = cfg.get("command")
+    template = getattr(command, "template", None)
+    if template is not None and template != command:  # name the configured template, never a resolved secret
+        issues = [issue.replace(str(command), template) for issue in issues]
+    return issues
+
+
 def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
-    try:
-        from hermes_cli.mcp_security import validate_mcp_server_entry
-    except Exception:
-        validate_mcp_server_entry = None
     safe_servers = {}
     for name, cfg in servers.items():
-        issues = validate_mcp_server_entry(name, cfg) if validate_mcp_server_entry and isinstance(cfg, dict) else None
+        issues = _suspicious_mcp_issues(name, cfg)
         if issues:
             logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
         elif (bad_costs := _malformed_cost_table(name, cfg)) is not None:
@@ -676,18 +686,32 @@ def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     return safe_servers
 
 
+def _render_portable_mcp_servers(portable: dict[str, dict]) -> dict[str, dict]:
+    """Portable entries rendered like native ones (a raw ``${VAR}`` reads as a changed definition on every
+    transport rebuild and swaps the running header for the literal placeholder), so they are validated as
+    spawned. An unscoped multiplex load keeps the raw templates; connect re-renders and re-validates."""
+    from agent.secret_scope import UnscopedSecretError
+    rendered = {}
+    for name, cfg in portable.items():
+        try:
+            rendered[name] = _interpolate_env_vars(dict(cfg))
+        except UnscopedSecretError:
+            logger.debug("Portable MCP server '%s' left unrendered: no secret scope bound", name)
+            rendered[name] = dict(cfg)
+    return rendered
+
+
 def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str] = frozenset()) -> None:
     """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
 
     The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
     a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
-    from agent.secret_scope import UnscopedSecretError
     from tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
         portable = get_plugin_manager().get_portable_mcp_servers()
-        for name, cfg in _filter_suspicious_mcp_servers(portable).items():
+        for name, cfg in _filter_suspicious_mcp_servers(_render_portable_mcp_servers(portable)).items():
             if name in rejected:  # the user's own entry for this name has a malformed budget: stay off
                 logger.warning("Portable MCP server '%s' skipped: the native entry of that name was rejected", name)
             elif name in safe_servers:
@@ -700,15 +724,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
                 else:
                     logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                # Rendered like native entries: a raw ``${VAR}`` here reads as a changed definition
-                # on every transport rebuild and swaps the running header for the literal placeholder.
-                try:
-                    safe_servers[name] = _interpolate_env_vars(dict(cfg))
-                except UnscopedSecretError:
-                    # Unscoped multiplex load: keep the raw templates (as before rendering here) rather
-                    # than end the merge; connect re-renders under the owner's scope and fails closed.
-                    logger.debug("Portable MCP server '%s' left unrendered: no secret scope bound", name)
-                    safe_servers[name] = dict(cfg)
+                safe_servers[name] = cfg
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
@@ -731,9 +747,9 @@ def _load_mcp_config() -> dict[str, dict]:
             pass
         safe_servers: dict[str, dict] = {}
         servers = servers if isinstance(servers, dict) else {}
-        kept = _filter_suspicious_mcp_servers(servers)
-        for name, cfg in kept.items():
-            interpolated = _interpolate_env_vars(cfg)
+        # Validate what will be spawned: a benign-looking ``${VAR}`` can expand into a shell payload.
+        kept = _filter_suspicious_mcp_servers({name: _interpolate_env_vars(cfg) for name, cfg in servers.items()})
+        for name, interpolated in kept.items():
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated

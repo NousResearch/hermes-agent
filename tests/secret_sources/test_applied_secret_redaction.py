@@ -186,6 +186,8 @@ def test_partial_print_of_a_key_ending_on_a_short_body_line_masks_it(part, trail
     assert not [b for b in [*SSH_BODY, trailer] if b in redacted.splitlines()]
     for kept in (f"key file:\ndone\n{lines[-1]}\n", f"{lines[0]}\nnote\n"):  # no body run: nothing to mask
         assert redact_sensitive_text(kept, force=True) == kept
+    for status in ("0", "done"):  # head -n 3 key; echo $? -- the status line is output, not a trailer
+        assert redact_sensitive_text("\n".join([*lines[:3], status]) + "\n", force=True).splitlines()[-1] == status
 
 
 

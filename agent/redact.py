@@ -1561,7 +1561,9 @@ def _redact_partial_private_keys(text: str) -> str:
         while 0 <= j < len(lines) and j not in drop and _PEM_BODY_LINE_RE.fullmatch(lines[j].rstrip("\r")):
             drop.add(j)
             j += step
-        if step > 0 and i + 1 < j < len(lines) and _PEM_TRAILER_RE.fullmatch(lines[j].rstrip("\r")):
+        # Forward, only a padded line: an unpadded short word after the run is output (``echo $?``, ``done``).
+        if step > 0 and i + 1 < j < len(lines) and _PEM_TRAILER_RE.fullmatch(lines[j].rstrip("\r")) \
+                and lines[j].rstrip().endswith("="):
             drop.add(j)
         if j != i + step:
             lines[i] = "[REDACTED PRIVATE KEY]"

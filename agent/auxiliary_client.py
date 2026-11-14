@@ -1,8 +1,10 @@
 """Shared auxiliary client router for side tasks (compression, search, vision, ...).
 
 Text auto chain: main provider+model → OpenRouter → Nous Portal → custom endpoint →
-native Anthropic → direct API-key providers → None. Vision auto chain: main
-provider (if a supported vision backend) → OpenRouter → Nous → Anthropic → custom.
+direct API-key providers (Anthropic only when explicitly configured; Claude Code
+credentials are not auto-tried) → None. Vision auto chain: main provider (if a
+supported vision backend) → OpenRouter → Nous → DeepInfra → None. Native Anthropic
+is not in the vision auto-detect chain — opt in with ``auxiliary.vision.provider``.
 ``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. Codex OAuth is
 in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.

@@ -150,6 +150,14 @@ _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 
+# TANDY (kb-sub-cache): "does this board have ANY platform='tui' subscription?" is probed at
+# most once per board per TTL, process-wide, instead of once per board per 5 s tick per live
+# session. With zero subscriptions and most boards empty the uncached walk dominated a
+# dashboard-profile CPU sample (52%). A board WITH any subscription still runs the unchanged
+# claim path every tick; only a brand-new subscription waits up to TTL to be noticed.
+_KB_SUBS_ANY_TTL = 60.0
+_kb_subs_any_cache: dict[str, tuple[float, bool]] = {}
+
 
 def _notif_release_turn(session: dict) -> None:
     with session["history_lock"]:
@@ -588,8 +596,34 @@ def _collect_kanban_notifications(session: dict) -> list:
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
     stray, unreclaimed = _kb_stray_delegate_keys(session, session_key), []
-    texts = [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, stray, unreclaimed)]
-    if stray and not unreclaimed:
+    try:
+        from hermes_cli import kanban_db_notify as _kbn
+    except Exception:
+        _kbn = None
+    import time as _time
+    now = _time.monotonic()
+    texts: list = []
+    skipped_any = False
+    for resolved, slug in unique.items():
+        cached = _kb_subs_any_cache.get(resolved)
+        if cached is None or (now - cached[0]) > _KB_SUBS_ANY_TTL:
+            if _kbn is None:
+                has_any = True  # fail open: never stop polling on an import problem
+            else:
+                try:
+                    # No chat_id: "any tui subscription at all", so a sub bound to a stray
+                    # subagent key still keeps this board in the poll set.
+                    has_any = _kbn.count_notify_subs(board=slug, platform="tui") > 0
+                except Exception:
+                    has_any = True  # fail open: an unreadable board keeps its delivery path
+            cached = (now, has_any)
+            _kb_subs_any_cache[resolved] = cached
+        if not cached[1]:
+            skipped_any = True
+            continue  # no subscription of any kind on this board — nothing can be delivered
+        texts.extend(_kb_poll_board(_kb, slug, session_key, stray, unreclaimed))
+    # Only declare the stray cache clean when every board was actually examined this tick.
+    if stray and not unreclaimed and not skipped_any:
         session["_kanban_stray_keys"] = ()  # every board is clean; stop probing
     return texts
 

@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` eklenemedi — {size_mb} MB, Discord'un bu kanal için {limit_mb} MB yükleme sınırını aşıyor. Dosyayı sıkıştırın veya bunun yerine bir bağlantı paylaşın."
       image_skipped_too_large: "⚠️ `{filename}` atlandı — {size_mb} MB, Discord'un {limit_mb} MB yükleme sınırını aşıyor."
   telegram:
+    vault_code:
+      body: "Bu mesajı kodla yanıtla. Hermes yanıtını hemen siler ve kodu sayfaya girer; model kodu hiç görmez."
+      delete_failed: "Yanıtın burada silinemedi. Lütfen kendin sil."
     approval:
       action_once: "✅ Bir Kez"
       action_session: "✅ Oturum"

@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}`을(를) 첨부할 수 없었어요 — {size_mb} MB는 이 채널의 Discord 업로드 한도 {limit_mb} MB를 초과해요. 파일을 압축하거나 링크로 공유해 주세요."
       image_skipped_too_large: "⚠️ `{filename}` 건너뜀 — {size_mb} MB는 Discord 업로드 한도 {limit_mb} MB를 초과해요."
   telegram:
+    vault_code:
+      body: "이 메시지에 코드로 답장하세요. Hermes가 답장을 즉시 삭제하고 코드를 페이지에 입력합니다. 모델은 코드를 보지 않습니다."
+      delete_failed: "여기서 답장을 삭제하지 못했습니다. 직접 삭제해 주세요."
     approval:
       action_once: "✅ 한 번 허용"
       action_session: "✅ 세션"

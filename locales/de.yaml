@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` konnte nicht angehängt werden — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB für diesen Kanal. Komprimieren Sie die Datei oder teilen Sie stattdessen einen Link."
       image_skipped_too_large: "⚠️ `{filename}` übersprungen — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Antworte auf diese Nachricht mit dem Code. Hermes löscht deine Antwort sofort und trägt den Code in die Seite ein; das Modell sieht ihn nie."
+      delete_failed: "Deine Antwort konnte hier nicht gelöscht werden. Bitte lösche sie selbst."
     approval:
       action_once: "✅ Einmalig"
       action_session: "✅ Sitzung"

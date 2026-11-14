@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Kon nie `{filename}` aanheg nie — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB vir hierdie kanaal. Pers die lêer saam of deel eerder 'n skakel."
       image_skipped_too_large: "⚠️ `{filename}` oorgeslaan — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Antwoord op hierdie boodskap met die kode. Hermes vee jou antwoord dadelik uit en vul die kode op die bladsy in; die model sien dit nooit."
+      delete_failed: "Kon nie jou antwoord hier uitvee nie. Vee dit asseblief self uit."
     approval:
       action_once: "✅ Eenmalig"
       action_session: "✅ Sessie"

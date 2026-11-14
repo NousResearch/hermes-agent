@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` を添付できませんでした — {size_mb} MB はこのチャンネルの Discord アップロード上限 {limit_mb} MB を超えています。ファイルを圧縮するか、代わりにリンクを共有してください。"
       image_skipped_too_large: "⚠️ `{filename}` をスキップしました — {size_mb} MB は Discord のアップロード上限 {limit_mb} MB を超えています。"
   telegram:
+    vault_code:
+      body: "このメッセージにコードを返信してください。Hermes は返信をすぐに削除し、コードをページに入力します。モデルがコードを見ることはありません。"
+      delete_failed: "ここで返信を削除できませんでした。ご自身で削除してください。"
     approval:
       action_once: "✅ 一度だけ許可"
       action_session: "✅ セッション中"

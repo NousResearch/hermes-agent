@@ -164,6 +164,42 @@ def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: i
     return price if newest < 0 else (lambda i: 0 if i <= newest else price(i))
 
 
+def last_index_with_role(messages: list[dict[str, Any]], role: str) -> int:
+    """Index of the newest dict message with ``role``, or -1."""
+    return max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == role), default=-1)
+
+
+def unread_delegation_result_cut(compressor: Any, messages: list[dict[str, Any]], head_end: int, cut_idx: int) -> int:
+    """Tail cut pulled back to the oldest async-delegation result that arrived after the model's last turn.
+
+    Such a row was in no request the model answered, so summarizing it hands the parent a paraphrase of a result it
+    never read. The over-ceiling guards above keep the cut inside a run of large unread results (several parallel
+    children finishing together), so the older ones were summarized while only the newest stayed verbatim. The
+    resulting tail is bounded by :data:`TAIL_MAX_THRESHOLD_FRACTION` of the trigger, so the oldest results of a pile
+    larger than that are still summarized and compaction keeps making progress."""
+    start = max(last_index_with_role(messages, "assistant"), head_end) + 1
+    unread = [i for i in range(start, min(cut_idx, len(messages))) if _is_delegation_result(messages[i])]
+    if not unread:
+        return cut_idx
+    price, budget = compressor._tail_row_pricer(messages), int(compressor.threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION)
+    # Newest-first: extend back to the next older unread result while the whole resulting tail fits the budget.
+    keep, tail_tokens, bound = cut_idx, sum(map(price, range(cut_idx, len(messages)))), cut_idx
+    for idx in reversed(unread):
+        tail_tokens += sum(map(price, range(idx, bound)))
+        if tail_tokens > budget:
+            break
+        keep, bound = idx, idx
+    return keep
+
+
+def _is_delegation_result(message: dict[str, Any]) -> bool:
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    return message.get("display_kind") == "async_delegation_complete" or (
+        isinstance(content, str) and content.lstrip().startswith("[ASYNC DELEGATION"))
+
+
 def tail_cut_progress_floor(compressor: Any, messages: list[dict[str, Any]], head_end: int, cut_idx: int) -> int:
     """Lowest tail cut that leaves the summary window a row the handoff scan keeps.
 

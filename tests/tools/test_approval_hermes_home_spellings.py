@@ -41,6 +41,8 @@ class TestSpellingsOfTheHermesHome:
         "$HOME/AppData/Local/hermes/config.yaml",
         "${HOME}/AppData/Local/hermes/config.yaml",
         "$LOCALAPPDATA/hermes/config.yaml",  # the variable the default is built from
+        "${LOCALAPPDATA}/hermes/config.yaml",
+        "${USERPROFILE}/AppData/Local/hermes/config.yaml",
         r"%LOCALAPPDATA%\hermes\config.yaml",
     ])
     def test_every_spelling_of_the_windows_default_home_is_gated(self, windows_default_home, target):
@@ -72,3 +74,9 @@ class TestUnrelatedPathsStaySafe:
     ])
     def test_a_sibling_config_yaml_is_not_flagged_as_hermes_policy(self, windows_default_home, target):
         assert _is_dangerous(f"sed -i s/a/b/ {target}") is False
+
+    def test_a_sibling_of_a_custom_home_is_not_flagged(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/home/tester")
+        monkeypatch.setenv("HERMES_HOME", "/home/tester/hermes-data")
+        assert _is_dangerous("sed -i s/a/b/ ~/hermes-data-old/config.yaml") is False
+        assert _is_dangerous("sed -i s/a/b/ $HOME/hermes-data-old/config.yaml") is False

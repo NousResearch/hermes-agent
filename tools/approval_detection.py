@@ -869,10 +869,9 @@ def _home_spellings(paths, command: str) -> list[str]:
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     roaming = os.environ.get("APPDATA", "")
     profile = os.environ.get("USERPROFILE", "")
-    roots = [("~", home), ("$HOME", home), ("${HOME}", home),
-             ("$LOCALAPPDATA", local_appdata), ("%LOCALAPPDATA%", local_appdata),
-             ("$APPDATA", roaming), ("%APPDATA%", roaming),
-             ("$USERPROFILE", profile), ("%USERPROFILE%", profile)]
+    named = (("HOME", home), ("LOCALAPPDATA", local_appdata), ("APPDATA", roaming), ("USERPROFILE", profile))
+    roots = [("~", home)] + [(spelled, root) for name, root in named
+                             for spelled in (f"${name}", f"${{{name}}}", f"%{name}%")]
     relative = [f"{prefix}/{tail}"
                 for prefix, root in roots
                 for spelled_root in dict.fromkeys([root, *_msys_drive_spellings(root)])

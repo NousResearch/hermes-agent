@@ -44,6 +44,16 @@ def test_heredoc_written_then_run_keeps_its_body_on_the_deny_list(floors_off):
     assert approval_floors._match_user_deny_rule(command) is not None
 
 
+def test_absolute_shell_path_keeps_written_heredoc_on_floors(floors_off):
+    # /bin/bash executes the file just written; its heredoc is code, not inert documentation.
+    rm_root = "r" + "m -r" + "f /"
+    command = f"cat > job.sh <<'EOF'\n{rm_root}\nEOF\n/bin/bash job.sh"
+
+    assert detect_hardline_command(command)[0] is True
+    assert approval_floors._match_user_deny_rule(command) is not None
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
 def test_unquoted_heredoc_keeps_command_substitution_visible_to_hardline():
     command = "cat > notes.txt <<EOF\n$(rm -rf /)\nEOF"
 

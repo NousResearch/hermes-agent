@@ -47,3 +47,29 @@ function Find-WindowButton {
     }
     return $null
 }
+
+function Confirm-AppInstallerPrompt {
+    # Presses App Installer's prompt button, then Yes on the "Warning: Metered Connection" dialog
+    # App Installer 1.26 opens over the prompt on a metered network, as the x64 runner's is.
+    # Yes counts only after the prompt: a user answers the warning the prompt raised, nothing else.
+    # Returns the names pressed, in order; none when no prompt appeared.
+    param($Root, [scriptblock]$GetProcessIds, [scriptblock]$Press,
+        [int]$PromptTimeoutSec, [int]$WarningTimeoutSec, [int]$PollSec = 3)
+    $stages = @(
+        @{ Patterns = @('^Update$', '^Install$', '^(Reinstall|Update) .*'); TimeoutSec = $PromptTimeoutSec },
+        @{ Patterns = @('^Yes$'); TimeoutSec = $WarningTimeoutSec })
+    $pressed = @()
+    foreach ($stage in $stages) {
+        $deadline = (Get-Date).AddSeconds($stage.TimeoutSec)
+        $hit = $null
+        while (-not $hit -and (Get-Date) -lt $deadline) {
+            $ids = @(& $GetProcessIds)
+            if ($ids.Count) { $hit = Find-WindowButton -Root $Root -ProcessIds $ids -Patterns $stage.Patterns }
+            if ($hit -and -not (& $Press $hit)) { $hit = $null }
+            if (-not $hit) { Start-Sleep -Seconds $PollSec }
+        }
+        if (-not $hit) { break }
+        $pressed += $hit.Name
+    }
+    return $pressed
+}

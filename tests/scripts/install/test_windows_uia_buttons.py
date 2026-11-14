@@ -13,6 +13,10 @@ rc.5-v0.23.2). App Installer 1.29 (arm64 runner) can open the prompt in a second
 App Installer 1.26 (x64 runner) is a UWP app: its window is an ApplicationFrameHost frame
 and only the frame's CoreWindow child belongs to App Installer, so a lookup by App
 Installer's process id found no window at all (rehearsal rc.6-v0.23.2).
+
+On a metered network App Installer 1.26 answers the prompt's Update with "Warning: Metered
+Connection ... Would you like to proceed?". The driver pressed Update and stopped, so nothing
+deployed and the x64 leg failed (rehearsal rc.7-v0.23.2): it now answers Yes, after Update only.
 """
 from pathlib import Path
 import shutil
@@ -151,3 +155,40 @@ def test_uwp_app_installer_prompt_inside_its_application_frame_is_found():
 def test_another_uwp_apps_frame_is_never_pressed():
     other_app = _uwp_frame(7580, 5120, ["Update", "Cancel"])
     assert _find([other_app, _uwp_frame(7580, 2224, [])], [2224]) == "none"
+
+
+def _confirm(*, metered: bool, names: list[str]) -> str:
+    """Confirm-AppInstallerPrompt against a UWP App Installer whose CoreWindow starts with
+    `names`. Pressing Update on a metered network opens the warning over the prompt, so Yes and
+    No join the same window. Returns the names pressed, comma-joined."""
+    powershell = shutil.which("powershell")
+    assert powershell, "Windows PowerShell 5.1 is part of every supported Windows"
+    script = (
+        "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes; "
+        f". '{HELPER}'; {FAKE_UIA}; "
+        f"$core = New-FakeElement 2224 'Windows.UI.Core.CoreWindow' '2224/core' {_ps_array(names)} @(); "
+        f"$frame = New-FakeElement 7580 '{UWP_FRAME}' '7580/frame' @('Minimize', 'Close') @($core); "
+        "$root = New-FakeElement 0 'Desktop' 'desktop' @() @($frame); "
+        f"$metered = ${str(metered).lower()}; "
+        "$press = { param($hit) if ($hit.Name -eq 'Update' -and $metered) { "
+        "$core.Names = @($core.Names) + @('Yes', 'No') }; $true }; "
+        "$pressed = @(Confirm-AppInstallerPrompt -Root $root -GetProcessIds { 2224 } -Press $press "
+        "-PromptTimeoutSec 3 -WarningTimeoutSec 3 -PollSec 1); "
+        "$pressed -join ','"
+    )
+    result = subprocess.run([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                            capture_output=True, text=True, timeout=120, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout.strip()
+
+
+def test_metered_connection_warning_is_answered_yes_after_update():
+    assert _confirm(metered=True, names=["Update", "Cancel"]) == "Update,Yes"
+
+
+def test_unmetered_update_presses_only_the_prompt():
+    assert _confirm(metered=False, names=["Update", "Cancel"]) == "Update"
+
+
+def test_yes_is_never_pressed_without_the_prompt():
+    assert _confirm(metered=False, names=["Yes", "No"]) == ""

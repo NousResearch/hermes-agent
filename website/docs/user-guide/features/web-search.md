@@ -320,6 +320,33 @@ EXA_API_KEY=your-exa-key-here
 
 Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
 
+**Search type — the cost/latency dial.** Exa runs one of several search algorithms per query: they differ in price by up to ~4× and in latency by more than an order of magnitude. `web.exa_search_type` picks it for every `web_search` call:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  exa_search_type: lite      # auto (default) | lite | fast | instant | deep | deep-lite | deep-reasoning
+```
+
+| Value | What it does | Exa's list price | Latency |
+|-------|--------------|------------------|---------|
+| `auto` | Exa picks the best approach per query — the vendor default | $7 / 1 000 searches | ~1 s |
+| `lite` | Same index, lighter candidate generation and ranking | $4 / 1 000 | ~0.4 s |
+| `instant` | Low-latency neural search | $4 / 1 000 | sub-second |
+| `fast` | Speed-first full search | $7 / 1 000 | ~1 s |
+| `deep-lite` | Light multi-step synthesis | $12 / 1 000 | ~4 s |
+| `deep` | Multi-step reasoning with structured outputs | $12 / 1 000 | 4–15 s |
+| `deep-reasoning` | The hardest research questions | $15 / 1 000 | 12–40 s |
+
+Prices are Exa's published rates per 1 000 requests for up to 10 results each; every result above 10 adds $1 / 1 000. `lite` runs on the same index as `auto` with lighter candidate generation and ranking — it is the mode to reach for when you are not chasing a hard research question, and the deep variants are worth switching on only for research runs.
+
+Notes:
+
+- **Unset means no argument is sent**, so the request is exactly what Hermes sent before this setting existed. There is no behaviour change for existing users.
+- The free keyless tier is **mode-agnostic** — set the key to use this.
+- It affects `web_search` only, not `web_extract`.
+- Values are passed through, not whitelisted: a search type Exa releases tomorrow works without a Hermes release, and a typo comes back as Exa's own API error rather than being silently swapped for a default.
+
 ---
 
 ### Parallel

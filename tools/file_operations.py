@@ -239,7 +239,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """Hash regular file bytes without transferring or buffering the file."""
         path = self._expand_path(path)
         if self._native_read_enabled():
-            return _native_io.sha256_of(self._native_path(path))
+            try:
+                return _native_io.sha256_of(self._native_path(path))
+            except Exception:  # health: allow BLE001 -- backend exception text can contain secrets
+                return None
         marker = _new_sentinel("HERMES_SHA256_")
         snippet = (
             "import hashlib, os, stat, sys\n"

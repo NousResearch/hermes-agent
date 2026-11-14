@@ -22,6 +22,18 @@ def test_rejects_digest_with_unfenced_extra_output(tmp_path, monkeypatch):
     assert ops.file_sha256(str(tmp_path / "data")) is None
 
 
+def test_native_hash_exception_does_not_escape(tmp_path, monkeypatch):
+    from tools import file_operations
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: True)
+
+    def fail(*args):
+        raise RuntimeError("synthetic_private_value")
+
+    monkeypatch.setattr(file_operations._native_io, "sha256_of", fail)
+    assert ops.file_sha256(str(tmp_path / 'x')) is None
+
+
 def test_backend_exception_does_not_escape_digest_or_delete(tmp_path, monkeypatch):
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)

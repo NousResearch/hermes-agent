@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 import json
 import sqlite3
 import time
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Tuple
 
 from hermes_cli import kanban_db as kb
 
@@ -103,6 +103,20 @@ def _activate_root_inline(
     return True
 
 
+_DEFAULT_VERIFIER_BODY = (
+    "Review every worker handoff and blackboard update. Gate the swarm: "
+    "complete only with metadata {\"gate\": \"pass\"} when evidence is "
+    "sufficient; otherwise block with exact missing work."
+)
+_DEFAULT_VERIFIER_SKILLS: Tuple[str, ...] = ("requesting-code-review",)
+
+_DEFAULT_SYNTHESIZER_BODY = (
+    "Synthesize the verified worker outputs into the final deliverable. "
+    "Do not start until the verifier has passed the gate."
+)
+_DEFAULT_SYNTHESIZER_SKILLS: Tuple[str, ...] = ("humanizer",)
+
+
 def create_swarm(
     conn: sqlite3.Connection,
     *,
@@ -119,8 +133,20 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    # #34273: per-swarm overrides for verifier + synthesizer body/skills.
+    # None preserves historical defaults (code-review verifier, humanizer).
+    verifier_body: Optional[str] = None,
+    verifier_skills: Optional[Iterable[str]] = None,
+    synthesizer_body: Optional[str] = None,
+    synthesizer_skills: Optional[Iterable[str]] = None,
 ) -> SwarmCreated:
-    """Atomically create a durable, immediately dispatchable Kanban swarm."""
+    """Atomically create a durable, immediately dispatchable Kanban swarm.
+
+    Verifier/synthesizer bodies default to a code-review-style flow. Callers
+    with different semantics can override verifier_body/skills and
+    synthesizer_body/skills (#34273). Custom bodies still receive the swarm
+    context_suffix so workers see protocol metadata.
+    """
     activation_summary = "Swarm topology planned; root remains the shared blackboard."
     activated = False
     with kb.write_txn(conn):
@@ -130,6 +156,8 @@ def create_swarm(
             verifier_title=verifier_title, synthesizer_title=synthesizer_title, tenant=tenant,
             created_by=created_by, workspace_kind=workspace_kind, workspace_path=workspace_path,
             priority=priority, idempotency_key=idempotency_key,
+            verifier_body=verifier_body, verifier_skills=verifier_skills,
+            synthesizer_body=synthesizer_body, synthesizer_skills=synthesizer_skills,
         )
         root = kb.get_task(conn, created.root_id)
         if root is not None and root.status == "blocked":
@@ -167,6 +195,8 @@ def _create_swarm_uncommitted(
     verifier_assignee: str, synthesizer_assignee: str, root_title: Optional[str],
     verifier_title: str, synthesizer_title: str, tenant: Optional[str], created_by: str,
     workspace_kind: Optional[str], workspace_path: Optional[str], priority: int, idempotency_key: Optional[str],
+    verifier_body: Optional[str] = None, verifier_skills: Optional[Iterable[str]] = None,
+    synthesizer_body: Optional[str] = None, synthesizer_skills: Optional[Iterable[str]] = None,
 ) -> SwarmCreated:
     """Create the swarm graph inside the caller's transaction: planning root
     (``blocked`` until the caller activates it), parallel workers, a verifier
@@ -223,33 +253,42 @@ def _create_swarm_uncommitted(
         )
         for spec in worker_specs
     ]
+    _verifier_body_base = (
+        verifier_body if verifier_body is not None else _DEFAULT_VERIFIER_BODY
+    )
+    final_verifier_body = _verifier_body_base + context_suffix
+    final_verifier_skills = (
+        list(verifier_skills)
+        if verifier_skills is not None
+        else list(_DEFAULT_VERIFIER_SKILLS)
+    )
     verifier = kb.create_task(
         conn,
         title=verifier_title,
-        body=(
-            "Review every worker handoff and blackboard update. Gate the swarm: "
-            "complete only with metadata {\"gate\": \"pass\"} when evidence is "
-            "sufficient; otherwise block with exact missing work."
-            + context_suffix
-        ),
+        body=final_verifier_body,
         assignee=verifier_assignee,
         parents=worker_ids,
         priority=priority,
-        skills=["requesting-code-review"],
+        skills=final_verifier_skills or None,
         **common,
+    )
+    _synthesizer_body_base = (
+        synthesizer_body if synthesizer_body is not None else _DEFAULT_SYNTHESIZER_BODY
+    )
+    final_synthesizer_body = _synthesizer_body_base + context_suffix
+    final_synthesizer_skills = (
+        list(synthesizer_skills)
+        if synthesizer_skills is not None
+        else list(_DEFAULT_SYNTHESIZER_SKILLS)
     )
     synthesizer = kb.create_task(
         conn,
         title=synthesizer_title,
-        body=(
-            "Synthesize the verified worker outputs into the final deliverable. "
-            "Do not start until the verifier has passed the gate."
-            + context_suffix
-        ),
+        body=final_synthesizer_body,
         assignee=synthesizer_assignee,
         parents=[verifier],
         priority=priority,
-        skills=["humanizer"],
+        skills=final_synthesizer_skills or None,
         **common,
     )
 

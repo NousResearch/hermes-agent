@@ -439,6 +439,13 @@ def _string_list_arg(args: dict[str, Any], key: str, *, dedupe: bool, max_items:
     return out, None
 
 
+def _named_by(query: str, names: Iterable[str]) -> list[str]:
+    """Names *query* spells out: the whole name, or the part after a ``__`` namespace
+    separator (``report`` for ``mcp__nous_support__report``)."""
+    wanted = query.strip().lower()
+    return sorted(n for n in names if wanted and (n.lower() == wanted or n.lower().endswith(f"__{wanted}")))
+
+
 def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None, call: Optional[Any] = None) -> str:
@@ -460,6 +467,10 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     results: list[dict[str, Any]] = []
     tools_map: dict[str, dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
+    # Tools already in the model's list are not in the deferred catalog, so a search naming
+    # one would otherwise read as "no such tool" and send the model hunting.
+    deferred_names = {entry.name for entry in catalog}
+    loaded = [n for n in session_tool_names(current_tool_defs) if n not in deferred_names]
     for position, query in enumerate(queries):
         corpus = catalog + remote_entries[position]
         hits = search_catalog(corpus, query, limit=limit)
@@ -467,7 +478,11 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]
         group: dict[str, Any] = {"query": query, "matches": matches}
-        if not matches and available_sources:
+        if already := _named_by(query, loaded):
+            group["already_available"] = already
+            group["hint"] = ("Tools in already_available are loaded and directly callable: "
+                             "call them by that name, without tool_describe or tool_call.")
+        elif not matches and available_sources:
             group["available_sources"] = available_sources
             group["hint"] = (
                 "This query returned no lexical matches, but the sources above "
@@ -538,6 +553,13 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
     if not_found:
         result["not_found"] = not_found
         result["hint"] = "Names in not_found are not currently available. Re-run tool_search to refresh."
+        # A bare MCP tool name (``report``) is the commonest miss: name the full one.
+        suggestions = {name: full for name in not_found
+                       if (full := _named_by(name, set(by_name) | session_names))}
+        if suggestions:
+            result["did_you_mean"] = suggestions
+            result["hint"] = ("Names in not_found are not exact tool names; did_you_mean lists the full "
+                              "name(s) each one is short for. Retry with the full name.")
     if errors:
         result["errors"] = errors
     if hosted_failure:

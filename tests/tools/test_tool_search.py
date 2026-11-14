@@ -475,6 +475,45 @@ class TestHandleFunctionCallIntegration:
         assert payload["tool_call_id"] == "private-call"
 
 
+class TestNamedToolHints:
+    """A tool named by the model but outside the deferred catalog gets a pointer, not a
+    bare miss: a loaded tool is reported as directly callable, and a bare MCP tool name
+    passed to tool_describe is answered with the full name it is short for."""
+
+    @staticmethod
+    def _register_report():
+        from tools.registry import registry
+
+        registry.register(
+            name="mcp__probe_hint__report", toolset="mcp-probe-hint",
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            schema={"name": "mcp__probe_hint__report", "description": "Fetch diagnostics bundles.",
+                    "parameters": {"type": "object", "properties": {}}})
+
+    def test_search_naming_a_loaded_tool_says_it_is_already_available(self):
+        import model_tools
+
+        self._register_report()
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_search", function_args={"queries": ["read_file"]},
+            enabled_toolsets=["file", "mcp-probe-hint"]))
+
+        group = result["results"][0]
+        assert group["already_available"] == ["read_file"]
+        assert "available_sources" not in group
+
+    def test_describe_bare_mcp_name_suggests_full_name(self):
+        import model_tools
+
+        self._register_report()
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_describe", function_args={"names": ["report"]},
+            enabled_toolsets=["file", "mcp-probe-hint"]))
+
+        assert result["not_found"] == ["report"]
+        assert result["did_you_mean"] == {"report": ["mcp__probe_hint__report"]}
+
+
 class TestRegression_OpenClawCron84141:
     """Regression guard for the OpenClaw cron-tool-loss class of bug.
 

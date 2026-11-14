@@ -899,15 +899,14 @@ class SessionAuthority:
         # The transcript boundary commits WITH the terminal transition: a follower can never be
         # claimed with the discarded text left open to be merged into its request. With a captured
         # result the answer is normally already the transcript tail, so the closer is a no-op.
-        from gateway.session_results import close_discarded_turn
+        from gateway.session_results import resolve_captured_write
         from gateway.session_runtime_workers import tracked_write
         return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
             # ``notice`` says the turn was interrupted: only when that is the outcome, never beside a
             # captured result this resolution commits as the turn's own answer.
-            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost, None if (
-                prepared is not None and lost['owner_epoch'] == self.epoch) else notice)),
+            _terminal_write=partial(resolve_captured_write, self.db, self.epoch, prepared, captured, notice)),
             then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
@@ -1099,6 +1098,9 @@ class SessionAuthority:
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
+            if first is not None:
+                from gateway.session_goal_waits import preflight
+                await preflight(self, ref, first)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the
@@ -1166,18 +1168,8 @@ class SessionAuthority:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
-            self._require_admission_open()
-            from gateway.session_runtime_workers import tracked_write
-            live.rescan = False  # a _schedule from here on may not be visible to this claim's read
-            # The row these checks validated, never whichever is first when the write runs: a
-            # cancellation commits from a worker thread and can advance the FIFO at any point.
-            row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
-                                                    head=first['admission_id'] if first is not None else None),
-                                      then=partial(self._stamp_claim, ref, live))
-            # Input scheduled while this claim's transaction ran may postdate its read: re-read
-            # instead of letting the drain exit idle over a committed admission.
-            return (False if row is None and live.rescan else row), first
+            from gateway.session_goal_waits import claim
+            return await claim(self, ref, live, first)
 
     def _stamp_claim(self, ref, live, row):
         """The claim's execution stamp, in the same tracked task as its commit: no observer (or
@@ -1243,6 +1235,14 @@ class SessionAuthority:
                 try:
                     row, first = await self._claim_next(ref, live)
                 except RuntimeStoreError as exc:
+                    from gateway.session_goal_waits import GoalPriority, yield_priority
+                    if isinstance(exc, GoalPriority):
+                        try:
+                            await yield_priority(self, ref, exc.admission_id)
+                        except RuntimeStoreError as refusal:
+                            exc = refusal
+                        else:
+                            continue
                     if exc.reason == 'unknown_execution':
                         # An automation turn nobody is waiting on settles interrupted (GW-10); only a
                         # person's lost turn keeps the FIFO paused for them to resolve.

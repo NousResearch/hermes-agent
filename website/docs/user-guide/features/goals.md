@@ -174,6 +174,12 @@ You don't type anything for this — it's the judge's decision, made from the pr
 
 The barrier (pid- or time-based) is persisted with the goal in `SessionDB.state_meta`, so it survives `/resume`. `/goal pause`, `/goal resume`, and `/goal clear` all drop it. If the PID is already dead when the barrier is set (or dies while parked), or the time deadline passes, the barrier clears on the next check — a stale barrier can never wedge the loop.
 
+For gateway-owned interactive sessions, the existing heartbeat ticker rediscovers parked goals after a restart and checks them even when no CLI, TUI, or Desktop viewer is connected. A ready wait is reserved in the session's durable input queue; the barrier is consumed only when that exact continuation is claimed. Human input and real completion events take priority. If a fresh post-turn decision to continue cannot enter the queue yet, Hermes retains that exact decision and retries it on a later tick, including after restart, only once its predecessor is proven completed. It does not replay interrupted or unknown work, rejudge old responses, or use a continuation descriptor to bypass a newer manual cooldown. New goal controls invalidate the outstanding decision. A classic CLI that is still driving the session's automation keeps that responsibility while connected.
+
+Delegation dependencies are distinct from cooldowns: the judge uses the exact boolean `wait_on_delegations: true` with a timed wait, and Hermes records the owned delegation identities. A matching completion turn can release that worker barrier and re-run the judge before the deadline. A plain timed wait is not released by unrelated worker completions; legacy count-only waits keep their deadline rather than treating an empty roster after restart as success.
+
+`/stop` pauses autonomous goal duty, including between turns. Explicitly closing a chat or switching away does not authorize a goal wake to reopen it; merely disconnecting a viewer is not an explicit close. A queued continuation is invalidated by a newer pause, replacement, or manual wait, and goal wakes are not retargeted by a reset to an unrelated conversation.
+
 Typical flow: the agent pushes a PR, starts a CI watcher with `terminal(background=true, notify_on_complete=true)`, and reports "watching CI." The judge sees the watcher process still running, returns `wait` on its pid, and the loop goes quiet — then picks back up the instant CI finishes and judges the goal against the actual result.
 
 ## Behavior details

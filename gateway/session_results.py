@@ -56,6 +56,8 @@ def prepare_result(row, response, outcome, result=None):
     redacted copy settlement stores. Pure CPU work, safe off-loop and outside the stream lock."""
     if result is None:
         result = {'result': {'final_response': response or '', 'messages': []}, 'usage': {}}
+    # A host-only same-transaction obligation, never serialized as model output or history.
+    result = {k: v for k, v in result.items() if k != 'goal_continuation_write'}
     value = result['result']
     if value.get('interrupted'):
         outcome = 'interrupted'
@@ -101,11 +103,16 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     notice, display_metadata = owner_stop_notice(result, outcome, row), None
     if notice is None and (refusal := gateway_refusal_boundary(result, outcome)) is not None:
         notice, display_metadata = refusal
-    write = None if notice is None else (lambda conn, _current: close_discarded_turn(
-        db, conn, row, notice, replace_after=row.get('transcript_mark'), display_metadata=display_metadata))
+    continuation = (result or {}).get('goal_continuation_write') if outcome == 'completed' else None
+    def write(conn, current):
+        if continuation is not None:
+            continuation(conn, current)
+        if notice is not None:
+            close_discarded_turn(db, conn, row, notice, replace_after=row.get('transcript_mark'),
+                                 display_metadata=display_metadata)
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
         generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers,
-        _terminal_write=write)
+        _terminal_write=write if continuation is not None or notice is not None else None)
     return settled, response
 
 
@@ -117,6 +124,19 @@ def admission_result(db, admission_id):
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
         return load_result(saved[0]) if saved else None
+
+
+def resolve_captured_write(db, epoch, prepared, captured, notice, conn, lost):
+    """A same-owner captured success owes the same terminal effects as normal settlement.
+
+    The runtime fences the exact unknown row and commits its captured answer in this transaction;
+    a failed obligation must roll that answer and resolution back too, not discard the obligation.
+    """
+    retained = prepared is not None and lost['owner_epoch'] == epoch
+    continuation = (captured or {}).get('goal_continuation_write') if retained and prepared[0] == 'completed' else None
+    if continuation is not None:
+        continuation(conn, lost)
+    close_discarded_turn(db, conn, lost, None if retained else notice)
 
 
 def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, display_metadata=None):

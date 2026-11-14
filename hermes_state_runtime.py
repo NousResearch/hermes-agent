@@ -161,14 +161,16 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             if _replay_guard is not None:
                 _replay_guard(conn)
             return _row(old)
+        if _authorize_write is not None:
+            _authorize_write(conn)
+        # A canonical queued replacement retires its predecessor inside the guard. Count after
+        # that effect so replacing at capacity needs no spare slot; a refusal rolls both back.
         queued = conn.execute('''SELECT COUNT(*) FROM session_admissions WHERE target_session_id=?
             AND status='queued' ''', (session_id,)).fetchone()[0]
         # Main's cap holds in both states: a FIFO paused behind an unknown turn runs every accepted
         # input after Discard, so it must not grow without bound while nobody resolves it.
         if queued >= ADMISSION_QUEUE_MAX:
             raise RuntimeStoreError('queue_full')
-        if _authorize_write is not None:
-            _authorize_write(conn)
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
@@ -230,8 +232,6 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
     tells the caller to re-read and validate the row that is now first."""
     def write(conn):
         _epoch(conn, epoch)
-        if _guard is not None:
-            _guard(conn)
         session = _session(conn, session_id)
         blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
         if any(row[0] == 'unknown' for row in blocked):
@@ -247,6 +247,8 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
             return False
         if row is None:
             return None
+        if _guard is not None:
+            _guard(conn)
         generation = session['runtime_generation'] + 1
         conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, session_id))
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))
@@ -456,7 +458,8 @@ def retarget_local_automation(db, *, epoch: int, session_id: str, principal_id: 
                                 "AND principal_id=? ORDER BY seq", (session_id, principal_id)).fetchall():
             payload = json.loads(row['payload_json'])
             descriptor = payload.get('local_automation_v1') if isinstance(payload, dict) else None
-            if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
+            if (not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets
+                    or descriptor.get('goal_wait')):
                 continue
             descriptor['target'] = new_target
             digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': row['intent']})

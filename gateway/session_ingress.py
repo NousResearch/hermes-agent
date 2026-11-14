@@ -386,7 +386,9 @@ async def execute_admission(authority, ref, row):
             # before the completion event exists in the replay ring.
             authority.pending_results[row['admission_id']] = {
                 'result': result, 'usage': captured.get('usage', {}),
-                **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
+                **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {}),
+                **({'goal_continuation_write': captured['goal_continuation_write']}
+                   if 'goal_continuation_write' in captured else {})}
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:

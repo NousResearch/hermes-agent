@@ -172,3 +172,17 @@ def test_a_route_moved_to_another_url_of_the_backups_provider_drops_the_primary_
                  patch("gateway.session_cli_turn.one_turn_route", side_effect=once_to_another_url))
     assert (agent.provider, agent.base_url) == ("anthropic", "https://other-gateway.test/v1")
     assert agent._primary_auth_failure is None
+
+
+def test_a_channel_override_to_another_provider_drops_the_primary_failure():
+    """A channel's own provider (``channel_overrides``) replaces the route resolution fell back to, before the
+    turn runner sees it: a refusal there is that provider's own, not the primary's lapsed login."""
+    runner = _runner_with_real_runtime_resolution()
+    runner._serving_channel_config = lambda _source: object()
+    channel = SimpleNamespace(model="gpt-5", provider="openrouter")
+    agent = _run(runner, _ctx(_AgentWithRoute),
+                 patch("gateway.run._get_channel_override", return_value=channel),
+                 patch("gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                       return_value={"provider": "openrouter", "api_key": "k2", "base_url": "u2"}))
+    assert agent.provider == "openrouter"
+    assert agent._primary_auth_failure is None

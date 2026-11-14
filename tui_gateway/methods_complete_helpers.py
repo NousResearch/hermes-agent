@@ -43,7 +43,12 @@ def _git_repo_files(root: str):
         return
     for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
         if p:
-            rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+            try:
+                rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+            except ValueError:
+                # `git ls-files --others` lists a file named `nul`, which Windows abspaths to the
+                # `\\.\nul` device: it has no relative path, so drop that entry, not the listing (#148767).
+                continue
             if not rel.startswith("../"):
                 yield rel
 

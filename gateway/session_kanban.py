@@ -389,7 +389,13 @@ def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+        # Name the skill in the failure. A bare 'kanban_skills_unavailable' is a
+        # condition, and every seat that read it read it as a statement about the
+        # bot it was dispatched to: five consecutive spawns of one card failed in
+        # ~2 s each and the only visible symptom was
+        # 'Kanban owner refused: Kanban execution unknown; retained by owner',
+        # while the real cause was one skill absent from that seat's profile.
+        raise ValueError('kanban_skills_unavailable:' + ','.join(sorted(missing)))
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

@@ -178,6 +178,43 @@ _NESTED_CHILDREN_NOTE = (
     "from the nesting depth; children at the maximum depth cannot delegate further. No parameter override is available."
 )
 
+_WARNED_MISSING_PROJECT_CONTEXT = False
+
+
+def _warn_missing_project_context(workspace_path: Optional[str]) -> None:
+    """Warn once per process when a child is composed without any project context files.
+
+    A child sees the repo's conventions (``.hermes.md`` / ``AGENTS.md`` / ``CLAUDE.md`` /
+    ``.cursorrules``) only through the discovery in :func:`_build_child_system_prompt`. When that
+    discovery yields nothing -- and especially when no workspace resolved at all -- the child works
+    blind to those conventions and nothing in the transcript says so. Both silent paths are the
+    defect this warns about: on the estate that motivated it, the arm given the contract in
+    ``context`` refused an action a constraint forbade, while the arm given nothing performed it.
+
+    Detection only, never refusal. Plenty of delegations legitimately have no project context (a
+    self-contained question, a throwaway probe), so refusing here would be a policy change rather
+    than a fix -- what was missing was the signal. Once per process keeps the log honest without
+    turning a fan-out of ten children into ten identical lines.
+    """
+    global _WARNED_MISSING_PROJECT_CONTEXT
+    if _WARNED_MISSING_PROJECT_CONTEXT:
+        return
+    _WARNED_MISSING_PROJECT_CONTEXT = True
+    if workspace_path:
+        logger.warning(
+            "delegated child has no project context: workspace %s resolved but contains no "
+            ".hermes.md/HERMES.md, AGENTS.md, CLAUDE.md or .cursorrules, so the child cannot see "
+            "repo conventions or governance. Pass them in `context` if the task depends on them.",
+            workspace_path,
+        )
+    else:
+        logger.warning(
+            "delegated child has no project context: no workspace resolved, so no project context "
+            "files could be discovered — the child cannot see repo conventions or governance. "
+            "Pass them in `context` if the task depends on them."
+        )
+
+
 def _build_child_system_prompt(
     *, workspace_path: Optional[str] = None, role: str = "leaf", max_spawn_depth: int = 2, child_depth: int = 1,
 ) -> str:
@@ -206,6 +243,12 @@ def _build_child_system_prompt(
             _ctx_files = build_context_files_prompt(cwd=str(workspace_path), skip_soul=True)
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
+        else:
+            with _quiet("subagent: missing-project-context warning failed", exc_info=True):
+                _warn_missing_project_context(str(workspace_path).strip())
+    else:
+        with _quiet("subagent: missing-project-context warning failed", exc_info=True):
+            _warn_missing_project_context(None)
     parts.append(_COMPLETION_INSTRUCTIONS)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE

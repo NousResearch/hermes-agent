@@ -1,7 +1,7 @@
 name: shaderbruecke
 title: Shaderbrücke
 repo: https://github.com/studioluftbruecke/hermes-shaderbruecke
-sha: d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a
+sha: 51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea
 description: >-
   Make GLSL shaders with your Hermes agent, see them render, tune them by hand, and take them into
   the tool you ship in, with a frame-by-frame proof on every export. Disclosure: each render starts
@@ -12,14 +12,14 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://shaderbruecke.luftbruecke.studio
-version: "0.2.2"
-image: https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/banner.png
+version: "0.2.6"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-1.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-2.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-3.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-4.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-5.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/51fd3176aa0fa35a1f4ae9c7f31335813a33d3ea/docs/screenshot-5.png
 readme: true
 platforms: [linux, macos]
 known_issues:

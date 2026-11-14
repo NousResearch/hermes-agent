@@ -286,6 +286,16 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             await self._record_room_silence_decision(
                 session_key, agent_result, _intentional_silence,
                 display_kind=prepared.persist_user_display_kind, reply_expected=event.reply_expected)
+            # Settlement and the adapter retain the opening event, but the final response
+            # belongs to the last queued turn. Project only its trusted voice attributes.
+            if isinstance(agent_result, dict) and agent_result.get("_queued_terminal_event") is not None:
+                terminal = agent_result["_queued_terminal_event"]
+                event.message_type = terminal.message_type
+                event._queued_terminal_voice_projected = True
+                event.internal = bool(terminal.internal)
+                event.metadata.pop("presentation_origin", None)
+                if terminal.internal and (terminal.metadata or {}).get("presentation_origin") == "voice":
+                    event.metadata["presentation_origin"] = "voice"
             return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -1786,6 +1796,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)
+        # Merging creates a new dict; retain the terminal execution object itself so
+        # settlement can prove the deferred audio belongs to the committed result.
+        if isinstance(merged, dict) and isinstance(followup_result, dict):
+            merged = {**merged, "_queued_voice_execution": followup_result.get(
+                "_queued_voice_execution", followup_result)}
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal
         # reply is recorded under the first message's id, so a first reply that was refused (flood
@@ -1796,6 +1811,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             merged = {
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
+                "_queued_terminal_event": pending_event,
                 "queued_terminal_display_kind": next_display_kind,
                 "queued_terminal_reply_expected": next_reply_expected,
                 "queued_terminal_source": next_source,
@@ -1803,6 +1819,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
             }
+        # Event-less recursion inherits presentation from the nearest real turn,
+        # independently of the terminal ledger identity.
+        if isinstance(merged, dict) and merged.get("_queued_terminal_event") is None and pending_event is not None:
+            merged = {**merged, "_queued_terminal_event": pending_event}
         return merged
 
     async def _run_agent_cleanup_turn_tasks(

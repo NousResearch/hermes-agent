@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
 from gateway.session_contract import SessionActor
@@ -247,5 +247,21 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
                 and 'not admitted' in r.getMessage()] == [
             'Watch notification not admitted for discord chat=42: admission_conflict']
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_voice_presentation_survives_native_automation_admission(tmp_path, monkeypatch):
+    from gateway.session_envelope import restore_native
+    runner, authority, adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+    try:
+        metadata['presentation_origin'] = 'voice'
+        event = MessageEvent(text='completion', source=source, internal=True, metadata=metadata)
+        receipt = await authority.admit_automation(adapter, event, 'voice-completion')
+        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        restored = restore_native(row['payload'], runner)
+        assert restored.message_type == MessageType.TEXT
+        assert restored.metadata['presentation_origin'] == 'voice'
     finally:
         authority.db.close()

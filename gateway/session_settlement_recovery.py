@@ -218,6 +218,9 @@ async def settle_with_retry(authority, live, ref, row, response, outcome, captur
             return await asyncio.shield(track_mutation(authority, asyncio.to_thread(
                 commit_and_publish, authority, live, ref, row, response, outcome, captured, settlement)))
         except (OSError, sqlite3.Error) as exc:
+            # A retry may read an already committed result; object/text equality cannot
+            # establish that this process's voice candidate is the committed execution.
+            settlement['commit_uncertain'] = True
             if delay is None or 'settled' in settlement:
                 raise
             logger.warning('Settlement of admission %s deferred by storage (%r); retrying in %.1fs',
@@ -317,11 +320,32 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                 from gateway.session_ingress import fire_post_delivery
                 await fire_post_delivery(authority, admission_id)
             from gateway.session_ingress import waiter_replies
-            waiter_replies(authority).pop(admission_id, None)
+            waiter_delivery = waiter_replies(authority).pop(admission_id, None)
             # Taken on every exit, so a turn that never settled leaves no reset for a later one.
             reset = authority.deferred_resets.pop(live.route, None)
         await authority._run_deferred_reset(live.route, reset)
         from gateway.session_ingress import deliver_settled, fire_post_delivery
+        delivery = authority.pending_deliveries.get(admission_id)
+        native_delivery = waiter_delivery or delivery
+        if (native_delivery and not settlement.get('commit_uncertain')
+                and settled.get('outcome') == 'completed' and response is native_delivery[3]):
+            from gateway.session_ingress import _marker_adopters
+            adopter = _marker_adopters(authority).get(admission_id)
+            executed = native_delivery[1]
+            if adopter is not None and getattr(executed, '_queued_terminal_voice_projected', False):
+                # The adapter owns a different event than the restored execution. Only copy
+                # the terminal input type, never the queued event's routing or metadata.
+                adopter.message_type = executed.message_type
+        if (delivery and not settlement.get('commit_uncertain') and settled.get('outcome') == 'completed'
+                and response is delivery[3] and captured
+                and captured.get('result') is getattr(delivery[1], '_deferred_voice_execution', None)):
+            delivery[1]._voice_result_committed = True
+        if (waiter_delivery and not settlement.get('commit_uncertain')
+                and settled.get('outcome') == 'completed' and response is waiter_delivery[3]):
+            # The adapter waiter still owns the text; only deliver the deferred audio here.
+            # Identity ties it to the exact in-process execution, not a redacted readback.
+            from gateway.session_ingress import deliver_waiter_voice
+            await deliver_waiter_voice(authority, waiter_delivery, captured)
         await deliver_settled(authority, admission_id)
         await fire_post_delivery(authority, admission_id)
         await authority._resolve_settled_waiter(admission_id, response)

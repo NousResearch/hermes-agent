@@ -403,6 +403,15 @@ def automation_notification_metadata(metadata):
     return {'notification_category': category} if category == 'diagnostic' else {}
 
 
+def automation_presentation_metadata(metadata):
+    """Only the trusted automation envelope can preserve a voice origin."""
+    if 'presentation_origin' not in metadata:
+        return {}
+    if metadata['presentation_origin'] != 'voice':
+        raise RuntimeStoreError('invalid_params')
+    return {'presentation_origin': 'voice'}
+
+
 _DISPLAY_TEXT_LIMIT = 2000
 
 
@@ -429,7 +438,7 @@ def automation_display_metadata(metadata):
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
     'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
-    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id'})
+    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id', 'presentation_origin'})
 
 
 def admission_display(payload):
@@ -550,7 +559,7 @@ def snapshot_automation(authority, adapter, event, identity):
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
-                    | _tick_metadata(event.metadata))
+                    | _tick_metadata(event.metadata) | automation_presentation_metadata(event.metadata))
     entry = _owner(runner, event, authority)
     from gateway.session_detached import detached_route_of
     if event.source.platform == Platform.LOCAL or detached_route_of(event.source):
@@ -636,6 +645,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
                   'route': entry.session_key, 'target': entry.session_id}
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
+    descriptor.update(automation_presentation_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
     if 'completion_wakes_parent' in event.metadata:
         # A failed async delegation: the parent must act on it, so it runs as a turn even when no viewer
@@ -692,6 +702,7 @@ def restore_local_automation(authority, ref, row):
             'gateway_session_id': entry.session_id})
     event.metadata.update(automation_notification_metadata(descriptor))
     event.metadata.update(automation_display_metadata(descriptor))
+    event.metadata.update(automation_presentation_metadata(descriptor))
     if descriptor.get('turn_author') is not None:
         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):

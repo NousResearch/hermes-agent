@@ -198,6 +198,23 @@ def retain_unsettled_delivery(authority, admission_id):
         _registry(authority, 'unsettled_deliveries')[admission_id] = delivery
 
 
+async def deliver_waiter_voice(authority, delivery, captured):
+    """Send only the audio; the native waiter remains responsible for its text."""
+    _adapter, event, _route, response, home = delivery
+    candidate = getattr(event, '_deferred_voice_response', None)
+    if (not captured or captured.get('result') is not getattr(event, '_deferred_voice_execution', None)
+            or response is not candidate or candidate is None):
+        return
+    event._voice_result_committed = True
+    try:
+        with await _execution_scope(authority, home):
+            if authority.runner._should_send_voice_reply(
+                    event, candidate, getattr(event, '_deferred_voice_messages', []), already_sent=False):
+                await authority.runner._send_voice_reply(event, candidate)
+    except Exception:
+        logger.exception('Delivery of native waiter voice failed')
+
+
 async def deliver_resolved(authority, admission_id, *, owed):
     """After a Discard committed: send the retained reply when its captured answer committed with
     the resolution (``owed``), else release its marker and drop it. Popped first, so a repeated
@@ -206,6 +223,11 @@ async def deliver_resolved(authority, admission_id, *, owed):
     if delivery is None:
         return
     if owed:
+        # ``owed`` proves a captured result committed, but does not identify which result.
+        # The resolver removes pending_results before calling us; text equality (including
+        # redacted equality) cannot prove the retained audio belongs to that commit. Keep
+        # delivery of text, but deliberately fail closed on audio without that identity.
+        delivery[1]._voice_result_committed = False
         authority.pending_deliveries[admission_id] = delivery
     await deliver_settled(authority, admission_id)
 
@@ -391,7 +413,15 @@ async def execute_admission(authority, ref, row):
             authority.pending_results[row['admission_id']] = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
-            if not is_api and response:
+            # A streamed reply has no text left to send, but can still owe deferred audio.
+            # Bind that candidate to this admission's captured execution result, not merely
+            # to an equal (possibly redacted) persisted string.
+            candidate = getattr(event, '_deferred_voice_response', None)
+            streamed_voice = (response is None and candidate is not None
+                              and result is getattr(event, '_deferred_voice_execution', None))
+            if streamed_voice:
+                event._deferred_voice_result = result
+            if not is_api and (response or streamed_voice):
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
                     # A recovered turn with no live delivery waiter: the drain sends this only after
@@ -399,7 +429,7 @@ async def execute_admission(authority, ref, row):
                     # leaves an externally answered admission started -> unknown. A live waiter
                     # sends its own; the record only outlives a settlement fenced unknown.
                     delivery = (adapter, event, live.route, response, home)
-                    if native:
+                    if native and not streamed_voice:
                         waiter_replies(authority)[row['admission_id']] = delivery
                     else:
                         authority.pending_deliveries[row['admission_id']] = delivery
@@ -470,10 +500,14 @@ async def deliver_settled(authority, admission_id):
     failure cannot rewrite that outcome; it is logged, and inference never runs again."""
     held = _held_markers(authority).pop(admission_id, None)
     delivery = authority.pending_deliveries.get(admission_id)
-    if delivery is not None and admission_id in authority.native_waiters:
+    if (delivery is not None and admission_id in authority.native_waiters
+            and not (delivery[3] is None and hasattr(delivery[1], '_deferred_voice_result'))):
         # ``admit_message`` registered its delivery waiter after this turn started: the drain
         # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
         authority.native_waiters.discard(admission_id)
+        if getattr(delivery[1], '_voice_result_committed', False):
+            await deliver_waiter_voice(authority, delivery, {
+                'result': getattr(delivery[1], '_deferred_voice_execution', None)})
         _hand_back_post_delivery(authority, admission_id)
         authority.pending_deliveries.pop(admission_id)
         adopter = _marker_adopters(authority).get(admission_id)
@@ -493,7 +527,16 @@ async def deliver_settled(authority, admission_id):
     delivered = False
     try:
         with await _execution_scope(authority, home):
-            delivered = await deliver_response(adapter, event, session_key, response)
+            # A None response is the streamed-body sentinel; never send that body again.
+            delivered = True if response is None else await deliver_response(adapter, event, session_key, response)
+            voice_response = getattr(event, '_deferred_voice_response', None)
+            if (delivered and getattr(event, '_voice_result_committed', False)
+                    and (response is voice_response or
+                         (response is None and hasattr(event, '_deferred_voice_result')))
+                    and authority.runner._should_send_voice_reply(
+                        event, voice_response, getattr(event, '_deferred_voice_messages', []),
+                        already_sent=response is None)):
+                await authority.runner._send_voice_reply(event, voice_response)
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)
     finally:

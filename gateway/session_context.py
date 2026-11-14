@@ -113,6 +113,11 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
         _SESSION_ID.set(previous)
 
 
+def current_turn_event() -> Any:
+    """Return the event bound to this turn, without process-environment fallback."""
+    return _SESSION_TURN_EVENT.get()
+
+
 @contextmanager
 def scoped_turn_actor(event: Any, turn: Any) -> Iterator[None]:
     """Bind *event*'s sender as the actor of a turn run inside an already bound one (a queued follow-up

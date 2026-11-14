@@ -612,6 +612,19 @@ This prevents drift between what Nix declares and what's on disk. Detection uses
 
 Both signals hold the name of the system that manages the install. Thus the refusal names the correct rebuild command. The NixOS module gives `sudo nixos-rebuild switch`. The Home Manager module gives `home-manager switch`.
 
+### Opting out of managed mode
+
+Set `managed = false` to leave the configuration runtime-owned:
+
+```nix
+services.hermes-agent = {
+  enable = true;
+  managed = false;
+};
+```
+
+The activation then removes the `.managed` marker instead of writing it, and the services run with `HERMES_MANAGED=false`. `hermes config set`, `hermes config edit` and the settings panes work again, which is the shape you want when Hermes itself owns platform toggles and other runtime keys. Nix still owns the package, the services, the secrets and every key that `settings` declares: those keys still deep-merge into config.yaml on each activation, and an undeclared key that Hermes writes at runtime survives. Nix also still refuses nothing else — `hermes update` keeps refusing a store install, because that guard reads the install method, not the marker.
+
 ---
 
 ## Home Manager Module

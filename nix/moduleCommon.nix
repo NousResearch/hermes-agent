@@ -267,6 +267,27 @@ let
         '';
       };
 
+      managed = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether this module owns the installation's configuration. When
+          true (the default), the activation writes a `.managed` marker into
+          HERMES_HOME and the services run with HERMES_MANAGED set, so the
+          CLI refuses a configuration change that the next activation would
+          overwrite, and names the rebuild command instead. The `settings`
+          option still deep-merges into config.yaml and keeps every key it
+          does not declare.
+
+          Set to false to leave the configuration runtime-owned: the
+          activation removes a stale `.managed` marker and the services run
+          with HERMES_MANAGED=false, so `hermes config set` and the settings
+          panes can change platforms and other runtime keys directly. Nix
+          still owns the package, the services and the secrets, and the
+          keys that `settings` declares.
+        '';
+      };
+
       settings = mkOption {
         type = deepConfigType;
         default = { };
@@ -818,11 +839,13 @@ let
       owner ? null,
       modes,
       stateDirs ? [ ],
-      # The module writes this value into the .managed marker. An
-      # interactive shell reads the marker, because it does not see the
-      # HERMES_MANAGED variable of the service. The value tells the shell
-      # which system owns the install and which rebuild command to name.
-      managedSystem ? "nixos",
+      # The value to write into the .managed marker, or null for an
+      # unmanaged install. An interactive shell reads the marker, because it
+      # does not see the HERMES_MANAGED variable of the service. The value
+      # tells the shell which system owns the install and which rebuild
+      # command to name. null removes a stale marker instead, so a flip to
+      # `managed = false` also unlocks an interactive shell.
+      managedSystem ? null,
     }:
     let
       installFlags = lib.optionalString (owner != null) (
@@ -888,8 +911,15 @@ let
       }
 
       # The managed-mode marker. It makes an interactive shell also refuse to
-      # change the configuration that Nix owns.
-      ${inst} -m ${modes.managed} ${pkgs.writeText "hermes-managed" managedSystem} ${hermesHome}/.managed
+      # change the configuration that Nix owns. An unmanaged install instead
+      # removes the marker, so the CLI does not keep refusing an install that
+      # nothing manages any more.
+      ${
+        if managedSystem != null then
+          "${inst} -m ${modes.managed} ${pkgs.writeText "hermes-managed" managedSystem} ${hermesHome}/.managed"
+        else
+          "${run}rm -f ${hermesHome}/.managed"
+      }
 
       ${lib.optionalString (cfg.environment != { } || cfg.environmentFiles != [ ]) ''
         ${run}${envScript} ${hermesHome}/.env ${modes.env} ${lib.escapeShellArgs cfg.environmentFiles}

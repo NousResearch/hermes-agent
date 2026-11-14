@@ -1419,6 +1419,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # `hermes gateway restart` child inherits; a console-less watcher makes every descendant allocate a
         # visible conhost (#54220/#56747).
         from hermes_cli._launchers import runtime_command
+        if hermes_cmd[1:] == ["-m", "hermes_cli.main"]:  # bootstrap drops PYTHONPATH: bind the respawn to this checkout too
+            hermes_cmd = runtime_command(project_root, python=hermes_cmd[0])
         watcher_argv = runtime_command(project_root,
             [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
             code=_WINDOWS_RESTART_WATCHER)

@@ -60,7 +60,10 @@ def detached_restart_shell(cmd: str, current_pid: int, restart_after_s: float) -
     if log_path is None:
         return f"{wait}{cmd} gateway restart"
     log_arg = shlex.quote(str(log_path))
+    # An unopenable log must not skip the restart: bash drops a command whose redirect fails.
     return (
-        f"{wait}{cmd} gateway restart >> {log_arg} 2>&1; "
-        f"echo \"detached restart exited with status $?\" >> {log_arg}"
+        f"{wait}if : >> {log_arg} 2>/dev/null; then "
+        f"{cmd} gateway restart >> {log_arg} 2>&1; "
+        f"echo \"detached restart exited with status $?\" >> {log_arg}; "
+        f"else {cmd} gateway restart; fi"
     )

@@ -1216,7 +1216,7 @@ def _write_config_changes(sets: dict, unsets: tuple = ()) -> None:
     applied when it raises. The file backend keeps its raw round-trip (callers branch on
     ``supports_file_tooling()``)."""
     try:
-        _config_backend.get_config_backend().write_changes(_active_config_path().parent, Changes(set=dict(sets), unset=tuple(unsets)))
+        _config_backend.write_changes(_active_config_path(), Changes(set=dict(sets), unset=tuple(unsets)))
     finally:
         _drop_cfg_cache()
 

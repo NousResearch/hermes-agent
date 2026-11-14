@@ -246,6 +246,10 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             from gateway.session_local_mcp import prepare_editor_mcp
             prepare = {'model': prepare_model, 'compress': prepare_compress, **PREPARE,
                        'editor_mcp': partial(prepare_editor_mcp, servers=editor_servers)}[operation]
+            if operation == 'compress':
+                # The viewer-facing id is the listed row (the snapshot is keyed on it); the
+                # compressing/compacted status frames ride that id so the owning viewer sees them.
+                prepare = partial(prepare_compress, listed_sid=ref.session_id)
             prepared = await prepare(authority, live, params['payload'], prepared)
             if prepared.get('status') in {'preview', 'noop', 'confirmation_required'}:
                 # ``--preview`` and a compress that removes nothing are read-only reports, and a

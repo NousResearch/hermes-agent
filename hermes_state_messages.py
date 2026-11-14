@@ -28,6 +28,7 @@ from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_stored_reads import SessionStoredReadsMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
+from hermes_state_reasoning import restored_reasoning, stored_reasoning
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -283,6 +284,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             # Writers that copy a fixed field list (/branch) carry the key, not display_metadata.
             display_metadata = {**(display_metadata or {}), DATA_USE: list(msg[DATA_USE])}
         display_metadata = self._encode_display_metadata(display_metadata)
+        reasoning_content = _scrub_surrogates(_reasoning("reasoning_content"))
         identity_row = {
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
@@ -292,7 +294,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
-            _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
+            stored_reasoning(role, _scrub_surrogates(_reasoning("reasoning")), reasoning_content), reasoning_content,
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
@@ -371,9 +373,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             if metadata is not None:
                 msg["display_metadata"] = metadata
         if row["role"] == "assistant":
-            for column in ("reasoning", "reasoning_content"):
-                if row[column] is not None:
-                    msg[column] = row[column]
+            reasoning = restored_reasoning(row["role"], row["reasoning"], row["reasoning_content"])
+            msg.update((col, value) for col, value in (("reasoning", reasoning), ("reasoning_content", row["reasoning_content"])) if value is not None)
             for column in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
                 if row[column]:
                     msg[column] = _json_or(
@@ -1319,6 +1320,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
         if msg.get("display_metadata") is not None:
             msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+        if (reasoning := restored_reasoning(msg["role"], msg.get("reasoning"), msg.get("reasoning_content"))) is not None:
+            msg["reasoning"] = reasoning
         # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
         # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
         # here, once, rather than needing a new named pop for each future binary column. Known
@@ -1629,7 +1632,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             if row["observed"]:
                 msg["observed"] = True
             if row["role"] == "assistant":
-                msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
+                reasoning = restored_reasoning(row["role"], row["reasoning"], row["reasoning_content"])
+                msg.update((col, value) for col, value in (("finish_reason", row["finish_reason"]), ("reasoning", reasoning)) if value)
                 if row["reasoning_content"] is not None:
                     msg["reasoning_content"] = row["reasoning_content"]
                 msg.update(

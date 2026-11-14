@@ -116,3 +116,39 @@ class TestAppendMessageRoundTrip:
         )
         msg = _assistant(db.get_messages_as_conversation("copy"))
         assert msg["reasoning_details"] == REASONING_DETAILS
+
+
+class TestSharedReasoningStoredOnce:
+    """reasoning-content providers (DeepSeek, Kimi) hand back the same text as both
+    ``reasoning`` and ``reasoning_content``; it lands on disk once (#125273)."""
+
+    TEXT = "compare both branches first"
+
+    def _columns(self, db, sid):
+        with db._read_ctx() as conn:
+            return conn.execute(
+                "SELECT reasoning, reasoning_content FROM messages "
+                "WHERE session_id = ? AND role = 'assistant'", (sid,)).fetchone()
+
+    def _append(self, db, sid, **reasoning):
+        db.create_session(sid, source="cli")
+        db.append_message(sid, role="user", content="hi")
+        db.append_message(sid, role="assistant", content="done", **reasoning)
+
+    def test_only_identical_non_blank_text_is_stored_once(self, db):
+        differs = "summary + " + self.TEXT
+        cases = {
+            "same": (self.TEXT, self.TEXT, (None, self.TEXT)),
+            "differs": (differs, self.TEXT, (differs, self.TEXT)),
+            "pad": (" ", " ", (" ", " ")),  # the thinking-mode tool-call pad is stored as given
+        }
+        for sid, (reasoning, reasoning_content, stored) in cases.items():
+            self._append(db, sid, reasoning=reasoning, reasoning_content=reasoning_content)
+            assert tuple(self._columns(db, sid)) == stored, sid
+
+    def test_fork_keeps_one_copy(self, db):
+        self._append(db, "src", reasoning=self.TEXT, reasoning_content=self.TEXT)
+        _fork(db, "src", "fork")
+        assert tuple(self._columns(db, "fork")) == (None, self.TEXT)
+        msg = _assistant(db.get_messages_as_conversation("fork"))
+        assert (msg["reasoning"], msg["reasoning_content"]) == (self.TEXT, self.TEXT)

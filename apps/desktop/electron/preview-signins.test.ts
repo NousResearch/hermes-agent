@@ -106,7 +106,15 @@ afterEach(() => {
 })
 
 const sender = {} as Electron.WebContents
-const SESSION = { name: 'sid', value: 'secret-value', domain: 'app.test', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' as const }
+const SESSION = {
+  name: 'sid',
+  value: 'secret-value',
+  domain: 'app.test',
+  path: '/',
+  httpOnly: true,
+  secure: true,
+  sameSite: 'Lax' as const
+}
 
 describe('syncPreviewSignins', () => {
   it('imports exported cookies into the partition and records identities without values', async () => {
@@ -203,7 +211,13 @@ describe('syncPreviewSignins', () => {
     const { deps, jar } = rig({ status: 'ok', cookies: [SESSION] })
     await syncPreviewSignins(deps, sender, { connectionId: null, enabled: true, profile: null })
     // User replaces the imported cookie's value by hand: it is no longer ours.
-    jar.set('app.test/|sid', { url: 'https://app.test/', name: 'sid', value: 'rotated-by-user', path: '/', domain: '.app.test' })
+    jar.set('app.test/|sid', {
+      url: 'https://app.test/',
+      name: 'sid',
+      value: 'rotated-by-user',
+      path: '/',
+      domain: '.app.test'
+    })
 
     await syncPreviewSignins(deps, sender, { connectionId: null, enabled: false, profile: null })
 
@@ -220,7 +234,9 @@ describe('syncPreviewSignins', () => {
 
     // The write-ahead failure propagates (the IPC handler turns it into an error result). The
     // guarantee that matters: NO cookie was installed, so none is ever installed-but-unowned.
-    await expect(syncPreviewSignins(deps, sender, { connectionId: null, enabled: true, profile: null })).rejects.toThrow('disk full')
+    await expect(
+      syncPreviewSignins(deps, sender, { connectionId: null, enabled: true, profile: null })
+    ).rejects.toThrow('disk full')
     expect(jar.size).toBe(0)
   })
 
@@ -330,7 +346,10 @@ describe('runSigninExport', () => {
     const line = JSON.stringify({ status: 'ok', cookies: [SESSION], skipped: 2 })
 
     const verdict = await runSigninExport(
-      { command: process.execPath, args: ['-e', `process.stdout.write('notice\\n' + ${JSON.stringify(line)} + '\\n')`] },
+      {
+        command: process.execPath,
+        args: ['-e', `process.stdout.write('notice\\n' + ${JSON.stringify(line)} + '\\n')`]
+      },
       process.cwd(),
       '/h',
       { PATH: process.env.PATH ?? '' }

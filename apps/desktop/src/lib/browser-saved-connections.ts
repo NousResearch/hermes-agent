@@ -324,11 +324,12 @@ export function createBrowserSavedConnections({
     setLastUsed: connectionId => mutated({ body: { id: connectionId }, method: 'POST', path: `${ROUTE}/last-used` }),
     setLaunchMode: mode => mutated({ body: { mode }, method: 'POST', path: `${ROUTE}/launch-mode` }),
     setPrimary: connectionId => mutated({ method: 'POST', path: `${ROUTE}/${id(connectionId)}/primary` }),
-    test: connectionId => api({
-      method: 'POST',
-      path: `${ROUTE}/${id(connectionId)}/test`,
-      timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
-    })
+    test: connectionId =>
+      api({
+        method: 'POST',
+        path: `${ROUTE}/${id(connectionId)}/test`,
+        timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
+      })
   }
 
   // Another window or native Desktop may have edited the list while this tab was in the background.

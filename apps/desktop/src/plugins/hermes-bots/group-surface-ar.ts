@@ -16,7 +16,8 @@ export const GROUP_SURFACE_AR = {
     compressHistory: 'ضغط السجل',
     compressHistoryHint: member => `ضغط سجل محادثة المجموعة المخفي للعضو ${member} لتجنب الردود الفارغة`,
     compressing: member => `جارٍ ضغط سجل محادثة المجموعة للعضو ${member}…`,
-    compressDone: (member, compressed, detail) => `تم ضغط جلسات محادثة المجموعة للعضو ${member}، العدد: ${compressed}${detail ? ` — ${detail}` : ''}`,
+    compressDone: (member, compressed, detail) =>
+      `تم ضغط جلسات محادثة المجموعة للعضو ${member}، العدد: ${compressed}${detail ? ` — ${detail}` : ''}`,
     compressNothing: member => `لا يوجد ما يُضغط للعضو ${member} — لا توجد جلسات محادثة مجموعة بعد`,
     compressFailed: (member, error) => `تعذّر ضغط سجل محادثة المجموعة للعضو ${member}: ${error}`,
     searchToAdd: 'البحث عن روبوتات لإضافتها',
@@ -26,7 +27,8 @@ export const GROUP_SURFACE_AR = {
     deleteTitle: 'حذف محادثة المجموعة؟',
     deleteAction: 'حذف',
     composerPlaceholder: 'اكتب رسالة — سيراها كل روبوت في محادثة المجموعة هذه.',
-    slashCommandsUnsupported: 'الأوامر التي تبدأ بشرطة مائلة غير متاحة في محادثات المجموعات. افتح محادثة فردية مع روبوت لاستخدامها.',
+    slashCommandsUnsupported:
+      'الأوامر التي تبدأ بشرطة مائلة غير متاحة في محادثات المجموعات. افتح محادثة فردية مع روبوت لاستخدامها.',
     attachHint: 'إرفاق ملفات — يراها كل روبوت يرد',
     newThread: 'سلسلة جديدة',
     reply: 'رد',
@@ -44,7 +46,8 @@ export const GROUP_SURFACE_AR = {
     heldMembersStatus: members => `متوقفون مؤقتًا: ${members}`,
     holdReleaseHint: 'أشر إلى روبوت متوقف مؤقتًا أو أرسل @all resume للاستئناف.',
     needsYourInput: 'يحتاج روبوت في محادثة المجموعة هذه إلى ردك',
-    noMembersToSend: group => `لا يوجد أعضاء لإرسال الرسالة إليهم في «${group}» — أضف روبوتًا أو أعد فتح محادثة المجموعة إذا كان تحميل الأعضاء مستمرًا.`,
+    noMembersToSend: group =>
+      `لا يوجد أعضاء لإرسال الرسالة إليهم في «${group}» — أضف روبوتًا أو أعد فتح محادثة المجموعة إذا كان تحميل الأعضاء مستمرًا.`,
     pictureGenerationFailed: 'تعذّر إنشاء صورة المجموعة',
     nameTaken: name => `توجد مجموعة باسم «${name}» بالفعل.`,
     you: 'أنت',
@@ -59,7 +62,14 @@ export const GROUP_SURFACE_AR = {
     stopped: group => `تم إيقاف «${group}» — الأدوار المتبقية متوقفة مؤقتًا حتى الاستئناف`,
     removeAttachment: 'إزالة المرفق',
     threadFallback: 'سلسلة',
-    replyCount: replies => replies === 0 ? 'لا ردود' : replies === 1 ? 'رد واحد' : replies === 2 ? 'ردان' : `${replies} ${replies % 100 >= 3 && replies % 100 <= 10 ? 'ردود' : replies % 100 >= 11 ? 'ردًا' : 'رد'}`,
+    replyCount: replies =>
+      replies === 0
+        ? 'لا ردود'
+        : replies === 1
+          ? 'رد واحد'
+          : replies === 2
+            ? 'ردان'
+            : `${replies} ${replies % 100 >= 3 && replies % 100 <= 10 ? 'ردود' : replies % 100 >= 11 ? 'ردًا' : 'رد'}`,
     dropToThread: 'أفلت للإرفاق بهذا الرد في السلسلة',
     dropToRoom: 'أفلت للإرفاق — يراه كل روبوت يرد',
     waitingForAnswer: 'في انتظار ردك…',
@@ -73,108 +83,138 @@ export const GROUP_SURFACE_AR = {
     wantsToRunCommand: handle => `يريد @${handle} تنفيذ أمر:`,
     asks: handle => `يسأل @${handle}:`,
     answerTo: member => `الرد على @${member}`
-
   },
   roster: {
     ...ROSTER_CHROME.ar,
-    search: "البحث عن روبوتات ومحادثات مجموعات",
-    searchPlaceholder: "ابحث عن روبوتات ومحادثات مجموعات…",
-    newBotOrGroup: "روبوت أو محادثة مجموعة جديدة",
-    groupChats: "محادثات المجموعات",
-    emptyTitle: "لا توجد روبوتات بعد",
-    emptyDesc: "أنشئ روبوتك الأول.",
+    search: 'البحث عن روبوتات ومحادثات مجموعات',
+    searchPlaceholder: 'ابحث عن روبوتات ومحادثات مجموعات…',
+    newBotOrGroup: 'روبوت أو محادثة مجموعة جديدة',
+    groupChats: 'محادثات المجموعات',
+    emptyTitle: 'لا توجد روبوتات بعد',
+    emptyDesc: 'أنشئ روبوتك الأول.',
     noMatchQuery: query => `لا توجد روبوتات أو محادثات مجموعات تطابق «${query}»`,
     noMatchQueryOn: (query, gateway) => `لا توجد روبوتات أو محادثات مجموعات تطابق «${query}» على ${gateway}`,
     noMatchFiltersOn: gateway => `لا توجد روبوتات أو محادثات مجموعات تطابق هذه المرشحات على ${gateway}`,
-    noMatchFilters: "لا توجد روبوتات أو محادثات مجموعات تطابق هذه المرشحات.",
-    clearFilters: "مسح المرشحات",
-    allHidden: "جميع الروبوتات مخفية",
-    allHiddenDesc: "تواصل العمل وتحتفظ بسجلها.",
-    showHidden: "إظهار الروبوتات المخفية",
-    noHiddenMatch: "لا توجد روبوتات مخفية تطابق هذه المرشحات.",
-    hiddenFromRoster: "مخفي من القائمة",
-    pinned: "مثبّت",
-    needsAttention: "يحتاج إلى انتباه",
-    needsInput: "يحتاج إلى ردك",
-    botsAndGroups: "الروبوتات ومحادثات المجموعات",
-    botsOnly: "الروبوتات فقط",
-    groupsOnly: "محادثات المجموعات فقط",
-    anyActivity: "أي نشاط",
-    activeNow: "نشط الآن",
-    recentlyActive: "نشط مؤخرًا",
-    older: "أقدم",
-    gatewayRemoved: "أُزيلت البوابة",
-    onDemand: "عند الطلب",
-    ready: "جاهز",
-    statusUnknown: "الحالة غير معروفة",
-    unavailable: "غير متاح",
-    retryNow: "إعادة المحاولة الآن",
-    rosterUnavailable: reason => `القائمة غير متاحة: ${reason}. إذا كانت البوابة لا تدعم profiles.list، فحدّث Hermes وأعد تشغيل البوابة.`,
-    waitingForGateway: "في انتظار الاتصال بالبوابة… (قد تستغرق البوابات البعيدة بضع ثوانٍ؛ تُعاد المحاولة تلقائيًا)"
+    noMatchFilters: 'لا توجد روبوتات أو محادثات مجموعات تطابق هذه المرشحات.',
+    clearFilters: 'مسح المرشحات',
+    allHidden: 'جميع الروبوتات مخفية',
+    allHiddenDesc: 'تواصل العمل وتحتفظ بسجلها.',
+    showHidden: 'إظهار الروبوتات المخفية',
+    noHiddenMatch: 'لا توجد روبوتات مخفية تطابق هذه المرشحات.',
+    hiddenFromRoster: 'مخفي من القائمة',
+    pinned: 'مثبّت',
+    needsAttention: 'يحتاج إلى انتباه',
+    needsInput: 'يحتاج إلى ردك',
+    botsAndGroups: 'الروبوتات ومحادثات المجموعات',
+    botsOnly: 'الروبوتات فقط',
+    groupsOnly: 'محادثات المجموعات فقط',
+    anyActivity: 'أي نشاط',
+    activeNow: 'نشط الآن',
+    recentlyActive: 'نشط مؤخرًا',
+    older: 'أقدم',
+    gatewayRemoved: 'أُزيلت البوابة',
+    onDemand: 'عند الطلب',
+    ready: 'جاهز',
+    statusUnknown: 'الحالة غير معروفة',
+    unavailable: 'غير متاح',
+    retryNow: 'إعادة المحاولة الآن',
+    rosterUnavailable: reason =>
+      `القائمة غير متاحة: ${reason}. إذا كانت البوابة لا تدعم profiles.list، فحدّث Hermes وأعد تشغيل البوابة.`,
+    waitingForGateway: 'في انتظار الاتصال بالبوابة… (قد تستغرق البوابات البعيدة بضع ثوانٍ؛ تُعاد المحاولة تلقائيًا)'
   },
   sections: {
-    newSection: "قسم جديد",
-    newTitle: "قسم جديد",
-    renameTitle: "تغيير اسم القسم",
-    nameLabel: "اسم القسم",
-    namePlaceholder: "مثلًا: العملاء",
-    create: "إنشاء",
-    rename: "تغيير الاسم…",
-    moveUp: "نقل لأعلى",
-    moveDown: "نقل لأسفل",
-    unassigned: "غير معيّن",
+    newSection: 'قسم جديد',
+    newTitle: 'قسم جديد',
+    renameTitle: 'تغيير اسم القسم',
+    nameLabel: 'اسم القسم',
+    namePlaceholder: 'مثلًا: العملاء',
+    create: 'إنشاء',
+    rename: 'تغيير الاسم…',
+    moveUp: 'نقل لأعلى',
+    moveDown: 'نقل لأسفل',
+    unassigned: 'غير معيّن',
     options: name => `خيارات القسم «${name}»`,
-    headingTip: "أفلت الروبوتات هنا · انقر مرتين لتغيير الاسم",
-    emptyHint: "اسحب الروبوتات هنا",
-    moveTo: "نقل إلى قسم",
-    newSectionEllipsis: "قسم جديد…",
-    removeFromSection: "إزالة من القسم",
-    deleted: (name, count) => count === 0 ? `تم حذف «${name}»` : `تم حذف «${name}» — عدد الروبوتات دون قسم: ${count}`,
-    undo: "تراجع"
+    headingTip: 'أفلت الروبوتات هنا · انقر مرتين لتغيير الاسم',
+    emptyHint: 'اسحب الروبوتات هنا',
+    moveTo: 'نقل إلى قسم',
+    newSectionEllipsis: 'قسم جديد…',
+    removeFromSection: 'إزالة من القسم',
+    deleted: (name, count) => (count === 0 ? `تم حذف «${name}»` : `تم حذف «${name}» — عدد الروبوتات دون قسم: ${count}`),
+    undo: 'تراجع'
   },
   bot: {
-    newChatWith: "محادثة جديدة مع هذا الروبوت",
-    newTitle: "روبوت جديد",
-    thisDevice: "هذا الجهاز",
-    removeFromAllGroups: "إزالة من جميع المجموعات",
-    openBotChat: "فتح محادثة الروبوت",
-    openBotChatInNewTab: "فتح محادثة الروبوت في علامة تبويب جديدة",
-    openingChat: "جارٍ فتح المحادثة…",
-    pinToTop: "تثبيت في الأعلى",
-    unpin: "إلغاء التثبيت",
+    newChatWith: 'محادثة جديدة مع هذا الروبوت',
+    newTitle: 'روبوت جديد',
+    thisDevice: 'هذا الجهاز',
+    removeFromAllGroups: 'إزالة من جميع المجموعات',
+    openBotChat: 'فتح محادثة الروبوت',
+    openBotChatInNewTab: 'فتح محادثة الروبوت في علامة تبويب جديدة',
+    openingChat: 'جارٍ فتح المحادثة…',
+    pinToTop: 'تثبيت في الأعلى',
+    unpin: 'إلغاء التثبيت',
     pinnedToast: name => `تم تثبيت ${name} في الأعلى`,
     unpinnedToast: name => `تم إلغاء تثبيت ${name}`,
-    hide: "إخفاء",
-    unhide: "إظهار",
+    hide: 'إخفاء',
+    unhide: 'إظهار',
     hiddenToast: name => `تم إخفاء ${name} — استخدم زر العين أعلى قائمة الروبوتات لإظهاره`,
     unhiddenToast: name => `عاد ${name} إلى القائمة`,
     groupsMenu: groups => `المجموعات: ${groups}…`,
-    manageGroups: "إدارة المجموعات…",
-    metadataLoadFailed: "تعذّر تحميل بيانات الروبوت",
-    loadFailed: "تعذّر تحميل الروبوت",
-    groupsLoadFailed: "تعذّر تحميل مجموعات الروبوت",
-    attentionFallback: "يحتاج إلى انتباه",
-    attentionProviderAuth: "سجّل الدخول مجددًا لهذا الملف الشخصي",
-    attentionQuota: "نفدت الحصة أو الرصيد",
-    attentionMissingConfig: "لم يُضبط المزوّد — نفّذ hermes model",
-    attentionBlocked: "الروبوت محظور — راجع آخر رسالة له",
-    editMenu: "تعديل…",
-    duplicate: "إنشاء نسخة",
-    duplicateFailed: "تعذّر إنشاء نسخة"
+    manageGroups: 'إدارة المجموعات…',
+    metadataLoadFailed: 'تعذّر تحميل بيانات الروبوت',
+    loadFailed: 'تعذّر تحميل الروبوت',
+    groupsLoadFailed: 'تعذّر تحميل مجموعات الروبوت',
+    attentionFallback: 'يحتاج إلى انتباه',
+    attentionProviderAuth: 'سجّل الدخول مجددًا لهذا الملف الشخصي',
+    attentionQuota: 'نفدت الحصة أو الرصيد',
+    attentionMissingConfig: 'لم يُضبط المزوّد — نفّذ hermes model',
+    attentionBlocked: 'الروبوت محظور — راجع آخر رسالة له',
+    editMenu: 'تعديل…',
+    duplicate: 'إنشاء نسخة',
+    duplicateFailed: 'تعذّر إنشاء نسخة'
   },
   avatar: {
-    upload: "رفع",
-    generate: "إنشاء",
-    generating: "جارٍ الإنشاء…"
+    upload: 'رفع',
+    generate: 'إنشاء',
+    generating: 'جارٍ الإنشاء…'
   },
   screen: {
-    autoOpenMenu: "فتح الشاشة عندما يستخدمها الروبوت",
+    autoOpenMenu: 'فتح الشاشة عندما يستخدمها الروبوت',
     autoOpenOnToast: name => `تُفتح شاشة ${name} عندما يبدأ الروبوت باستخدام سطح مكتبه`,
     autoOpenOffToast: name => `تبقى شاشة ${name} مغلقة حتى تفتحها`,
-    menu: "فتح الشاشة"
+    menu: 'فتح الشاشة'
   }
 } satisfies Pick<BotsMessages, 'group' | 'roster' | 'sections'> & {
-  bot: Pick<BotsMessages['bot'], 'newChatWith' | 'newTitle' | 'thisDevice' | 'removeFromAllGroups' | 'openBotChat' | 'openBotChatInNewTab' | 'openingChat' | 'pinToTop' | 'unpin' | 'pinnedToast' | 'unpinnedToast' | 'hide' | 'unhide' | 'hiddenToast' | 'unhiddenToast' | 'groupsMenu' | 'manageGroups' | 'metadataLoadFailed' | 'loadFailed' | 'groupsLoadFailed' | 'attentionFallback' | 'attentionProviderAuth' | 'attentionQuota' | 'attentionMissingConfig' | 'attentionBlocked' | 'editMenu' | 'duplicate' | 'duplicateFailed'>
+  bot: Pick<
+    BotsMessages['bot'],
+    | 'newChatWith'
+    | 'newTitle'
+    | 'thisDevice'
+    | 'removeFromAllGroups'
+    | 'openBotChat'
+    | 'openBotChatInNewTab'
+    | 'openingChat'
+    | 'pinToTop'
+    | 'unpin'
+    | 'pinnedToast'
+    | 'unpinnedToast'
+    | 'hide'
+    | 'unhide'
+    | 'hiddenToast'
+    | 'unhiddenToast'
+    | 'groupsMenu'
+    | 'manageGroups'
+    | 'metadataLoadFailed'
+    | 'loadFailed'
+    | 'groupsLoadFailed'
+    | 'attentionFallback'
+    | 'attentionProviderAuth'
+    | 'attentionQuota'
+    | 'attentionMissingConfig'
+    | 'attentionBlocked'
+    | 'editMenu'
+    | 'duplicate'
+    | 'duplicateFailed'
+  >
   avatar: Pick<BotsMessages['avatar'], 'upload' | 'generate' | 'generating'>
   screen: Pick<BotsMessages['screen'], 'menu' | 'autoOpenMenu' | 'autoOpenOnToast' | 'autoOpenOffToast'>
 }

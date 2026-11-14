@@ -854,6 +854,9 @@ def _kill_targets_pid(args: list[str], pid: int) -> bool:
             continue
         if _is_pid_operand(arg, pid, group=signal_given):
             return True
+        if redirect := re.match(r"\d*(?:>>?|<<?|<>|>\|)", arg):  # `kill 2>/dev/null -0 N`: not an operand
+            position += 2 if redirect.end() == len(arg) else 1
+            continue
         if not arg.startswith("-"):
             # The first operand ends option parsing: every later word is a target, so in
             # `kill 99 -N` the `-N` is a process group and `kill 99 -s 0 N` still signals N.

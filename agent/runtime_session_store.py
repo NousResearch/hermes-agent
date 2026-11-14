@@ -20,6 +20,78 @@ from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
+# The ``worker.adopt`` handshake is a round trip through the OWNER's event loop, and a live
+# gateway legitimately spends 1000 s+ inside one turn (gateway.log 2026-10-22:
+# ``time=1018.3s api_calls=46``). A fixed 5 s budget lost that race and cost a whole dispatch
+# cycle: the managed worker died in ``worker.adopt`` (run 730), the card kept saying ``running``,
+# and nothing retried until #145952 booked the loss. Generous by default, overridable, and a
+# TIMEOUT (never an auth/protocol failure) is retried with backoff.
+WORKER_RPC_OPEN_TIMEOUT_SECONDS = 60.0
+WORKER_RPC_CONNECT_ATTEMPTS = 3
+WORKER_RPC_RETRY_SLEEP_SECONDS = 1.0
+
+
+def worker_rpc_open_timeout():
+    """Per-attempt adopt handshake budget in seconds, default 60.
+
+    ``WORKER_RPC_OPEN_TIMEOUT_SECONDS`` wins; ``HERMES_WORKER_RPC_OPEN_TIMEOUT`` is the name the
+    earlier upstream attempt (#143250) documented, so an operator who set that keeps it. Unset,
+    empty, non-numeric, non-positive or non-finite values keep the default: a typo in the
+    environment must not leave the worker waiting forever.
+    """
+    raw = (os.environ.get('WORKER_RPC_OPEN_TIMEOUT_SECONDS')
+           or os.environ.get('HERMES_WORKER_RPC_OPEN_TIMEOUT') or '').strip()
+    if not raw:
+        return WORKER_RPC_OPEN_TIMEOUT_SECONDS
+    try:
+        budget = float(raw)
+    except ValueError:
+        logger.warning('worker_rpc_open_timeout_invalid: %r is not a number; using %ss',
+                       raw, WORKER_RPC_OPEN_TIMEOUT_SECONDS)
+        return WORKER_RPC_OPEN_TIMEOUT_SECONDS
+    if not budget > 0 or budget == float('inf'):  # NaN and inf both fail ``not budget > 0``/the equality
+        logger.warning('worker_rpc_open_timeout_invalid: %r is not a positive finite budget; using %ss',
+                       raw, WORKER_RPC_OPEN_TIMEOUT_SECONDS)
+        return WORKER_RPC_OPEN_TIMEOUT_SECONDS
+    return budget
+
+
+def connect_worker_link(target, *, open_timeout=None, attempts=None, sleep=None, connect=None):
+    """Open the owner link, retrying a handshake that TIMED OUT because the owner was busy.
+
+    ``target()`` runs once per attempt and returns ``(url, protocols)``. It must mint a fresh
+    ticket every time: adoption tickets are single-use and expire after 30 s
+    (``gateway/runtime_bootstrap`` ``TTL_SECONDS``), which is shorter than one budget. Resending
+    the first attempt's ticket would be refused as expired — not timed out — so a timeout-only
+    retry would never fire, which is how the previous upstream attempt (#143250) died.
+
+    Only ``TimeoutError`` is retried: an authentication or protocol failure will not heal with
+    another attempt, and a completed handshake is never re-sent. Each attempt gets the full
+    budget, so the whole adopt stays bounded by ``attempts x budget + backoff`` (about 3 minutes
+    by default) instead of hanging the worker. Minting the ticket is outside the retry: it is a
+    control-socket round trip with its own timeout, and re-sending is not the repair.
+    ``sleep`` and ``connect`` are test seams.
+    """
+    import time as _time
+    budget = worker_rpc_open_timeout() if open_timeout is None else float(open_timeout)
+    tries = max(1, int(WORKER_RPC_CONNECT_ATTEMPTS if attempts is None else attempts))
+    pause = _time.sleep if sleep is None else sleep
+    dial = _dial_owner if connect is None else connect
+    last = None
+    for attempt in range(tries):
+        url, protocols = target()
+        try:
+            return dial(url, protocols, budget)
+        except TimeoutError as exc:
+            last = exc
+            if attempt + 1 < tries:
+                logger.warning('worker_rpc_adopt_timeout: owner handshake exceeded %ss '
+                               '(attempt %d/%d); redialing with a fresh ticket',
+                               budget, attempt + 1, tries)
+                pause(WORKER_RPC_RETRY_SLEEP_SECONDS * (2 ** attempt))
+    raise last
+
+
 _worker_process = False
 
 
@@ -75,6 +147,18 @@ def call_off_event_loop(fn, *args, **kwargs):
     context = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='worker-persist-off-loop') as pool:
         return pool.submit(context.run, fn, *args, **kwargs).result()
+
+
+def _dial_owner(url, protocols, budget):
+    """One adopt handshake attempt, bounded by ``budget`` seconds.
+
+    The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
+    No library keepalive: its pong deadline would run independently of (and could fail) a call
+    inside its receipt budget; that budget and the observed close are the liveness checks.
+    """
+    from websockets.sync.client import connect
+    return connect(url, subprotocols=protocols, open_timeout=budget, close_timeout=1,
+                   max_size=8 * 1024 * 1024, proxy=None, ping_interval=None)
 
 
 class _OwnerLink:
@@ -135,9 +219,7 @@ class WorkerRPC:
                 return self.link
             # The owner closed it while idle, before any send: redial with a fresh ticket.
             self._drop()
-        from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
         from hermes_cli.gateway_runtime_discovery import query_identify
-        from websockets.sync.client import connect
         # A served secondary has no socket; its multiplexer's descriptor names it.
         from hermes_cli.gateway_runtime import discover_gateway_endpoint
         discovery = discover_gateway_endpoint(self.home, timeout=5)
@@ -150,13 +232,14 @@ class WorkerRPC:
         descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
         if descriptor.get('pid') == os.getpid():
             raise WorkerPersistenceError('synchronous_self_rpc')
-        ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
-        url, protocols = gateway_ws_target(endpoint, ticket)
-        # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
-        # No library keepalive: its pong deadline would run independently of (and could fail) a call
-        # inside its receipt budget; that budget and the observed close are the liveness checks.
-        self.link = _OwnerLink(connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
-                                       max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+        from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
+
+        def target():
+            # A ticket is single-use and short-lived: every attempt mints its own.
+            return gateway_ws_target(
+                endpoint, _session_ticket(self.home, endpoint, purpose='worker-adoption'))
+
+        self.link = _OwnerLink(connect_worker_link(target))
         return self.link
 
     def _drop(self):

@@ -33,9 +33,11 @@ If you're paying Portal for an xAI model anyway, Live Search calls bill against 
 | Credential | Source | Setup |
 |------------|--------|-------|
 | **SuperGrok / X Premium+ OAuth** | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
-| **`XAI_API_KEY`** (preferred) | Paid xAI API key | Set in `~/.hermes/.env` |
+| **`XAI_API_KEY`** (preferred in auto mode) | Paid xAI API key | Set in `~/.hermes/.env` |
 
-Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, the explicit `XAI_API_KEY` wins** — the subscription OAuth bearer authorizes `/v1/responses` but answers x_search in a degraded Grok explanatory mode with no citations, while the API key returns real posts. Note this means x_search runs against metered API billing when a key is set; remove `XAI_API_KEY` to fall back to your subscription quota (with the degraded-answer caveat).
+Both hit the same endpoint with the same payload; the bearer token selects the credential path. With `x_search.credential_source: auto` (the default for existing/unconfigured installs), **`XAI_API_KEY` wins when both are configured**, preserving the API-key-first behavior from #88040. OAuth responses may lack citations; choosing OAuth does not guarantee search quality, provider entitlement, or subscription billing treatment.
+
+An explicit `oauth` selection uses only OAuth and **never falls back to the paid API key**, even if OAuth is missing or refresh fails. An explicit `api_key` selection uses only `XAI_API_KEY` and does not fall back to OAuth. This setting affects X Search only: keep a shared API key for voice or other xAI tools without letting X Search silently use it.
 
 The tool's `check_fn` runs the xAI credential resolver every time the model's tool list is rebuilt. A `True` return means the bearer is fetchable AND non-empty AND (if it had expired) successfully refreshed. Revoked tokens with a failed refresh hide the tool from the schema; the model simply can't see it.
 
@@ -53,13 +55,15 @@ The picker offers two credential choices:
 1. **xAI Grok OAuth (SuperGrok / Premium+)** — opens the browser to `accounts.x.ai` if you're not already logged in
 2. **xAI API key** — prompts for `XAI_API_KEY`
 
-Either choice satisfies the gating. You can pick whichever credentials you already have; the tool works identically with both. If both end up configured, OAuth is preferred at call time.
+The CLI picker and Desktop settings persist the selected source as `x_search.credential_source` in the active profile. Availability checks and execution honor that same choice. Older selections were not persisted; select the row again to pin it, or use `hermes config set x_search.credential_source oauth`. Use `hermes config set x_search.credential_source auto` to restore legacy API-key-first fallback behavior.
 
 ## Configuration
 
 ```yaml
 # ~/.hermes/config.yaml
 x_search:
+  # auto (API key first, then OAuth), oauth (strict), or api_key (strict).
+  credential_source: auto
   # xAI model used for the Responses call.
   # grok-4.5 is the recommended default; any Grok model
   # with x_search tool access works.

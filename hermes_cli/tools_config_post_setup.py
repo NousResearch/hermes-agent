@@ -129,19 +129,19 @@ def _post_setup_python(spec: dict) -> None:
 
 
 def _post_setup_xai_grok() -> None:
-    """Shared xAI credential bootstrap for any picker row that talks to xAI (TTS, STT, Video Gen, x_search
-    …). Accepts a SuperGrok-tier OAuth token (preferred — billed to the existing subscription) or a raw
-    XAI_API_KEY; the rows declare empty env_vars so the auth UX lives here."""
+    """Shared xAI credential bootstrap (TTS, STT, Video Gen, …).
+    Saves credentials, not runtime precedence or billing policy. X Search's explicit OAuth
+    selection has its own strict hook; these rows accept either credential type."""
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
         oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
     except Exception:
         oauth_logged_in = False
     if oauth_logged_in:
-        _print_success("    xAI will use your xAI Grok OAuth (SuperGrok / Premium+) credentials")
+        _print_success("    xAI Grok OAuth credentials are configured; credential precedence depends on the tool's settings.")
         return
     if get_env_value("XAI_API_KEY"):
-        _print_success("    xAI will use your existing XAI_API_KEY")
+        _print_success("    XAI_API_KEY is configured; credential precedence depends on the tool's settings.")
         return
 
     _print_info("    xAI needs credentials. Choose one:")
@@ -161,7 +161,7 @@ def _post_setup_xai_grok() -> None:
                  "Skip — configure later via `hermes auth add xai-oauth`"])
     if idx == 0:
         if _run_xai_oauth_login_from_setup():
-            _print_success("    Logged in — xAI will use these OAuth credentials")
+            _print_success("    xAI OAuth credentials saved; credential precedence depends on the tool's settings.")
         else:
             _print_warning("    xAI Grok OAuth login did not complete. Run later: hermes auth add xai-oauth")
     elif idx == 1:
@@ -173,6 +173,25 @@ def _post_setup_xai_grok() -> None:
             _print_warning("    No API key provided. Run later: hermes auth add xai-oauth")
     else:
         _print_info("    xAI will remain inactive until credentials are configured.")
+
+
+def _x_search_oauth_ready() -> bool:
+    """Check only OAuth without refreshing or making a request."""
+    from hermes_cli.setup_tts import _xai_oauth_logged_in_for_setup
+    return _xai_oauth_logged_in_for_setup()
+
+
+def _post_setup_x_search_oauth() -> None:
+    """Bootstrap explicitly selected OAuth without offering a paid-key fallback."""
+    from hermes_cli.setup import is_noninteractive
+    from hermes_cli.setup_tts import _run_xai_oauth_login_from_setup
+
+    if _x_search_oauth_ready():
+        _print_success("    X Search OAuth credentials are configured (no API-key fallback).")
+    elif not is_noninteractive() and _run_xai_oauth_login_from_setup():
+        _print_success("    X Search OAuth credentials saved (no API-key fallback).")
+    else:
+        _print_warning("    X Search needs OAuth login: hermes auth add xai-oauth. No API-key fallback.")
 
 
 def _codex_credentials_present() -> bool:
@@ -231,6 +250,7 @@ def _xai_credentials_ready() -> bool:
 # Credential-bootstrap post_setup keys -> "credentials present" predicate. These rows have no install
 # side-effect; ``provider_readiness_status`` reports them ready/needs_auth from the auth store.
 _POST_SETUP_AUTH_READY: dict = {
+    "x_search_oauth": _x_search_oauth_ready,
     "xai_grok": _xai_credentials_ready,
     "openai_codex": _codex_credentials_present,
 }
@@ -238,6 +258,7 @@ _POST_SETUP_AUTH_READY: dict = {
 
 # post_setup key -> hook. Unknown keys are a silent no-op (callers validate against valid_post_setup_keys()).
 _POST_SETUP_HOOKS: dict = {
+    "x_search_oauth": _post_setup_x_search_oauth,
     "lightpanda": _post_setup_lightpanda,
     "chromium": _post_setup_chromium,
     # Cloud browser rows (plugins.browser.*): the vendor hosts Chromium; browser_exec attaches over CDP.

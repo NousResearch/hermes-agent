@@ -338,6 +338,31 @@ def _copy_lineage_index(value):
     return set(superseded), {key: (owner, list(lineage)) for key, (owner, lineage) in heads.items()}
 
 
+# TANDY-FORK (lineage-process-cache): the dashboard opens a FRESH read-only SessionDB per
+# /api/sessions request, so the per-connection cache below is cold on every call and the
+# 38 MiB receipt scan is repeated each time (measured: nova 76 ms, default 11 ms, zero rows
+# returned). This module-level cache is keyed by (path, PRAGMA main.data_version) and used
+# ONLY for a pristine read connection. data_version moves whenever another connection
+# commits, so a stale projection cannot be served. See _cached_local_lineage_index.
+_PROCESS_LINEAGE_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_PROCESS_LINEAGE_LOCK = threading.Lock()
+_PROCESS_LINEAGE_MAX = 8
+
+
+def _process_lineage_key(db, conn):
+    """(path, data_version) for a pristine read connection, else None (cache not applied)."""
+    if conn.in_transaction or conn.total_changes:
+        return None
+    try:
+        path = str(getattr(db, "db_path", "") or "")
+        version = conn.execute('PRAGMA main.data_version').fetchone()[0]
+    except Exception:
+        return None
+    if not path:
+        return None
+    return path, version
+
+
 def _cached_local_lineage_index(db, conn):
     # Owned by this SessionDB, not a process-global path/id cache. Bound retained connections
     # across read-pool churn and close/reopen; a closed/replaced connection cannot match a new one.
@@ -347,6 +372,16 @@ def _cached_local_lineage_index(db, conn):
         with lock:
             cache.pop(conn, None)
         return local_lineage_index(conn)
+    # TANDY-FORK (lineage-process-cache): a fresh read-only SessionDB (one per dashboard request)
+    # has an empty per-connection cache, so consult the process-level projection first. Keyed by
+    # (path, data_version), which any OTHER connection's commit invalidates.
+    pkey = _process_lineage_key(db, conn)
+    if pkey is not None:
+        with _PROCESS_LINEAGE_LOCK:
+            hit = _PROCESS_LINEAGE_CACHE.get(pkey)
+            if hit is not None:
+                _PROCESS_LINEAGE_CACHE.move_to_end(pkey)
+                return _copy_lineage_index(hit)
     version = _lineage_version(conn)
     with lock:
         saved = cache.get(conn)
@@ -362,6 +397,15 @@ def _cached_local_lineage_index(db, conn):
             cache.move_to_end(conn)
             if len(cache) > 8:
                 cache.popitem(last=False)
+        # TANDY-FORK (lineage-process-cache): also publish for the next request's fresh
+        # connection, so a per-request SessionDB reuses this projection instead of rescanning.
+        pkey = _process_lineage_key(db, conn)
+        if pkey is not None:
+            with _PROCESS_LINEAGE_LOCK:
+                _PROCESS_LINEAGE_CACHE[pkey] = value
+                _PROCESS_LINEAGE_CACHE.move_to_end(pkey)
+                while len(_PROCESS_LINEAGE_CACHE) > _PROCESS_LINEAGE_MAX:
+                    _PROCESS_LINEAGE_CACHE.popitem(last=False)
     return _copy_lineage_index(value)
 
 

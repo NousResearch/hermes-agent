@@ -2693,7 +2693,7 @@ DEFAULT_CONFIG = {
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
-        # Extra ports detection probes for an external llama-server (besides 8080).
+        # Extra ports detection probes for an external llama-server (besides 8080 and 9931).
         "detect_ports": [],
     },
     "_config_version": 53,  # Config schema version - bump this when adding new required fields

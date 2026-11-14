@@ -97,15 +97,7 @@ type McpSetupScope = null | string | undefined | { connectionId?: null | string;
 interface McpSetupButtonProps {
   ensureProfile?: () => Promise<null | string>
   entry: McpCatalogEntry
-  /** Setup finished. May run after this button unmounted (an adopted or
-   *  tab-switched setup): the owner must check the result is still its own. */
   onDone?: () => void
-  /** The catalog server now exists on the profile (before its keys/sign-in).
-   *  Runs even after the setup was retired; same ownership rule as onDone. */
-  onAdded?: () => void
-  /** True once the owner retired this setup (New Bot rename/cancel). Unmounting
-   *  alone does not stop key setup: an adopted draft keeps its setup. */
-  retired?: () => boolean
   // TODO(bot-mode-types): Edit Profile passes `botBackendProfileScope(...)`, which
   // is a `{ connectionId, profile }` OBJECT for every source-scoped bot. That
   // object is forwarded verbatim as the `profile` param of mcp.servers.add /
@@ -115,7 +107,7 @@ interface McpSetupButtonProps {
   profile: McpSetupScope
 }
 
-export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile, retired }: McpSetupButtonProps) {
+export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSetupButtonProps) {
   const { t } = useI18n()
   const b = useBots()
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
@@ -126,40 +118,14 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
   const [supported, setSupported] = useState<boolean | null>(null)
   const [keyValues, setKeyValues] = useState<Record<string, string>>({})
   const [message, setMessage] = useState('')
-  // OAuth is cancelled by unmount; key setup only by a newer action or the
-  // owner retiring it, so an adopted draft's key writes and test still finish.
   const oauthEpoch = useRef(0)
-  const keyEpoch = useRef(0)
-  const keysStale = (epoch: number) => keyEpoch.current !== epoch || Boolean(retired?.())
-  // Key setup that outlives its button (the bot was created mid-write) still
-  // reports its outcome, but only as a notice: its owner's state is gone.
-  const mounted = useRef(true)
-
-  // eslint-disable-next-line no-restricted-syntax -- mount flag for setup that outlives its button, not an atom mirror
-  useEffect(() => {
-    mounted.current = true
-
-    return () => {
-      mounted.current = false
-    }
-  }, [])
-
-  const failKeys = (message: string) => {
-    if (mounted.current) {
-      setPhase('error')
-      setMessage(message)
-    } else {
-      host.notify({ kind: 'error', title: entry.name, message, persistent: true })
-    }
-  }
-
   // Holds ONLY the profile this component created on demand. The live prop
   // wins wherever both exist, so there is nothing to mirror into the ref and
   // no render of lag between the parent supplying a profile and us using it.
   const createdProfileRef = useRef<McpSetupScope>(null)
 
   // Resolve the target profile, creating it on demand for the New Bot flow.
-  const resolveProfile = async (stale: () => boolean) => {
+  const resolveProfile = async () => {
     const known = profile || createdProfileRef.current
 
     if (known) {
@@ -168,10 +134,6 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
 
     if (ensureProfile) {
       const created = await ensureProfile()
-
-      if (stale()) {
-        return null
-      }
 
       if (created) {
         createdProfileRef.current = created
@@ -202,15 +164,10 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
   const requires = entry.requires || []
 
   const beginKeys = async () => {
-    const epoch = ++keyEpoch.current
     // Ensure the server exists in the target profile first (add from catalog).
     setPhase('busy')
     setMessage('')
-    const profile = await resolveProfile(() => keysStale(epoch))
-
-    if (keysStale(epoch)) {
-      return
-    }
+    const profile = await resolveProfile()
 
     if (!profile) {
       setPhase('idle')
@@ -225,16 +182,6 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
         preset: entry.name
       })
 
-      // The server exists now even if this setup was retired: the owner
-      // keeps it for the draft that still holds it.
-      if (add.ok) {
-        onAdded?.()
-      }
-
-      if (keysStale(epoch)) {
-        return
-      }
-
       if (!add.ok) {
         setPhase('error')
         setMessage(add.error || b.tools.addServerFailed)
@@ -247,7 +194,6 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
   }
 
   const submitKeys = async () => {
-    const epoch = ++keyEpoch.current
     setPhase('busy')
     const target = profile || createdProfileRef.current
 
@@ -272,13 +218,9 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
         value: val
       })
 
-      // A sent write cannot be recalled; retirement stops the next key/test.
-      if (keysStale(epoch)) {
-        return
-      }
-
       if (!r.ok) {
-        failKeys(r.error || b.tools.setKeyFailed(k))
+        setPhase('error')
+        setMessage(r.error || b.tools.setKeyFailed(k))
 
         return
       }
@@ -290,21 +232,16 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
       name: entry.name
     })
 
-    if (keysStale(epoch)) {
-      return
-    }
-
     if (t.ok && t.result && (t.result.ok || (t.result.result && t.result.result.ok))) {
       setPhase('done')
       host.notify({
         kind: 'success',
         message: b.tools.configured(entry.name)
       })
-
-      // The owner decides whether the result still belongs to its draft.
-      onDone?.()
+      onDone && onDone()
     } else {
-      failKeys((t.result && (t.result.error || (t.result.result && t.result.result.error))) || b.tools.testFailed)
+      setPhase('error')
+      setMessage((t.result && (t.result.error || (t.result.result && t.result.result.error))) || b.tools.testFailed)
     }
   }
 
@@ -318,12 +255,7 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
 
     setPhase('busy')
     setMessage('')
-    const oauthStale = () => oauthEpoch.current !== epoch || Boolean(retired?.())
-    const resolvedProfile = await resolveProfile(oauthStale)
-
-    if (oauthStale()) {
-      return
-    }
+    const resolvedProfile = await resolveProfile()
 
     if (!resolvedProfile) {
       setPhase('idle')

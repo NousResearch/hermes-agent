@@ -32,7 +32,8 @@ def image_tool():
 
 @pytest.mark.parametrize("variant", ["flare", "sunburst"])
 @pytest.mark.parametrize("aspect,size", [
-    ("landscape", "landscape_4_3"), ("square", "square_hd"), ("portrait", "portrait_4_3"),
+    ("landscape", {"width": 1280, "height": 720}), ("square", "square_hd"),
+    ("portrait", {"width": 720, "height": 1280}),
 ])
 def test_image_25_selection_routes_generation_and_edits(image_tool, monkeypatch, variant, aspect, size):
     model = f"openai/gpt-image-2.5/{variant}/text-to-image"
@@ -47,7 +48,8 @@ def test_image_25_selection_routes_generation_and_edits(image_tool, monkeypatch,
         )
         assert actual == endpoint
         assert payload["quality"] == "medium"
-        assert payload["image_size"] == size
+        # Edits omit image_size so FAL's `auto` keeps the source aspect instead of squeezing it.
+        assert payload.get("image_size") == (None if sources else size)
         assert "seed" not in payload and "guidance_scale" not in payload
         assert payload.get("image_urls", []) == sources[:16]
     assert meta["upscale"] is False
@@ -129,13 +131,13 @@ class TestGptLiteralFamily:
 
 
 class TestGptImage2Presets:
-    """GPT Image 2 uses preset enum sizes (not literal strings like 1.5).
-    Mapped to 4:3 variants so we stay above the 655,360 min-pixel floor
-    (16:9 presets at 1024x576 = 589,824 would be rejected)."""
+    """GPT Image 2 takes custom {width, height}: FAL's 16:9 presets (1024x576 =
+    589,824 px) fall below the 655,360 min-pixel floor, so 16:9 is sent explicitly."""
 
-    def test_gpt2_landscape_uses_4_3_preset(self, image_tool):
-        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "landscape")
-        assert p["image_size"] == "landscape_4_3"
+    def test_gpt2_landscape_is_true_16_9_above_min_pixels(self, image_tool):
+        size = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "landscape")["image_size"]
+        w, h = size["width"], size["height"]
+        assert w * 9 == h * 16 and w % 16 == h % 16 == 0 and w * h >= 655_360
 
 
     def test_gpt2_strips_byok_and_unsupported_overrides(self, image_tool):

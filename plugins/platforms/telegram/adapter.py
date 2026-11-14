@@ -2691,7 +2691,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         table = getattr(app, "handlers", None)
-        core_before = {g: len(hs) for g, hs in table.items()} if isinstance(table, dict) else {}
+        prior = {id(h) for hs in table.values() for h in hs} if isinstance(table, dict) else set()
         app.add_handler(TelegramMessageHandler((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
@@ -2710,8 +2710,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
         # Everything appended above is core; a late plugin re-wire must land BEFORE these (#87770).
-        if isinstance(table, dict):
-            self._core_handler_ids = {id(h) for g, hs in table.items() for h in hs[core_before.get(g, 0):]}
+        if isinstance(table := getattr(app, "handlers", None), dict):  # re-read: PTB swaps the dict per new group
+            self._core_handler_ids = {id(h) for hs in table.values() for h in hs if id(h) not in prior}
 
     def _wire_plugin_handlers(self, native: Any = None) -> None:
         """PTB dispatches the FIRST matching handler per group and core registers catch-alls

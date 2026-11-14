@@ -405,6 +405,46 @@ function AppGuidancePanel({
   )
 }
 
+/** The backend's app check: a line while it runs, then the guidance it found. */
+function AppCheckStatus({
+  checking,
+  guidance,
+  installing,
+  onHelp,
+  onRecheck,
+  targetLabel
+}: {
+  checking: boolean
+  guidance: AppGuidance | null
+  installing: boolean
+  onHelp: () => void
+  onRecheck: () => void
+  targetLabel: string
+}) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      {/* Install stays disabled until the backend answers; say why instead of waiting silently. */}
+      {checking && (
+        <p aria-live="polite" className={cn(CAPTION, 'text-(--ui-text-secondary)')}>
+          {t.settings.plugins.installModal.appGuidance.checking}
+        </p>
+      )}
+      {guidance && (
+        <AppGuidancePanel
+          checking={checking || installing}
+          guidance={guidance}
+          helpDisabled={installing}
+          onHelp={onHelp}
+          onRecheck={onRecheck}
+          targetLabel={targetLabel}
+        />
+      )}
+    </>
+  )
+}
+
 interface SourceMovedNoticeProps {
   copy: InstallModalCopy
   /** A failure on screen replaces the notice. */
@@ -795,22 +835,14 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
 
       <div className="space-y-3">
         <ProbeWarnings copy={m} probe={probe} />
-        {/* Install stays disabled until the backend answers; say why instead of waiting silently. */}
-        {checkingApp && (
-          <p aria-live="polite" className={cn(CAPTION, 'text-(--ui-text-secondary)')}>
-            {m.appGuidance.checking}
-          </p>
-        )}
-        {guidance && (
-          <AppGuidancePanel
-            checking={checkingApp || installing}
-            guidance={guidance}
-            helpDisabled={installing}
-            onHelp={askForHelp}
-            onRecheck={() => void recheckApp()}
-            targetLabel={targetLabel}
-          />
-        )}
+        <AppCheckStatus
+          checking={checkingApp}
+          guidance={guidance}
+          installing={installing}
+          onHelp={askForHelp}
+          onRecheck={() => void recheckApp()}
+          targetLabel={targetLabel}
+        />
 
         <Disclosure label={m.advanced} onToggle={() => setAdvancedOpen(open => !open)} open={advancedOpen}>
           <PluginInstallDetails

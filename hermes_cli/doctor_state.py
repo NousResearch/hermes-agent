@@ -233,11 +233,15 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 # Cache-root entries at least this big that no pruner covers get a doctor warning.
 _UNPRUNED_CACHE_WARN_BYTES = 1 << 30
-_PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})
+# Stays quiet for ``scratch``/``terminal`` (reaped) and for the package manager's own store, which is
+# not task residue: ``pm/packages.py::pnpm_env()`` pins pnpm's store/cache/state at ``cache/pnpm``, so
+# "move task files under cache/scratch/<task>/ or delete it" would drop a content-addressed store that
+# every install links from (a full re-download) into the 24h pruner's reach.
+_SILENT_CACHE_DIRS = frozenset({"scratch", "terminal", "pnpm"})
 
 
 def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN_BYTES) -> list[tuple[str, int]]:
-    """``(name, bytes)`` for ``cache/`` entries outside the pruned dirs that exceed *min_bytes*.
+    """``(name, bytes)`` for ``cache/`` entries outside the silent dirs that exceed *min_bytes*.
 
     Finished campaign trees parked at the cache root sat for weeks (95 GB on one host)
     because only ``scratch/`` and ``terminal/`` are reaped; doctor is where that shows."""
@@ -246,7 +250,7 @@ def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN
     cache = hermes_home / "cache"
     hogs: list[tuple[str, int]] = []
     try:
-        entries = [e for e in cache.iterdir() if e.is_dir() and not e.is_symlink() and e.name not in _PRUNED_CACHE_DIRS]
+        entries = [e for e in cache.iterdir() if e.is_dir() and not e.is_symlink() and e.name not in _SILENT_CACHE_DIRS]
     except OSError:
         return hogs
     for entry in entries:

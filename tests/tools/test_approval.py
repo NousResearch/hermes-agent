@@ -80,7 +80,7 @@ class TestSmartApproval:
             lambda: {"mode": "smart"},
         )
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "approve")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_, **__: "approve")
         approval_module.clear_session(session_key)
         approval_module._permanent_approved.clear()
 

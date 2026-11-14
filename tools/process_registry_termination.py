@@ -29,6 +29,16 @@ class ProcessTerminationMixin:
         except Exception:
             return False
 
+    def _terminate_local_process(self, session: "ProcessSession") -> None:
+        """Tree-kill a session that owns a local Popen. Windows: a foreground command that
+        yielded to background still carries its per-command job object; terminating it first
+        reaches the MSYS-forked pipeline members that ``taskkill /T`` cannot (their recorded
+        parent is an exited fork stub). Then the usual identity-checked tree kill."""
+        from tools.environments.local import _terminate_command_job
+
+        _terminate_command_job(session.process)
+        self._terminate_host_pid(session.process.pid, session.host_start_time)
+
     @classmethod
     def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.

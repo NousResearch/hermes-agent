@@ -123,13 +123,19 @@ def _hook_choice(resolved: bool, choice: str | None, extra: dict) -> str:
 
 def _await_coalesced_leader(session_key: str, leader, payload: dict):
     """Wait on an already-pending identical approval instead of re-prompting.
-    Adopts the leader's decision: ``session``/``always`` → approval (same dict
-    shape as a direct resolution; persistence stays the caller's and is
-    idempotent across leader and followers); ``deny`` → denial carrying the
-    leader's reason; leader timeout / our own deadline → unresolved. ``once``
-    returns ``None``: single-use consent covers only the leader's execution,
-    so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
-    so observers see the follower's lifecycle without a duplicate prompt."""
+
+    Adopts only what is safely transferable: ``deny`` → denial carrying the
+    leader's reason; leader timeout / our own deadline → unresolved.
+
+    ``once``, ``session`` and ``always`` all return ``None``, so the caller
+    issues a fresh prompt. Coalescing is keyed by the *rendered* command and
+    pattern keys, not by request identity — two different operations can
+    render identically. A single-use grant covers only the leader's execution,
+    and a broader grant must never widen to a request the user never saw.
+    Followers that fall through re-coalesce on their own prompt.
+
+    Hooks fire with ``coalesced=True`` so observers see the follower's
+    lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
     # The leader's captured timeout (when stamped), so a config edit mid-wait can't end the follower first.
     state = _poll_event(leader.event, session_key, timeout_s=leader.data.get("timeout_s"),
@@ -146,8 +152,11 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     else:
         choice = leader.result
         resolved = choice is not None
-    if choice == "once":
+    if choice in ("once", "session", "always"):
         # The post hook fires for the fresh prompt's own lifecycle, not here.
+        # ``session``/``always`` are deliberately excluded: they consent to a
+        # class of commands, and the follower may be a different operation that
+        # merely renders the same text.
         return None
     extra = {"cancelled": cancelled} if cancelled else {}
     return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **extra)

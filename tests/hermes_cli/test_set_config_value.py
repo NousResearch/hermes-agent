@@ -468,11 +468,14 @@ class TestSecretRedactionInDisplay:
     def test_redact_config_value_masks_all_digit_secret(self):
         from hermes_cli.config import redact_config_value
         # YAML loads an unquoted all-digit password as an int, not a str.
-        cfg = yaml.safe_load("env:\n  DB_PASSWORD: 48213977261\n  PORT: 5432\n")
+        cfg = yaml.safe_load(
+            "env:\n  DB_PASSWORD: 48213977261\n  DB_SECRET: 4821.3977\n  USE_TOKEN: true\n  PORT: 5432\n")
 
         out = redact_config_value(cfg)
 
         assert "48213977261" not in str(out)
+        assert "4821.3977" not in str(out)
+        assert out["env"]["USE_TOKEN"] is True
         assert out["env"]["PORT"] == 5432
 
     def test_set_and_get_mask_all_digit_secret(self, _isolated_hermes_home, capsys):

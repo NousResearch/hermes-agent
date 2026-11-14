@@ -26,6 +26,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.session_split import is_compression_continuation, restore_route
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
@@ -1187,7 +1188,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         except Exception:
             logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
-    def _sync_session_after_run(self, agent_history):
+    def _sync_session_after_run(self, agent_history, result_messages=None):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
         model call fails, and the failure return must still point at the compressed child.
         Returns (compacted_in_place, effective_session_id, effective_history_offset)."""
@@ -1199,8 +1200,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False)) if agent else False
         agent_session_id = getattr(agent, 'session_id', ctx.session_id) if agent else ctx.session_id
         session_was_split = bool(agent and ctx.session_key and agent_session_id != ctx.session_id)
+        split_rejected = False
         if session_was_split:
-            logger.info("Session split detected: %s → %s (compression)", ctx.session_id, agent_session_id)
+            logger.info("Session split detected: %s → %s", ctx.session_id, agent_session_id)
             entry = runner.session_store._entries.get(ctx.session_key)
             persisted = False
             if entry:
@@ -1220,11 +1222,33 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         "compression finished",
                         ctx.session_key or "?", ctx.session_id, entry_session_id,
                     )
+                elif not is_compression_continuation(runner.session_store, ctx.session_key,
+                                                     ctx.session_id, agent_session_id):
+                    split_rejected = True
                 else:
                     entry.session_id = agent_session_id
-                    runner.session_store._save()
-                    runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
+                    try:
+                        runner.session_store._save()
+                        runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
+                    except Exception:
+                        # A half-published split must not outlive the failure: the saved route would
+                        # name a session the rest of the store never adopted.
+                        restore_route(runner.session_store, entry,
+                                      published_id=agent_session_id, restored_id=ctx.session_id)
+                        self._evict_foreign_session_agent()
+                        raise
                     persisted = True
+            if split_rejected:
+                # The agent came back on another conversation's session (#154994: an async subagent's).
+                # The route keeps its session, the result reports it (or the agent-result sync after the
+                # turn would move the route anyway), and the cached agent goes: it would carry the other
+                # session into every later turn of this route.
+                logger.warning(
+                    "Skipping session split sync for %s: %s is not a compression "
+                    "continuation of %s; the route keeps its session",
+                    ctx.session_key or "?", agent_session_id, ctx.session_id,
+                )
+                self._evict_foreign_session_agent()
             # Only after this run published its split — a stale /stop→/new predecessor must not
             # mutate routing state.
             if persisted:
@@ -1236,7 +1260,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     self._restore_telegram_thread_id_after_split(agent_session_id)
                 runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
         from gateway.session_cli_turn import cli_turn
-        if not cli_turn(ctx.inbound_message_id).get("model_override"):
+        if not split_rejected and not cli_turn(ctx.inbound_message_id).get("model_override"):
             # A `/model --once` / `/moa` turn ran another route for this admission only: the row keeps
             # the session's model, or a /resume would come back on the one-turn model.
             runner._sync_session_model_from_agent(agent_session_id, agent)
@@ -1244,7 +1268,19 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.
         offset = 0 if (session_was_split or compacted_in_place) else len(agent_history)
+        if split_rejected:
+            # The returned `messages` are the other session's transcript, none of it this route's: no
+            # message counts as new, so the route's transcript gets only this turn's user row and reply.
+            return compacted_in_place, ctx.session_id, len(result_messages or ())
         return compacted_in_place, agent_session_id, offset
+
+    def _evict_foreign_session_agent(self) -> None:
+        """Drop this route's cached agent after it ran on a session the route does not hold, so the
+        next turn builds one on the route's session (released once this turn's slot clears)."""
+        evict = getattr(self._runner, "_evict_cached_agent", None)
+        if callable(evict):
+            with suppress(Exception):
+                evict(self._ctx.session_key, release_after_turn=True)
 
     def _combined_ephemeral_prompt(self) -> str:
         """Platform context + YAML channel_prompts hint + channel_overrides system_prompt (or global
@@ -1494,7 +1530,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # what the in-process one-shot took straight from `run_conversation`.
             **{key: result.get(key) for key in _LEDGER_PASSTHROUGH_KEYS if key in result},
         }
-        compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
+        compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(
+            agent_history, result.get("messages"))
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from
         # compression_exhausted so the gateway never auto-resets a session a concurrent compressor is

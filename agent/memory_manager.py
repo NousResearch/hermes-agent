@@ -209,6 +209,10 @@ class MemoryManager:
     _PREFETCH_GATE = _StuckCallGate()
     _BACKGROUND_GATE = _StuckCallGate()
 
+    #: Feature flag for out-of-tree providers: this manager calls ``MemoryProvider.capture_turn``
+    #: inline before queueing ``sync_turn`` (older managers never call it).
+    supports_durable_turn_capture = True
+
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: list[MemoryProvider] = []
         self._tool_to_provider: dict[str, MemoryProvider] = {}
@@ -463,6 +467,8 @@ class MemoryManager:
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
+        The one inline step is ``capture_turn``, a provider's fast local journal append, so a process
+        that exits before the worker drains does not lose the turn.
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
 
         Everything forwarded is provider egress: turn strings AND the ``messages`` transcript slice
@@ -478,6 +484,19 @@ class MemoryManager:
         clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
             clean_user_content, assistant_content, messages)
         optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
+
+        def _capture(provider: MemoryProvider) -> None:
+            callback = getattr(provider, "capture_turn", None)
+            if not callable(callback):
+                return
+            params = _signature_params(callback)
+            kwargs: dict[str, Any] = {"session_id": session_id}
+            for keyword, value in optional_kwargs.items():
+                if value is not None and (params is None or _has_var_kwargs(params) or keyword in params):
+                    kwargs[keyword] = value
+            callback(clean_user_content, assistant_content, **kwargs)
+
+        self._each_provider("durable turn capture failed", _capture, level=logging.WARNING, providers=providers)
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: dict[str, Any] = {"session_id": session_id}

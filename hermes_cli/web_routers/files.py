@@ -85,7 +85,7 @@ _FS_READDIR_HIDDEN = {
 # browser is a security leak — see issue #57505.
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", "google_oauth.json",
+    "google_token.json", "google_client_secret.json", "google_oauth_pending.json", "google_oauth.json",
     "webhook_subscriptions.json",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)

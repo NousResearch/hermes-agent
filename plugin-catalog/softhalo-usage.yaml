@@ -1,0 +1,28 @@
+name: softhalo-usage
+title: Soft Halo Usage
+repo: https://github.com/ahujat/softhalo-usage-hermes
+sha: 76810482d0d1a22e1f5cf889b5b9fb45593817de
+description: >-
+  Shows your Hermes token usage in Soft Halo's always-on-top Windows overlay, which you can resize and
+  make more or less transparent, next to Claude Code, Codex and OpenClaw. Observer hooks only: after
+  each model call it writes the token counts (uncached input, cache reads and writes, output), the
+  provider, model and session id to a small file in Soft Halo's local folder on Windows, reached from
+  WSL through /mnt/c. Disclosure: never records prompts, responses or tool output; no network
+  requests; no tools or commands; identifies the Hermes home only by a one-way hash.
+maintainer: ahujat
+tier: community
+category: tools
+requires_hermes: ">=0.13.0"
+version: "0.1.0"
+docs_url: https://github.com/ahujat/softhalo-usage-hermes/blob/76810482d0d1a22e1f5cf889b5b9fb45593817de/README.md
+platforms: []
+known_issues:
+  - "Needs Soft Halo for Windows 2.0.5.20 or later to show the numbers; without it the plugin only writes small local files."
+  - "On Hermes versions without the post_auxiliary_call hook (such as v0.13.0), side calls such as title generation are not counted."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - post_auxiliary_call
+  provides_middleware: []
+  requires_env: []

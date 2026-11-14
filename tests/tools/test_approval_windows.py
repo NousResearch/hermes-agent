@@ -313,6 +313,23 @@ class TestDriveLetterRoots:
         assert detect_hardline_command(cmd) == (False, None)
         assert time.perf_counter() - start < 2, cmd[:30]
 
+    @pytest.mark.parametrize("cmd", ["rm -r C:\\* -Include *.tmp", "rm -r C:/ -Include:*.log -Force"])
+    def test_rm_alias_with_narrowing_include_stays_approvable(self, cmd):
+        # PowerShell's `rm` alias: a literal -Include deletes only the matching items (#155280 shares this veto).
+        assert detect_hardline_command(cmd) == (False, None), cmd
+        assert _is_dangerous(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -r C:\\* -Include *",
+        "rm -r C:/* -Include *.tmp,*",
+        "rm -r C:/* -Include *$x",
+        "rm -rf -- C:/ -Include x",
+        "rm -r C:/* -- -Include x",
+        "rm -r C:/ # -Include *.tmp",
+    ])
+    def test_rm_alias_with_wildcard_or_non_include_stays_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd
+
     def test_pre_drive_letter_root_approval_key_still_matches(self, monkeypatch):
         """An "always" saved under the old regex-derived key keeps approving `rm /tmp/file`."""
         monkeypatch.setattr(approval, "_permanent_approved", set())

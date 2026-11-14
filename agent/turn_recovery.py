@@ -36,6 +36,7 @@ from agent.turn_failure_copy import (
 )
 from agent.route_verdicts import route_visit
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_recovery_replay import is_classified_replay_401, recover_classified_replay
 from agent.turn_recovery_codex import _codex_soft_failure_error, _is_codex_token_expired, _recover_stale_codex_reasoning
 from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
@@ -651,6 +652,23 @@ def _usage_window_reset_context(agent) -> dict[str, float]:
     return {"reset_at": resets_ms / 1000} if isinstance(resets_ms, (int, float)) and resets_ms > 0 else {}
 
 
+def _recover_oversized_images(agent: Any, api_error: Exception, classified: Any,
+                              retry: TurnRetryState, api_messages: Any) -> bool:
+    if classified.reason != FailoverReason.image_too_large or retry.image_shrink_retry_attempted:
+        return False
+    retry.image_shrink_retry_attempted = True
+    if agent._try_shrink_image_parts_in_messages(
+        api_messages, max_dimension=_image_error_max_dimension(api_error) or 8000
+    ):
+        _vlines(agent, "📐 Image(s) exceeded provider size limit — shrank and retrying...")
+        return True
+    logger.info(
+        "image-shrink recovery: no data-URL image parts found "
+        "or shrink didn't reduce size; surfacing original error."
+    )
+    return False
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],
@@ -672,6 +690,11 @@ def recover_after_classification(
         agent, api_error, classified, _retry
     ) or (agent.api_mode == "codex_responses" and _reject_all_turns(agent, api_error)):
         return True, False
+
+    # A profile-classified replay 401 describes the request, not the bearer. Even when
+    # attribution fails or this visit spent its repair, never rotate/refresh healthy credentials.
+    if is_classified_replay_401(classified, status_code):
+        return recover_classified_replay(agent, api_error, _retry, messages, api_messages), False
 
     # 401 ``token_expired`` while the transcript still carries ``codex_reasoning_items`` is a
     # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
@@ -705,17 +728,8 @@ def recover_after_classification(
         return True, recovered_with_pool
 
     # Shrink oversized native image parts in-place and retry once.
-    if classified.reason == FailoverReason.image_too_large and not _retry.image_shrink_retry_attempted:
-        _retry.image_shrink_retry_attempted = True
-        if agent._try_shrink_image_parts_in_messages(
-            api_messages, max_dimension=_image_error_max_dimension(api_error) or 8000
-        ):
-            _vlines(agent, "📐 Image(s) exceeded provider size limit — shrank and retrying...")
-            return True, recovered_with_pool
-        logger.info(
-            "image-shrink recovery: no data-URL image parts found "
-            "or shrink didn't reduce size; surfacing original error."
-        )
+    if _recover_oversized_images(agent, api_error, classified, _retry, api_messages):
+        return True, recovered_with_pool
 
     # Strict OpenAI-spec providers 400 on list-type tool content: strip images, mark
     # (provider, model) no-list-tool-content for the session, retry once.

@@ -104,6 +104,25 @@ class TestKnownPrefixes:
         ]:
             assert redact_sensitive_text(benign) == benign
 
+    def test_grafana_token_prefixes(self):
+        """Bare Grafana service-account / Cloud tokens redact (#150339); look-alikes stay intact."""
+        from agent.redact import redact_terminal_output
+        # NOTE: prefix + suffix CONCATENATION so no contiguous token literal exists in this file.
+        sa_body = "Q7zR4Lm9Xc2Vb5Nw8Kd3Hf6JtPa0Sg7Y"
+        cloud_body = "eyJvIjoiMTIzNDU2IiwibiI6InN0YWNrLXRva2VuIiwiayI6Ilo3cTRMbTlYYzJWYjVOdzgifQ"
+        for token, body in [
+            ("glsa_" + sa_body + "_0123abcd", sa_body),  # service-account token + checksum
+            ("glsa_" + sa_body, sa_body),                # checksum dropped / format drift
+            ("glc_" + cloud_body + "==", cloud_body),    # Cloud access-policy token, padded
+            ("glc_" + cloud_body, cloud_body),
+            ("glc_" + cloud_body[:40] + "+/" + cloud_body[40:], cloud_body[40:]),  # base64 +/ chars
+        ]:
+            for out in (redact_sensitive_text(f"$ printf '%s' \"$GRAFANA_TOKEN\"\n{token}\n"),
+                        redact_terminal_output(f"{token}\n", "printenv GRAFANA_TOKEN")):
+                assert body not in out, f"{token!r} survived redaction: {out!r}"
+        for benign in ["glsa_short", "glc_config_loader", "myglsa_" + sa_body]:
+            assert redact_sensitive_text(benign) == benign
+
     def test_context7_api_key_prefix(self):
         """Context7 keys carry a fixed vendor prefix (``ctx7sk-``) and must redact on every surface.
 

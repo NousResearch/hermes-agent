@@ -246,6 +246,8 @@ _PREFIX_PATTERNS = [
     r"glffct-[A-Za-z0-9_\-]{10,}",      # GitLab feature-flags client token
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
+    r"glsa_[A-Za-z0-9]{10,}(?:_[A-Fa-f0-9]{8})?",  # Grafana service-account token (+ hex checksum)
+    r"glc_[A-Za-z0-9+/]{32,}={0,3}",    # Grafana Cloud access-policy token (base64 body)
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 ]
 

@@ -48,6 +48,9 @@ Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
   `gh pr view --comments` — decisions live in threads, not titles.
 - Sweep for duplicates before creating anything:
   `gh pr list --search` / `gh issue list --search`.
+- Honor the repository's own templates: read `.github/ISSUE_TEMPLATE/` and
+  the `PULL_REQUEST_TEMPLATE` locations before writing a body, and keep their
+  sections and checklists (`issues.md` § 1.5, `pr-workflow.md` § 2.5).
 
 ## Verification
 

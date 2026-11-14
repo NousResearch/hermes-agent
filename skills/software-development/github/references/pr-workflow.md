@@ -88,6 +88,34 @@ Longer explanation if needed. Wrap at 72 characters.
 
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
 
+## 2.5. Check Repository PR Template
+
+**Before creating a PR**, find the repository's pull request template and build
+the body around it. GitHub reads a single `PULL_REQUEST_TEMPLATE.md` (any case)
+from the repository root, `docs/`, or `.github/`, or a `PULL_REQUEST_TEMPLATE/`
+directory of named templates in the same three places.
+
+```bash
+# In a checkout (the usual case):
+for p in PULL_REQUEST_TEMPLATE.md pull_request_template.md \
+         docs/PULL_REQUEST_TEMPLATE.md docs/pull_request_template.md \
+         .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md; do
+  [ -f "$p" ] && { echo "=== $p ==="; cat "$p"; break; }
+done
+ls PULL_REQUEST_TEMPLATE docs/PULL_REQUEST_TEMPLATE .github/PULL_REQUEST_TEMPLATE 2>/dev/null
+
+# No checkout: the same paths through the API
+gh api "repos/$OWNER/$REPO/contents/.github/PULL_REQUEST_TEMPLATE.md" --jq '.content' 2>/dev/null | base64 -d
+```
+
+When a template exists, **keep its sections and checklist structure**: every
+heading in the template's order, required sections filled rather than deleted,
+checkboxes ticked only for what you actually did. `gh pr create --body` /
+`--body-file` replaces the template entirely, so paste the structure into your
+body file first; with a `PULL_REQUEST_TEMPLATE/` directory, start from the right
+one via `gh pr create --template <file>`. The generic bodies in `templates/`
+are the fallback for repositories without a template.
+
 ## 3. Pushing and Creating a PR
 
 ### Push the Branch (same either way)

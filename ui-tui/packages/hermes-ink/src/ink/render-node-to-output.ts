@@ -243,8 +243,9 @@ function drainProportional(node: DOMElement, pending: number, innerHeight: numbe
 const OSC = '\u001B]'
 const BEL = '\u0007'
 
-// Only the URL is untrusted here: `text` already carries this run's SGR, and stray
-// controls in plain text are dropped cell by cell in output.ts.
+// Only the URL is sanitized here: `text` already carries this run's SGR. Plain text
+// is NOT scrubbed by the renderer (an unknown ESC sequence tokenizes as a style code);
+// message text containing ESC is routed to the display sanitizer before it reaches <Md>.
 function wrapWithOsc8Link(text: string, url: string): string {
   return `${OSC}8;;${sanitizeOsc8Url(url)}${BEL}${text}${OSC}8;;${BEL}`
 }

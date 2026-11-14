@@ -978,16 +978,18 @@ class SignalAdapter(BasePlatformAdapter):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 when processing begins."""
         if self._reactions_enabled(event) and (target := self._extract_reaction_target(event)):
-            await self.send_reaction(event.source.chat_id, "👀", *target)
+            event._signal_eyes_sent = await self.send_reaction(event.source.chat_id, "👀", *target)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap 👀 for ✅/❌; on CANCELLED the 👀 stays to keep reflecting "in progress" (matches Telegram)."""
-        if outcome == ProcessingOutcome.CANCELLED or not self._reactions_enabled(event):
+        """Swap 👀 for ✅/❌; on CANCELLED the 👀 stays to keep reflecting "in progress" (matches Telegram).
+        Keyed on the 👀 actually sent: the gateway check can flip mid-turn (the message that trips a bot's
+        loop-guard budget passes it at start), so re-asking it here would strand that 👀."""
+        if outcome == ProcessingOutcome.CANCELLED or not getattr(event, "_signal_eyes_sent", False):
             return
         if not (target := self._extract_reaction_target(event)):
             return
         await self.remove_reaction(event.source.chat_id, *target)
-        if emoji := _OUTCOME_REACTION.get(outcome):
+        if self._reactions_enabled(event) and (emoji := _OUTCOME_REACTION.get(outcome)):
             await self.send_reaction(event.source.chat_id, emoji, *target)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:

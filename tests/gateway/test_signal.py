@@ -1412,3 +1412,36 @@ class TestSignalPreAuthReaction:
         await adapter.on_processing_start(event)
 
         assert sent == reactions
+
+    @pytest.mark.asyncio
+    async def test_eyes_are_cleared_when_the_verdict_turns_during_the_turn(self, monkeypatch):
+        """The message that trips a bot's loop-guard budget passes the check at start and fails it at
+        completion: the 👀 already sent is removed, and the refused sender gets no ✅."""
+        monkeypatch.delenv("SIGNAL_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SIGNAL_REACTIONS", raising=False)
+        from gateway.platforms.base import ProcessingOutcome
+        from gateway.platforms.event import MessageEvent, MessageType
+        adapter = _make_signal_adapter(monkeypatch)
+        verdict = {"ok": True}
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id, **_: verdict["ok"])
+        calls = []
+
+        async def fake_send_reaction(chat_id, emoji, target_author, target_timestamp):
+            calls.append(emoji)
+            return True
+
+        async def fake_remove_reaction(chat_id, target_author, target_timestamp):
+            calls.append("remove")
+            return True
+
+        monkeypatch.setattr(adapter, "send_reaction", fake_send_reaction)
+        monkeypatch.setattr(adapter, "remove_reaction", fake_remove_reaction)
+        source = adapter.build_source(chat_id="+15559999999", chat_type="dm", user_id="+15559999999")
+        event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source,
+                             raw_message={"sender": "+15559999999", "timestamp_ms": 1700000000000})
+
+        await adapter.on_processing_start(event)
+        verdict["ok"] = False
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        assert calls == ["👀", "remove"]

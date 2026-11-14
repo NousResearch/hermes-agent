@@ -15,7 +15,7 @@ import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { messages, t as tr } from '../i18n/runtime.js'
-import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
+import { buildSubagentTree, fmtTokens, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg } from '../types.js'
@@ -347,6 +347,7 @@ export interface StatusBarSegments {
   duration: boolean
   latency: boolean
   subagents: boolean
+  tokens: boolean
   tps: boolean
   voice: boolean
 }
@@ -364,7 +365,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     subagents: w >= 92,
     cacheHit: w >= 96,
     latency: w >= 104,
-    tps: w >= 110
+    tps: w >= 110,
+    tokens: w >= 118
   }
 }
 
@@ -550,6 +552,7 @@ export function StatusRule({
   bgCount,
   lastTurnEndedAt,
   liveSessionCount,
+  liveTps = null,
   sessionTitle,
   sessionStartedAt,
   turnStartedAt,
@@ -676,8 +679,17 @@ export function StatusRule({
   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
   const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
-  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
+  // Prefer live streaming throughput while a turn runs: it moves with every
+  // delta. Fall back to the server's per-call rolling average when idle.
+  const tpsValue = busy && typeof liveTps === 'number' ? liveTps : usage.avg_tps
+  const tpsText = typeof tpsValue === 'number' ? `↓ ${Math.round(tpsValue)} t/s` : ''
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
+  // Session token totals, same convention as the classic CLI: ↑ input sent to
+  // the model, ↓ output it produced. Self-hides before the first billed turn.
+  const tokensIn = typeof usage.input === 'number' ? usage.input : 0
+  const tokensOut = typeof usage.output === 'number' ? usage.output : 0
+  const tokensText = tokensIn || tokensOut ? `↑ ${fmtTokens(tokensIn)} ↓ ${fmtTokens(tokensOut)}` : ''
+  const showTokens = segs.tokens && ok('tokens') && !!tokensText && fits(SEP + stringWidth(tokensText))
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
@@ -836,6 +848,12 @@ export function StatusRule({
             {tpsText}
           </Text>
         ) : null}
+        {showTokens ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {tokensText}
+          </Text>
+        ) : null}
         {showVoice ? (
           <Text
             color={
@@ -992,6 +1010,8 @@ interface StatusRuleProps {
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number
+  // Client-side instantaneous t/s while streaming; null when idle.
+  liveTps?: null | number
   busy: boolean
   // Context compaction in progress — FaceTicker freezes on "compacting".
   compacting?: boolean

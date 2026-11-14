@@ -363,6 +363,10 @@ export interface UiState {
   focusView: boolean
   info: null | SessionInfo
   liveSessionCount: number
+  // Instantaneous streaming throughput, measured client-side while tokens
+  // arrive (null when idle). The status bar prefers it over usage.avg_tps,
+  // which only moves when an API call completes.
+  liveTps: null | number
   inlineDiffs: boolean
   // `display.inline_images` isn't off: transcript rows draw (and reserve rows for) their images.
   inlineImages: boolean

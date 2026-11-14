@@ -9,9 +9,9 @@ worker/thread option, but its native binding parallelizes with rayon, which hono
 
 The defaults are deliberately conservative: bounded to half the available cores so
 one build can never monopolize a small host, and a heap ceiling sized from the
-container/cgroup limit (75% of it, same shape as the TUI launcher's sizing) so a
-constrained container gets a graceful V8 allocation failure instead of a silent
-cgroup OOM kill.
+memory limit *this process* runs under (its own cgroup first, then the cgroup root,
+75% of it, same shape as the TUI launcher's sizing) so a constrained container gets
+a graceful V8 allocation failure instead of a silent cgroup OOM kill.
 
 User overrides always win: an explicit ``NODE_OPTIONS`` ``--max-old-space-size`` or
 ``RAYON_NUM_THREADS`` in the environment is left untouched, and
@@ -22,6 +22,10 @@ tailoring without code changes.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+_BYTES_PER_MB = 1024 * 1024
 
 # Never let the heap ceiling drop below this on constrained-but-usable hosts:
 # below ~1 GB V8 spends the build GC-thrashing instead of making progress.
@@ -36,31 +40,55 @@ _MAX_WEB_BUILD_THREADS = 8
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
-def _cgroup_memory_limit_mb() -> int | None:
-    """Return the cgroup memory limit in MB, or None when unconstrained."""
-    limit = None
-    for path in (
-        "/sys/fs/cgroup/memory.max",  # cgroup v2
-        "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
-    ):
-        try:
-            with open(path, "r", encoding="utf-8-sig") as f:
-                raw = f.read().strip()
-        except OSError:
-            continue
-        if raw == "max":
-            return None
-        try:
-            value = int(raw)
-        except ValueError:
-            continue
-        if value <= 0 or value >= (1 << 50):  # the v1 "unlimited" sentinel
-            return None
-        limit = value
-        break
-    if limit is None:
+def _own_cgroup_path() -> str | None:
+    """The cgroup v2 path this process runs in (``/proc/self/cgroup``'s ``0::`` line), or None.
+
+    Delegates to the gateway's helper so the build caps and the cache-pressure budget read
+    the same hierarchy; a layout where that import is unavailable still sizes from the root.
+    """
+    try:
+        from gateway.cgroup_cleanup import _own_cgroup_path as process_cgroup_path
+
+        return process_cgroup_path()
+    except Exception:
         return None
-    return limit // (1024 * 1024)
+
+
+def _limit_bytes(path: Path) -> int | None:
+    """A cgroup memory limit file's value when it is a real cap; None for unreadable, empty,
+    ``max``, or the v1 near-2^63 sentinel (all mean unlimited)."""
+    try:
+        raw = path.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 0 < value < (1 << 50) else None
+
+
+def _cgroup_memory_limit_mb() -> int | None:
+    """Return the cgroup memory limit in MB, or None when unconstrained.
+
+    Own cgroup first: a systemd unit's ``MemoryHigh=``/``MemoryMax=`` lands on the unit's
+    own cgroup and the root reads ``max`` there, so a root-only read reports "unconstrained"
+    for a service that is in fact capped. Root comes next for container-style limits, then
+    cgroup v1.
+    """
+    own = _own_cgroup_path()
+    roots = [str(_CGROUP_ROOT)]
+    if own and own != "/":
+        roots.insert(0, f"{_CGROUP_ROOT}{own}")
+    candidates = [f"{root}/memory.{field}" for root in roots for field in ("high", "max")]
+    candidates.append(f"{_CGROUP_ROOT}/memory/memory.limit_in_bytes")
+    for candidate in candidates:
+        limit = _limit_bytes(Path(candidate))
+        if limit is not None:
+            return limit // _BYTES_PER_MB
+    return None
 
 
 def _available_cores() -> int:

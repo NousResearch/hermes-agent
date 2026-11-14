@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Skill service tokens that are read-denied to the agent (agent.file_safety) yet stay mountable:
 # the google-workspace skill's own sandboxed scripts are their intended consumer. Exact names
 # relative to HERMES_HOME; master stores (.env, auth.json, mcp-tokens/) must never appear here.
-_MOUNTABLE_SERVICE_TOKENS = frozenset({"google_token.json"})
+_MOUNTABLE_SERVICE_TOKENS = frozenset({"google_token.json", "google_client_secret.json"})
 
 # Session-scoped registry; ContextVar prevents cross-session bleed in the gateway.
 _registered_files_var: ContextVar[dict[str, str]] = ContextVar("_registered_files")

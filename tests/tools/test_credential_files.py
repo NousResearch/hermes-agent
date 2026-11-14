@@ -655,6 +655,7 @@ class TestMasterCredentialStoresAreNeverMountable:
         (home / "mcp-tokens").mkdir()
         (home / "mcp-tokens" / "srv.json").write_text('{"access_token":"t"}')
         (home / "google_token.json").write_text("{}")
+        (home / "google_client_secret.json").write_text("{}")
         return home
 
     @pytest.mark.parametrize(
@@ -691,6 +692,18 @@ class TestMasterCredentialStoresAreNeverMountable:
         assert [m["container_path"] for m in mounts] == [
             "/root/.hermes/google_token.json"
         ]
+
+    def test_declared_google_workspace_files_mount_although_read_denied(self, tmp_path):
+        """The skill's two required_credential_files still reach its sandbox (#149056)."""
+        from agent.file_safety import get_read_block_error
+
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_files(["google_token.json", "google_client_secret.json"]) == []
+            for name in ("google_token.json", "google_client_secret.json"):
+                assert get_read_block_error(str(home / name)), name
+            paths = sorted(m["container_path"] for m in get_credential_file_mounts())
+        assert paths == ["/root/.hermes/google_client_secret.json", "/root/.hermes/google_token.json"]
 
     def test_pending_oauth_state_is_refused(self, tmp_path):
         """``google_oauth_pending.json`` is read-denied and NOT in the

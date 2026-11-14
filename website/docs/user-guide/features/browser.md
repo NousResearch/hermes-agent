@@ -93,6 +93,53 @@ The driver is [browser-harness](https://github.com/browser-use/browser-use), the
 engine of the Browser Use CLI. It is a regular Python dependency of Hermes, so
 every install — the Desktop app included — ships it with no separate download.
 
+## Google Maps location-sharing reliability
+
+[Issue #153121](https://github.com/NousResearch/hermes-agent/issues/153121) reports
+a Google Maps frontend branch that replaces location-sharing addresses with
+`webdriver - <index> - austin` and coordinates with `30.4587205, -97.7504158`
+when `navigator.webdriver` is true. The reporter's same-session
+false → true → false experiment reproduced and reversed the substitution.
+Google's reason for this branch is unknown; this is not evidence that all
+headless browsers return incorrect locations.
+
+`browser_exec` adds a `warnings` entry with code
+`google_maps_webdriver_test_data` when its stdout or stderr contains that
+address marker. The warning also accompanies attached screenshots. Execution
+`success` still describes the command's exit status, **not the reliability of
+the location**. Ordinary Austin addresses, coordinates alone, or
+`navigator.webdriver=true` alone do not trigger this marker check.
+
+When that marker appears in a sharing card, do not report the associated
+Austin/US location as the person's real location. Explain that the displayed
+record is test data. The avatar, address card and Directions destination can
+all come from the same substituted record, so agreement between them is not
+independent confirmation. Verify with an independent, user-confirmed source,
+such as the user's Google Maps mobile app.
+
+For a read-only diagnostic in the same `browser_exec` session:
+
+```python
+# Inspect automation state and browser version
+print(js("({webdriver: navigator.webdriver, userAgent: navigator.userAgent})"))
+print(cdp("Browser.getVersion"))
+```
+
+`HeadlessChrome` in the user agent is a useful clue, not a definitive headless
+check; check the browser's launch configuration too. Headless mode and the
+webdriver flag are separate properties. If needed, explicitly choose the
+[own-browser CDP path](#your-own-browser-via-cdp-browser-connect) with a dedicated
+profile and a loopback-only debugging endpoint. Recheck the actual session and
+location independently after connecting; ordinary Chrome is not a guarantee
+of valid data. Do not globally hide webdriver as a workaround.
+
+This is a text-output warning, not a live Maps validator: it does not OCR
+screenshots, inspect unprinted DOM content, or detect coordinate-only results.
+A quoted marker in documentation can also trigger it. Absence of a warning
+does not certify a location, and the warning does not recover the original
+coordinates. Keep accounts, precise real locations, cookies and private
+sharing links out of public diagnostics.
+
 ## Local Chromium (default)
 
 With no cloud provider, `/browser connect` endpoint or real-profile toggle

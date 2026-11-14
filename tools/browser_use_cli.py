@@ -881,9 +881,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     # browser_vault fill registers injected values with this forced model-egress
     # boundary. Preserve raw stdout only for screenshot-path detection below.
+    from tools.browser_use_reliability import browser_output_warnings
     result = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
+        **browser_output_warnings(proc.stdout, proc.stderr),
         "output": redact_sensitive_text(proc.stdout, force=True),
     }
     if workspace:

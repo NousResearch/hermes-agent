@@ -60,12 +60,12 @@ def test_ordinary_error_text_is_kept_verbatim(tmp_cron_dir):
 
 
 def test_persisted_error_is_length_bounded(tmp_cron_dir):
-    from cron.jobs import _MAX_PERSISTED_ERROR_CHARS
+    from cron.jobs_error_text import MAX_PERSISTED_ERROR_CHARS
 
     job = create_job(prompt="watch prices", schedule="every 1h")
     mark_job_run(job["id"], success=False, error="x" * 50_000)
 
-    assert len(get_job(job["id"])["last_error"]) == _MAX_PERSISTED_ERROR_CHARS
+    assert len(get_job(job["id"])["last_error"]) == MAX_PERSISTED_ERROR_CHARS
 
 
 def test_redactor_failure_stores_placeholder_not_raw_text(tmp_cron_dir, monkeypatch):
@@ -86,6 +86,33 @@ def test_finish_execution_redacts_error_in_ledger(tmp_cron_dir):
     assert finish_execution(record["id"], success=False, error=_PROVIDER_ERROR) is not None
 
     assert _KEY not in get_execution(record["id"])["error"]
+
+
+def test_url_credentials_in_error_are_redacted(tmp_cron_dir):
+    job = create_job(prompt="watch prices", schedule="every 1h")
+    mark_job_run(job["id"], success=False, error="GET https://api.example.com/v1?access_token=plainvalue123 -> 401")
+
+    assert "plainvalue123" not in get_job(job["id"])["last_error"]
+
+
+def test_receipt_recovery_redacts_error_in_ledger(tmp_cron_dir):
+    from cron.executions import create_execution, get_execution, give_up_execution, recover_receipted_execution
+
+    record = create_execution("job-1", source="test")
+    assert give_up_execution(record["id"], reason="unverified admission") is True
+    assert recover_receipted_execution(record["id"], "job-1", success=False, error=_PROVIDER_ERROR) is not None
+
+    assert _KEY not in get_execution(record["id"])["error"]
+
+
+def test_interrupted_run_delivery_error_is_redacted(tmp_cron_dir):
+    from cron.executions import create_execution
+    from cron.scheduler_bookkeeping import finish_interrupted_run
+
+    job = create_job(prompt="watch prices", schedule="every 1h")
+    finish_interrupted_run(job, create_execution(job["id"], source="test")["id"], _PROVIDER_ERROR)
+
+    assert _KEY not in get_job(job["id"])["last_delivery_error"]
 
 
 def test_unknown_admission_reason_is_redacted_and_still_lifts_its_pause(tmp_path, monkeypatch):

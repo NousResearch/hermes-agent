@@ -38,7 +38,7 @@ from cron.jobs_invariants import _validate_job_mode_invariants, validate_schedul
 from cron.jobs_model_pin import _main_model_pin
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
-from cron import extra_fire, store_health
+from cron import extra_fire, jobs_error_text, store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -47,30 +47,6 @@ from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
 from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
-
-# Same bound as cron/incidents.py MAX_ERROR_CHARS-style caps: enough to diagnose, never unbounded.
-_MAX_PERSISTED_ERROR_CHARS = 2000
-
-
-def _sanitize_persisted_error(error: Optional[str]) -> Optional[str]:
-    """Scrub secrets from, and bound, error text bound for jobs.json / executions.db (#102700).
-
-    Those stores outlive restarts and get backed up or synced, so raw provider / stderr text must
-    not land there verbatim — the same rule cron/incidents.py and cron/delivery_queue.py already
-    apply. A redactor failure stores a placeholder rather than the unscanned text, and never
-    raises: the caller is recording that a job failed.
-    """
-    if not error:
-        return error
-    try:
-        from agent.redact import redact_sensitive_text
-
-        text = redact_sensitive_text(str(error), force=True, redact_url_credentials=True)
-    except Exception:
-        logger.warning("Failed to redact cron error before persisting it", exc_info=True)
-        return "[REDACTED - redaction failed]"
-    return text[:_MAX_PERSISTED_ERROR_CHARS]
-
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
@@ -2407,7 +2383,7 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     clears it."""
     def apply(jobs, _i, job):
         job["last_fire_error"] = {
-            "at": _hermes_now().isoformat(), "detail": _sanitize_persisted_error(str(detail or ""))[:500]}
+            "at": _hermes_now().isoformat(), "detail": jobs_error_text.sanitize_persisted_error(str(detail or ""))[:500]}
         save_jobs(jobs)
         return True
 
@@ -2428,7 +2404,7 @@ def _record_run_outcome(
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
     cancelled = status == "cancelled"  # an operator stop is not a failure
-    job["last_error"] = None if success or cancelled else _sanitize_persisted_error(error)
+    job["last_error"] = None if success or cancelled else jobs_error_text.sanitize_persisted_error(error)
     if success:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
@@ -2444,9 +2420,8 @@ def _record_run_outcome(
         # a monitor sampling jobs.json then sees a permanently green job. last_failure
         # survives success (latest failure wins); the recency window is the consumer's
         # call. Delivery failures keep their own sticky last_delivery_error.
-        job["last_failure"] = {
-            "at": now, "detail": _sanitize_persisted_error(error) or (status or "run failed")}
-    job["last_delivery_error"] = _sanitize_persisted_error(delivery_error)
+        job["last_failure"] = {"at": now, "detail": jobs_error_text.sanitize_persisted_error(error) or (status or "run failed")}
+    job["last_delivery_error"] = jobs_error_text.sanitize_persisted_error(delivery_error)
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
     job.pop("pending_slot", None)

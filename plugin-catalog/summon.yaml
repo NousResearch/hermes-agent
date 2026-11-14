@@ -1,0 +1,24 @@
+name: summon
+repo: https://github.com/gtmcknight/hermes-summon
+sha: e83478f0d3f372f1aa5f847e07719a075317937e
+title: Summon
+description: "Your own @grok on X that learns: tag your bot under any post and your Hermes answers in the thread; say \"learn this\" under a how-to thread or video and it saves it as a skill that waits for your approval. A gateway platform for X that only reads posts from its owner, by user ID. Judges: hermes gateway setup, choose X, \"Borrow @taybotfyi\" with invite code judge-hermes; no bot account needed. Disclosure — polls the X API every 20 s while the gateway runs (the owner's posts that tag the bot, thread reads, replies); on the free trial and the borrow path those X calls, including the agent's reply text, go through the author's relay at summon.taylor.fyi (Cloudflare Worker, source in relay/), which holds the bot's X OAuth tokens and stores a hash of the trial key, both handles and user IDs, and reply and read counts (no post text, error logs only); with your own X app the four keys are saved to Hermes's .env through Hermes; with consent, setup sets platform_toolsets.summon to [safe, video, skills] and turns on skills.write_approval for all of Hermes; videos in a thread go to Hermes's configured video model through video_analyze; replies are public posts on X; on the borrow path the relay posts as the author's bot under the user's posts only, after Cloudflare Workers AI (Llama Guard) reads the reply."
+maintainer: gtmcknight
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://summon.taylor.fyi
+version: "0.1.1"
+image: https://raw.githubusercontent.com/gtmcknight/hermes-summon/e83478f0d3f372f1aa5f847e07719a075317937e/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/e83478f0d3f372f1aa5f847e07719a075317937e/docs/01-check.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/e83478f0d3f372f1aa5f847e07719a075317937e/docs/02-find.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/e83478f0d3f372f1aa5f847e07719a075317937e/docs/03-learn.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/e83478f0d3f372f1aa5f847e07719a075317937e/docs/04-approve.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - X_BOT_OWNER

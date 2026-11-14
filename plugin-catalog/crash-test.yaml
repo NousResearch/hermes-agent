@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/crash-test
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/crash-test/4a2258cfa30d8cef83cbdd8d586fac1f08d5b093/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

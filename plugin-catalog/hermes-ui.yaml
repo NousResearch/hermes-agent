@@ -1,0 +1,30 @@
+name: hermes-ui
+title: Hermes UI
+repo: https://github.com/Ilyassbm/hermes-ui
+sha: 209db04ae62c9c011e6ee3a5f98b9b204a493baf
+subdir: ""
+description: "A bespoke chat workspace for Hermes Desktop and the Webapp: it takes over the app's home route and replaces it with a three-column page — a rail of bots (one row per profile, each with its own conversations), the conversation itself with folded reasoning and tool runs, and a right panel for files, previews and session detail. Bots can answer with a structured block that the thread draws as rich components (status cards, tables, checklists, approval prompts) instead of prose; slash commands, per-bot models and a settings page come with it, and media blocks render images, audio and video inline. Disclosure — takes over the Desktop/Webapp home route by default: opening home or a session from the native sidebar redirects into Hermes UI (a palette command turns this off). Its side panel previews files that replies name (MEDIA: lines, attached-image paths) by reading them through the plugin's own backend routes, which accept any path under the profile home or the user's home directory except core-refused and credential files (.env*, auth.json, config.yaml, credentials, webhook_subscriptions.json, private keys, .ssh/.aws/.gnupg, secrets, mcp-tokens and pairing folders); previews stay on the device. The bots rail reads each profile's state.db read-only, and the usage meter calls https://opencode.ai/zen/go/v1/usage only when the active profile holds OPENCODE_GO_API_KEY, with the key kept server-side. No telemetry."
+maintainer: Ilyassbm
+tier: community
+category: desktop
+requires_hermes: ">=0.23"
+docs_url: https://github.com/Ilyassbm/hermes-ui#readme
+version: "1.5.2"
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/209db04ae62c9c011e6ee3a5f98b9b204a493baf/docs/screenshots/01-intelligent-ui.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/209db04ae62c9c011e6ee3a5f98b9b204a493baf/docs/screenshots/02-table.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/209db04ae62c9c011e6ee3a5f98b9b204a493baf/docs/screenshots/03-tools-files.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/209db04ae62c9c011e6ee3a5f98b9b204a493baf/docs/screenshots/04-approval.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/209db04ae62c9c011e6ee3a5f98b9b204a493baf/docs/screenshots/05-model.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/209db04ae62c9c011e6ee3a5f98b9b204a493baf/docs/screenshots/06-slash.jpg
+known_issues:
+  - The Desktop half of a unified package starts disabled per browser; enable it once in Capabilities ▸ Plugins.
+  - On a shell that loads plugins late, the first paint can be the native home for a moment before the page takes over; the sidebar entry always opens it.
+  - A provider the gateway does not expose shows no usage meter.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

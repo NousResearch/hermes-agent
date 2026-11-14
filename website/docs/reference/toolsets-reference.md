@@ -133,6 +133,8 @@ mcp_servers:
 
 This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs. The bare server name (`github`) works as an alias. If a server is named like a built-in toolset (`browser`, `web`), that name resolves to the built-in tools **plus** the server's `mcp__<server>__*` tools; neither side shadows the other.
 
+In `platform_toolsets.<platform>`, a list that names no MCP server gets every enabled server, a list that names servers gets only those, and `no_mcp` drops them all. An explicitly empty list (`email: []`) gets no MCP servers.
+
 ### Plugin toolsets
 
 Plugins can register their own toolsets via `ctx.register_tool()` during plugin initialization. These appear alongside built-in toolsets and can be enabled/disabled the same way.

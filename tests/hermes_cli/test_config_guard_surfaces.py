@@ -76,7 +76,7 @@ class TestCronRunJobGuard:
         owner = SimpleNamespace(db=db, pending_results={}, sessions={
             ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
         admission = {"admission_id": "guard-fire", "request_id": "guard-fire",
-                     "principal_id": "cron-owner", "payload": {"text": ""}}
+                     "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
         policy = SimpleNamespace(request_json=json.dumps({
             "cron_job": self._job(), "extra_prompt": None, "request_id": "guard-fire"}))
         previous = current_execution()

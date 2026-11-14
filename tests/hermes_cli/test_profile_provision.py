@@ -17,7 +17,7 @@ def launch(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("model:\n  default: m\n  provider: openrouter\n")
     (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-x\nTELEGRAM_BOT_TOKEN=1:x\n")
     (home / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {}}')
-    monkeypatch.setattr(profiles, "seed_profile_skills", lambda path, quiet=True: {"copied": ["s"]})
+    monkeypatch.setattr(profiles, "seed_profile_skills", lambda path, quiet=True, problems=None: {"copied": ["s"]})
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: None)
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: Path("/wrapper") / name)
     return home
@@ -103,12 +103,19 @@ def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     assert result.mirrored["auth"] == "shared"
 
 
-def test_clone_skips_bundled_skills_unless_asked(launch):
+def test_only_a_fresh_profile_gets_bundled_skills(launch):
     cloned = provision_profile(ProfileCreateRequest(name="a", clone_from="default", clone_config=True))
-    assert cloned.skills_seeded is None
-    asked = provision_profile(ProfileCreateRequest(name="b", clone_from="default", clone_config=True,
-                                                   seed_skills=True))
-    assert asked.skills_seeded == {"copied": ["s"]}
+    full = provision_profile(ProfileCreateRequest(name="b", clone_all=True))
+    assert (cloned.skills_seeded, full.skills_seeded) == (None, None)
+
+
+def test_a_rejected_model_pick_is_reported_and_the_create_still_succeeds(launch, monkeypatch):
+    from hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                        lambda **_kw: ModelSwitchResult(success=False, error_message="Unknown provider 'nope'."))
+    result = provision_profile(ProfileCreateRequest(name="work", provider="nope", model="m"))
+    assert (result.model_set, result.model_error, result.warnings) == (False, "Unknown provider 'nope'.", [])
+    assert result.path.is_dir()
 
 
 def test_alias_collision_is_reported_not_written(launch, monkeypatch):
@@ -118,7 +125,7 @@ def test_alias_collision_is_reported_not_written(launch, monkeypatch):
 
 
 def test_a_failing_step_is_a_warning_and_the_profile_stays(launch, monkeypatch):
-    def boom(path, quiet=True):
+    def boom(path, quiet=True, problems=None):
         raise OSError("disk full")
     monkeypatch.setattr(profiles, "seed_profile_skills", boom)
     result = provision_profile(ProfileCreateRequest(name="work"))
@@ -242,3 +249,21 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
     assert "cannot be combined" in capsys.readouterr().err
     assert not (launch / "profiles" / "cn").exists()
 
+
+
+def test_validating_in_another_home_runs_under_multiplex_semantics(launch, monkeypatch):
+    from agent.secret_scope import is_multiplex_active
+    from hermes_cli.model_switch import ModelSwitchResult
+    other = launch / "profiles" / "other"
+    other.mkdir(parents=True)
+    (other / "config.yaml").write_text("{}\n", encoding="utf-8")
+    seen: list[bool] = []
+
+    def switch(**_kw):
+        seen.append(is_multiplex_active())
+        return ModelSwitchResult(success=False, error_message="no")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", switch)
+    provision_profile(ProfileCreateRequest(name="a", provider="p", model="m", model_validate_in=launch))
+    provision_profile(ProfileCreateRequest(name="b", provider="p", model="m", model_validate_in=other))
+    assert (seen, is_multiplex_active()) == ([False, True], False)

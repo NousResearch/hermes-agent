@@ -448,14 +448,19 @@ def rollback(backup_id: Optional[str] = None) -> tuple[bool, str, Optional[Path]
 
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Reject absolute paths and ".." defensively; Python 3.12+ also gets filter='data', older interpreters fall back unfiltered.
+            # Reject absolute paths and ".." defensively; interpreters with tar filters also get filter='data'.
             for member in tf.getmembers():
                 if member.name.startswith("/") or ".." in Path(member.name).parts:
                     raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
             except TypeError:
-                tf.extractall(str(skills))  # Python < 3.12 — no filter kwarg
+                # Python 3.11.0-3.11.3 has no filter kwarg; unfiltered extraction would follow a link member out of skills/, so
+                # only regular files and directories are allowed here (stricter than 'data', which permits in-tree links).
+                for member in tf.getmembers():
+                    if not (member.isfile() or member.isdir()):
+                        raise tarfile.TarError(f"refusing to extract non-file member: {member.name!r}")
+                tf.extractall(str(skills))
     except (OSError, tarfile.TarError) as e:
         # A partial extract can leave entries the original tree never had; drop those first or the "restored" tree is skills + a slice of snapshot.
         keep = _EXCLUDE_TOP_LEVEL | {orig.name for orig, _ in moved}

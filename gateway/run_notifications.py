@@ -25,7 +25,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
-from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -136,28 +136,6 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-def _local_completion_card(evt: dict) -> dict[str, str]:
-    """The card of a local process notice: the async-result card the in-process TUI wrote for a
-    completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
-    one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
-    turn that has one. ``{}`` for a watch match."""
-    from tools.process_registry_notifications import (
-        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
-    evt_type = evt.get("type", "completion")
-    if evt_type == "completion":
-        return {"display_kind": PROCESS_COMPLETE_DISPLAY_KIND,
-                "display_text": evt.get("_display_text") or process_completion_display_text([evt])}
-    if evt_type == "async_delegation":
-        return {"display_kind": "async_delegation_complete", "display_text": async_delegation_display_text(evt)}
-    if evt_type == "heartbeat":
-        # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
-        # idle CLI open the turn with one line and show the agent's reply.
-        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
-        from tools.process_registry_notifications import heartbeat_display_text
-        return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
-    return {}
-
-
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
@@ -177,12 +155,17 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         # A local completion persists as the async-result card the in-process TUI wrote, and a tick
         # carries its CLI receipt; messaging rows stay internal_notification, as on main.
         metadata.update(_local_completion_card(evt))
-        from tools.process_registry_notifications import delegation_wakes_parent
+        from tools.process_registry_notifications import completion_resumes_parent, delegation_wakes_parent
         if delegation_wakes_parent(evt):
             metadata["completion_wakes_parent"] = True
+        if completion_resumes_parent(evt) and "notification_category" not in metadata:
+            metadata["completion_resumes_parent"] = True
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
         metadata["gateway_proven_session_id"] = proven_session_id
+    requester_user_id = str(evt.get("user_id") or "").strip()
+    if requester_user_id:
+        metadata["requester_user_id"] = requester_user_id
     if completion_ids := evt.get("completion_ids"):
         metadata["gateway_completion_ids"] = list(completion_ids)
     return metadata
@@ -243,9 +226,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _deliver_media_from_response(
-        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
-    ) -> None:
+        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None,
+        footer_line: str = "",
+    ) -> bool:
         """Deliver explicit attachments from an already-streamed response (text already delivered).
+        Returns True when ``footer_line`` rode the last photo's caption (``runtime_footer``, #74547).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
         path in a streamed reply is shown text or stale inspected content, and promoting it sent
         files the model never asked for. MEDIA tags are NOT deduped against prior turns (a final-reply
@@ -255,12 +240,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         non-streaming chain turns into attachments. See #20834 and #141806.
         """
         from urllib.parse import quote as _quote
+        from gateway.runtime_footer import caption_landed, caption_with_footer
+        captioned = False
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+            await hand_back_unreadable_media([p for p, _ in media_files])
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
@@ -293,8 +282,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if image_paths or url_images:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    images.extend(url_images)
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    images, _ = caption_with_footer(adapter, [*images, *url_images], footer_line)
+                    result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    captioned = caption_landed(result, images)  # only once the send confirmed it
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
@@ -310,6 +300,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+        return captioned
 
 
     async def _deliver_queued_first_response(
@@ -331,6 +322,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
         DECLINE returns True: that destination is not approved and must not be re-sent."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        if text_already_delivered and session_key and getattr(stream_consumer, "delivery_uncertain", False) is True:
+            # The stream counted a timed-out send as shown. The follow-up's result replaces this
+            # turn's, so the completion path never sees the flag: ledger it now under THIS turn's
+            # inbound id, through the same adapter-owned bracket the completion path uses.
+            await self._ledger_uncertain_streamed_final(
+                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                session_key, response, adapter)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -344,9 +342,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
-                        )
+                        from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
+                        _edit_res = await edit_preview_to_final(
+                            adapter, source.chat_id, _sc_msg_id, text_content, metadata,
+                            still_current=getattr(stream_consumer, "_run_still_current", None))
+                        if _edit_res is TURN_REPLACED:
+                            # The turn was replaced (/new, /stop) during a flood wait: nothing more is
+                            # owed, and False would make the caller re-send this stale answer.
+                            return True
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
                             logger.info(
@@ -1610,11 +1613,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         consolidated = "\n\n".join([header, *blocks])
         if getattr(self, 'session_authority', None) is not None:
             from gateway.session_automation import producer_identity
-            from tools.process_registry_notifications import delegation_wakes_parent
+            from tools.process_registry_notifications import completion_resumes_parent, delegation_wakes_parent
             primary_evt = dict(primary_evt, _automation_identities=[
                 producer_identity(self, event) for event in [primary_evt, *(e for e, _ in siblings)]],
-                # One admission carries the whole batch: a failed sibling wakes the parent too.
-                **({"_sibling_failed": True} if any(delegation_wakes_parent(e) for e, _ in siblings) else {}))
+                # One admission carries the whole batch: a failed sibling wakes the parent too, and a
+                # sibling the parent carries on from resumes it under a cron-run primary.
+                **({"_sibling_failed": True} if any(delegation_wakes_parent(e) for e, _ in siblings) else {}),
+                **({"_sibling_resumes": True} if any(completion_resumes_parent(e) for e, _ in siblings) else {}))
         delivered = await self._deliver_completion_notification(
             consolidated, primary_evt, sibling_claims=siblings,
         )

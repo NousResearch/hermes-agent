@@ -84,6 +84,7 @@ _lark_import_lock = threading.Lock()
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
+from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import (
@@ -92,8 +93,9 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import send_chunks
+from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
+from plugins.platforms.feishu.adapter_synthetic_events import FeishuSyntheticEventsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1286,7 +1288,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
+class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1343,9 +1345,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._pending_media_batch_tasks = self._media_batch_state.tasks
         # Button-card state: id → {session_key, message_id, chat_id}
         self._approval_state: dict[int, dict[str, str]] = {}
-        self._approval_counter = itertools.count(1)
+        self._approval_counter = prompt_id_counter()
         self._update_prompt_state: dict[int, dict[str, str]] = {}
-        self._update_prompt_counter = itertools.count(1)
+        self._update_prompt_counter = prompt_id_counter()
         self._init_choice_card_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
@@ -2009,9 +2011,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 return fallback
             data = getattr(response, "data", None)
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
+            # chat.get's chat_type is private/public; the DM marker is chat_mode == "p2p".
+            raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
                 "type": self._map_chat_type(raw_chat_type), "raw_type": raw_chat_type or None,
+                "raw_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
             return dict(info)
@@ -2314,9 +2319,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        from gateway.approval_actor import approval_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
-        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra, request_id=state.get("request_id")):
+        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra,
+                                         request_id=state.get("request_id"), choice=choice):
             return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         if not self._submit_on_loop(loop, self._resolve_approval(
                 approval_id=approval_id, choice=choice, user_name=user_name, open_id=open_id, chat_id=chat_id,
@@ -2342,9 +2347,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        coro = self._resolve_update_prompt(
-            prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id,
-        )
+        if requester := update_prompt_refusal(user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # not the /update sender or an admin: card stays open
+        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id)
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
@@ -2390,7 +2395,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                                                   actor_id=user_id or open_id, extra=self.config.extra)
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count, state["session_key"], choice, user_name,
+                count, state["session_key"], choice, user_id or open_id,
             )
             if not count and choice != "deny":
                 # The card already reads "Approved" (synchronous callback), but nothing was
@@ -2421,51 +2426,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             self._write_update_prompt_response(answer)
             logger.info(
                 "Feishu update prompt resolved for session %s (answer=%s, user=%s)",
-                state["session_key"], answer, user_name,
+                state["session_key"], answer, user_id or open_id,
             )
         except Exception as exc:
             logger.error("Failed to resolve Feishu update prompt: %s", exc)
-
-    async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
-        """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
-        if not self._client:
-            return
-        event = getattr(data, "event", None)
-        message_id = str(getattr(event, "message_id", "") or "")
-        if not message_id:
-            return
-        # Fetch the target message to verify it was sent by us and to obtain chat context.
-        try:
-            request = self._build_get_message_request(message_id)
-            response = await self._run_blocking(self._client.im.v1.message.get, request)
-            if not self._response_succeeded(response):
-                return
-            items = getattr(getattr(response, "data", None), "items", None) or []
-            msg = items[0] if items else None
-            if not msg:
-                return
-            # GET im/v1/messages reports sender.id=app_id for bot messages — peer bots share
-            # sender_type="app" with us but differ on app_id. Only route our own messages.
-            sender = getattr(msg, "sender", None)
-            if str(getattr(sender, "id", "") or "") != self._app_id:
-                return
-            chat_id = str(getattr(msg, "chat_id", "") or "")
-            chat_type_raw = str(getattr(msg, "chat_type", "p2p") or "p2p")
-            if not chat_id:
-                return
-        except Exception:
-            logger.debug("[Feishu] Failed to fetch message for reaction routing", exc_info=True)
-            return
-        user_id_obj = getattr(event, "user_id", None)
-        reaction_type_obj = getattr(event, "reaction_type", None)
-        emoji_type = str(getattr(reaction_type_obj, "emoji_type", "") or "UNKNOWN")
-        action = "added" if "created" in event_type else "removed"
-        synthetic_text = f"reaction:{action}:{emoji_type}"
-        logger.info("[Feishu] Routing reaction %s:%s on bot message %s as synthetic event", action, emoji_type, message_id)
-        await self._dispatch_synthetic_event(
-            text=synthetic_text, message_type=MessageType.TEXT, chat_id=chat_id, sender_id=user_id_obj,
-            event_chat_type=chat_type_raw, raw_message=data, message_id=message_id,
-        )
 
     def _is_card_action_duplicate(self, token: str) -> bool:
         """Return True if this card action token was already processed within the dedup window."""
@@ -2478,59 +2442,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return True
         self._card_action_tokens[token] = now
         return False
-
-    async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
-        event = getattr(data, "event", None)
-        token = str(getattr(event, "token", "") or "")
-        if token and self._is_card_action_duplicate(token):
-            logger.debug("[Feishu] Dropping duplicate card action token: %s", token)
-            return
-        context = getattr(event, "context", None)
-        chat_id = str(getattr(context, "open_chat_id", "") or "")
-        operator = getattr(event, "operator", None)
-        open_id = str(getattr(operator, "open_id", "") or "")
-        if not chat_id or not open_id:
-            logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
-            return
-        action = getattr(event, "action", None)
-        action_tag = str(getattr(action, "tag", "") or "button")
-        action_value = getattr(action, "value", {}) or {}
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
-            try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
-        await self._dispatch_synthetic_event(
-            text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
-            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
-            raw_message=data, message_id=token or str(uuid.uuid4()),
-        )
-
-    async def _dispatch_synthetic_event(
-        self, *, text: str, message_type: MessageType, chat_id: str, sender_id: Any, event_chat_type: str,
-        raw_message: Any, message_id: str,
-    ) -> None:
-        """Wrap a reaction/card click as a MessageEvent and run it through the guarded pipeline."""
-        sender_profile = await self._resolve_sender_profile(sender_id)
-        chat_info = await self.get_chat_info(chat_id)
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=event_chat_type),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
-            thread_id=None,
-            user_id_alt=sender_profile["user_id_alt"],
-        )
-        synthetic_event = MessageEvent(
-            text=text, message_type=message_type, source=source, raw_message=raw_message,
-            message_id=message_id, channel_prompt=self._resolve_channel_prompt(chat_id),
-            timestamp=datetime.now(),
-        )
-        await self._handle_message_with_guards(synthetic_event)
 
     # --- Per-chat serialization and typing indicator ---
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
@@ -2679,9 +2590,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         )
         chat_id = getattr(message, "chat_id", "") or ""
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text_len=%d media=%d",
             "dm" if chat_type == "p2p" else "group", message_id, inbound_type.value, chat_id,
-            "bot" if is_bot else "user", sender_primary, text[:120], len(media_urls),
+            "bot" if is_bot else "user", sender_primary, len(text), len(media_urls),
         )
 
         chat_info = await self.get_chat_info(chat_id)
@@ -2784,21 +2695,21 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import ssrf_redirect_guard
+        from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
             timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
-            )
-            response.raise_for_status()
-            # Snapshot headers + body inside the context so pooled connections fully release.
-            # See #18451.
-            content_type_hdr = str(response.headers.get("Content-Type", ""))
-            body = response.content
+            async with client.stream(
+                "GET", file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
+            ) as response:
+                response.raise_for_status()
+                # Snapshot headers + body inside the context so pooled connections fully release.
+                # See #18451.
+                content_type_hdr = str(response.headers.get("Content-Type", ""))
+                body = await read_httpx_body_with_limit(response, media_type="document")
         filename = self._derive_remote_filename(
             file_url, content_type=content_type_hdr, default_name=preferred_name, default_ext=default_ext,
         )
@@ -2836,11 +2747,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
-
-        # Rate-limit key is app_id:path:remote_ip (matches openclaw key structure).
-        if not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
-            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
-            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
 
         headers = getattr(request, "headers", {}) or {}
         content_type = str(headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
@@ -2883,14 +2789,19 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
-        # Token is validated above BEFORE reflecting the challenge, so an unauthenticated
-        # remote can't prove endpoint control by getting its own challenge echoed back.
-        if payload.get("type") == "url_verification":
-            return web.json_response({"challenge": payload.get("challenge", "")})
-
-        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
+        # url_verification is unsigned (the token above is its only auth): no signature check, and no quota charge without a token.
+        # Quota (key app_id:path:remote_ip, as openclaw) is charged only after auth, so forged traffic can't get real deliveries 429'd.
+        is_url_verification = payload.get("type") == "url_verification"
+        if self._encrypt_key and not is_url_verification and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
+        if (self._verification_token or not is_url_verification) and not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
+            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
+            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
+
+        # Token is checked above BEFORE reflecting the challenge, so a remote can't get its own challenge echoed.
+        if is_url_verification:
+            return web.json_response({"challenge": payload.get("challenge", "")})
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
@@ -3057,8 +2968,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         text = normalized.text_content
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
+        is_command = caption_is_command(_strip_edge_self_mentions(text, normalized.mentions))  # "@Hermes /goal x"
         for media_url, media_type in zip(media_urls, media_types):
-            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            extracted = "" if is_command else await self._maybe_extract_text_document(media_url, media_type)
             media_text_inlined.append(bool(extracted))
             if extracted:
                 inlined_parts.append(extracted)
@@ -3417,13 +3329,16 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             logger.exception("[Feishu] Background inbound processing failed")
 
     # --- Inbound admission ---
-    def _admit(self, sender: Any, message: Any) -> Optional[RejectReason]:
+    def _admit(self, sender: Any, message: Any, *, require_mention: Optional[bool] = None) -> Optional[RejectReason]:
+        """``require_mention=False`` exempts @-less synthetic turns (reactions, card clicks)."""
         sender_ids = _sender_identity(sender)
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
         is_bot = _is_bot_sender(sender)
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
-        require_mention = is_group and self._require_mention_for(chat_id)
+        if require_mention is None:
+            require_mention = self._require_mention_for(chat_id)
+        require_mention = is_group and require_mention
         # Defensive only — Feishu doesn't echo our outbound back as inbound,
         # and open_id is always populated on both sides.
         if self_ids and sender_ids & self_ids:
@@ -3470,7 +3385,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         )
         if text:
             self._warned_empty_allowlist_deny = True
-            logger.warning(text)
+            logger.warning(text)  # health: allow HX017 -- operator remedy text, built from config, no user content
 
     def _require_mention_for(self, chat_id: str) -> bool:
         rule = self._group_rules.get(chat_id) if chat_id else None

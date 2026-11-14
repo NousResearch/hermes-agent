@@ -17,11 +17,13 @@ from urllib.parse import unquote_plus
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
+from agent.redact_control_split import mask_control_split_tokens
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
 )
+from agent.redact_pattern_shape import _pattern_structure
 
 logger = logging.getLogger(__name__)
 
@@ -130,17 +132,16 @@ def note_config_policy(home_key: str, raw) -> None:
 
 def resolve_profile_policy(home) -> None:
     """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
-    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
-    token = set_hermes_home_override(home)
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_constants import hermes_home_key
     try:
-        key = hermes_home_key()
-        from hermes_cli.config import load_config_readonly, load_env
-        note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
-        note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
+        with bind_profile_scope(home, hydrate_secrets=False):
+            key = hermes_home_key()
+            from hermes_cli.config import load_config_readonly, load_env
+            note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
+            note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- unreadable now: stays unknown, which redacts
         logging.getLogger(__name__).debug("redaction policy for %s not read: %s", home, exc)
-    finally:
-        reset_hermes_home_override(token)
 
 
 def _redact_enabled() -> bool:
@@ -191,6 +192,8 @@ _PREFIX_PATTERNS = [
     r"xapp-\d+-[A-Za-z0-9-]{10,}",      # Slack app-Level token
     r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack bot/app/user tokens
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
+    r"GOCSPX-[A-Za-z0-9_-]{8,}",        # Google OAuth client secret (pasted client_secret.json, #64351)
+    r"ya29\.(?:[a-z]\.)?[A-Za-z0-9_-]{20,}",  # Google OAuth access token: user a0…, service-account c., STS d. (#64351)
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl
@@ -818,16 +821,6 @@ def _is_basic_pair_password(password: str) -> bool:
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
 
-# Control / zero-width characters that can split a token body (``sk-abc\x1bdef``,
-# ``ghp_abc\n123``) and escape the contiguous prefix regexes.
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\ufeff]")
-
-# Union of every _PREFIX_PATTERNS body class: a control-stripped match may only
-# span token-body or control chars. ``=`` is excluded so a KEY=value separator
-# never lets a match span unrelated text.
-_TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.")
-
-
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
 
@@ -866,7 +859,11 @@ def _is_opaque_prefixed_token(token: str) -> bool:
 
 def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
     glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
-    return m.group(0) if glued and not _is_opaque_prefixed_token(m.group(1)) else mask(m.group(1))
+    token = m.group(1)
+    # Google OAuth prefixes are distinctive even when base64url separators break every long run.
+    if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
+        return m.group(0)
+    return mask(token)
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
@@ -876,42 +873,6 @@ def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
 _ZHIPU_API_KEY_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
 )
-
-
-def _mask_control_split_tokens(text: str, mask_fn) -> str:
-    """Mask tokens whose body is split by control/zero-width characters.
-
-    Match on a control-stripped copy, then mask the corresponding span in the
-    ORIGINAL — only when that span holds solely token-body and control chars, so
-    a match can never cross into another line's unrelated text.
-
-    A credential like ``sk-abc\\x1bdef456…`` or ``ghp_abc\\n123def…`` has its token body interrupted, so the
-    contiguous _PREFIX_RE cannot match it and the secret leaks verbatim (issue #77484). ``EXA_API_KEY=*** is
-    rejected).
-    """
-    stripped = _CONTROL_CHARS_RE.sub("", text)
-    if stripped == text:
-        return text
-    orig_idx = [i for i, c in enumerate(text) if not _CONTROL_CHARS_RE.match(c)]
-    out, matches = list(text), []
-    for m in _PREFIX_RE.finditer(stripped):
-        start_orig = orig_idx[m.start(1)]
-        end_orig = orig_idx[m.end(1) - 1] + 1
-        span = text[start_orig:end_orig]
-        # Self-matching fragment AND a span crossing a LINE boundary: do NOT join
-        # (``ghp_<tok>\nbutton`` would mask ``button``; the prefix pass handles the
-        # fragment). Non-newline controls (ESC, ZWSP) never legitimately sit
-        # between a token and prose, so there the join proceeds regardless.
-        if ("\n" in span or "\r" in span) and _PREFIX_RE.search(span):
-            continue
-        # Reject spans containing a non-token char (``sk_abc…\nTAVILY_API_KEY=``
-        # matched across lines) and matches running into a ``KEY=`` name.
-        if (all(c in _TOKEN_BODY_CHARS or _CONTROL_CHARS_RE.match(c) for c in span)
-                and (end_orig >= len(text) or text[end_orig] != "=")):
-            matches.append((start_orig, end_orig, mask_fn(m.group(1))))
-    for start_orig, end_orig, replacement in reversed(matches):
-        out[start_orig:end_orig] = list(replacement)
-    return "".join(out)
 
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
@@ -1206,11 +1167,7 @@ def _redact_python_diagnostic_repr_fields(text: str) -> str:
         if match is None:
             match = _PYTHON_EXCEPTION_LINE_RE.match(body_line)
         if match is not None:
-            lines[index] = (
-                match.group("prefix")
-                + _redact_python_repr_fields(match.group("body"))
-                + ending
-            )
+            lines[index] = match.group("prefix") + _redact_python_repr_fields(match.group("body")) + ending
     return "".join(lines)
 
 
@@ -1548,7 +1505,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # across them — a secret smuggled as ``sk-abc\\x1bdef…`` leaks verbatim (issue #77484). Mask such
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
-        text = _mask_control_split_tokens(text, _prefix_sub)
+        text = mask_control_split_tokens(text, _prefix_sub, _PREFIX_RE)
         text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:
@@ -1706,9 +1663,10 @@ def _is_under_hermes_home(path: str) -> bool:
     so the resolve cost stays off the per-token command scan.
     """
     from agent.file_safety import _hermes_dirs
-
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    # A hosted path names a file in the sandbox: judged as written (never empty), not resolved on this host.
     try:
-        target = os.path.normcase(os.path.realpath(os.path.expanduser(path)))
+        target = os.path.normcase(sandbox_lexical_path(path) or os.path.realpath(os.path.expanduser(path)))
     except (OSError, ValueError):
         return False
     for home in _hermes_dirs():
@@ -1791,7 +1749,12 @@ REDACTION_UNAVAILABLE = "[redaction-unavailable]"
 # The opaque branch needs a 20-char floor (the floor the gateway/A2A sweeps always had): without it the
 # English word "bearer" turns "the bearer of bad news" into "Bearer [redacted] bad news" on every chat
 # reply. The bracket branch folds an already-masked residue ("Bearer [redacted-jwt]") to one marker.
-_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)", re.IGNORECASE)
+# ASCII lookbehind (not Unicode ``\b``): a Unicode word neighbor can hide ``Bearer <opaque>``
+# the same way prefix tokens used to hide behind ``\b``.
+_BEARER_RESIDUE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])Bearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)",
+    re.IGNORECASE,
+)
 
 
 def redact_for_egress(text: str) -> str:
@@ -1836,62 +1799,6 @@ def _extract_literal_prefix(pattern: str) -> str:
         if ch in meta:
             return pattern[:i]
     return pattern
-
-
-def _skip_char_class(pattern: str, i: int) -> int:
-    """Given ``pattern[i] == "["``, return the index just past the closing ``]``."""
-    i += 2 if pattern[i + 1:i + 2] == "]" else 1  # a leading "]" is literal
-    while i < len(pattern) and pattern[i] != "]":
-        i += 2 if pattern[i] == "\\" else 1
-    return i
-
-
-def _unbounded_quantifier_follows(pattern: str, j: int) -> bool:
-    """True if an open-ended quantifier (``*``, ``+``, ``{m,}``) starts at ``pattern[j]``."""
-    if j >= len(pattern):
-        return False
-    if pattern[j] in "*+":
-        return True
-    if pattern[j] == "{":
-        k = pattern.find("}", j)
-        body = pattern[j + 1:k] if k != -1 else ""
-        return body[:-1].isdigit() and body.endswith(",")  # {m,} is open-ended; {m} / {m,n} bounded
-    return False
-
-
-def _pattern_structure(pattern: str) -> tuple[bool, bool]:
-    """One scan → ``(has_top_level_alternation, has_nested_unbounded_repeat)``.
-
-    Top-level ``|`` defeats the literal-prefix guarantee (in ``ab|.*`` the prefix
-    binds only the first branch; ``ab(?:x|y)`` is fine). An unbounded quantifier
-    on a group containing one (``(a+)+``, ``(a{2,})+``) is the canonical ReDoS
-    shape. Structural only; overlapping branches (``(a|aa)+``) are not detected.
-    """
-    top_level_alt = nested = False
-    contains_unbounded = [False]  # per open group: does it contain an unbounded repeat?
-    i = 0
-    while i < len(pattern):
-        ch = pattern[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch == "[":
-            i = _skip_char_class(pattern, i)
-        elif ch == "(":
-            contains_unbounded.append(False)
-        elif ch == ")":
-            inner = contains_unbounded.pop() if len(contains_unbounded) > 1 else False
-            if inner and _unbounded_quantifier_follows(pattern, i + 1):
-                nested = True
-            contains_unbounded[-1] = contains_unbounded[-1] or inner
-        elif ch == "|" and len(contains_unbounded) == 1:
-            top_level_alt = True
-        elif _unbounded_quantifier_follows(pattern, i):
-            contains_unbounded[-1] = True
-            if ch == "{":
-                i = pattern.find("}", i)  # skip the {m,} body
-        i += 1
-    return top_level_alt, nested
 
 
 def _has_top_level_alternation(pattern: str) -> bool:
@@ -1998,3 +1905,7 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         return redact_sensitive_text(super().format(record))
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        from hermes_logging import display_record  # lazy: hermes_logging imports this module lazily
+        return super().formatMessage(display_record(record))

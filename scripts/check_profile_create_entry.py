@@ -17,7 +17,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SKIP_TOP = {"tests", "tests-js", "website", "apps", "ui-tui", "web", "native", "nix"}
 SKIP_ANY = {"tests", "node_modules", "__pycache__", "venv"}
-ALLOWED_FILES = {ROOT / "hermes_cli" / "profile_provision.py", Path(__file__).resolve()}
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import current_path
+
+ALLOWED_FILES = {ROOT / current_path("hermes_cli/profile_provision.py"), Path(__file__).resolve()}
 SUPPRESS = "# profile-create: ok"
 NAME = "create_profile"
 

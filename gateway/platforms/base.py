@@ -19,11 +19,13 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
+from agent.file_safety import is_project_env_basename
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -433,8 +435,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
+from gateway.platforms.base_delivery_ledger import (
+    finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
@@ -445,6 +449,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -518,9 +523,9 @@ def validate_inbound_media_size(
         raise ValueError(f"Inbound {media_type} payload is too large ({size} bytes > {limit} bytes)")
 
 
-async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
-    """Read an httpx streaming body under the media cap: reject an oversized ``Content-Length``
-    early, then re-check the running total per chunk (a lying/absent header can't smuggle more)."""
+async def read_httpx_body_with_limit(response, *, media_type: str, body=None) -> bytes:
+    """Read an httpx streaming body (aiohttp: ``body=resp.content.iter_chunked(n)``) under the media
+    cap: reject an oversized ``Content-Length`` early, then re-check the running total per chunk."""
     max_bytes = get_inbound_media_max_bytes()
     content_length = response.headers.get("content-length")
     if content_length:
@@ -532,7 +537,7 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
             validate_inbound_media_size(declared_size, media_type=media_type, max_bytes=max_bytes)
     chunks: list[bytes] = []
     total = 0
-    async for chunk in response.aiter_bytes():
+    async for chunk in (response.aiter_bytes() if body is None else body):
         total += len(chunk)
         validate_inbound_media_size(total, media_type=media_type, max_bytes=max_bytes)
         chunks.append(chunk)
@@ -652,7 +657,7 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
             try:
                 async with client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
-                    content = await _read_httpx_body_with_limit(response, media_type=media_type)
+                    content = await read_httpx_body_with_limit(response, media_type=media_type)
                 return await asyncio.to_thread(cache_fn, content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
@@ -894,8 +899,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:
             continue
-        hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
-        if hit and resolved_denied != home:
+        if deny_path_under(resolved, resolved_denied) and resolved_denied != home:
             return True
     return False
 
@@ -1054,8 +1058,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
     host secrets): MUST be under a Hermes cache, an operator root (``HERMES_MEDIA_ALLOW_DIRS``),
     or freshly produced within the recency window. Symlinks are resolved before any check."""
-    candidate = _normalize_media_tag_path(path)
-    if not candidate:
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_delivery") or not (candidate := _normalize_media_tag_path(path)):
         return None
     try:
         expanded = Path(os.path.expanduser(candidate))
@@ -1065,10 +1069,14 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     if not expanded.is_absolute():
         return None
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
-    resolved = _translate_docker_container_media_path(expanded, session_key=session_key)
-    if resolved is None:
-        resolved = _resolve_path(expanded, strict=True)
+    resolved = _translate_docker_container_media_path(expanded, session_key=session_key) or _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
+        return None
+    # Project-local secret env files (.env, .envrc, ...) are read-blocked anywhere on disk by
+    # agent/file_safety.get_read_block_error; mirror that here (the denylist's stated invariant)
+    # before the allowlist, so they are never deliverable in any mode or location. Judged on the
+    # resolved name, so a symlink to a .env is caught; the predicate case-folds.
+    if is_project_env_basename(resolved.name):
         return None
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():
@@ -1085,16 +1093,6 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
             and _file_is_recently_produced(resolved, window)):
         return str(resolved)
     return None
-
-
-# Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks: a
-# model-emitted path must not forge a log line.
-_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
-
-
-def _log_safe_path(path: str) -> str:
-    """Return a single-line, length-bounded path for log output."""
-    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str,
@@ -1348,11 +1346,13 @@ def _deliverable_tag_spans(text: str) -> list:
 
 
 def _extensionless_media_matches(masked: str):
-    """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension
-    MEDIA tag in ``masked`` that ``validate_media_delivery_path`` accepts."""
+    """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension MEDIA tag in
+    ``masked`` that validates, skipping one inside a REAL known-extension file's tag (spaced path, #78383)."""
+    known = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked) if "MEDIA:" not in m.group("path")
+             and _existing_regular_file(_normalize_media_tag_path(m.group("path")))]
     for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
-        if path and _path_lacks_deliverable_extension(path):
+        if path and _path_lacks_deliverable_extension(path) and not any(s <= match.start() < e for s, e in known):
             resolved = _match_extensionless_path(masked, match)
             if resolved is not None:
                 yield match, resolved[0], resolved[1]
@@ -2893,8 +2893,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                logger.info("[%s] Sending image: %s (alt=%s)", self.name,
-                            safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
+                logger.info("[%s] Sending image: %s (alt=%d chars)", self.name,
+                            safe_url_for_log(image_url), len(alt_text or ""))
                 if image_url.startswith("file://"):
                     from urllib.request import url2pathname
                     sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}
@@ -3200,11 +3200,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
         # Scan a masked copy so example/stored MEDIA paths (code, quotes, JSON values) are never
-        # delivered; dedupe on the expanded path so a file referenced twice uploads once.
+        # delivered: code blocks / inline code / blockquotes hold prose examples (#35695), serialized
+        # JSON string values hold stored tool-result text (#34375); both maskers preserve offsets.
         scan_content = _mask_media_scan_text(content)
-        # - code blocks / inline code / blockquotes hold prose examples (#35695) - serialized JSON string
-        #   values hold stored tool-result text (#34375) Both maskers are offset-preserving (chars ->
-        #   spaces) so match offsets stay valid; chaining them masks the union of both protected regions.
         # Dedupe on the expanded path (first occurrence wins) so the same file referenced twice in one
         # response — e.g. a MEDIA tag inline AND in a summary footer — is uploaded once, not twice (#29131).
         seen_paths: set = set()
@@ -3277,17 +3275,16 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                            stop_event: asyncio.Event | None = None) -> None:
         """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
-        setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
-        timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
+        setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval timeout."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
-                    try:
-                        await asyncio.wait_for(self.send_typing(chat_id, metadata=metadata),
-                                               timeout=_send_typing_timeout)
+                if chat_id not in self._typing_paused and typing_pause_key(chat_id, metadata) not in self._typing_paused:
+                    try:  # asyncio.timeout: 3.11's wait_for swallows a same-tick cancel (stuck "typing")
+                        async with asyncio.timeout(_send_typing_timeout):
+                            await self.send_typing(chat_id, metadata=metadata)
                     except TimeoutError:
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
@@ -3309,7 +3306,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         finally:
             # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
             # getattr-guard: tests build adapters via object.__new__ without _status_text.
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
@@ -3329,7 +3326,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
         finally:
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
 
     async def _stop_typing_quietly(self, chat_id: str, metadata=None) -> None:
         """Best-effort platform stop_typing; adapter errors are swallowed."""
@@ -3527,7 +3524,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         failures fall back to a plain-text send, exhausted retries notify the user."""
         async def _send(text: str) -> SendResult:
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
+        tried, as_file = await try_reply_file(self, chat_id, content, reply_to=reply_to, metadata=metadata)
+        if as_file or tried:  # past MAX_SPLIT_MESSAGES: one file; a failed upload never retried as a file (#152012)
+            with reply_file_off():
+                return as_file or await self._send_with_retry(chat_id, content, reply_to, metadata, max_retries, base_delay)
         async def _send_again(previous: SendResult) -> Optional[SendResult]:
             """Retry: the whole payload normally; only the undelivered remainder after a partial split
             delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
@@ -3540,12 +3540,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if result.success or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
-        # A rate-limited / flood-capped send is transient: it should back off
-        # (honoring the server's retry_after when present) rather than fall
-        # through to the plain-text fallback, which re-enters the ban and can
-        # truncate content.  Gate on the platform-neutral classifier as well so
-        # platforms that surface a rate limit without a retry_after field
-        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
+        # than fall through to the plain-text fallback, which re-enters the ban and can truncate content. The
+        # platform-neutral classifier also matches a rate limit with no retry_after (Weixin's bare RuntimeError).
         is_rate_limited = self._is_rate_limited_error(error_str)
         is_network = (
             result.retryable
@@ -3810,12 +3807,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return bool(done and done())
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
-        """Clear a stale session lock; True if healed. On-entry safety net: without it a split-brain
-        (guard held, nothing processing) traps the chat in "Interrupting..." until restart."""
-        if session_key not in self._active_sessions or not self._session_task_is_stale(session_key):
+        """Clear a stale session lock (split-brain: guard held, nothing processing); True if healed."""
+        from gateway.platforms.base_session_command import command_in_flight  # it settles its own guard
+        if ((guard := self._active_sessions.get(session_key)) is None
+                or not self._session_task_is_stale(session_key) or command_in_flight(guard)):
             return False
-        logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
-                       self.name, session_key)
+        logger.warning("[%s] Healing stale session lock for %s (owner task done/absent)", self.name, session_key)
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._requeue_counts.pop(session_key, None)
@@ -3890,27 +3887,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """Dispatch a reset-like bypass command (/stop, /new, /reset): keep a guard installed while
-        the runner handles it (follow-ups stay queued), cancel the old task AFTER the response,
-        drain once."""
-        logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
-        current_guard = self._active_sessions.get(session_key)
-        command_guard = asyncio.Event()
-        self._active_sessions[session_key] = command_guard
-        try:
-            # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
-            # confirmation.
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
-            await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
-        except Exception:
-            # On failure restore the original guard so the session isn't left half-reset.
-            if self._active_sessions.get(session_key) is command_guard:
-                if session_key in self._session_tasks and current_guard is not None:
-                    self._active_sessions[session_key] = current_guard
-                else:
-                    self._release_session_guard(session_key, guard=command_guard)
-            raise
-        await self._drain_pending_after_session_command(session_key, command_guard)
+        """/stop, /new, /reset on a busy session: cancel only on the runner's verdict (#136759)."""
+        from gateway.platforms.base_session_command import dispatch_active_session_command
+        await dispatch_active_session_command(self, event, session_key, cmd)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
@@ -3983,21 +3962,16 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             from gateway.session_ingress_burst import dispatch_busy_burst
             await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
             return
-        # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
-        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
-        # calling the message handler directly and sending the response.  Do NOT use
-        # _process_message_background — it manages session lifecycle and its cleanup
-        # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
-        self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
+        # Bypass commands run inline (queued, /new would leak as user text and /approve, /deny deadlock on
+        # Event.wait); never via _process_message_background, whose cleanup races the running task (#4926).
+        src = event.source
+        self._canonicalize(src)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:
-                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
+                # /stop, /new, /reset: response, then cancel + drain only if the runner accepted it.
                 if cmd and is_interrupt_then_dispatch(cmd):
-                    self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
@@ -4087,28 +4061,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> tuple[list[str], Optional[str]]:
-        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
-        (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
-        paths: list[str] = []
-        requested_path = None
-        try:
-            from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-            if check_tts_requirements():
-                import json as _json
-                speech_text = self.prepare_tts_text(text_content)
-                if not speech_text:
-                    raise ValueError("Empty text after markdown cleanup")
-                requested_path = build_auto_tts_output_path(self.platform)
-                tts_data = _json.loads(await asyncio.to_thread(
-                    text_to_speech_tool, text=speech_text, output_path=requested_path))
-                if tts_data.get("success", True):
-                    raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
-                    paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
-        except Exception as tts_err:
-            logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-        return paths, requested_path
+    async def _synthesize_auto_tts(self, text_content: str, source: Optional[SessionSource] = None,
+                                   ) -> tuple[list[str], Optional[str]]:
+        """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
+        scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
+        from gateway.platforms.base_auto_tts import synthesize_auto_tts
+        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
@@ -4136,67 +4094,14 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
-        """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
-        next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
-        or None."""
-        if is_ephemeral_response or str(event.text or "").lstrip().startswith(
-            ("/", self.typed_command_prefix or "!")):
-            return None
-        try:
-            from gateway.delivery_ledger import (
-                compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
-            if not await asyncio.to_thread(ledger_enabled):
-                return None
-            source = event.source
-            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
-            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
-            _ledger_id = getattr(event, "ledger_message_id", None)
-            if _ledger_id is None:
-                _ledger_id = getattr(event, "message_id", "")
-            obligation_id = compute_obligation_id(
-                session_key, str(_ledger_id or ""), text_content)
-            await asyncio.to_thread(
-                record_obligation, obligation_id=obligation_id, session_key=session_key,
-                platform=str(getattr(source.platform, "value", source.platform)),
-                chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-            await asyncio.to_thread(mark_attempting, obligation_id)
-            return obligation_id
-        except Exception:
-            logger.debug("delivery ledger record failed", exc_info=True)
-            return None
+        """Ledger a final before its send (``base_delivery_ledger.record_final_obligation``); the per-adapter seam."""
+        return await record_final_obligation(self, event, session_key, text_content, delivery_adapter, is_ephemeral_response)
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
         delivery_adapter: "BasePlatformAdapter") -> None:
-        """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
-        replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
-        the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
-        backoff has passed instead of waiting for the next restart (#91653)."""
-        try:
-            from gateway.dead_targets import classify_dead_error
-            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
-            if getattr(result, "success", False):
-                await asyncio.to_thread(mark_delivered, obligation_id)
-                return
-            error = str(getattr(result, "error", "") or "")
-            await asyncio.to_thread(mark_failed, obligation_id, error)
-            if is_reconnect_only(error):
-                redeliver = getattr(
-                    self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
-                live = self._final_delivery_adapter(event.source)
-                if live is not delivery_adapter and callable(redeliver):
-                    await redeliver(event.source.platform,
-                                    profile=getattr(delivery_adapter, "_owner_profile", None))
-            elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
-                schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
-                if callable(schedule):
-                    schedule(event.source.platform,
-                             profile=getattr(delivery_adapter, "_owner_profile", None))
-        except Exception:
-            logger.debug("delivery ledger update failed", exc_info=True)
+        """Settle a ledgered final from its send result (``base_delivery_ledger.finalize_final_obligation``)."""
+        await finalize_final_obligation(self, obligation_id, result, event, delivery_adapter)
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
@@ -4262,9 +4167,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
-            record_delivery(SendResult(success=False, error=str(batch_err)))
-            return
-        record_delivery(result)
+            result = SendResult(success=False, error=str(batch_err))
+        record_delivery(result)  # a footer the captioned photo lost goes out on its own (#74547):
+        await send_footer_unless_captioned(self, event.source.chat_id, images, result, metadata, record_delivery)
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
@@ -4277,19 +4182,25 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
-        delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
-        obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-        if obligation_id is not None:
-            await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-        stop_reply_clock(delivery_adapter, event.source.chat_id, result)
-        if obligation_id is not None:
-            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
-        return result, delivery_adapter
+        async def _send(delivery_adapter: "BasePlatformAdapter", obligation_id: Optional[str]) -> SendResult:
+            logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                        len(text_content), event.source.chat_id)
+            if obligation_id is not None:
+                await self._release_turn_marker(event)  # the ledger now owns the crash recovery
+            result = await delivery_adapter._send_with_retry(
+                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+            stop_reply_clock(delivery_adapter, event.source.chat_id, result)
+            return result
+        return await ledger_bracket(self, event, session_key, text_content, _send,
+                                    is_ephemeral_response=is_ephemeral_response)
+
+    async def ledger_attempted_final(self, event: MessageEvent, session_key: str, response: str, *,
+                                     error: str) -> bool:
+        """A final already sent once whose outcome is unknown: ledger it as a failed row so the timed
+        redelivery sends it WITH the may-be-a-duplicate marker. True only when a row was saved."""
+        text = (await self._extract_response_content(
+            response, event, session_key, is_ephemeral_response=False)).text_content
+        return bool(text) and await ledger_attempted(self, event, session_key, text, error)
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
         """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or
@@ -4316,12 +4227,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
-                    t("gateway.notify.turn_error_detailed", error_type=type(e).__name__, error_detail=error_detail),
+                    t("gateway.errors.generic_failed"),  # raw exception text can carry credentials (logged above)
                     t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:
@@ -4390,6 +4300,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if not is_ephemeral_response:
                 local_files, text_content = self.extract_local_files(text_content)
                 local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+            from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+            await hand_back_unreadable_media([p for p, _ in media_files] + local_files)
         history = (await self._bounded_history_media_paths_for_session(session_key)
                    if local_files else None)
         if history:
@@ -4411,9 +4323,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                                "no attachment; delivering recovered original to %s", self.name,
                                len(pre_extract), event.source.chat_id)
                 text_content = _recovered
-        return _ExtractedResponse(
-            text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+        return footer_onto_photo_caption(self, _ExtractedResponse(text_content=text_content, images=images, media_files=media_files,
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract), _IMAGE_EXTS)  # #74547
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
@@ -4456,9 +4367,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
-        # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
-        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
-        self._active_sessions[session_key] = interrupt_event
+        from gateway.platforms.base_session_command import guard_under_commands  # the guard it was scheduled under
+        interrupt_event = guard_under_commands(self._active_sessions.get(session_key)) or asyncio.Event()
+        self._active_sessions.setdefault(session_key, interrupt_event)  # an in-flight command keeps its own
         _thread_metadata = _thread_metadata_for_event(event)
         _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
             self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
@@ -4491,7 +4402,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content, event.source)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):
@@ -4760,62 +4671,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
                          len_fn: Optional[Callable[[str], int]] = None) -> list[str]:
-        """Split a long message into chunks preserving code blocks: a split inside a fence closes it
-        at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
-        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
-        _len = len_fn or len
-        if _len(content) <= max_length:
-            return [content]
-        INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
-        FENCE_CLOSE = "\n```"
-        chunks: list[str] = []
-        remaining = content
-        carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
-        while remaining:
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
-            if headroom < 1:
-                headroom = max(1, max_length // 2)
-            # Remainder fits in one final chunk; close a reopened fence if still open.
-            if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                final_chunk = prefix + remaining
-                if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
-                    final_chunk += FENCE_CLOSE
-                chunks.append(final_chunk)
-                break
-            # Natural split (newline, then space); a custom _len budget maps to a codepoint offset.
-            _cp_limit = (
-                _custom_unit_to_cp(remaining, headroom, _len) if _len is not len else headroom)
-            region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
-            if split_at < 1:
-                # Floor at one codepoint: a zero _cp_limit (max_length 0/1, or a surrogate pair
-                # wider than the utf16 budget) would never shrink ``remaining``; overshooting beats
-                # a hang.
-                split_at = max(1, _cp_limit)
-            # Don't split inside an inline code span: an unpaired backtick breaks MarkdownV2.
-            candidate = remaining[:split_at]
-            backtick_count = candidate.count("`") - candidate.count("\\`")
-            if backtick_count % 2 == 1:
-                last_bt = candidate.rfind("`")
-                while last_bt > 0 and candidate[last_bt - 1] == "\\":
-                    last_bt = candidate.rfind("`", 0, last_bt)
-                if last_bt > 0:
-                    safe_split = max(
-                        candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
-                    if safe_split > _cp_limit // 4:
-                        split_at = safe_split
-            chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
-            full_chunk = prefix + chunk_body
-            # Walk only chunk_body (not the prepended prefix) for the fence state.
-            in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
-            carry_lang = lang if in_code else None
-            # Close the orphaned fence so the chunk stands alone.
-            chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)
-        if len(chunks) > 1:
-            chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
-        return chunks
+        """Split a long message into Markdown-safe chunks with ``(1/3)`` indicators: fences
+        close/reopen, inline code and links stay whole, pipe tables repeat their header.
+        ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram). See ``base_chunking``."""
+        from gateway.platforms.base_chunking import chunk_markdown_message
+        return chunk_markdown_message(content, max_length, len_fn)

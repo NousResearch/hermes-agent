@@ -689,7 +689,11 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    # "custom" is deliberately absent: it names a user-supplied endpoint, not a local one. A custom
+    # endpoint on a host no row above names falls through to the is_local_endpoint() fallback, so a
+    # localhost/LAN engine keeps both carriers while a remote gateway gets reasoning_content only --
+    # strict serde gateways alias `reasoning` to `reasoning_content` and reject both keys (#136486).
+    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
 
@@ -738,9 +742,9 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
         None,
     )
     if carriers is None:
-        from agent.model_metadata import is_local_endpoint
+        from agent.process_transport import is_local_server
 
-        carriers = _LOCAL_CARRIERS if base_url and is_local_endpoint(str(base_url)) else _DEFAULT_CARRIERS
+        carriers = _LOCAL_CARRIERS if is_local_server(base_url, provider_lower) else _DEFAULT_CARRIERS
     if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
         carriers = carriers | {RD}
     return carriers
@@ -1002,23 +1006,38 @@ _NAMED_FIELD_RES = {
     # The bare word is also a top-level request param; only a message-path mention counts.
     R: re.compile(r"messages[^\n]{0,80}?(?<![\w])reasoning(?![\w])"),
 }
+# Alias collision: the schema reads ``reasoning`` as an alias of ``reasoning_content``, so a message
+# carrying both is rejected while either alone is accepted (#136486). serde names the duplicate
+# ("duplicate field `reasoning_content`" or "`reasoning`", with or without a ``messages[N]:`` path)
+# and only ``reasoning`` is the alias; Recursive's rec engine names nothing ("Use one reasoning field
+# per message") and rejects any second carrier, ``reasoning_details`` included.
+_DUPLICATE_FIELD_RE = re.compile(r"duplicate field[^a-z0-9_]{0,4}([a-z_][a-z0-9_]*)")
+_KEYLESS_COLLISION_PHRASES = ("use one reasoning field per message",)
 
 
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
-    """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
+    """Reasoning keys to drop after a schema rejection of a carrier this request sent.
 
-    Strict schemas report one offending key per error, so the drop is widened to the keys the
-    same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
-    other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
-    ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
+    Unknown field: strict schemas report one offending key per error, so the drop is widened to
+    the keys the same schema will reject next: a rejected ``reasoning_details`` / ``reasoning``
+    takes the other non-standard carrier too (``reasoning_content`` still carries the text); a
+    rejected ``reasoning_content`` (the most widely accepted alias) takes all three. One retry.
+
+    Alias collision is the opposite case: the schema READS ``reasoning_content``, so it is kept
+    and only the carriers that rode next to it in one message are dropped (``reasoning`` for a
+    named collision; any second carrier for the keyless one). A duplicate complaint about a key
+    that is not a carrier learns nothing.
     """
     body = str(error_body or "").lower()
+    assistant = [m for m in (sent_messages if isinstance(sent_messages, list) else ())
+                 if isinstance(m, dict) and m.get("role") == "assistant"]
+    if any(phrase in body for phrase in _KEYLESS_COLLISION_PHRASES):
+        return frozenset(key for msg in assistant if RC in msg for key in (R, RD) if key in msg)
+    if {m.group(1) for m in _DUPLICATE_FIELD_RE.finditer(body)} & {RC, R}:
+        return frozenset({R}) if any(RC in msg and R in msg for msg in assistant) else frozenset()
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
-    sent = {
-        key for msg in (sent_messages if isinstance(sent_messages, list) else ())
-        if isinstance(msg, dict) and msg.get("role") == "assistant" for key in REASONING_CARRIERS if key in msg
-    }
+    sent = {key for msg in assistant for key in REASONING_CARRIERS if key in msg}
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()

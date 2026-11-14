@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
+from hermes_agent.compat.paths import original_path
+
 # Master switch, honoured everywhere the ratchet runs (CI, `scripts/check`, the git hooks). It is
 # read from main, never from the branch under test, so a PR cannot relax its own check: CI reads
 # the merge commit's first parent; local runs read `origin/main` (falling back to the merge-base).
@@ -127,6 +129,14 @@ RULES: tuple[Rule, ...] = (
     Rule("PS-P06", "raw platform credential getenv", "read it through the profile's secret"
          " scope (`get_secret`)", "regex", exclude=SINGLE_PROFILE,
          blocking=WARN_UNTIL_REPLAYED, pattern_id="P06"),
+    Rule("HX016", "legacy profile setter", "bind a scope:"
+         " `agent.runtime_scope.bind_profile_scope(home)` moves home, secrets and terminal policy"
+         " together (`bind_turn(session_id, turn_id, fence)` inside it for a turn); `bind_state(scope, ...)` for a host"
+         " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
+         " `set_terminal_scope` / `install_profile_terminal_scope` call blocks only when it is new: an"
+         " existing call stays until someone migrates it", "ast",
+         exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
+                                   "agent/secret_scope.py", "tools/terminal_scope.py")),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"
@@ -140,6 +150,13 @@ RULES: tuple[Rule, ...] = (
     # Structure.
     Rule("HX011", "if/elif ladder on one name", "use a dict/table -> handler (`_SLASH_DISPATCH`"
          " is the shape)", "ast", exclude=()),
+    # Session store: an fd the lock-safety registry cannot see (closing any raw fd on the file
+    # cancels the process's POSIX locks on it; see `_HEADER_PROBE_FDS` in hermes_state_dbfile.py).
+    Rule("HX015", "untracked sqlite3.connect on state.db", "open it with"
+         " `hermes_cli.sqlite_safe_read.connect_tracked(..., tracking_path=<the db path>)`"
+         " so `has_live_connection()` / `offline_file_access()` see the fd; a deliberately offline"
+         " file (snapshot, scratch copy, quarantined file) takes `# health: allow HX015 -- <why>`",
+         "ast", blocking=WARN_UNTIL_REPLAYED, exclude=TESTS + ("evals/*",)),
     # Tests: a fixed delay is a race against the runner's load (the usual flake).
     Rule("HX013", "wall-clock sleep in a test", "wait for the condition, not the clock: an"
          " Event the code under test sets (`threading.Event` / `asyncio.Event`, `.wait(timeout=)`),"
@@ -151,6 +168,12 @@ RULES: tuple[Rule, ...] = (
     Rule("HX014", "private API-error predicate", "use `classify_api_error` (`agent.auxiliary_error_policy`"
          " on the aux path); add the phrasing to its pattern tables", "ast",
          include=("agent/auxiliary*.py", "agent/context_compressor*.py", "agent/turn_*.py")),
+    # Logs reach `hermes debug share` and bug reports: user content and identities stay out of INFO+.
+    Rule("HX017", "user content or identity logged at INFO+", "log the metadata, not the value:"
+         " `len(text)`, an id or a short hash (`gateway.platforms.helpers.hash_for_log`), or a"
+         " redacted form (`redact_phone`); the verbatim value goes to `logger.debug`. A content-named"
+         " value that holds no user data (a config string) takes `# health: allow HX017 -- <why>`",
+         "ast", include=("gateway/*", "plugins/platforms/*")),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}
@@ -159,6 +182,7 @@ ALLOW_SYNTAX = "# health: allow <RULE> -- <why>"
 
 
 def _matches(path: str, globs: tuple[str, ...]) -> bool:
+    path = original_path(path)
     return any(fnmatch(path, glob) for glob in globs)
 
 

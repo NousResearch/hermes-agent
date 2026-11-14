@@ -33,6 +33,14 @@ _DESTRUCTIVE = (
     "> {h}/state.db",
     "tee {h}/state.db </dev/null",
     "cp /dev/null {h}/state.db",
+    # The destination may be followed by a redirection, pipe, comment or next line (#155452 review).
+    "cp /tmp/state.db {h}/state.db 2>/dev/null",
+    "cp /tmp/state.db {h}/state.db 2>&1",
+    "cp /tmp/state.db {h}/state.db >/dev/null",
+    "cp /tmp/state.db {h}/state.db | tee log",
+    "cp /dev/null {h}/state.db # clear database",
+    "cp {h}/state.db.bak {h}/state.db  # restore",
+    "cp /tmp/state.db {h}/state.db\necho done",
     "dd if=/dev/zero of={h}/state.db",
     'sqlite3 {h}/state.db "delete from messages where 1=1"',
     'sqlite3 {h}/state.db "update messages set content=0"',
@@ -42,10 +50,17 @@ _DESTRUCTIVE = (
     "ls; mv {h}/sessions /tmp/s",
     "echo x | tee -a {h}/state.db",
     'sqlite3 {h}/state.db "vacuum"',
+    'sqlite3 {h}/state.db "update or replace messages set content=0"',
+    'sqlite3 {h}/state.db "update messages as m set content=0"',
+    "sqlite3 {h}/state.db <<'EOF'\ndelete from messages where 1=1;\nEOF",
+    "sqlite3 {h}/state.db <<EOF\nupdate messages set content='';\nEOF",
 )
 
 _BENIGN = (
     "cp {h}/state.db /tmp/backup.db",
+    "cp {h}/state.db /tmp/backup.db 2>/dev/null  # backup",
+    "cp {h}/state.db {h}/state.db.bak 2>&1",
+    "cp {h}/state.db /tmp/b.db\ncp {h}/state.db-wal /tmp/b.db-wal",
     'sqlite3 {h}/state.db "select count(*) from messages"',
     "sqlite3 {h}/state.db .schema",
     "cat {h}/state.db",
@@ -74,6 +89,8 @@ _BENIGN = (
     "mv /tmp/skill {h}/",
     "mv /tmp/skill ~/.hermes",
     'sqlite3 {h}/state.db "VACUUM INTO \'/tmp/b.db\'"',
+    'sqlite3 {h}/state.db "vacuum main into \'/tmp/b.db\'"',
+    'sqlite3 {h}/state.db <<< "select count(*) from messages"',
 )
 
 
@@ -97,4 +114,12 @@ def test_repeated_verb_words_stay_linear(home):
     command = "sqlite3 " * 8000 + home + "/state.db;x"
     started = time.monotonic()
     detect_dangerous_command(command)
+    assert time.monotonic() - started < 6
+
+
+def test_repeated_heredoc_lines_stay_linear(home):
+    # The heredoc clause must not let the verb lookahead cross newlines (quadratic per line).
+    command = "sqlite3 ~/.hermes/state.db <<E\n" * 1990
+    started = time.monotonic()
+    assert detect_dangerous_command(command)[0] is True
     assert time.monotonic() - started < 6

@@ -22,7 +22,14 @@ const OVERSCAN = 20
 // viewport+2*overscan = 80 rows of needed coverage = ~25 items at avg 3
 // rows/item, so 120 leaves >4× headroom and never blanks the viewport
 // even when items are tiny.
-const MAX_MOUNTED = 120
+// Bumped 120 → 300: issue #55594 — long assistant responses scroll out
+// of the mounted range and the clamp (setClampBounds) holds the viewport
+// at the edge of mounted content while the user catches up, so the
+// response is perceived as having "disappeared" with no way back.  300
+// is 2.5× the old cap and still well under the ~23k live Yoga node budget
+// (300 items × ~75 nodes/item = ~22.5k, similar to the old 260 ceiling
+// that was tolerable).  Override per-instance via the `maxMounted` option.
+export const MAX_MOUNTED = 300
 const COLD_START = 30
 // Floor on unmeasured row height used when computing coverage — guarantees
 // the mounted span physically reaches the viewport bottom regardless of how

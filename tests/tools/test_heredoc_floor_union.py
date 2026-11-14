@@ -80,6 +80,12 @@ def test_quote_in_inert_body_does_not_hide_the_next_command(gate_mode):
     assert approval.check_all_command_guards(command, "local")["approved"] is False
 
 
+@pytest.mark.parametrize("opener", ["python3 - <<'EOF'\n# it's code", "osascript <<'EOF'\n-- it's code"])
+def test_quote_in_code_heredoc_body_does_not_hide_the_next_command(opener):
+    # Code bodies stay raw too; only their dropped copy keeps the quote from hiding the next line.
+    assert detect_hardline_command(f"{opener}\nEOF\n{RM_ROOT}")[0] is True
+
+
 def test_ansi_c_after_inert_heredoc_is_decoded():
     # Heredoc masking runs first, then ANSI-C expansion: `$'\x72m'` in the body is data, after it a command.
     command = "cat <<'EOF'\n$'\\x72m'\nEOF\n$'\\x72m' -rf /"

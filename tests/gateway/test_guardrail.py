@@ -280,6 +280,17 @@ class TestMalformedNeverRaises(GuardrailTestCase):
         stub = _Stub("hello")
         self.assertFalse(self.run_screen(stub))
 
+    def test_nonfinite_env_falls_back_to_default(self):
+        """N1 (r2 re-review): 'inf'/'1e999' must not disable holds."""
+        for bad in ("inf", "1e999", "-inf"):
+            os.environ["HERMES_GATEWAY_GUARDRAIL_TIMEOUT_S"] = bad
+            self.assertEqual(
+                guardrail._float_env(
+                    "HERMES_GATEWAY_GUARDRAIL_TIMEOUT_S", 4.0), 4.0)
+        EngineStubHandler.tier = "block"
+        stub = _Stub("attack with degenerate env", user_id="n1")
+        self.assertTrue(self.run_screen(stub))  # hold still enforced
+
     def test_corrupted_debounce_state_never_raises(self):
         guardrail._STATE_PATH.write_text(
             json.dumps({"whatsapp:attacker": "not-a-number"}),

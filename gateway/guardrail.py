@@ -66,6 +66,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 import urllib.request
@@ -98,7 +99,9 @@ def guardrail_enabled() -> bool:
 def _float_env(name: str, default: float) -> float:
     try:
         value = float(_flag(name))
-        return value if value > 0 else default
+        if not math.isfinite(value) or value <= 0:
+            return default
+        return value
     except (TypeError, ValueError):
         return default
 

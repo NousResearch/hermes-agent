@@ -90,9 +90,22 @@ attributed under caller `hermes-gateway`).
   stub defaults aligned, overall deadline); I4 documented as a known
   limitation; I7 debris removed.
 
+- r3 (delta re-review PASS + N1 clamp): independent delta review
+  (VERDICT-R2.json, 79 probes) confirmed all four r1 blockers CLOSED
+  and 19/19 tests green - real-event B1 held with exactly 1 engine
+  call; '/zzz' and '/notacommand' text screened and held while
+  '/stop'/'/STOP' skip with 0 engine calls; 53-case malformed-input
+  fuzz: zero raises, all 10 exact-block malformed bodies kept the
+  hold; heartbeat probe: slow /outcome leaves gate latency <1.0s
+  with >=80% loop ticks; 50 concurrent outcome reports drained to 0;
+  classifier breakage fails OPEN to screening. One new minor
+  non-blocking finding N1 fixed in r3: non-finite numeric env
+  ('inf'/'1e999') now clamps to the default via math.isfinite (was:
+  degenerate env silently disabled holds / suppressed alerts).
+
 ## Test coverage
 
-`tests/gateway/test_guardrail.py` - 19 cases against a loopback engine
+`tests/gateway/test_guardrail.py` - 20 cases against a loopback engine
 stub (all tiers, hold reply, debounce, known/unknown-command matrix,
 real-MessageEvent regression, malformed-response matrix, bad env,
 corrupted state, slow-outcome latency bound, fail-open, default-off).

@@ -93,6 +93,68 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+@pytest.mark.parametrize("endpoint", ["/api/files/upload", "/api/fs/write-text"])
+def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatch, endpoint):
+    import utils
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    previous = target.read_bytes()
+    original_replace = utils.os.replace
+
+    def fail_target_replace(source, destination):
+        if str(destination) == str(target):
+            assert target.read_bytes() == previous
+            raise OSError("simulated write failure")
+        return original_replace(source, destination)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(utils.os, "replace", fail_target_replace)
+        payload = ({"path": str(target), "data_url": "data:text/plain;base64,bmV3"}
+                   if endpoint.endswith("upload") else {"path": str(target), "content": "new"})
+        response = client.post(endpoint, json=payload)
+    assert response.status_code == 500
+    assert target.read_bytes() == previous
+    assert set(target.parent.iterdir()) == {target}
+
+
+@pytest.mark.platforms("posix")
+def test_upload_overwrite_keeps_the_file_group(forced_files_client):
+    """The atomic replace swaps in a new inode; an overwritten file keeps its owner and group."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    other = next((g for g in os.getgroups() if g != target.stat().st_gid), None)
+    if other is None:
+        pytest.skip("needs a supplementary group to tell the groups apart")
+    os.chown(target, -1, other)
+
+    response = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,bmV3", "overwrite": True})
+
+    assert response.status_code == 200, response.text
+    assert target.read_bytes() == b"new"
+    assert target.stat().st_gid == other
+
+
+def test_write_text_does_not_reuse_a_precreated_staging_name(forced_files_client):
+    """The staging file is created exclusively under an unpredictable name: a file another user
+    planted at the old ``.<name>.hermes-tmp-<pid>`` sibling is neither written through nor kept."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    planted = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    planted.write_text("planted", encoding="utf-8")
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "new"})
+
+    assert response.status_code == 200, response.text
+    assert target.read_text(encoding="utf-8") == "new"
+    assert planted.read_text(encoding="utf-8") == "planted"
+
+
 
 
 @pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])

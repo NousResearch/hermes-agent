@@ -51,10 +51,44 @@ def test_linux_refresh_reconciles_installed_pin(refresh):
     ensure.assert_called_once_with("cua-driver", explicit=True)
 
 
+def _outdated_pin(lookup):
+    """Installed entry exists, but not at the version pinned in pm/lock.json."""
+    lookup.side_effect = lambda name, allow_outdated=False: SimpleNamespace() if allow_outdated else None
+
+
+@pytest.mark.platforms("windows")
+def test_windows_refresh_is_silent_when_pin_is_current(refresh, monkeypatch, capsys):
+    """A current pin needs no refresh, so no UAC hint on every `hermes update`."""
+    _, ensure = refresh
+    monkeypatch.setattr(setup, "install_cua_driver", Mock(side_effect=AssertionError("unattended UAC")))
+
+    update._refresh_cua_driver_after_update()
+
+    ensure.assert_not_called()
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.platforms("windows")
+def test_windows_refresh_installs_outdated_pin_without_autostart(refresh, monkeypatch):
+    """With the on-demand default there is no scheduled task to re-register."""
+    lookup, ensure = refresh
+    _outdated_pin(lookup)
+    monkeypatch.setattr(setup, "_cua_autostart_opt_in", lambda: False)
+    host_setup = Mock(side_effect=AssertionError("unattended UAC"))
+    monkeypatch.setattr(setup, "install_cua_driver", host_setup)
+
+    update._refresh_cua_driver_after_update()
+
+    ensure.assert_called_once_with("cua-driver", explicit=True)
+    host_setup.assert_not_called()
+
+
 @pytest.mark.platforms("windows")
 def test_windows_refresh_defers_pin_and_uac_to_explicit_setup(refresh, monkeypatch, capsys):
     """Keep the task's versioned executable selected until interactive re-registration."""
-    _, ensure = refresh
+    lookup, ensure = refresh
+    _outdated_pin(lookup)
+    monkeypatch.setattr(setup, "_cua_autostart_opt_in", lambda: True)
     host_setup = Mock(side_effect=AssertionError("unattended UAC"))
     monkeypatch.setattr(setup, "install_cua_driver", host_setup)
 

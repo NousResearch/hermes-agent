@@ -715,24 +715,33 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
     and leaves the unit alone; it is not a failed restart.
     """
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, home_in_update_scope, systemd_unit_foreign_checkout, systemd_unit_hermes_home,
+    )
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
-    if home is not None and home_in_update_scope(home):
+    checkout = systemd_unit_foreign_checkout(scope_cmd, svc_name) if home is not None else None
+    if home is not None and checkout is None and home_in_update_scope(home):
         return True
-    announce_skipped_runtime("systemd unit", svc_name, home)
+    announce_skipped_runtime("systemd unit", svc_name, home, checkout=checkout)
     return False
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
     """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
     install's profile PID files); every other gateway process is named and left running."""
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, partition_gateway_pids_by_scope
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, gateway_pid_foreign_checkout, partition_gateway_pids_by_scope,
+    )
     keep = set(keep)
     owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
+    # Same home is not same install: a gateway running another checkout is not this update's.
+    other_checkout = {pid: root for pid in [*keep, *owned] if (root := gateway_pid_foreign_checkout(pid))}
     if not quiet:
         for pid, home in foreign:
             announce_skipped_runtime("gateway process", f"PID {pid}", home)
-    return [pid for pid in pids if pid in keep or pid in owned]
+        for pid, root in other_checkout.items():
+            announce_skipped_runtime("gateway process", f"PID {pid}", None, checkout=root)
+    return [pid for pid in pids if (pid in keep or pid in owned) and pid not in other_checkout]
 
 
 def _is_serve_or_dashboard_unit(unit: str) -> bool:
@@ -1136,6 +1145,12 @@ def _drain_or_signal_gateway_for_update(
         GATEWAY_LOOP_WEDGED, _escalate_wedged_gateway, _graceful_restart_via_sigusr1,
         _is_pid_ancestor_of_current_process, _request_gateway_self_restart, probe_gateway_loop_liveness,
     )
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, gateway_pid_foreign_checkout
+    if (checkout := gateway_pid_foreign_checkout(pid)) is not None:
+        # Every caller funnels here, the ancestor case included: an update from a worktree whose shell
+        # descends from the live gateway used to SIGUSR1 a gateway serving another checkout.
+        announce_skipped_runtime("gateway process", label, None, checkout=checkout)
+        return False
     if _is_pid_ancestor_of_current_process(pid):
         print(
             f"  → {label}: update is running inside this gateway's "

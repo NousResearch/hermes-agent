@@ -2169,19 +2169,28 @@ def replay_compression_warning(agent: Any) -> None:
 def conversation_history_after_compression(
     agent: Any, messages: list, previous_history: Optional[list] = None
 ) -> Optional[list]:
-    """Return the correct flush baseline after a compression boundary.
-    Session rotation returns ``None`` so the child gets the full compacted list. In-place compaction returns a
-    shallow copy of the already-persisted rows (else the identity flush re-appends them). Aborted/no-op
-    attempts keep the baseline: marking all persisted drops unflushed turns; clearing re-appends rows."""
+    """Return the post-compaction ``conversation_history`` baseline for flush diffing.
+
+    In-place compaction keeps the same session_id; rows stamped ``_db_persisted=True`` by
+    ``_commit_compaction`` are already in SQLite and must be skipped on the next flush, while
+    any row whose ``_db_persisted`` marker was popped after ``_commit_compaction`` (e.g. by
+    ``_repair_alternation_after_compression``) must remain outside ``conversation_history`` so
+    ``_db_flush_collect`` flushes its post-repair state instead of re-stamping ``_db_persisted``.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    def _persisted_only(msgs: list) -> list:
+        return [m for m in msgs if not isinstance(m, dict) or m.get(_DB_PERSISTED_MARKER)]
+
     if bool(getattr(agent, "_last_compression_attempt_recorded", False)):
         attempt_in_place = getattr(agent, "_last_compression_attempt_in_place", None)
         if attempt_in_place is True:
-            return list(messages)
+            return _persisted_only(messages)
         if attempt_in_place is False:
             return None
         return previous_history
     if bool(getattr(agent, "_last_compaction_in_place", False)):
-        return list(messages)
+        return _persisted_only(messages)
     return None
 
 

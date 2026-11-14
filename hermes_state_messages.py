@@ -707,6 +707,55 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         except Exception:
             return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
 
+    @staticmethod
+    def _fold_compaction_summary_seam(messages: list[dict[str, Any]]) -> int:
+        """Fold consecutive assistant turns across a compaction summary seam in place before INSERT.
+
+        When ``ContextCompressor.compress()`` emits a ``role='assistant'`` summary immediately before
+        a carried ``role='assistant'`` tool-call turn, ``_repair_alternation_after_compression`` merges
+        them via ``_merge_consecutive_assistants`` right after ``_commit_compaction``. Folding that
+        seam here — after coverage/rewind accounting and ``_carry_parent_timestamps`` have resolved
+        the un-merged tail, and before ``_insert_message_rows`` writes SQLite — persists one clean
+        merged row instead of two consecutive assistant rows in ``state.db``.
+        """
+        if not messages or len(messages) < 2:
+            return 0
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX
+
+        def _is_summary(m: Any) -> bool:
+            if not isinstance(m, dict):
+                return False
+            if m.get(COMPRESSED_SUMMARY_METADATA_KEY):
+                return True
+            content = m.get("content")
+            return isinstance(content, str) and content.startswith(SUMMARY_PREFIX)
+
+        if not any(
+            isinstance(messages[i], dict)
+            and isinstance(messages[i + 1], dict)
+            and messages[i].get("role") == "assistant"
+            and messages[i + 1].get("role") == "assistant"
+            and (_is_summary(messages[i]) or _is_summary(messages[i + 1]))
+            for i in range(len(messages) - 1)
+        ):
+            return 0
+        from agent.agent_runtime_helpers import _merge_consecutive_assistants
+        from agent.conversation_compression_archive import (
+            ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS,
+        )
+
+        for m in messages:
+            if isinstance(m, dict):
+                stamp_message_uid(m)
+        repaired, count = _merge_consecutive_assistants(list(messages))
+        if count > 0:
+            for m in repaired:
+                if isinstance(m, dict) and not isinstance(m.get("_row_id"), int):
+                    for k in (ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS):
+                        m.pop(k, None)
+            messages[:] = repaired
+        return count
+
     def _insert_message_rows(self, conn, session_id: str, messages: list[dict[str, Any]], *,
                              prune_checkpoints: bool = True) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
@@ -1049,6 +1098,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         # durable row's timestamp and message_uid so display dedupe and client reconciliation
         # preserve identity across compactions. Rewound tail originals donate to their carried copies.
         self._carry_parent_timestamps(conn, session_id, compacted_messages, donor_row_ids=rewind_ids)
+        self._fold_compaction_summary_seam(compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if clone_ids:
             _ids, unseen_tool_calls = self._tail_rows_after_watermark(
@@ -1198,6 +1248,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         # durable row's timestamp and message_uid so display dedupe and client reconciliation
         # preserve identity across compactions. Rewound tail originals donate to their carried copies.
         self._carry_parent_timestamps(conn, session_id, compacted_messages, donor_row_ids=rewind_ids)
+        self._fold_compaction_summary_seam(compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if clone_ids:
             self._clone_message_rows(conn, clone_ids)

@@ -393,19 +393,42 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
     """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
     text survives: multimodal (list) content is never joined."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, message_uid_or_none
+
+    msg_uid = message_uid_or_none(msg)
+    if msg_uid is not None and msg_uid in (prev.get(ABSORBED_MESSAGE_UIDS) or ()):
+        # ``prev`` was already rewritten to storage after absorbing ``msg`` (while ``msg``'s
+        # durable row remained active in SQLite for rewind accounting). Re-merging on reload
+        # must fold the duplicate dict away without re-appending its tool_calls or content.
+        return True
 
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
     calls_changed = False
     if new_calls:
-        prev["tool_calls"] = prev_calls + new_calls
-        # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
-        if isinstance(extra := msg.get(TOOL_CALL_UIDS), dict) and extra:
-            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
-                per_occurrence_tool_call_uids(
-                    own if isinstance(own := prev.get(TOOL_CALL_UIDS), dict) else {}, prev_calls),
-                per_occurrence_tool_call_uids(extra, new_calls))
-        calls_changed = True
+        extra = msg.get(TOOL_CALL_UIDS)
+        own = prev.get(TOOL_CALL_UIDS)
+        already_merged_calls = False
+        if isinstance(extra, dict) and extra and isinstance(own, dict) and own:
+            own_per_occ = per_occurrence_tool_call_uids(own, prev_calls)
+            extra_per_occ = per_occurrence_tool_call_uids(extra, new_calls)
+            def _as_uid_list(v: Any) -> list:
+                return list(v) if isinstance(v, list) else ([v] if isinstance(v, str) and v else [])
+            if extra_per_occ and all(
+                bool(_as_uid_list(uids))
+                and all(u in _as_uid_list(own_per_occ.get(cid)) for u in _as_uid_list(uids))
+                for cid, uids in extra_per_occ.items()
+            ):
+                already_merged_calls = True
+        if not already_merged_calls:
+            prev["tool_calls"] = prev_calls + new_calls
+            # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
+            if isinstance(extra, dict) and extra:
+                prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
+                    per_occurrence_tool_call_uids(
+                        own if isinstance(own, dict) else {}, prev_calls),
+                    per_occurrence_tool_call_uids(extra, new_calls))
+            calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
     else:
@@ -678,6 +701,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, message_uid_or_none
     from hermes_state import SessionDB
 
     def _plain_text(content: Any) -> bool:
@@ -701,10 +725,14 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
+            msg_uid = message_uid_or_none(msg)
+            already_absorbed = bool(msg_uid and msg_uid in (prev.get(ABSORBED_MESSAGE_UIDS) or ()))
             merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
+                prev_content
+                if already_absorbed
+                else ((prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content))
             )
-            had_api_sidecar = "api_content" in prev
+            had_api_sidecar = "api_content" in prev and not already_absorbed
             # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
             # the dict no longer stands for durable rows only.
             if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):

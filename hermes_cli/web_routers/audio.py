@@ -91,6 +91,13 @@ async def transcribe_audio_upload(
     payload: AudioTranscriptionRequest, profile: Optional[str] = None
 ):
     data_url = (payload.data_url or "").strip()
+    effective_mime = (payload.mime_type or payload.mime or "").strip() or None
+    if not data_url and (payload.audio or "").strip():
+        raw_audio = (payload.audio or "").strip()
+        if raw_audio.startswith("data:"):
+            data_url = raw_audio
+        else:
+            data_url = f"data:{effective_mime or 'audio/mp4'};base64,{raw_audio}"
     if not data_url.startswith("data:") or "," not in data_url:
         raise HTTPException(status_code=400, detail="Invalid audio payload")
 
@@ -98,7 +105,7 @@ async def transcribe_audio_upload(
     if ";base64" not in header:
         raise HTTPException(status_code=400, detail="Audio payload must be base64 encoded")
 
-    mime_type = (payload.mime_type or header[5:].split(";", 1)[0] or "audio/webm").strip()
+    mime_type = (effective_mime or header[5:].split(";", 1)[0] or "audio/webm").strip()
     normalized_mime_type = mime_type.split(";", 1)[0].lower()
     if not (normalized_mime_type.startswith("audio/") or normalized_mime_type == "video/webm"):
         raise HTTPException(status_code=400, detail="Payload must be an audio recording")

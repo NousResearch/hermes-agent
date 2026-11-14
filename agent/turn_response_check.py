@@ -66,6 +66,8 @@ def _codex_finish_reason(response: Any) -> str:
 
 def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
     if agent.api_mode == "codex_responses":
+        if getattr(response, "_runaway_repetition", False):
+            return "length"  # the stream cut a live repetition loop; the length path ends the turn on the mark
         finish_reason = _codex_finish_reason(response)
         # A function_call cut off by max_output_tokens is not a text turn to continue: the
         # Codex incomplete path would replay the partial and re-hit the same cap. Route it

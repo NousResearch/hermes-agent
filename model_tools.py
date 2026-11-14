@@ -810,8 +810,10 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
             )
             if modified_args is not None:
                 function_args = modified_args
-        except Exception as _hook_err:
-            logger.debug("pre_tool_call hook error: %s", _hook_err)
+        except Exception:
+            # Fail closed: without the hooks' verdict the call must not proceed.
+            logger.warning("pre_tool_call hook dispatch failed; blocking %s", function_name, exc_info=True)
+            block_message = "Pre-tool hook dispatch failed; tool execution blocked"
         if block_message is not None:
             return function_args, (tool_error(block_message), "plugin_block", block_message)
 

@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from contextvars import Context
+from urllib.parse import urlsplit
 from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
@@ -263,7 +264,7 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
 
 class ElicitationHandler:
     """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
-    (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
+    (CLI, TUI, Telegram, ...); URL-mode asks consent to open the shown http(s) URL. Fail-closed: any timeout, exception or unexpected
     state returns decline/cancel, never a silent accept."""
 
     # asyncio-side safety net over the approval's own input() timeout so the MCP loop never blocks
@@ -306,18 +307,25 @@ class ElicitationHandler:
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""
         self.metrics["requests"] += 1
-        if getattr(params, "mode", "form") == "url":  # OAuth/payment: needs a browser + elicitation/complete; unsupported
-            logger.info("MCP server '%s' requested URL-mode elicitation; declining "
-                        "(URL-mode elicitation not implemented)", self.server_name)
-            return self._result("decline", "declined")
-
         message = strip_unicode_tags(str(getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"))
-        # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
-        # access) — read both or the user approves without seeing the fields.
-        schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
+        if getattr(params, "mode", "form") == "url":
+            # The user follows the link themselves (OAuth, payment); accept only records consent to go
+            # there, so the full URL and its host are shown and nothing is opened or fetched here.
+            url = strip_unicode_tags(str(getattr(params, "url", "") or ""))
+            parsed = urlsplit(url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                logger.warning("MCP server '%s' URL-mode elicitation declined: not an http(s) URL", self.server_name)
+                return self._result("decline", "declined")
+            description = (f"MCP server '{self.server_name}' asks you to open this URL in your browser:\n"
+                           f"  {url}\n  (site: {parsed.hostname})\nAllow only if you trust this site.")
+        else:
+            # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
+            # access) — read both or the user approves without seeing the fields.
+            schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
+            description = _format_elicitation_schema_summary(schema, self.server_name)
         logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
         try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
-            invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
+            invoke_consent = self._consent_thunk(message, description)
         except Exception as exc:  # pragma: no cover -- defensive
             logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
             return self._result("decline", "errors")

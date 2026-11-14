@@ -586,6 +586,33 @@ def test_pythonpath_descendants_are_not_owned():
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+def test_pythonpath_superseded_environment_is_owned(tmp_path, monkeypatch):
+    """A backend running across an environment switch still exports the *previous* generation's
+    site-packages; it must be stripped exactly like the currently selected one (#122928)."""
+    environments = tmp_path / "installs" / "abc123" / "environments"
+    stale = environments / "superseded" / "venv/lib/python3.14/site-packages"
+    current = environments / "selected" / "venv/lib/python3.14/site-packages"
+    user = tmp_path / "user-libs"
+    monkeypatch.setattr(pp, "_hermes_environment_roots", lambda: (environments.resolve(),))
+
+    env = {"PYTHONPATH": os.pathsep.join([str(stale), str(user)])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"] == str(user)
+
+    env = {"PYTHONPATH": os.pathsep.join([str(current), str(stale)])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env.get("PYTHONPATH") is None
+
+
+def test_hermes_environment_roots_track_the_install_state_dir():
+    """The generations dir is derived from the repo root the same way ``_validated_runtime_venv``
+    locates ``runtime_facts_path``; a mismatch would silently stop matching leaked entries."""
+    from pm.environments import install_state_dir
+
+    root = Path(__file__).resolve().parents[2]
+    assert pp._hermes_environment_roots() == ((install_state_dir(root) / "environments").resolve(),)
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])
@@ -652,7 +679,10 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (user_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
     base = {"VIRTUAL_ENV": str(user_venv), "PYTHONPATH": os.pathsep.join(map(str, [site, alias, user_site]))}
     result = local._sanitize_subprocess_env(base)
-    expected = [str(user_site)] if has_facts else [str(site), str(user_site)]
+    # Provenance under install_state_dir/.../environments is Hermes-owned
+    # whether or not runtime facts name this generation. The launcher alias
+    # is a repo-root spelling; only the user's site survives.
+    expected = [str(user_site)]
     assert result["PYTHONPATH"].split(os.pathsep) == expected
     assert "VIRTUAL_ENV" not in result
     assert base["VIRTUAL_ENV"] == str(user_venv)

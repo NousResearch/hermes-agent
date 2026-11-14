@@ -1575,8 +1575,8 @@ def terminal_tool(
     time" event every N seconds so the agent stays current on a long job without polling.
     ``persist_on_release`` (background-only) keeps the process alive across agent-lifecycle
     cleanup — session end, context compression, error recovery, max-iteration stop — all of
-    which kill the task's background processes; the user can still stop it on purpose via
-    process_manage kill (#41225).
+    which kill the task's background processes; the owning conversation can still stop it via
+    process_manage kill, and the user from the process UI (#41225).
     ``_completion_output_chars`` (internal) sizes the completion notification's output for a
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane

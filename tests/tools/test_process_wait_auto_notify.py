@@ -47,14 +47,16 @@ def test_opt_out_keeps_plain_polling(sleeper, tmp_path, monkeypatch):
 
 
 def test_caller_that_does_not_own_the_completion_keeps_plain_polling(tmp_path, monkeypatch):
-    """Session B polling session A's process must not be told to stop: the completion is routed to A."""
+    """A caller acting through the owning task but bound to session B must not be told to stop:
+    the completion is routed to session A. (Session B alone cannot reach A's process at all, #108413.)"""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     session = pr.process_registry.spawn_local("sleep 30", cwd=str(tmp_path), task_id="owner-a", session_key="owner-a")
     session.notify_on_complete = False
     monkeypatch.setenv("HERMES_SESSION_KEY", "caller-b")
     try:
         for _ in range(3):
-            result = _wait(session.id)
+            result = json.loads(pr._handle_process(
+                {"action": "wait", "session_id": session.id, "timeout": 1}, task_id="owner-a"))
             assert "Poll again later" in result["timeout_note"] and "notify_on_complete" not in result
         assert session.notify_on_complete is False
     finally:

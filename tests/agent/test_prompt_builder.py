@@ -537,7 +537,7 @@ class TestBuildContextFilesPrompt:
     @pytest.mark.require_symlinks
     @pytest.mark.parametrize("loader", ["startup", "subdirectory_hint"])
     def test_home_or_above_is_never_the_containment_root(self, tmp_path, monkeypatch, loader):
-        """A dotfiles repo at $HOME (startup context) or a session rooted at $HOME (subdirectory hints) would
+        """A dotfiles repo at $HOME (startup context) or a session rooted at / (subdirectory hints) would
         contain every file below it: a download the agent unpacked must not link a context file to a home file."""
         home = tmp_path / "home"
         (home / ".git").mkdir(parents=True)
@@ -553,7 +553,8 @@ class TestBuildContextFilesPrompt:
             if loader == "startup":
                 return build_context_files_prompt(cwd=str(unpacked), skip_soul=True)
             from agent.subdirectory_hints import SubdirectoryHintTracker
-            return SubdirectoryHintTracker(working_dir=str(home)).check_tool_call(
+            # A $HOME working dir disables hints outright (#76902); "/" is the remaining wide root.
+            return SubdirectoryHintTracker(working_dir="/").check_tool_call(
                 "read_file", {"path": str(unpacked / "x.py")}) or ""
 
         link = unpacked / "AGENTS.md"

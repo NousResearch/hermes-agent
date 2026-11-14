@@ -22,6 +22,7 @@ WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
 OSS_FORENSICS = "optional-skills/security/oss-forensics"
+CLAUDE_CODE = "skills/autonomous-ai-agents/claude-code"
 
 
 def _document(skill):
@@ -67,6 +68,10 @@ def test_required_references_are_present_and_routed(skill, references):
              "sent replies", "fall back to matching the incoming thread's register",
              "generic-professional"), ()),
     (SOCIAL, (), ("image-generation-workflow",)),
+    # A git worktree isolates file edits, not the filesystem, network or credentials.
+    (CLAUDE_CODE, ("it is not a filesystem, network or credential sandbox", "sandbox runtime",
+                   "`bypassPermissions` is the same bypass as `--dangerously-skip-permissions`"),
+     ("throwaway worktree",)),
 ])
 def test_document_obligations(skill, required, forbidden):
     _, body = _document(skill)

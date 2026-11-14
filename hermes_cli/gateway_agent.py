@@ -426,11 +426,14 @@ class GatewayAgent:
 
     def _sync_show_reasoning(self):
         """Sent unless this viewer already set the value: a session it attaches (/new, /resume, /branch)
-        may hold another viewer's "1". A "0" outlives a redial (a restarted gateway starts with the
-        flag unset, read as off); a "1" is set again on each gateway life."""
+        may hold another viewer's "1". Publishing the flag on the session's state is what lets the
+        connection replay it on every new socket — a redial lands on a gateway that forgot it — so only
+        a changed value is written from here."""
         show = self._reasoning_callback is not None
+        # The owner forgets this live flag on restart; reconnect restores it from this state.
+        self._state().show_reasoning = show
         sent = self._show_reasoning_sent
-        if sent and sent[:2] == (self.session_id, show) and (not show or sent[2] == self.connection.epoch):
+        if sent and sent[:2] == (self.session_id, show):
             return
         try:
             self.connection.call("config.set", session_id=self.session_id, key="show_reasoning",
@@ -438,7 +441,7 @@ class GatewayAgent:
         except GatewayClientError as exc:
             logger.debug("config.set show_reasoning failed: %s", exc)
             return
-        self._show_reasoning_sent = (self.session_id, show, self.connection.epoch)
+        self._show_reasoning_sent = (self.session_id, show)
 
     @property
     def service_tier(self):

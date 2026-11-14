@@ -70,6 +70,37 @@ class TestPlanToolBatchSegments:
         assert _kinds(segments) == ["parallel"]
         assert _flatten_ids(segments) == [c.id for c in calls]
 
+    @pytest.mark.parametrize(
+        "tool_names",
+        [
+            ("hindsight_recall", "hindsight_recall"),
+            ("hindsight_reflect", "hindsight_reflect"),
+            ("hindsight_recall", "hindsight_reflect"),
+            ("hindsight_recall", "web_search"),
+            ("hindsight_reflect", "web_search"),
+        ],
+    )
+    def test_hindsight_reads_share_parallel_segment(self, tool_names):
+        calls = [
+            _tc(name, json.dumps({"query": f"topic-{index}"}))
+            for index, name in enumerate(tool_names)
+        ]
+        assert _plan_tool_batch_segments(calls) == [("parallel", calls)]
+
+    def test_hindsight_retain_remains_a_barrier_between_reads(self):
+        calls = [
+            _tc("hindsight_recall", '{"query":"before recall"}'),
+            _tc("hindsight_reflect", '{"query":"before reflect"}'),
+            _tc("hindsight_retain", '{"content":"new fact"}'),
+            _tc("hindsight_recall", '{"query":"after recall"}'),
+            _tc("hindsight_reflect", '{"query":"after reflect"}'),
+        ]
+        assert _plan_tool_batch_segments(calls) == [
+            ("parallel", calls[:2]),
+            ("sequential", calls[2:3]),
+            ("parallel", calls[3:]),
+        ]
+
     def test_three_safe_reads_plus_trailing_unsafe_keeps_reads_parallel(self):
         """The headline case: 3 safe reads + 1 unsafe tool must NOT go fully sequential."""
         calls = [

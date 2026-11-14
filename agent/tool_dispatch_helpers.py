@@ -32,6 +32,8 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_cata
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
+    "hindsight_recall",
+    "hindsight_reflect",
     "image_generate",
     "read_file",
     "search_files",

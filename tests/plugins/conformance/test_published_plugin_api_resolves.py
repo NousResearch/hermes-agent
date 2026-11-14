@@ -14,7 +14,10 @@ from pathlib import Path
 
 import pytest
 
-_PLUGIN_API = Path(__file__).resolve().parents[3] / "hermes_cli" / "data" / "plugin_api.json"
+from hermes_agent.compat.paths import current_module, current_path
+
+# The list keeps the names it was published with while packages move; each resolves through MOVES.
+_PLUGIN_API = Path(__file__).resolve().parents[3] / current_path("hermes_cli/data/plugin_api.json")
 
 
 def _entries() -> list[str]:
@@ -25,6 +28,6 @@ def _entries() -> list[str]:
 @pytest.mark.parametrize("entry", _entries())
 def test_published_entry_imports(entry):
     module_name, _, name = entry.partition(":")
-    module = importlib.import_module(module_name)
+    module = importlib.import_module(current_module(module_name))
     if name:
         assert hasattr(module, name), f"{entry}: {module_name} has no attribute {name!r}"

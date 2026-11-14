@@ -135,11 +135,11 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
 
 @pytest.mark.parametrize("blobless", [False, True], ids=["full-clone", "blobless-clone"])
 def test_a_runtime_target_whose_state_modules_moved_into_the_package_is_not_refused(repo, tmp_path, blobless):
-    """A target beside this checkout's history that keeps the state store under ``src/hermes_agent/``
+    """A target beside this checkout's history that keeps the state store under ``hermes_agent/``
     still defines the runtime ledger: the guard must find it there, and must not trust a no-match
     while those nested blobs are missing from a blobless clone."""
     _git(repo, "checkout", "-q", "-b", "moved", "HEAD~1")
-    package = repo / "src" / "hermes_agent" / "hermes_state"
+    package = repo / "hermes_agent" / "hermes_state"
     package.mkdir(parents=True)
     _git(repo, "mv", "hermes_state_common.py", str(package / "common.py"))
     (package / "common.py").write_text(

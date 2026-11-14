@@ -15,19 +15,7 @@ repo: https://github.com/LuuMoss/video-xray
 sha: df688ec6b9c146eb95579ffabe8a32d3f6bdfdc7
 
 # --- human copy (plain block scalars; the security disclosure is REQUIRED) ---
-description: >-
-  Drop a video file into the chat composer and get a structured report: segment-wise
-  frame observation by whatever vision-capable chat model you already configured
-  (local llama.cpp/Strata or cloud), timestamped dialogue from R2T2, Whisper, or any
-  OpenAI-compatible cloud ASR, and a frame gallery of the key moments inside the job
-  detail. Exports the report as Markdown or as a MiniMax-H3 integrated multimodal
-  description prompt. Ships the R2T2 engine worker source (the same code the panel
-  uses); the heavy R2T2 runtime binaries and any Whisper models are
-  user-supplied, nothing else is downloaded. Spawns ffmpeg/ffprobe and local ASR worker subprocesses; network calls
-  go only to the user's own configured inference and cloud-ASR endpoints, never to
-  third-party services; background analysis jobs run as worker threads tracked in a
-  local job ledger. The panel is pure @hermes/plugin-sdk React and user-visible text
-  goes through ctx.i18n.
+description: "Drop a video file into the chat composer and get a structured report: segment-wise frame observation by whatever vision-capable chat model you already configured (local llama.cpp/Strata or cloud), timestamped dialogue from R2T2, Whisper, or any OpenAI-compatible cloud ASR, and a frame gallery of the key moments inside the job detail. Exports the report as Markdown or as a MiniMax-H3 integrated multimodal description prompt. Ships the R2T2 engine worker source (the same code the panel uses); the heavy R2T2 runtime binaries and any Whisper models are user-supplied, nothing else is downloaded. Spawns ffmpeg/ffprobe and local ASR worker subprocesses; network calls go only to the user's own configured inference and cloud-ASR endpoints, never to third-party services; background analysis jobs run as worker threads tracked in a local job ledger. The panel is pure @hermes/plugin-sdk React and user-visible text goes through ctx.i18n. Disclosure — runs ffmpeg/ffprobe and local ASR worker processes on your computer, and by default starts an analysis job for every video you attach when you press send (turn off \"Analyze attached videos on send\" in the panel); video frames go to your configured Hermes chat model and audio goes to the cloud ASR endpoint you set, if any; the faster-whisper engine downloads its model weights from Hugging Face on first use when they are not already cached; the cloud ASR key you save in the panel is stored in plain text in an owner-only (0600) file in Hermes' data folder."
 maintainer: LuuMoss
 tier: community              # community tier, third-party source below
 category: desktop            # drives the default platform/toolset behavior

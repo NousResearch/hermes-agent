@@ -60,6 +60,8 @@ The `@file:` reference supports line ranges for precise content injection:
 @file:src/main.py:10-25     # Lines 10 through 25 (inclusive)
 ```
 
+Line suffixes pasted from compilers, editors and code hosts work too: a column is ignored (`@file:src/main.py:42:7`, `@file:src/main.py:10:1-25:4`), and GitHub-style anchors read as ranges (`@file:src/main.py#L42`, `@file:src/main.py#L10-L25`).
+
 Lines are 1-indexed. Invalid ranges are silently ignored (full file is returned).
 
 ## Size Limits

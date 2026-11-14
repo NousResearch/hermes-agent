@@ -85,6 +85,15 @@ class ReplacementCoordinator:
                     if lease.finalize is not None:
                         lease.finalize()
             finally:
+                # Splice the disposed generation out of its successors' chains. ``restore`` only ever
+                # walks *through* an inactive predecessor (taking its ``previous`` and moving on), so
+                # pointing a successor straight at ``lease.previous`` / ``lease.predecessor`` restores
+                # exactly the same value -- but stops every live lease from pinning each dead generation
+                # (and whatever its ``current`` / ``previous`` snapshots reference) for the life of the
+                # process when one slot is re-registered over and over.
+                for item in leases:
+                    if item.predecessor is lease:
+                        item.previous, item.predecessor = lease.previous, lease.predecessor
                 live = [item for item in leases if item.active]
                 if live:
                     self._active[lease.slot] = live

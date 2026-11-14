@@ -27,6 +27,7 @@ hermes dashboard
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
 | `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
+| `--isolated` | 关闭 | 从具名 profile 启动时（`worker dashboard`），运行该 profile 专用的服务器，而不是路由到本机 Dashboard。它只列出该 profile。这只是路由/运维便利，**不是**安全边界：同一操作系统用户下的 profile 可以互相读取（接受 profile 选择参数的路由、`/api/fs/*` 以及 agent 自身的工具仍可访问同级 profile）；要隔离租户，请使用不同的操作系统用户或容器。 |
 
 ```bash
 # 自定义端口
@@ -45,7 +46,7 @@ FastAPI、Uvicorn 和平台 PTY 辅助库是 Hermes 核心依赖。`web` extra �
 标准 PM 安装通过 `all` 选择 `web`；消息和语音功能仍需单独请求。
 如依赖损坏，请运行 `hermes pm repair` 并重启 Hermes。
 
-在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建且 `npm` 可用，则会在首次启动时自动构建。
+在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建，首次启动时会使用 Hermes 提供的 Node 和 pnpm 自动构建。
 
 Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏览器聊天面板（通过 PTY/WebSocket 运行 TUI）始终可用，无需任何额外参数。
 
@@ -311,8 +312,8 @@ hermes dashboard --no-open
 
 # 终端 2：启动带 HMR 的 Vite 开发服务器
 cd web/
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 `http://localhost:5173` 上的 Vite 开发服务器会将 `/api` 请求代理到 `http://127.0.0.1:9119` 上的 FastAPI 后端。
@@ -321,7 +322,7 @@ npm run dev
 
 ## 更新时自动构建
 
-运行 `hermes update` 时，如果 `npm` 可用，Web 前端会自动重新构建。这使 Dashboard 与代码更新保持同步。如果未安装 `npm`，更新会跳过前端构建，`hermes dashboard` 将在首次启动时构建。
+运行 `hermes update` 时，Web 前端会使用 Hermes 提供的 Node 和 pnpm 自动重新构建。这使 Dashboard 与代码更新保持同步。如果更新无法提供它们（例如禁用了延迟安装），更新会跳过前端构建，`hermes dashboard` 将在首次启动时构建。
 
 ## 主题与插件
 

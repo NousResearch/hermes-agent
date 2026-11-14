@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -27,17 +27,41 @@ interface AutoSpeakReply {
 // start the final reply over the first window's progress update.
 const OWNED_TURNS_MAX = 64
 const ownedTurns = new Set<string>()
+const pendingTurnClaims = new Map<string, Promise<boolean>>()
 
 async function claimSpeech(turnKey: string | undefined, claimKey: string): Promise<boolean> {
   if (turnKey && !ownedTurns.has(turnKey)) {
-    if (!(await ownsAmbientCue(`speak:turn:${turnKey}`))) {
-      return false
+    let claim = pendingTurnClaims.get(turnKey)
+
+    if (!claim) {
+      // An interim and final can arrive before the first IPC claim settles.
+      // They share this window's turn claim, but still claim each message separately.
+      claim = ownsAmbientCue(`speak:turn:${turnKey}`)
+        .then(owns => {
+          if (pendingTurnClaims.get(turnKey) !== claim) {
+            return false
+          }
+
+          if (owns) {
+            ownedTurns.add(turnKey)
+
+            if (ownedTurns.size > OWNED_TURNS_MAX) {
+              ownedTurns.delete(ownedTurns.values().next().value!)
+            }
+          }
+
+          return owns
+        })
+        .finally(() => {
+          if (pendingTurnClaims.get(turnKey) === claim) {
+            pendingTurnClaims.delete(turnKey)
+          }
+        })
+      pendingTurnClaims.set(turnKey, claim)
     }
 
-    ownedTurns.add(turnKey)
-
-    if (ownedTurns.size > OWNED_TURNS_MAX) {
-      ownedTurns.delete(ownedTurns.values().next().value!)
+    if (!(await claim)) {
+      return false
     }
   }
 
@@ -46,6 +70,7 @@ async function claimSpeech(turnKey: string | undefined, claimKey: string): Promi
 
 export function clearOwnedSpeechTurnsForTests(): void {
   ownedTurns.clear()
+  pendingTurnClaims.clear()
 }
 
 interface UseAutoSpeakReplies {
@@ -58,6 +83,11 @@ interface UseAutoSpeakReplies {
   /** Re-arm on session switch so opening a chat never reads its existing last reply. */
   sessionId: string | null | undefined
 }
+
+// Replies auto-speak started reading. Turning read-aloud off (here or in another
+// window) silences one of these mid-clip; a reply the user started by hand from
+// the message's own button keeps playing.
+const autoStartedReplies = new Set<string>()
 
 /**
  * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
@@ -79,9 +109,21 @@ export function useAutoSpeakReplies({
   const { $messages, connectionId, profile } = useComposerScope()
   const latest = useRef({ connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile })
   latest.current = { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile }
-
   useEffect(() => {
     if (!enabled) {
+      const playback = $voicePlayback.get()
+
+      if (
+        playback.status !== 'idle' &&
+        playback.source === 'read-aloud' &&
+        playback.messageId !== null &&
+        autoStartedReplies.has(playback.messageId)
+      ) {
+        stopVoicePlayback()
+      }
+
+      autoStartedReplies.clear()
+
       return undefined
     }
 
@@ -128,6 +170,8 @@ export function useAutoSpeakReplies({
 
           return
         }
+
+        autoStartedReplies.add(reply.id)
 
         void playSpeechText(reply.text, {
           connectionId,

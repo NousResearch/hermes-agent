@@ -529,6 +529,12 @@ export function restoreAutoProject(id: string): void {
   }
 }
 
+/** The hide/remove key for a linked lane. Another gateway's lane is keyed by that gateway and profile
+ *  too: a local lane at the same path is a different checkout, and hiding one must not hide the other. */
+export function worktreeDismissalId(id: string, owner?: { connectionId: string; profile: string }): string {
+  return owner ? JSON.stringify(['gateway-lane', owner.connectionId, owner.profile, id]) : id
+}
+
 export function dismissWorktree(id: string, { removed = false }: { removed?: boolean } = {}): void {
   const removedIds = $removedWorktreeIds.get().filter(worktreeId => worktreeId !== id)
   $removedWorktreeIds.set(removed ? [...removedIds, id] : removedIds)

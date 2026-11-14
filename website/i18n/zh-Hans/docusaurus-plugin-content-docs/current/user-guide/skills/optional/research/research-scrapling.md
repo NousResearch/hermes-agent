@@ -21,7 +21,7 @@ description: "使用 Scrapling 进行网页抓取——HTTP 获取、隐身浏�
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Web Scraping`, `Browser`, `Cloudflare`, `Stealth`, `Crawling`, `Spider` |
-| 相关 skill | [`duckduckgo-search`](/user-guide/skills/optional/research/research-duckduckgo-search), [`domain-intel`](/user-guide/skills/optional/research/research-domain-intel) |
+| 相关 skill | [`domain-intel`](/user-guide/skills/optional/research/research-domain-intel) |
 
 ## 参考：完整 SKILL.md
 

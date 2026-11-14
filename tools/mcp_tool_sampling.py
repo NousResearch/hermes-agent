@@ -9,8 +9,9 @@ import time
 from contextvars import Context
 from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
-from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
-from tools.mcp_tool_schema import _normalize_mcp_input_schema
+from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
+from tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
+from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
 
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -28,24 +29,28 @@ def _tool_result_text(block) -> str:
     if content is None:
         return ""
     items = content if isinstance(content, list) else [content]
-    return "\n".join(item.text for item in items if hasattr(item, "text"))
+    return "\n".join(strip_unicode_tags(item.text) for item in items if hasattr(item, "text"))
 
 
 def _content_part(block) -> Optional[dict]:
     """One OpenAI content part for a text/image block; None when unsupported."""
     if hasattr(block, "text"):
-        return {"type": "text", "text": block.text}
+        return {"type": "text", "text": strip_unicode_tags(block.text)}
     mime = mcp_field(block, "mime_type", "mimeType", _MISSING)
     if hasattr(block, "data") and mime is not _MISSING:
-        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{block.data}"}}
+        return {"type": "image_url", "image_url": {"url": f"data:{strip_unicode_tags(str(mime))};base64,{block.data}"}}
     logger.warning("Unsupported sampling content block type: %s (skipped)", type(block).__name__)
     return None
 
 
 def _tool_call_dict(tu, index: int) -> dict:
     args = tu.input
-    return {"id": getattr(tu, "id", f"call_{index}"), "type": "function", "function": {
-        "name": tu.name, "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
+    # Same conversion as the matching tool result's ``tool_call_id``, so the pair still matches. The
+    # name and arguments are what the tool was really called with: they stay exact, like the tool's
+    # schema names and enums, so the history matches the advertised contract.
+    return {"id": strip_unicode_tags(str(getattr(tu, "id", f"call_{index}"))), "type": "function", "function": {
+        "name": exact_mcp_identifier(str(tu.name), "sampling tool name"),
+        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
 
 
 def _convert_sampling_message(msg) -> list[dict]:
@@ -57,19 +62,20 @@ def _convert_sampling_message(msg) -> list[dict]:
     others = [b for b in blocks if _tool_use_id(b) is _MISSING]
     tool_uses = [b for b in others if hasattr(b, "name") and hasattr(b, "input")]
     content_blocks = [b for b in others if not (hasattr(b, "name") and hasattr(b, "input"))]
-    out = [{"role": "tool", "tool_call_id": _tool_use_id(tr), "content": _tool_result_text(tr)} for tr in tool_results]
+    role = strip_unicode_tags(str(msg.role))
+    out = [{"role": "tool", "tool_call_id": strip_unicode_tags(str(_tool_use_id(tr))), "content": _tool_result_text(tr)} for tr in tool_results]
     if tool_uses:
-        msg_dict: dict = {"role": msg.role, "tool_calls": [_tool_call_dict(tu, i) for i, tu in enumerate(tool_uses)]}
-        text_parts = [b.text for b in content_blocks if hasattr(b, "text")]
+        msg_dict: dict = {"role": role, "tool_calls": [_tool_call_dict(tu, i) for i, tu in enumerate(tool_uses)]}
+        text_parts = [strip_unicode_tags(b.text) for b in content_blocks if hasattr(b, "text")]
         if text_parts:
             msg_dict["content"] = "\n".join(text_parts)
         out.append(msg_dict)
     elif len(content_blocks) == 1 and hasattr(content_blocks[0], "text"):
-        out.append({"role": msg.role, "content": content_blocks[0].text})
+        out.append({"role": role, "content": strip_unicode_tags(content_blocks[0].text)})
     elif content_blocks:
         parts = [p for p in map(_content_part, content_blocks) if p is not None]
         if parts:
-            out.append({"role": msg.role, "content": parts})
+            out.append({"role": role, "content": parts})
     return out
 
 
@@ -202,12 +208,14 @@ class SamplingHandler:
         messages = self._convert_messages(params)
         system_prompt = mcp_field(params, "system_prompt", "systemPrompt")
         if system_prompt:
-            messages.insert(0, {"role": "system", "content": system_prompt})
+            messages.insert(0, {"role": "system", "content": strip_unicode_tags(str(system_prompt))})
         max_tokens = min(mcp_field(params, "max_tokens", "maxTokens", self.max_tokens_cap), self.max_tokens_cap)
         server_tools = getattr(params, "tools", None)
         tools = [{"type": "function", "function": {
-            "name": getattr(t, "name", ""), "description": getattr(t, "description", "") or "",
-            "parameters": _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema"))}}
+            "name": exact_mcp_identifier(str(getattr(t, "name", "")), "sampling tool name"),  # tool_calls echo it
+            "description": strip_tool_metadata_text(str(getattr(t, "description", "") or "")),
+            "parameters": strip_schema_annotations(
+                _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")), getattr(t, "name", ""))}}
             for t in server_tools] if server_tools else None
         logger.log(self.audit_level, "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
                    self.server_name, resolved_model, max_tokens, len(messages))
@@ -247,7 +255,9 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     for field_name, field_spec in props.items():
         spec = field_spec if isinstance(field_spec, dict) else {}
         field_type, field_desc = str(spec.get("type", "") or ""), str(spec.get("description", "") or "")
-        lines.append(f"  - {field_name}" + (f" ({field_type})" if field_type else "") + (f": {field_desc}" if field_desc else ""))
+        lines.append(f"  - {strip_unicode_tags(str(field_name))}"
+                     + (f" ({strip_unicode_tags(field_type)})" if field_type else "")
+                     + (f": {strip_unicode_tags(field_desc)}" if field_desc else ""))
     return "\n".join(lines)
 
 
@@ -301,7 +311,7 @@ class ElicitationHandler:
                         "(URL-mode elicitation not implemented)", self.server_name)
             return self._result("decline", "declined")
 
-        message = getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"
+        message = strip_unicode_tags(str(getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"))
         # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}

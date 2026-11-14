@@ -4,15 +4,18 @@ A chat message an adapter hands to ``handle_message`` is bracketed by
 ``BasePlatformAdapter._process_message_background``: the typing refresh, ``on_processing_start``,
 and ``on_processing_complete`` once its reply was sent. A producer delivery is only committed at
 ingress (off the transport reader, acknowledged on the commit) and the authority's drain runs it, so
-no adapter task brackets it. The executor does, for those admissions only (a messaging admission's
-own adapter task already brackets it):
+no adapter task brackets it; neither does one a messaging follow-up sent while its chat was busy
+(``dispatch_shared_busy``). The executor does, for those admissions only (any other messaging
+admission's own adapter task already brackets it):
 
 - opened when the admission starts executing, not when it commits: a delivery queued behind a
   running turn is acknowledged when it runs, as the in-band queue's are (``run_turn_followup_ack``);
 - typing lives as long as execution, so it stops before the reply is sent (#117300 pauses it there);
 - the outcome is reported once: an interrupted turn as CANCELLED and a failed one as FAILURE when
   execution ends; a completed one after its settlement, by the reply's send (``deliver_settled``),
-  or as FAILURE when settlement dropped the reply (``drop_producer_turn``).
+  or as FAILURE when settlement dropped the reply (``drop_producer_turn``). A busy follow-up's reply
+  is sent by its observer after settlement, so the observer reports it, by that send's result
+  (``close_observed_turn``): a failed send never shows success.
 """
 import asyncio
 from contextlib import asynccontextmanager
@@ -33,13 +36,27 @@ def mark_producer_admission(authority, event, row):
     row is the executor's to bracket. A re-send of a row already running or settled is not marked."""
     if getattr(event, '_producer_delivery', False) and row['status'] == 'queued':
         _turns(authority).setdefault(row['admission_id'], None)
+        if getattr(event, '_busy_observed', False):
+            _observed(authority).add(row['admission_id'])
+            event._observed_turn = (authority, row['admission_id'])
+
+
+def _observed(authority):
+    """Admissions whose busy observer sends the reply, and so reports the completed outcome."""
+    observed = getattr(authority, 'observed_producer_turns', None)
+    if observed is None:
+        observed = authority.observed_producer_turns = set()
+    return observed
 
 
 class _Bracket:
     def __init__(self, adapter, event, hooks):
-        from gateway.platforms.base import _thread_metadata_for_event
+        from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event
+        from gateway.platforms.helpers import typing_metadata_for_turn
         self.adapter, self.event, self.hooks = adapter, event, hooks
-        self.metadata = _thread_metadata_for_event(event)
+        # The status anchor is this turn's: a message that reaches the chat later must not move it.
+        self.metadata = typing_metadata_for_turn(
+            adapter, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata_for_event(event))
         self.stop = asyncio.Event()
         self.typing = None
         self.closed = False
@@ -122,6 +139,29 @@ async def close_producer_turn(authority, admission_id, outcome):
     bracket = _turns(authority).pop(admission_id, None)
     if bracket is not None:
         await bracket.close(outcome)
+
+
+async def close_settled_turn(authority, admission_id):
+    """Settled with nothing left for the drain to send: SUCCESS, unless a busy observer still owes
+    the send (``close_observed_turn`` reports it then)."""
+    if admission_id not in _observed(authority):
+        await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
+
+
+async def close_observed_turn(event, delivered):
+    """A busy follow-up's observer finished: report its turn by whether the reply was delivered (a
+    turn that failed or was cancelled while executing was already reported; this is a no-op then).
+    An observer released before its turn started (a pause notice: the row stays queued) gives up
+    only the send; the entry stays, so the resumed turn still opens its lifecycle and the drain's
+    send reports it."""
+    authority, admission_id = getattr(event, '_observed_turn', (None, None))
+    if authority is None:
+        return
+    _observed(authority).discard(admission_id)
+    if _turns(authority).get(admission_id) is None:
+        return
+    await close_producer_turn(
+        authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
 
 
 def drop_producer_turn(authority, admission_id):

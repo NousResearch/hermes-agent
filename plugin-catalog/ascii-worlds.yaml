@@ -1,0 +1,37 @@
+name: ascii-worlds
+repo: https://github.com/dudicslevente/hermes-ascii-worlds
+sha: 48ac5499459417101828c794f85f55e227851d27
+title: ASCII Worlds
+description: >-
+  Twenty-three quiet habitats drawn live in text glyphs for Hermes Desktop: koi, jellyfish,
+  mantas, sea turtles, seahorses, a fish school, a whale, an octopus, hammerheads circling a
+  bait ball, an anglerfish, butterflies, luna moths, dragonflies, swallows, a sleeping cat,
+  axolotls, an owl, falling leaves and petals, fireflies, bubbles, dandelion seeds and a night
+  sky with the real moon phase. Choose a habitat and its controls in Settings -> Plugins ->
+  ASCII Worlds, and optionally let it animate across the whole window. Desktop-only
+  (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware, env
+  vars or network access.
+maintainer: dudicslevente
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/dudicslevente/hermes-ascii-worlds#readme
+version: "1.3.0"
+image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/overview.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/habitats/hammerhead-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/habitats/anglerfish-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/habitats/axolotl-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/settings.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/48ac5499459417101828c794f85f55e227851d27/docs/images/habitats/octopus-dark.png
+platforms: []
+known_issues:
+  - The author hand-tested the 1.3.0 builds on macOS with Hermes Desktop. The screenshots are browser captures of the plugin's own preview and settings page.
+  - Fine glyph density at full speed, high counts, Depth and the optional whole-window layer use noticeable CPU. Battery saver and a bolder density turn the cost down.
+  - Light-theme Cat and Owl faces, pale seeds, fish and swallows, and quiet halos or stars are lower-contrast. The whale deliberately leaves the frame for a while.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

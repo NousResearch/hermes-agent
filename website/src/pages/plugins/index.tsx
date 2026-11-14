@@ -18,6 +18,7 @@ import {
   cardSummary,
   categoryOf,
   desktopInstallLink,
+  docsHref,
   formatDate,
   formatRelativeTime,
   formatStars,
@@ -95,6 +96,7 @@ function PluginCard({
   const [imageBroken, setImageBroken] = useState(false);
   const showImage = Boolean(plugin.image) && !imageBroken;
   const pagePath = pluginPagePath(plugin.name);
+  const docs = docsHref(plugin);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
   const routed = useKnownRoute(pagePath);
@@ -329,10 +331,10 @@ function PluginCard({
               >
                 Repository ↗
               </a>
-              {plugin.docsUrl ? (
+              {docs ? (
                 <a
                   className={styles.docsLink}
-                  href={plugin.docsUrl}
+                  href={docs}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}

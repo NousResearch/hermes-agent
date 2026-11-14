@@ -29,7 +29,8 @@ GITHUB_TAP_PROVIDERS = {
     "openai/skills": "OpenAI", "anthropics/skills": "Anthropic", "huggingface/skills": "HuggingFace",
     "nvidia/skills": "NVIDIA", "voltagent/awesome-agent-skills": "VoltAgent", "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax", "wandb/skills": "Weights & Biases", "qdrant/skills": "Qdrant",
-    "pinecone-io/skills": "Pinecone",
+    "pinecone-io/skills": "Pinecone", "makenotion/skills": "Notion", "airtable/skills": "Airtable",
+    "shopify/shopify-ai-toolkit": "Shopify",
 }
 
 # Accepted ``--source`` provider filters (lowercased). Not real source ids —
@@ -216,10 +217,13 @@ class GitHubSource(SkillSource):
         # + governance card; `trusted` via tools/skills_guard.py::TRUSTED_REPOS.
         {"repo": "NVIDIA/skills", "path": "skills/"},
         # Vendor-maintained skills for their own products; they replaced our copied
-        # weights-and-biases / qdrant / pinecone optional skills.
+        # weights-and-biases / qdrant / pinecone / notion / airtable / shopify optional skills.
         {"repo": "wandb/skills", "path": "skills/"},
         {"repo": "qdrant/skills", "path": "skills/"},
         {"repo": "pinecone-io/skills", "path": "skills/"},
+        {"repo": "makenotion/skills", "path": "skills/"},
+        {"repo": "Airtable/skills", "path": "plugins/airtable/skills/"},
+        {"repo": "Shopify/Shopify-AI-Toolkit", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
@@ -485,8 +489,10 @@ class GitHubSource(SkillSource):
             wait = backoff
             try:
                 resp = hub()._skills_hub_http_get(
-                    url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True
+                    url, params=params, headers=hdrs, timeout=timeout
                 )
+            except hub().SkillsHubFetchBlocked:
+                return None
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
                 if last_attempt:
@@ -573,15 +579,15 @@ class GitHubSource(SkillSource):
         raw.githubusercontent.com first: the same bytes at the same commit, outside the REST rate
         limit. Through the Contents API every file in a skill folder cost one call, so an anonymous
         user (60/h) could never install a skill with more than ~58 files. A private repo or a raw
-        miss falls back to the API. A transport failure (DNS-poisoned or NXDOMAIN raw host surfaces as
-        SSRFConnectionBlocked, a dropping firewall as a 15 s timeout) also falls back, and marks raw
-        unusable for the rest of this source's flow."""
+        miss falls back to the API. A transport failure (a DNS-poisoned raw host surfaces as
+        SkillsHubFetchBlocked, NXDOMAIN as ConnectError, a dropping firewall as a 15 s timeout) also
+        falls back, and marks raw unusable for the rest of this source's flow."""
         if ref and not self._raw_unusable:
             try:
                 raw = hub()._skills_hub_http_get(
                     f"https://raw.githubusercontent.com/{repo}/{ref}/{quote(path, safe='/')}",
-                    timeout=15.0, follow_redirects=False)
-            except (httpx.HTTPError, OSError, ValueError):  # ValueError: SSRFConnectionBlocked
+                    timeout=15.0)
+            except (httpx.HTTPError, OSError):
                 self._raw_unusable = True
             else:
                 if raw.status_code == 200:

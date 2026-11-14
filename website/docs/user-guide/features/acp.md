@@ -333,6 +333,19 @@ ACP mode uses the same Hermes configuration as the CLI:
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run ACP clients; this opens Hermes' interactive model/provider setup.
 
+### Service-tier picker
+
+ACP clients that render `configOptions` can select **Service tier** for a supported
+model route: **Normal**, **Fast**, **Auto**, **Cold**, and **Ultrafast** when its
+model and account eligibility checks permit it. The gateway supplies the choices
+and validates each selection; unsupported routes do not show the picker.
+
+The selection applies to that session's next turn, not to every Hermes session,
+and does not write `config.yaml`. Reloading the editor preserves the selection
+while the same gateway session remains alive. Changes from another attached
+client update the ACP picker as well. See [the `/fast` reference](../../reference/slash-commands.md)
+for the bounded Auto and Cold modes.
+
 ## Host integration
 
 Older ACP hosts may still set this variable on the Hermes subprocess they

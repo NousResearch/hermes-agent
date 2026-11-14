@@ -600,6 +600,87 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+@pytest.mark.parametrize("dependencies, chosen, extras", [
+    pytest.param('"member-dep==1.0", "hermes-agent>=2"', '"member-dep==1.0"', None, id="runtime-dependency"),
+    pytest.param('"member-dep==1.0"', '"hermes-agent>=2"', ["chosen"], id="selected-extra"),
+])
+def test_plugin_requiring_a_newer_hermes_sits_out_until_hermes_fits(admission_env, monkeypatch,
+                                                                    dependencies, chosen, extras):
+    """PM supplies hermes-agent itself, so a plugin's requirement on it is judged the way
+    requires_hermes is: the misfit sits out of the build with config untouched (a plain sync
+    and an update both succeed), and it rejoins once the running Hermes fits, although no
+    dependency input changed."""
+    from pm.environments import runtime_facts_path
+    from pm.install import sync_venv, venv_is_current
+    from pm.lock import Facts
+
+    from hermes_cli import plugins_manifest
+
+    tmp_path, home = admission_env
+    core = tmp_path / "core"
+    manifest = core / "pyproject.toml"  # a selected extra naming core binds to the workspace root
+    manifest.write_text(manifest.read_text().replace('name = "fake-core"', 'name = "hermes-agent"')
+                        + "[project.optional-dependencies]\nchosen = []\n")  # core's extras are what a sync selects
+    subprocess.run([shutil.which("uv"), "lock"], cwd=core, check=True, capture_output=True, timeout=120)
+    running = {"version": "1.0.0"}
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: running["version"])
+    for name in ("fits", "needs-newer"):
+        _fixtures.installing_member(home / "plugins" / name, name, tmp_path / "wheels")
+    pyproject = home / "plugins" / "needs-newer" / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text().replace(
+        'dependencies=["member-dep==1.0"]\n',
+        f'dependencies=[{dependencies}]\n[project.optional-dependencies]\nchosen=[{chosen}]\n'))
+    _write_enabled(home, ["fits", "needs-newer"])
+    before = (home / "config.yaml").read_bytes()
+
+    def built() -> str:
+        lock = Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]
+        return (Path(lock).parent / "pyproject.toml").read_text()
+
+    sync_venv(extras, explicit=True)
+    assert "fits" in built() and "needs-newer" not in built()
+    sync_venv(extras, explicit=True, evict_incompatible_plugins=True)
+    assert (home / "config.yaml").read_bytes() == before
+    assert "needs-newer" not in built()
+    assert venv_is_current(project_root=core) is True
+
+    running["version"] = "2.0.0"
+    assert venv_is_current(project_root=core) is False
+    sync_venv(extras, explicit=True, evict_incompatible_plugins=True)
+    assert (home / "config.yaml").read_bytes() == before
+    assert "needs-newer" in built()
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+@pytest.mark.parametrize("enabled_before", [[], ["needs-newer"]], ids=["enabling-it", "enabled-before"])
+def test_only_enabling_a_plugin_that_requires_a_newer_hermes_is_refused(admission_env, monkeypatch,
+                                                                         enabled_before):
+    """Admission refuses enabling a plugin whose sole declared dependency is a Hermes it is not,
+    as it refuses a failing requires_hermes, although it installs nothing and is no workspace
+    member. One enabled before sits out as the build leaves it out, so enabling another plugin
+    beside it is admitted."""
+    from hermes_cli import plugins_admission as admission
+    from hermes_cli import plugins_manifest
+
+    _tmp_path, home = admission_env
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
+    for name, declaration in (("needs-newer", "pip_dependencies: ['hermes-agent>=99']\n"), ("other", "")):
+        (home / "plugins" / name).mkdir(parents=True)
+        (home / "plugins" / name / "plugin.yaml").write_text(f"name: {name}\n{declaration}", encoding="utf-8")
+    _write_enabled(home, enabled_before)
+    before = (home / "config.yaml").read_bytes()
+
+    if not enabled_before:
+        with pytest.raises(admission.AdmissionRefused,
+                           match=r"needs-newer.*requires hermes-agent>=99, running 1\.0\.0"):
+            admission.admit_plugin_set_change({"needs-newer"}, set(), active_plugins_dir=home / "plugins")
+        assert (home / "config.yaml").read_bytes() == before
+    else:
+        admission.admit_plugin_set_change({"needs-newer", "other"}, set(), active_plugins_dir=home / "plugins")
+        assert yaml.safe_load((home / "config.yaml").read_text())["plugins"]["enabled"] == ["needs-newer", "other"]
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_update_sync_retries_a_fetch_failure_once_before_disabling(admission_env, monkeypatch):
     """Build evidence disables a plugin at once. A fetch failure could be the moment, so it
     gets one more try first. Either way the recorded state is the one boot expects."""

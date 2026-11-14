@@ -14,8 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
-from tools.ansi_strip import strip_unicode_tags
-from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
+from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
+from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
@@ -80,7 +80,8 @@ _TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER = "\n... [arguments truncated]"
 
 
 def _is_secret_argument_name(key: Any) -> bool:
-    from agent.redact import SECRET_HEADER_NAME_LIST, is_secret_field_name
+    from agent.redact import is_secret_field_name
+    from agent.redact_headers import SECRET_HEADER_NAME_LIST
     return is_secret_field_name(key) or (isinstance(key, str) and key.casefold() in SECRET_HEADER_NAME_LIST)
 
 
@@ -562,7 +563,7 @@ def _error_result_text(result) -> str:
     """Concatenated text of an ``isError`` result's blocks (EmbeddedResource error payloads
     carry text under ``.resource.text``)."""
     texts = (getattr(b, "text", None) or getattr(getattr(b, "resource", None), "text", None) for b in (result.content or []))
-    return "".join(str(t) for t in texts if t)
+    return "".join(strip_unicode_tags(str(t)) for t in texts if t)
 
 
 def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
@@ -636,19 +637,56 @@ def _content_dual_emits_structured(result, structured) -> bool:
     copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
     richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
     ``structuredContent`` (#115430)."""
-    for block in (result.content or []):
-        text = getattr(block, "text", None)
-        if not text:
-            continue
-        try:
-            if json.loads(text) == structured:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return any(_text_is_value(text, structured) for text in _text_blocks(result))
 
 
-def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
+def _text_blocks(result) -> list[str]:
+    return [text for text in (getattr(block, "text", None) for block in (result.content or [])) if text]
+
+
+def _collapse_sdk_wrapped_copy(result, text_result: str, structured, usable_parts: int):
+    """Model view only: ``(text, structured)`` with the Python SDK's wrapper copy collapsed.
+
+    The SDK (``MCPServer``, FastMCP) must return an object, so a ``str``/``int``/``list`` result
+    travels as ``{"result": value}`` while ``content`` carries the bare value — one block, or one
+    block per list item. The model needs it once. Per-item blocks rejoin as ambiguous newline text
+    (``[1, "1"]`` -> ``"1\n1"``), so a list arrives as ONE JSON copy of the value instead. Plugins
+    (``ctx.call_mcp``) never come here: their ``structuredContent`` is the typed value they parse."""
+    if not (isinstance(structured, dict) and structured.keys() == {"result"}):
+        return text_result, structured
+    value, texts = structured["result"], _text_blocks(result)
+    if any(_text_is_value(text, value) for text in texts):
+        return text_result, None
+    if (isinstance(value, list) and len(texts) == len(value) == usable_parts
+            and all(map(_text_is_value, texts, value))):
+        return _truncate_mcp_text_result(json.dumps(value, ensure_ascii=False)), None
+    return text_result, structured
+
+
+def _text_is_value(text: str, value) -> bool:
+    """True when one text block is *value*: verbatim for a string, else its JSON. A string is also
+    tried as JSON because the SDK serializes non-``str`` returns such as ``bytes`` into ``content``
+    (``'"abc"'``) while ``structuredContent`` holds the bare ``"abc"``."""
+    if isinstance(value, str) and text == value:
+        return True
+    try:
+        return _json_type_stable_equal(json.loads(text), value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _json_type_stable_equal(left, right) -> bool:
+    """``==`` without Python's bool/int coercion (``1 == True``): a false match here drops
+    ``structuredContent`` the text does not carry, while a false miss only keeps a duplicate."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_type_stable_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(_json_type_stable_equal, left, right))
+    return type(left) is type(right) and left == right
+
+
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None, *,
+                             for_model: bool = False) -> str:
     """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
     call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
@@ -669,8 +707,11 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
     # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
-    if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
-        structured = None
+    if structured is not None and usable_parts > 0:
+        if isinstance(structured, str) or _content_dual_emits_structured(result, structured):
+            structured = None
+        elif for_model:
+            text_result, structured = _collapse_sdk_wrapped_copy(result, text_result, structured, usable_parts)
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
@@ -693,7 +734,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
     string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
     images then becomes the ``_multimodal`` envelope when the active route takes images in tool results.
-    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract and the ``MEDIA:`` paths."""
+    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract, the ``MEDIA:`` paths and the SDK's
+    ``structuredContent`` wrapper, which only the model view collapses."""
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
@@ -732,7 +774,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()
-            return _render_call_tool_result(result, server_name, image_paths)
+            return _render_call_tool_result(result, server_name, image_paths, for_model=native_images)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
@@ -791,7 +833,10 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
             entry["uri"] = str(entry["uri"])
         mime = mcp_field(r, "mime_type", "mimeType")
         if mime:
-            entry["mimeType"] = mime  # camelCase: this is the tool's own JSON output shape
+            entry["mimeType"] = str(mime)  # camelCase: this is the tool's own JSON output shape
+        entry = strip_unicode_tags_deep(entry)
+        if "uri" in entry:  # read_resource sends it back verbatim
+            entry["uri"] = exact_mcp_identifier(str(r.uri), "resource uri")
         resources.append(entry)
     return {"resources": resources}
 
@@ -810,9 +855,13 @@ def _render_read_resource(result, server_name: str) -> dict:
 def _render_prompt_list(all_prompts, server_name: str) -> dict:
     prompts = []
     for p in all_prompts:
-        entry = _pick(p, ("name", "name"), ("description", "description", True))
+        # get_prompt sends the prompt and argument names back verbatim: only the prose is stripped.
+        entry = {**_pick(p, ("name", "name")), **strip_unicode_tags_deep(_pick(p, ("description", "description", True)))}
+        if "name" in entry:
+            exact_mcp_identifier(entry["name"], "prompt name")
         if getattr(p, "arguments", None):
-            entry["arguments"] = [{"name": a.name, **_pick(a, ("description", "description", True), ("required", "required"))}
+            entry["arguments"] = [{"name": exact_mcp_identifier(a.name, f"prompt {p.name!r} argument name"),
+                                   **strip_unicode_tags_deep(_pick(a, ("description", "description", True), ("required", "required")))}
                                   for a in p.arguments]
         prompts.append(entry)
     return {"prompts": prompts}
@@ -824,8 +873,8 @@ def _render_get_prompt(result, server_name: str) -> dict:
         entry = _pick(msg, ("role", "role"))
         if hasattr(msg, "content"):
             entry["content"] = strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content))
-        messages.append(entry)
-    return {"messages": messages, **_pick(result, ("description", "description", True))}
+        messages.append(strip_unicode_tags_deep(entry))
+    return {"messages": messages, **strip_unicode_tags_deep(_pick(result, ("description", "description", True)))}
 
 
 _make_list_resources_handler = _make_utility_handler(

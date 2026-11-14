@@ -4,10 +4,12 @@ import { type FC, useState } from 'react'
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
 import { ToolIcon } from '@/components/ui/tool-icon'
+import { useI18n } from '@/i18n'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
@@ -63,10 +65,42 @@ export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, proc
   )
 }
 
+/** A safety-refused turn kept for display: the user's own message rendered
+ *  greyed and non-interactive (no edit, no actions), with a short notice that
+ *  the model's safety filter refused it. Right-aligned like the prompt it was,
+ *  but a dashed muted card — never the blue user bubble, never a reply. */
+const ContentRefusedNote: FC<{ notice: string; userText: string }> = ({ notice, userText }) => (
+  <MessagePrimitive.Root
+    className="flex w-full min-w-0 max-w-full flex-col items-stretch gap-1 self-end pb-(--conversation-turn-gap)"
+    data-role="system"
+    data-slot="aui_content-refused"
+  >
+    <div className="ml-auto flex min-w-0 max-w-full flex-col gap-1.5 rounded-xl border border-dashed border-(--ui-stroke-tertiary) px-3 py-2 text-left opacity-70">
+      {userText && <UserMessageText className="wrap-anywhere text-(--ui-text-tertiary)" text={userText} />}
+      <span className="flex items-center gap-1.5 text-[0.6875rem] leading-5 text-muted-foreground/70">
+        <Codicon className="shrink-0 text-muted-foreground/60" name="shield" size="0.75rem" />
+        <span className="wrap-anywhere">{notice}</span>
+      </span>
+    </div>
+    <MessageTimelineTimestamp className="self-end pr-1.5" />
+  </MessagePrimitive.Root>
+)
+
 export const SystemMessage: FC = () => {
+  const { t } = useI18n()
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+
+  const contentRefused = useAuiState(
+    s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
+  )
+
+  // A safety-refused turn, kept for display only: the user's own message, greyed
+  // and non-interactive, with a short notice. Not a user bubble, not a reply.
+  if (contentRefused) {
+    return <ContentRefusedNote notice={contentRefused.notice ?? t.assistant.thread.contentRefusedNotice} userText={text} />
+  }
 
   if (!text) {
     return null

@@ -1,9 +1,5 @@
 import { stripAnsi } from '@hermes/shared/ansi'
 import { compactNumber } from '@hermes/shared/format'
-
-import { usageBarsText } from '../../../components/overlayPrimitives.js'
-import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
-import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -13,7 +9,11 @@ import type {
   SessionUsageResponse,
   SlashExecResponse,
   VoiceToggleResponse
-} from '../../../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
+
+import { usageBarsText } from '../../../components/overlayPrimitives.js'
+import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { t } from '../../../i18n/runtime.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import type { PanelSection } from '../../../types.js'

@@ -234,6 +234,19 @@ def _strip_terminal_fence_leaks(text: str) -> str:
     return "".join(cleaned_lines)
 
 
+_CONFUSABLE_QUOTES = str.maketrans({"\u2019": "'", "\u2018": "'"})  # Finder's curly apostrophes
+
+
+def filename_match_key(name: str) -> str:
+    """Spelling of a file name with its invisible variants collapsed: NFC, every Unicode space
+    (``Zs``: macOS puts U+202F before AM/PM in screenshot names) as U+0020, curly single quotes
+    as ``'``. Two names with the same key render identically, so a model retyping one can never
+    see that it typed the other; read_file and the media resolver both retry on it."""
+    import unicodedata
+    out = unicodedata.normalize("NFC", name).translate(_CONFUSABLE_QUOTES)
+    return "".join(" " if unicodedata.category(ch) == "Zs" else ch for ch in out)
+
+
 def _detect_line_ending(sample: str) -> Optional[str]:
     """Dominant line ending of ``sample`` (``\\r\\n`` if any CRLF in the first 4KB,
     else ``\\n``), or None for empty/single-line content. Preserves a file's

@@ -1,0 +1,22 @@
+name: stepup
+repo: https://github.com/defisensei-maxxing/hermes-stepup
+sha: "d1280b969f42430e958f64bd6d8874bca92bab8f"
+title: Step-Up
+description: "Authenticator-app 2FA for your agent: on messaging platforms the protected tools (terminal and execute_code by default) stay locked until the sender sends a one-time TOTP code from an authenticator app, so an unlocked phone is not a remote shell. One valid code unlocks that sender for 10 minutes, each code works once, five wrong codes lock the sender out for 15 minutes, and `lock` re-locks at once. Local CLI, Desktop and cron runs are never gated, and nothing waits for input. Disclosure — pre_tool_call may block a protected tool call (never modifies arguments, never approves, never touches the approval system); post_gateway_admission reads the text of admitted gateway messages and consumes only a six-digit code sent while a lock is pending, `unlock <code>` and `lock`, so codes never reach the model; pre_llm_call only records which platform and sender a session belongs to and injects nothing; holds one secret, STEPUP_TOTP_SECRET, read through Hermes's secret scope and never written to state or logs; stores unlock expiries, failure counts and the last used code counter in plugin state; no network calls, no shell commands, no background processes, no telemetry, no dependencies, no self-update. Not a sandbox: tools outside protected_tools keep their normal reach."
+maintainer: defisensei-maxxing
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/defisensei-maxxing/hermes-stepup#readme
+version: "0.1.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env:
+    - STEPUP_TOTP_SECRET

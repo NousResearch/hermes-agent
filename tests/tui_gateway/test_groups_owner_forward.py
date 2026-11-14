@@ -51,7 +51,7 @@ def owner(monkeypatch):
             return {"driver": True, "methods": ["groups.list", "groups.create", "groups.not-forwarded"]}
         if method == "groups.list":
             return {"rooms": [{"room_id": "room-webapp"}], "next_offset": None}
-        return {"room": {"room_id": params.get("room_id")}}
+        return {"room": {"room_id": params.get("room_id")}, "change_events": True}
     monkeypatch.setattr(owner_forward, "forward_rpc", forward_rpc)
     return calls
 
@@ -72,6 +72,14 @@ def test_capabilities_advertise_only_what_this_wire_carries(home, owner):
     assert result["methods"] == ["groups.list", "groups.create"]
 
 
+def test_a_forwarded_room_state_keeps_the_full_rate_poll(home, owner):
+    """groups.changed on this wire comes from THIS backend's watcher, which cannot see the owning gateway's
+    live status (an approval prompt, the tool a member is in): the view must not demote its poll."""
+    result = srv._methods["groups.state"](1, {"room_id": "room-desk"})["result"]
+    assert result["room"] == {"room_id": "room-desk"}
+    assert "change_events" not in result
+
+
 def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError
     _discovery(monkeypatch, "ready")
@@ -84,6 +92,46 @@ def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):
     assert reply["error"]["code"] == 4030 and reply["error"]["data"] == {"reason": "permission_denied"}
     from gateway.hosted_rooms import default_db_path, list_rooms
     assert list_rooms(default_db_path()) == []
+
+
+@pytest.mark.parametrize("failure,method,code,data", [
+    ("absent", "groups.send", 5124, {"admitted": False}),
+    ("busy", "groups.send", 5124, {"admitted": False}),
+    ("profile", "groups.send", 4000, {"admitted": False}),
+    ("transport", "groups.send", 5124, None),
+    ("owner", "groups.send", 4030, {"reason": "permission_denied"}),
+    ("owner-marked", "groups.send", 4030, {"admitted": False}),
+    ("absent", "groups.stop", 5124, None),
+    ("busy", "groups.stop", 5124, None),
+    ("profile", "groups.stop", 4000, None),
+])
+def test_only_sends_refused_before_forwarding_are_marked_unsent(home, monkeypatch, failure, method, code, data):
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tui_gateway import methods_groups_forward
+
+    monkeypatch.setattr(methods_groups_forward, "_standalone_holder", lambda _: "gateway")
+    _discovery(monkeypatch, {"absent": "absent", "busy": "conflict"}.get(failure, "ready"))
+    monkeypatch.setattr(srv, "_profile_home", lambda _: None)
+    calls = []
+
+    def refuse(*args):
+        calls.append(args)
+        if failure.startswith("owner"):
+            raise GatewayRPCError("permission_denied", code=code, data=data)
+        raise OSError("connection lost after forwarding")
+
+    monkeypatch.setattr(owner_forward, "forward_rpc", refuse)
+    params = {"room_id": "room-desk"}
+    if method == "groups.send":
+        params.update(event_id="e1", payload={"text": "hello"})
+    if failure == "profile":
+        params["profile"] = "missing"
+    reply = srv._methods[method](1, params)
+
+    assert reply["error"]["code"] == code
+    assert reply["error"].get("data") == data
+    assert ("data" in reply["error"]) == (data is not None)
+    assert bool(calls) == (failure in {"transport", "owner", "owner-marked"})
 
 
 def test_without_a_gateway_rooms_stay_standalone(home):

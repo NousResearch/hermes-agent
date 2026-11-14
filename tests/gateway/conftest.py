@@ -321,10 +321,32 @@ def _ensure_discord_mock() -> None:
             pass
     discord_mod.AudioSource = _FakeAudioSource
 
+    class _FakeModal(_FakeView):
+        def __init__(self, *, title=None, timeout=None, custom_id=None):
+            super().__init__(timeout=timeout)
+            self.title = title
+
+    class _FakeTextInput:
+        def __init__(self, *, label=None, placeholder=None, min_length=None, max_length=None, **_):
+            self.label = label
+            self.placeholder = placeholder
+            self.min_length = min_length
+            self.max_length = max_length
+            self.value = ""
+
+    class _FakeLabel:
+        def __init__(self, *, text=None, component=None, description=None, **_):
+            self.text = text
+            self.component = component
+            self.description = description
+
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
         Select=_FakeSelect,
         Button=_FakeButton,
+        Modal=_FakeModal,
+        TextInput=_FakeTextInput,
+        Label=_FakeLabel,
         button=lambda *a, **k: (lambda fn: fn),
     )
     discord_mod.ButtonStyle = SimpleNamespace(
@@ -712,7 +734,7 @@ def hosted_owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway import run, session_policy
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
@@ -734,7 +756,7 @@ def hosted_owner(tmp_path, monkeypatch):
     thread.start()
     authority = asyncio.run_coroutine_threadsafe(initialize_session_authority(runner, profile_id='owned', instance_id='first'), loop).result()
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    principal = Principal('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
+    principal = SessionActor('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
     yield authority, loop, principal, agent
     loop.call_soon_threadsafe(loop.stop)
     thread.join()

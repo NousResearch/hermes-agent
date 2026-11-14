@@ -219,6 +219,11 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
         from hermes_cli.plugins_discovery import join_background_discovery
         join_background_discovery()
         manager = get_plugin_manager()
+        # Bind the Desktop listener to this discovery's manager generation.
+        import sys
+        methods = sys.modules.get("tui_gateway.methods_tools")
+        if methods is not None:
+            methods._ensure_plugin_activation_listener(manager)
         # Capture the forced pass before its unlocked listeners or another discovery can run.
         def snapshot():
             activation = find_activation(activation_summaries(manager), name)
@@ -228,6 +233,8 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
             return activation, blocked, portable, skills
 
         activation, blocked, portable, skills = manager.discover_and_load(force=True, snapshot=snapshot)
+        if manager._retired:
+            return None
     except Exception:
         logger.debug("in-process plugin reload after change to %r failed", name, exc_info=True)
         return None

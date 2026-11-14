@@ -85,7 +85,7 @@ _GENERIC_WORDS = frozenset((
     "allows", "let", "lets", "can", "will", "way", "ways", "basic", "simple", "easy", "quick"))
 _MIN_TRIGGER_TOKENS = 2
 # alias-overlap thresholds: Jaccard over description content tokens (the skill name is kept —
-# "codex" vs "claude-code" is a real distinction, not an alias); an identical tag set means the
+# "goose" vs "opencode" is a real distinction, not an alias); an identical tag set means the
 # two already claim the same lane, so the bar drops.
 _ALIAS_JACCARD = 0.6
 _ALIAS_JACCARD_SAME_TAGS = 0.4

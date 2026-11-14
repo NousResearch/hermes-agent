@@ -327,8 +327,8 @@ def test_alias_overlap_keeps_the_skill_name_as_a_distinction(tmp_path):
     # Same operation delegated to different products is a family, not an alias: the product
     # name in each description is what routes, so it must count as a distinguishing token.
     from tools.skill_linter import lint_collection
-    a = _skill(tmp_path, "claude-code", "Delegate coding to Claude Code CLI (features, PRs).", tags=("claude",))
-    b = _skill(tmp_path, "codex", "Delegate coding to OpenAI Codex CLI (features, PRs).", tags=("codex",))
+    a = _skill(tmp_path, "goose", "Delegate coding to Goose Desktop CLI (features, PRs).", tags=("goose",))
+    b = _skill(tmp_path, "opencode", "Delegate coding to OpenCode Terminal CLI (features, PRs).", tags=("opencode",))
     assert "alias-overlap" not in _rules(lint_collection([a, b]))
 
 

@@ -147,11 +147,8 @@ def _tts_lease_async(lease: str, active: bool) -> None:
             (acquire_tts_lease if active else release_tts_lease)(lease)
         except Exception as e:
             logger.debug("voice: tts lease %s active=%s failed: %s", lease, active, e)
-    from contextvars import copy_context
-
-    threading.Thread(
-        target=copy_context().run, args=(_run,), name=f"tts-lease-{lease}", daemon=True
-    ).start()
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_run, name=f"tts-lease-{lease}").start()
 
 
 def _running_sessions() -> list:
@@ -186,13 +183,10 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     except Exception:
         return None
     _tts_stream_stop()
-    from contextvars import copy_context
-
+    from agent.memory_provider import spawn_context_thread
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
-    threading.Thread(
-        target=copy_context().run, args=(stream_tts_to_speaker, text_queue, stop, done), daemon=True
-    ).start()
+    spawn_context_thread(stream_tts_to_speaker, name="voice-tts-stream", args=(text_queue, stop, done)).start()
     global _tts_stream_state
     with _tts_stream_lock:
         _tts_stream_state = {"stop": stop, "done": done}
@@ -782,6 +776,7 @@ _VOICE_TOGGLE_ACTIONS = {
 
 
 @method("voice.toggle")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """CLI parity for ``/voice``: ``status``; ``on``/``off`` flip voice *mode* (off also tears
     down the continuous loop); ``tts`` toggles speech output (requires mode on)."""

@@ -77,6 +77,20 @@ class TestCredentialStoreReads:
             assert f"credential_process{sep}aws-vault export prod --format=json" in out
             assert self.WEAK not in out
 
+    @pytest.mark.parametrize("path, line", [
+        (".env", "credential_process={pw}"),
+        ("~/.zshrc", "credential_process={pw}"),
+        ("~/.hermes/config.yaml", "credential_process: {pw}"),
+        ("~/.aws/config", "credential_process = {pw}"),  # no ``[section]`` above it
+    ])
+    def test_credential_process_exemption_is_scoped_to_aws_ini(self, path, line):
+        # The exemption belongs to the AWS INI store: a ``.env`` / rc / config.yaml key of that name, or one
+        # with no ``[section]`` above it, keeps the assignment gate.
+        opaque = "aB3dE5fG7hJ9" + "kL1mN3pQ5rS7tU9"
+        text = line.format(pw=opaque) + "\n"
+        assert opaque not in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
+        assert opaque not in redact_terminal_output(text, f"cat {path}", force=True)
+
     def test_lookalikes_and_shell_rc_lines_are_left_alone(self):
         # ``credentials`` alone is too generic: only the ``.aws`` parent makes it a store.
         for path in ("docs/credentials", "~/credentials", "~/config", "notes/netrc.md"):

@@ -23,7 +23,8 @@ from agent.redact_control_split import mask_control_split_tokens
 from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder, redact_db_url_query_passwords
 from agent.redact_discord import _redact_discord_tokens
 from agent.redact_credential_stores import (
-    _AWS_CREDENTIAL_PROCESS_KEY_RE, _LINE_NUMBER_GUTTER, _SECRET_CFG_NAMES, redact_credential_store_lines,
+    _LINE_NUMBER_GUTTER, _SECRET_CFG_NAMES, aws_credential_process_keys, outside_spans,
+    redact_credential_store_lines,
 )
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
@@ -480,9 +481,6 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     if value.lower() in _CONFIG_LITERAL_VALUES:
         return False
     if check_keyword and not _key_has_secret_keyword(key):
-        return False
-    # AWS ``credential_process`` holds the helper command that fetches the credential, not the secret.
-    if _AWS_CREDENTIAL_PROCESS_KEY_RE.search(key):
         return False
     # A shell rc's ``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock`` is configuration the agent must keep
     # readable; only password-class keys mask a path/variable reference.
@@ -1616,10 +1614,12 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
         text = _redact_discord_tokens(text, _mask)
 
     # Store lines first: the assignment passes would mask only the first word of ``password=a b``.
+    aws_command_lines = []
     if secret_file:
         text = _redact_credential_store_lines(text, mask_nonreusable=file_read)
+        aws_command_lines = aws_credential_process_keys(text)
     if not code_file:
-        text = _redact_assignments(text, mask_nonreusable=file_read)
+        text = outside_spans(text, aws_command_lines, lambda t: _redact_assignments(t, mask_nonreusable=file_read))
 
     # Flags and connection-string keys carry a credential in command text, so they are not
     # gated on code_file: the shape (``--password=`` / ``;AccountKey=``) is unambiguous, and

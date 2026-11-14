@@ -15,8 +15,32 @@ _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|
 # the anchored passes quadratic on long indented lines (2s per 5k spaces).
 _LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
 
-# The key group of the INI pass carries the gutter and the ``=`` separator.
-_AWS_CREDENTIAL_PROCESS_KEY_RE = re.compile(r"(?:^|[^\w.\-])credential_process[ \t]*=?[ \t]*$")
+# AWS ``credential_process`` (``~/.aws/config`` / ``~/.aws/credentials``) holds the helper command that
+# fetches the credential, not the secret. Only the key of such a line below an INI ``[section]`` header is
+# exempt, so a ``.env`` / shell rc / config.yaml key of that name keeps the assignment gate. The command
+# itself still goes through every pass: vendor prefixes, ``--flag`` secrets, ``sh -c 'SECRET=x'``.
+_INI_SECTION_RE = re.compile(rf"^[ \t]*{_LINE_NUMBER_GUTTER}\[[^\[\]\r\n]+\][ \t]*+$", re.MULTILINE)
+_AWS_CREDENTIAL_PROCESS_KEY_RE = re.compile(
+    rf"^[ \t]*{_LINE_NUMBER_GUTTER}credential_process[ \t]*+=[ \t]*+", re.MULTILINE)
+
+
+def aws_credential_process_keys(text: str) -> list[tuple[int, int]]:
+    """Spans of the ``credential_process =`` keys that follow an INI section header."""
+    if "credential_process" not in text or not (header := _INI_SECTION_RE.search(text)):
+        return []
+    return [m.span() for m in _AWS_CREDENTIAL_PROCESS_KEY_RE.finditer(text, header.end())]
+
+
+def outside_spans(text: str, spans: list[tuple[int, int]], fn) -> str:
+    """Apply ``fn`` to the text between ``spans``; the spans themselves are kept verbatim. A segment
+    that follows a span is mid-line, so it is passed behind a NUL that ``^``-anchored passes cannot
+    take for a line start."""
+    out, pos = [], 0
+    for start, end in spans:
+        segment = text[pos:start]
+        out += [fn("\0" + segment)[1:] if pos else fn(segment), text[start:end]]
+        pos = end
+    return "".join(out) + (fn("\0" + text[pos:])[1:] if pos else fn(text))
 
 
 # Credential-store lines that have no ``KEY=value`` shape, so the assignment passes miss them:
@@ -53,7 +77,8 @@ _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
 def redact_credential_store_lines(text: str, mask, should_redact) -> str:
     """Mask the value of every credential-store line: in a credential store the value is a secret
     whatever it looks like, so a weak human password is masked too. ``should_redact(key, value)``
-    is agent.redact's assignment gate, applied to the INI pass."""
+    is agent.redact's assignment gate, applied to the INI pass. AWS ``credential_process`` command
+    lines are left to the caller (``aws_credential_process_keys``)."""
     def _sub(m):
         value = m.group(2)
         if value == "***" or value.startswith("«redacted"):
@@ -79,4 +104,4 @@ def redact_credential_store_lines(text: str, mask, should_redact) -> str:
     text = _NETRC_LINE_RE.sub(_netrc_sub, text)
     for pattern in _CREDENTIAL_STORE_RES:
         text = pattern.sub(_sub, text)
-    return _INI_SPACED_ASSIGN_RE.sub(_ini_sub, text)
+    return outside_spans(text, aws_credential_process_keys(text), lambda t: _INI_SPACED_ASSIGN_RE.sub(_ini_sub, t))

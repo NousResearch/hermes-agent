@@ -625,6 +625,7 @@ this Hermes understands still loads with a warning.
 | `config_keys` | list | Dotted paths in Hermes' own config sections that your code reads (e.g. `memory.retaindb`). Each path covers itself and everything below it, so `hermes config get/set` recognizes those keys instead of warning "not a recognized config key", but only while the plugin is active (enabled, or the selected `memory.provider`). A path must be at least two segments deep, and paths Hermes already defines are ignored, so a declaration never hides a typo elsewhere in the section. Settings for your plugin alone belong in `config_schema`; use this only for a core section your plugin reads. Portable `plugin.json` packages put it under `extensions."com.nousresearch.hermes".config_keys`. |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
+| `issues_url` | str | Optional HTTP(S) issue tracker URL; other schemes are ignored. Falls back to the catalog repo, git origin, then a GitHub repo homepage. Bundled plugins report to Hermes upstream. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
@@ -638,6 +639,7 @@ manifest_version: 2
 api_version: 1
 license: MIT
 homepage: https://github.com/owner/my-plugin
+issues_url: https://github.com/owner/my-plugin/issues
 tags: [gateway, demo]
 requires_plugins:
   - id: other-plugin

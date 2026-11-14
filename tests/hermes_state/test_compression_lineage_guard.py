@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import time
 
 import pytest
@@ -36,12 +37,100 @@ def test_find_live_compression_child_returns_unique_direct_child(db: SessionDB) 
     assert child["ended_at"] is None
 
 
-def test_find_live_compression_child_fails_closed_when_ambiguous(db: SessionDB) -> None:
+@pytest.mark.parametrize(
+    "case, raw_config",
+    [
+        ("malformed-json", "{not-json"),
+        ("non-object-json", "[]"),
+        ("null-json", "null"),
+        ("non-text-json", b"{}"),
+        ("invalid-marker", '{"_branched_from": null}'),
+        ("duplicate-markers", '{"_branched_from": "parent", "_delegate_from": "parent"}'),
+        ("wrong-parent-sibling", '{"_branched_from": "elsewhere"}'),
+        ("closed-sibling", None),
+        ("live-intermediate", None),
+        ("invalid-lifecycle", None),
+        ("cycle", None),
+    ],
+)
+def test_find_live_compression_child_requires_a_proven_live_leaf(
+    db: SessionDB, case: str, raw_config,
+) -> None:
     _compression_parent(db)
-    db.create_session("child-a", source="webui", parent_session_id="parent")
-    db.create_session("child-b", source="webui", parent_session_id="parent")
-
+    db.create_session("child", source="webui", parent_session_id="parent")
+    if raw_config is not None:
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = 'child'", (raw_config,)
+            )
+        )
+    if case in {"wrong-parent-sibling", "closed-sibling"}:
+        db.create_session("sibling", source="webui", parent_session_id="parent")
+        if case == "closed-sibling":
+            db.end_session("sibling", "agent_close")
+    if case == "live-intermediate":
+        db.create_session("tip", source="webui", parent_session_id="child")
+    if case == "invalid-lifecycle":
+        db._execute_write(
+            lambda conn: conn.execute("UPDATE sessions SET end_reason = 'compression' WHERE id = 'child'")
+        )
+    if case == "cycle":
+        db.end_session("child", "compression")
+        db._execute_write(
+            lambda conn: conn.execute("UPDATE sessions SET parent_session_id = 'child' WHERE id = 'parent'")
+        )
     assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_walks_multi_hop_in_one_snapshot(
+    db: SessionDB,
+    monkeypatch,
+) -> None:
+    _compression_parent(db, "root")
+    db.create_session("mid", source="webui", parent_session_id="root")
+    db.end_session("mid", "compression")
+    parent = "mid"
+    for index in range(127):
+        child_id = f"compressed-{index}"
+        db.create_session(child_id, source="webui", parent_session_id=parent)
+        db.end_session(child_id, "compression")
+        parent = child_id
+    db.create_session("tip", source="webui", parent_session_id=parent)
+
+    assert db._conn is not None
+    with db._lock:
+        journal_mode = db._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    assert str(journal_mode).lower() == "wal"
+    writer = SessionDB(db_path=db.db_path)
+    inserted = False
+
+    def _insert_sibling_after_snapshot(sql: str) -> None:
+        nonlocal inserted
+        if not inserted and "parent_session_id = 'root'" in " ".join(sql.split()):
+            inserted = True
+            writer.create_session("late-sibling", source="webui", parent_session_id="mid")
+            writer.end_session("late-sibling", "agent_close")
+
+    original_read_ctx = db._read_ctx
+
+    @contextmanager
+    def _traced_read_ctx():
+        with original_read_ctx() as conn:
+            conn.set_trace_callback(_insert_sibling_after_snapshot)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+
+    monkeypatch.setattr(db, "_read_ctx", _traced_read_ctx)
+    try:
+        child = db.find_live_compression_child("root")
+    finally:
+        writer.close()
+
+    assert inserted is True
+    assert child is not None and child["id"] == "tip"
+    assert db.find_live_compression_child("root") is None
 
 
 def test_reopen_orphaned_compression_session_reopens_parent_without_child(

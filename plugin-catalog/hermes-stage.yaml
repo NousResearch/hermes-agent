@@ -1,12 +1,12 @@
 name: hermes-stage
 repo: https://github.com/davidpgil/hermes-stage
-sha: 397baf1aa5382aae3c5db50512ceb9cb98c36e40
-description: "A multi-profile terminal bot room for Hermes with one shared transcript, profile lens tabs, public @name/@everyone routing, and Stage-specific status, tool, and inline diff cards. Disclosure — joins the profiles you choose into one room: every room message (including other profiles' replies) is sent to each addressed profile's agent session, and a bot reply that mentions `@name` or `@everyone` starts that profile's turn (up to 3 rounds / 10 messages per discussion); starts a local gateway for each profile in the room, saves the room transcript in plaintext under the Hermes state directory, and needs a one-time `npm install` of its Node dependencies (ink, react, string-width)."
+sha: b9e32b69c4bcdc09d68a111f11579521a3634c61
+description: "A multi-profile terminal bot room for Hermes with one shared transcript, profile lens tabs, and public @name routing. Profiles load lazily; due cron jobs wake them, and public profile speech and cron notifications are mirrored from non-default profile state.db files into the room. Disclosure — starts a local gateway session for each profile in the room, saves the room transcript in plaintext under the Hermes state directory, and needs a one-time `npm install` of its Node dependencies (ink, react, string-width). A bot reply containing `@name` may wake a cold profile and start a turn (up to 3 rounds / 10 messages per discussion). The feed excludes tool calls, failed turns, private user prompts, assistant (pass) rows, and duplicate room rows."
 maintainer: David Philipe Gil
 tier: community
 category: automation
 requires_hermes: ">=0.23.1"
-version: "0.50.39"
+version: "0.66.5"
 readme: true
 platforms:
   - linux

@@ -28,4 +28,5 @@ class _Server:
 
 _ensure_mcp_loop()
 mcp_tool._servers['probe-mcp'] = _Server()
+mcp_tool._server_trust_levels['probe-mcp'] = 'full'  # registration records one for every server
 runpy.run_module('gateway.run', run_name='__main__')

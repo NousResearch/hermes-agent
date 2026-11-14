@@ -121,6 +121,68 @@ def _format_trust_gate_arguments(args: dict) -> str:
     return rendered
 
 
+_NO_TRUST_KEY = object()
+
+
+def _raw_server_entry_trust(server_name: str, home) -> Any:
+    """The raw ``trust`` value of *server_name*'s entry in *home*'s config: managed overlay, then native
+    ``mcp_servers``, then a plugin-declared server (registration's precedence). ``_NO_TRUST_KEY`` for an
+    entry without one, ``None`` when no source has the server. No ``${VAR}`` expansion: the tier needs no
+    secret, and an unscoped multiplex expansion raises. Read errors propagate."""
+    from hermes_cli.config_backend import read_config_doc_readonly
+    from hermes_cli.managed_scope import load_managed_config
+    from hermes_constants import get_hermes_home, hermes_home_key
+
+    def entry(doc):
+        servers = doc.get("mcp_servers") if isinstance(doc, dict) else None
+        return servers.get(server_name) if isinstance(servers, dict) else None
+
+    try:
+        native = entry(read_config_doc_readonly(home / "config.yaml"))
+    except FileNotFoundError:
+        native = None
+    managed = entry(load_managed_config())
+    if isinstance(managed, dict) and "trust" in managed:
+        return managed["trust"]
+    if isinstance(native, dict) or isinstance(managed, dict):
+        return (native if isinstance(native, dict) else {}).get("trust", _NO_TRUST_KEY)
+    if hermes_home_key(home) == hermes_home_key(get_hermes_home()):  # plugin managers are per active home
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+        portable = get_plugin_manager().get_portable_mcp_servers().get(server_name)
+        if isinstance(portable, dict):
+            return portable.get("trust", _NO_TRUST_KEY)
+    return None
+
+
+def _configured_trust(server_name: str, key) -> str:
+    """Trust tier from the key's own profile config, for a call that finds no recorded tier. Every
+    registration path records one, so a miss is unexpected (scope drift, a torn-down overlay): only an
+    entry that exists without a ``trust`` key keeps the compat ``full``; a failed read or a server no
+    source configures is ``untrusted``."""
+    from pathlib import Path
+    from hermes_constants import get_hermes_home
+    from tools.mcp_tool_registration import _normalize_server_trust
+    from tools.mcp_tool_scope import _key_scope
+    scope = _key_scope(key)
+    # A profile scope is that profile's home key; the HERMES_HOME override can name another profile.
+    home = Path(scope) if scope and Path(scope).is_absolute() else get_hermes_home()
+    try:
+        raw = _raw_server_entry_trust(server_name, home)
+    except Exception as exc:  # health: allow BLE001 -- any read failure fails closed; the warning names it
+        trust, source = _core._TRUST_UNTRUSTED, f"config read failed ({type(exc).__name__})"
+    else:
+        if raw is None:
+            trust, source = _core._TRUST_UNTRUSTED, "server not in config"
+        elif raw is _NO_TRUST_KEY:
+            trust, source = _core._TRUST_FULL, "config entry has no trust key"
+        else:
+            trust, source = _normalize_server_trust(raw), "configured value"
+    logger.warning("MCP trust gate: no trust record for server '%s' (key %r); using '%s' (%s)",
+                   server_name, key, trust, source)
+    return trust
+
+
 def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
                       args: Optional[dict] = None) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
@@ -131,9 +193,14 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     from tools import mcp_tool_costs as _costs
     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
     key = _server_key(server_name)
-    trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
-    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
-             and not _trust_granted(server_name, tool_name))
+    trust = _core._server_trust_levels.get(key)
+    if trust is None:
+        trust = _configured_trust(server_name, key)
+    gated = trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+    if gated and _trust_granted(server_name, tool_name):
+        logger.info("MCP trust gate: '%s' on untrusted server '%s' (key %r) ran on a remembered grant or "
+                    "approval bypass", tool_name, server_name, key)
+        gated = False
     charge = None
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
         from tools.approval_context import get_current_session_key
@@ -196,6 +263,8 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
                           f"system was unavailable (fail-closed).")
     if answer == "accept":
+        logger.info("MCP trust gate: user approved '%s' on %s server '%s'", tool_name,
+                    "untrusted" if gated else "spend-limited", server_name)
         if charge is not None:
             charge.book()
             if booked is not None:

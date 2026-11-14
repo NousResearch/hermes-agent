@@ -41,11 +41,17 @@ import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
+import {
+  resolveToolRunPresentation,
+  TOOL_RUN_PRESENTATION_AREA,
+  type ToolRunPresentationMode
+} from '@/lib/tool-run-presentation'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
@@ -61,6 +67,7 @@ import {
   setToolDisclosureOpen
 } from '@/store/tool-view'
 
+import { ToolActivityHeader } from './activity-header'
 import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
   buildToolView,
@@ -672,6 +679,22 @@ function ToolEntry({ part }: ToolEntryProps) {
             {!isFileEdit && !isPending && view.durationLabel && (
               <span className={cn(SCAFFOLD_META_CLASS, memoryMetaClass)}>{view.durationLabel}</span>
             )}
+            {!isCardTool(toolGroupKey(toolName, args as ToolCallMessagePartProps['args'])) && (
+              <ToolActivityHeader
+                context={{
+                  toolName,
+                  innerToolName,
+                  status: view.status,
+                  hasResult: result !== undefined,
+                  interrupted,
+                  startedAt: timestamp,
+                  completedAt,
+                  exitCode: view.terminalExitCode,
+                  hasDetails: hasExpandableContent,
+                  expanded: open
+                }}
+              />
+            )}
           </span>
         </DisclosureRow>
       </div>
@@ -1014,11 +1037,9 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  * the whole of it until the user opens it. `ToolEmbedContext` is false so each
  * row still owns its own chrome (timer / copy) when shown.
  */
-const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
-  children,
-  endIndex,
-  startIndex
-}) => {
+const ToolRun: FC<
+  PropsWithChildren<{ endIndex: number; startIndex: number; presentation: ToolRunPresentationMode }>
+> = ({ children, endIndex, presentation, startIndex }) => {
   const messageRunning = useAuiState(selectMessageRunning)
 
   const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
@@ -1037,6 +1058,14 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   const expanded = count < 2 || (persistedOpen ?? rowOpen)
   const collapsed = representedByApproval && !rowOpen && !persistedOpen
   const reduced = useReducedMotion()
+
+  // Only ordinary run descendants change wrapper shape on a mode transition.
+  // Keep the run's identity, native disclosure store and card siblings intact.
+  // Individual mode mounts no group scaffold, summary, or ticker. ToolEntry
+  // retains ownership of status, keyboard disclosure, errors and full output.
+  if (presentation === 'individual') {
+    return <ToolRunDisclosureContext.Provider value={disclosureId}>{children}</ToolRunDisclosureContext.Provider>
+  }
 
   // The original runtime stays mounted while its summary owns the activity.
   // Reveal its footprint gradually when the last approval clears, instead of
@@ -1098,6 +1127,8 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   startIndex
 }) => {
   const showToolActivity = useStore($showToolActivity)
+  const preferences = useContributions(TOOL_RUN_PRESENTATION_AREA)
+  const presentation = useMemo(() => resolveToolRunPresentation(preferences), [preferences])
 
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
@@ -1125,7 +1156,12 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
         item.kind === 'card' ? (
           <Fragment key={`card:${item.index}`}>{rows[item.index]}</Fragment>
         ) : (
-          <ToolRun endIndex={startIndex + item.end} key={`run:${item.start}`} startIndex={startIndex + item.start}>
+          <ToolRun
+            endIndex={startIndex + item.end}
+            key={`run:${item.start}`}
+            presentation={presentation}
+            startIndex={startIndex + item.start}
+          >
             {rows.slice(item.start, item.end + 1)}
           </ToolRun>
         )

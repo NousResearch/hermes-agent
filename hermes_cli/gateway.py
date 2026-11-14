@@ -999,7 +999,7 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
 
 
 GATEWAY_RESTART_WATCHER_TIMEOUT_S = 120
-"""How long the detached restart watcher waits for the old PID to exit before giving up.
+"""Windows only: the watcher's wait for the old PID (POSIX waits for exit: a restart-pending gateway is busy).
 
 ``hermes update``'s post-relaunch liveness check budgets against this: the watcher spawns the new
 gateway only AFTER the old PID is gone, so a verification window shorter than this can expire
@@ -1100,8 +1100,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + {watcher_timeout_literal}
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + {watcher_timeout_literal} if sys.platform == "win32" else None
+        while deadline is None or time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
             if not pid_exists_stdlib(pid):
                 break

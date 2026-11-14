@@ -159,6 +159,8 @@ class ManagedWorker:
         self.write_lock = threading.Lock()
         self.commands = queue.Queue(maxsize=16)
         self.closed = threading.Event()
+        # Owner-side activity clock: a turn with no frame past agent.gateway_timeout is wedged.
+        self.last_frame_at = time.monotonic()
         # Latched the moment Stop is admitted, before any pipe write: the owner's read loop
         # supervises it even while the child has not yet said hello or read its bootstrap.
         self.stop = asyncio.Event()
@@ -209,6 +211,7 @@ class ManagedWorker:
             self.process.stdout.close()
 
     def _deliver(self, item):
+        self.last_frame_at = time.monotonic()
         self._frames.append(item)
         self._arrived.set()
 

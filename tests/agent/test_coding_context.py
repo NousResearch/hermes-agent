@@ -355,3 +355,9 @@ class TestWorkspaceBlockStatusFailure:
         line = cc.build_coding_workspace_block(tmp_path).split("Status:")[1].splitlines()[0]
         assert "clean" not in line and "unknown" in line
 
+    def test_timed_out_status_is_not_reported_clean(self, tmp_path, monkeypatch):
+        _git_init(tmp_path)
+        (tmp_path / "untracked.txt").write_text("dirty")
+        monkeypatch.setattr(cc, "_GIT_TIMEOUT", 1e-6)  # a real kill of the status probe
+        line = cc.build_coding_workspace_block(tmp_path).split("Status:")[1].splitlines()[0]
+        assert "clean" not in line and "unknown" in line

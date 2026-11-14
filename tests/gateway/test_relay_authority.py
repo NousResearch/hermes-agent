@@ -273,7 +273,10 @@ def main():
     os.environ.update(OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     Path(os.environ['HERMES_HOME'], 'config.yaml').write_text(
         f'model:\n  default: local-wire-stub\n  provider: custom\n  base_url: {url}\n'
-        'streaming:\n  enabled: false\nauxiliary:\n  title_generation:\n    enabled: false\n')
+        'streaming:\n  enabled: false\nauxiliary:\n  title_generation:\n    enabled: false\n'
+        # relay-4 must queue behind the blocked turn: under the default ``interrupt`` a relay
+        # follow-up redirects the running turn (once its agent exists) instead of taking a FIFO row.
+        'display:\n  busy_input_mode: queue\n')
     try:
         asyncio.run(probe(peer))
     finally:

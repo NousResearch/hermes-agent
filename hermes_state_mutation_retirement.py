@@ -308,6 +308,11 @@ def retire_routes(conn, session_ids, *, expiring=()):
     expiring = set(expiring)
     for sid in session_ids:
         _mark_retired(conn, RETIRED_PREFIX + sid, expires=sid in expiring, own=True)
+        # A permanent session fence replaces every closed attempt, including on empty sweeps.
+        prefix = 'gateway.hosted.closed_attempt.v1:' + json.dumps([sid], separators=(',', ':'))[:-1] + ','
+        if conn.execute('DELETE FROM state_meta WHERE key>=? AND key<?', (prefix, prefix + '\uffff')).rowcount:
+            conn.execute("UPDATE state_meta SET value=json_remove(value, '$.expires') WHERE key=?",
+                         (RETIRED_PREFIX + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)

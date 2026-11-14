@@ -187,7 +187,10 @@ def _legacy_home_released(service, room_id, member, home, task):
             return True
         if info.get('task_id') != task['identity'].task_id:
             return False  # another turn holds that session
-        rpc.interrupt(session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id, **kw)
+        if info.get('interrupt_execution_generation') is not True:
+            return False  # an older daemon could ignore the generation and interrupt a later Retry
+        rpc.interrupt(session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+                      execution_generation=task['execution_generation'], **kw)
         # A queued input is cancelled at once; a running one stays until its run ends.
         return not rpc.info(session_id=rpc.ref.session_id, **kw).get('active')
     except Exception:  # health: allow BLE001 -- an unreachable or refusing home keeps the turn

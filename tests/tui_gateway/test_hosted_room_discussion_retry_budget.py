@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 from gateway import hosted_room_driver as driver
 from tui_gateway.hosted_room_service import HostedRoomService
+from tests.tui_gateway.test_hosted_room_service import _server
 
 
 PROFILES = ("research", "build", "review", "ops", "qa", "docs")
@@ -16,7 +15,7 @@ ROOM_ID = "retry-budget-room"
 
 
 def _service(root: Path) -> HostedRoomService:
-    server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+    server = _server()
     service = HostedRoomService(server, db_path=root / "state.db")
     service.local_profiles = lambda: PROFILES
     return service

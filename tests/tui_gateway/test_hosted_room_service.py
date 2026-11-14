@@ -305,7 +305,8 @@ class _BlockingFirstRPC(_PromptRecordingRPC):
 
 
 def _server():
-    return SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+    return SimpleNamespace(_methods={"session.list": lambda rid, params: {"result": {"sessions": []}}},
+                           _sessions={}, _sessions_lock=threading.Lock())
 
 
 def _wait_for(predicate, timeout=2.0):

@@ -13,7 +13,7 @@ from tui_gateway.hosted_room_service import HostedRoomService
 
 _OWNER = 'gateway.hosted.owner.v1:'
 # What the Stop of an attempt asks its admitting home after the profile moved: never create, submit or approve.
-_STOP_READS = frozenset({'resolve_exact', 'resume', 'info', 'interrupt', 'history', 'results', 'discard'})
+_STOP_READS = frozenset({'resolve_exact', 'resume', 'info', 'interrupt', 'history', 'results', 'discard', 'lookup_attempt'})
 # A hosted attempt whose room task has moved past it: its queued member input can never run.
 _RETIRED_ATTEMPT_STATUSES = frozenset({'queued', 'deferred', 'settled', 'failed', 'cancelled'})
 
@@ -187,10 +187,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         member = str(payload.get('target_member_id') or payload.get('target_profile'))
         profile = payload['target_profile']
         owner = self._owner(binding.room_id)
-        from gateway.session_hosted_member_homes import stopping_attempt_home
+        from gateway.session_hosted_member_homes import stopping_attempt_home, unsettled_legacy_homes
         # A Stop is asked where its attempt was admitted, wherever the profile points now.
         home = (stopping_attempt_home(self.authority.db, binding.room_id, member, task)
                 or self.profile_homes().get(profile))
+        if task['status'] in {'stopping', 'deferred'} and unsettled_legacy_homes(self, binding.room_id, task):
+            raise RuntimeStoreError('session_busy', field='home')
         if home is None:
             raise RuntimeStoreError('permission_denied')
         key = binding.room_id, member, profile, owner, str(home)
@@ -273,11 +275,11 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return unknown_home_refusal(self, room_id, [
             task for task in deferred if not self._member_is_peer(room_id, task_member_id(task))])
 
-    def _stop_deferred_peer(self, room_id, task):
+    def _stop_deferred_peer(self, room_id, task, *, discard=False):
         """Also settle a local member's deferred turn once its profile is no longer served here and
         nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
         from gateway.session_hosted_member_homes import unsettled_legacy_homes, unserved_member_stopped
-        if super()._stop_deferred_peer(room_id, task):
+        if super()._stop_deferred_peer(room_id, task, discard=discard):
             return not unsettled_legacy_homes(self, room_id, task)
         from tui_gateway.hosted_room_service import task_member_id
         return (not self._member_is_peer(room_id, task_member_id(task))

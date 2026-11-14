@@ -27,6 +27,8 @@ class HostedRoomSessionError(RuntimeError):
 
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
+    fenced_interrupts = True
+    interrupt_ack_is_delivery = True
 
     def __init__(self, server: ModuleType, *, db_path: Path | str | None = None) -> None:
         self.server = server
@@ -142,6 +144,8 @@ class HostedRoomServerRPC:
             task = record.get("_hosted_room_task")
             result = {"active": bool(record.get("running")),
                       "task_id": task.get("task_id") if isinstance(task, dict) else None}
+            if isinstance(task, dict) and "execution_generation" in task:
+                result["execution_generation"] = task["execution_generation"]
             pending_reader = getattr(self.server, "_pending_approval_request_payload", None)
             if callable(pending_reader) and (pending := pending_reader(str(record.get("session_key") or ""))):
                 result["status"] = "waiting_for_approval"
@@ -154,9 +158,11 @@ class HostedRoomServerRPC:
             "session_id": session_id, "request_id": request_id, "choice": choice, "all": False})
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        execution_generation: int | None = None,
     ) -> Mapping[str, Any] | None:
         del source
         return self._call("session.interrupt", {
             "profile": profile, "session_id": session_id,
-            "expected_hosted_task_id": expected_task_id})
+            "expected_hosted_task_id": expected_task_id,
+            "expected_hosted_execution_generation": execution_generation})

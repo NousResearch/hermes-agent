@@ -80,7 +80,7 @@ class HostedControls:
             raise RuntimeStoreError('peer_unreachable') from exc
         except RuntimeError as exc:  # no live route to the member's gateway
             raise RuntimeStoreError('peer_unreachable') from exc
-        if not closed and not self._stop_deferred_peer(binding.room_id, task):
+        if not closed and not self._stop_deferred_peer(binding.room_id, task, discard=True):
             raise RuntimeStoreError('session_busy', detail=(
                 "the member's gateway has not confirmed this turn's run stopped; Discard again once it has"))
         result = tasks.cancel_task(self.db_path, task['identity'], cancel_id=cancel_id,
@@ -98,7 +98,9 @@ class HostedControls:
         if local:
             # Every daemon is asked before the policy lock (a reverse RPC under it deadlocks real
             # gateways); a deferred turn is never admitted meanwhile, and the requeue is fenced.
-            self._local_retry_probe(room_id, member_id, task_id, execution_generation)
+            recovered = self._local_retry_probe(room_id, member_id, task_id, execution_generation)
+            if recovered is not None:
+                return recovered
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -133,6 +135,18 @@ class HostedControls:
         if session_id is None:
             return  # that daemon answered: no room session, nothing runs
         info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
+        if info.get('lookup_attempt') is True:
+            outcome = rpc.lookup_attempt(profile=profile, source='bot_room', session_id=session_id,
+                expected_task_id=task_id, execution_generation=execution_generation)
+            if outcome['status'] == 'terminal':
+                lease = self.runtime._ensure_lease(binding)
+                receipt = discarded_receipt(outcome['receipt'], task)
+                if receipt is not None:
+                    from dataclasses import asdict
+                    return self.runtime._fenced(tasks.settle_stopping_task, binding, task, lease, **asdict(receipt))
+                return self.runtime._complete_acknowledged_stop(binding, task, lease)
+            if outcome['status'] != 'absent':
+                info = {'status': outcome['status'], 'active': outcome['status'] in {'queued', 'running'}}
         if info.get('status') == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if info.get('active'):

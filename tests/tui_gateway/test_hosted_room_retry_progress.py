@@ -3,13 +3,12 @@ tool and last-frame time must not ride into the new attempt's ``member_activity`
 
 from __future__ import annotations
 
-import threading
 import time
-from types import SimpleNamespace
 
 from gateway import hosted_room_driver as driver
 from tui_gateway.hosted_room_member_activity import record_task_progress, task_progress
 from tui_gateway.hosted_room_service import HostedRoomService
+from tests.tui_gateway.test_hosted_room_service import _server
 
 
 def _deferred_room(tmp_path, monkeypatch):
@@ -17,7 +16,7 @@ def _deferred_room(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     (tmp_path / ".hermes" / "profiles" / "reviewer").mkdir(parents=True)
     (tmp_path / ".hermes" / "profiles" / "reviewer" / "config.yaml").write_text("{}\n")
-    server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+    server = _server()
     service = HostedRoomService(server, db_path=tmp_path / ".hermes" / "state.db")
     service.create_room(room_id="room", name="Room", members=[
         {"member_id": "worker", "profile": "default", "handle": "worker"},

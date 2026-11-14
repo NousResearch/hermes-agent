@@ -37,6 +37,11 @@ export interface GitIpcDeps {
 }
 
 export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps) {
+  // One in-flight `repoStatus` per repo path. The rail re-requests on every
+  // workspace-change tick and every window/focus change, so a slow probe (huge
+  // repo, cold index, network cwd) used to stack up one git process per request
+  // until the CPU was gone. Concurrent callers now share the running probe.
+  const repoStatusInFlight = new Map<string, ReturnType<typeof repoStatus>>()
   // Git-driven worktree management ("Start work" flow). Errors surface to the
   // renderer as rejected promises so it can toast a friendly message.
   ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) => listWorktrees(repoPath, resolveGitBinary()))
@@ -62,7 +67,20 @@ export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps
   // Compact repo status (branch, ahead/behind, change counts + files) for the
   // composer coding rail. Returns null on a non-repo / remote backend so the rail
   // hides cleanly rather than erroring.
-  ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => repoStatus(repoPath, resolveGitBinary()))
+  ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => {
+    const key = typeof repoPath === 'string' ? repoPath : ''
+    const running = repoStatusInFlight.get(key)
+
+    if (running) {
+      return running
+    }
+
+    const probe = repoStatus(repoPath, resolveGitBinary()).finally(() => repoStatusInFlight.delete(key))
+
+    repoStatusInFlight.set(key, probe)
+
+    return probe
+  })
 
   // Codex-style review pane: list changed files for a scope, fetch one file's
   // unified diff, and stage / unstage / revert. Reads return empty on failure;

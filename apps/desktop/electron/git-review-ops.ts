@@ -20,6 +20,15 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
+// Above this many changed files the +/- line counts stop meaning anything to a
+// human, and `git diff HEAD` has to read every changed file to compute them. On
+// a very large repo that single call has been measured at 80-90s. The coding
+// rail re-probes on every workspace-change tick, so those calls piled up as
+// concurrent git processes, saturated the CPU and starved the app until it
+// looked crashed. Keep the file counts (they come from the cheap `status` scan)
+// and skip the line counts.
+const REPO_STATUS_DIFF_MAX_CHANGES = 500
+
 // simple-git validates a custom binary path against an ASCII whitelist
 // (`/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`). Everything outside it is "restricted": a
 // space in the default `C:\Program Files\Git\...`, the parentheses in
@@ -844,6 +853,12 @@ async function repoStatus(repoPath, gitBin) {
     added: 0,
     removed: 0,
     files: files.slice(0, 200)
+  }
+
+  // Cheap-path exit: the `status` scan above already gave the rail its file
+  // counts, so a pathological repo never reaches the two expensive probes below.
+  if (result.changed > REPO_STATUS_DIFF_MAX_CHANGES) {
+    return result
   }
 
   // +/- vs HEAD (staged + unstaged tracked changes). No HEAD yet → leave 0.

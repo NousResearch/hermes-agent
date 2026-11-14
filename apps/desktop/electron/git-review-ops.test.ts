@@ -260,6 +260,47 @@ test('repoStatus reports an untracked directory without recursively listing its 
   )
 })
 
+test('repoStatus skips the line-count probes once the repo is past the change ceiling', async () => {
+  const dir = makeRepo()
+  const files: string[] = []
+
+  // 501 tracked files, then modify all of them: `changed` crosses the ceiling and
+  // `git diff HEAD` would report 501 insertions if the cheap-path exit ever
+  // regressed. That probe is what piled up git processes on huge repos.
+  for (let i = 0; i < 501; i++) {
+    const name = `bulk-${i}.txt`
+
+    files.push(name)
+    fs.writeFileSync(path.join(dir, name), 'before\n')
+  }
+
+  execFileSync('git', ['add', '.'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'bulk'], { cwd: dir })
+
+  for (const name of files) {
+    fs.writeFileSync(path.join(dir, name), 'after\n')
+  }
+
+  const status = await repoStatus(dir, 'git')
+
+  assert.ok(status)
+  assert.equal(status.changed, 501)
+  assert.equal(status.added, 0)
+  assert.equal(status.removed, 0)
+})
+
+test('repoStatus still reports line counts below the change ceiling', async () => {
+  const dir = makeRepo()
+
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'tracked\nmore\n')
+
+  const status = await repoStatus(dir, 'git')
+
+  assert.ok(status)
+  assert.equal(status.changed, 1)
+  assert.ok(status.added > 0, `expected insertions, got ${status.added}`)
+})
+
 test('reviewList reports an untracked directory without recursively listing its contents', async () => {
   const dir = makeRepo()
   const nested = path.join(dir, 'browser-profile', 'Default', 'Cache')

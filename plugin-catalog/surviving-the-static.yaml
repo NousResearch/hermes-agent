@@ -1,0 +1,10 @@
+yaml
+name: surviving-the-static
+version: "0.1.0"
+description: A real time architectural translator for local ai that turns cold, intimidating connection errors into plain english.
+author: littlewarrior333
+repository: https://github.com/littlewarrior333/surviving-the-static
+sha:  "eb348ba8268f91c834529d01105158dc742fa860"
+tags:
+  - utility
+  - translation

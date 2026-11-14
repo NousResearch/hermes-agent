@@ -238,3 +238,27 @@ def test_a_fallback_whose_base_url_carries_a_query_keeps_the_primary_failure(hom
                                backup_base_url="https://resource.openai.azure.test/openai/v1?api-version=2024-01-01")
     attach_primary_auth_failure(agent, other)
     assert agent._primary_auth_failure is None
+
+
+def test_a_route_that_drops_the_backups_query_is_not_the_backup(home):
+    """A real AIAgent always records the query it moved off its base_url, so one with no recorded query
+    runs a query-free route: on the backup's host that is another account, not the backup."""
+    from agent.primary_auth_fallback import PrimaryAuthFailure, attach_primary_auth_failure
+    from run_agent import AIAgent
+
+    def agent(url):
+        return AIAgent(api_key="k", base_url=url, provider="custom", model="m", quiet_mode=True,
+                       skip_context_files=True, skip_memory=True, enabled_toolsets=[])
+
+    def failure():
+        return PrimaryAuthFailure(provider="nous", error="expired", relogin="hermes portal", backup="custom",
+                                  backup_base_url="https://proxy.test/v1?account=backup")
+
+    on_backup = agent("https://proxy.test/v1?account=backup")
+    attach_primary_auth_failure(on_backup, failure())
+    assert on_backup._primary_auth_failure is not None
+
+    for url in ("https://proxy.test/v1", "https://other.test/v1?account=backup"):
+        swapped = agent(url)
+        attach_primary_auth_failure(swapped, failure())
+        assert swapped._primary_auth_failure is None, url

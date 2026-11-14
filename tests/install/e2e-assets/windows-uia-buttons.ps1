@@ -19,3 +19,18 @@ function Find-InvokableButton {
     }
     return $null
 }
+
+function Find-WindowButton {
+    # Every top-level window of every listed process: App Installer can show its prompt in a
+    # second process, or beside the buttonless window its launch-time update check leaves open.
+    param($Root, [int[]]$ProcessIds, [string[]]$Patterns)
+    foreach ($id in $ProcessIds) {
+        $cond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $id)
+        foreach ($window in $Root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
+            $hit = Find-InvokableButton -Root $window -Patterns $Patterns
+            if ($hit) { return $hit }
+        }
+    }
+    return $null
+}

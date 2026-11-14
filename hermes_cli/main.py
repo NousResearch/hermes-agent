@@ -489,10 +489,7 @@ def _apply_profile_override() -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     except Exception as exc:
-        # A profile was requested here (flag or sticky file — no profile
-        # requested returns early above), and the override failed: falling
-        # back to the default would silently read and write the wrong
-        # profile's config, .env and state.db (#152716). Fail loudly.
+        # A profile WAS requested: the default would read/write the wrong profile (#152716)
         print(f"Error: profile override failed ({exc})", file=sys.stderr)
         sys.exit(1)
     os.environ["HERMES_HOME"] = hermes_home

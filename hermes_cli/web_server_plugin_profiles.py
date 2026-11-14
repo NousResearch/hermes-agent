@@ -205,7 +205,7 @@ def hosted_response(result: dict[str, Any], home: Path, name: str) -> Response:
     dropped = False
     for key, value in result["headers"]:  # a list, so repeated headers all survive
         lowered = key.lower()
-        if lowered == "set-cookie":
+        if lowered in {"set-cookie", "set-cookie2"}:
             dropped = True
         elif lowered not in {"content-length", "transfer-encoding", "connection"}:
             response.headers.append(key, value)

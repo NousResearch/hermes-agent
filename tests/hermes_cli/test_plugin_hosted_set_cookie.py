@@ -23,7 +23,7 @@ def _answers_with_cookies(monkeypatch):
     def asgi_request(host, *args, **kwargs):
         return {"status": 200, "body": b'{"hosted": true}', "headers": [
             ("content-type", "application/json"), ("Set-Cookie", "a=1; Path=/"),
-            ("set-cookie", "b=2; Path=/"), ("x-plugin", "kept")]}
+            ("set-cookie", "b=2; Path=/"), ("Set-Cookie2", "c=3"), ("x-plugin", "kept")]}
 
     monkeypatch.setattr(PluginHost, "asgi_request", asgi_request)
 
@@ -51,6 +51,7 @@ def test_hosted_plugin_answer_reaches_the_browser_without_set_cookie(daemon, mon
     for response in (first, second):
         assert (response.status_code, response.json()) == (200, {"hosted": True})
         assert response.headers.get_list("set-cookie") == []
+        assert response.headers.get_list("set-cookie2") == []
         assert response.headers["x-plugin"] == "kept"
     assert not daemon.client.cookies
     assert len([r for r in caplog.records if "Set-Cookie" in r.getMessage()]) == 1

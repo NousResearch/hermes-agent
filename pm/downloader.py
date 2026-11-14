@@ -310,6 +310,8 @@ class Download:
     ``Source.dest`` is atomically replaced only after successful transfer.
     ``pause()`` stops between chunks or while waiting for a partial's owner;
     ``run()`` raises :class:`DownloadPaused` and preserves resumable bytes.
+    ``keep_retrying`` keeps active model jobs waiting through transient outages;
+    initial connections retry before resumability is known; non-resumable bodies remain bounded.
     """
 
     CONNECTIONS = 8
@@ -322,9 +324,11 @@ class Download:
         connections: int = CONNECTIONS,
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
+        keep_retrying: bool = False,
     ):
         self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks), s.http_mirror) for s in sources]
         self.resume = resume
+        self.keep_retrying = keep_retrying and resume
         self.connections = max(1, int(connections))
         if partials_dir:
             self.partials_dir = Path(partials_dir)
@@ -373,7 +377,7 @@ class Download:
                 remote = _Remote(source.dest.stat().st_size, False)
                 covered = [(0, remote.total)]
             else:
-                source, remote = self._try_sources(source, lambda candidate: self._probe(candidate.url, candidate.byte_limit()), failures[key])
+                source, remote = self._try_sources(source, lambda candidate: self._probe(candidate.url, candidate.byte_limit(), fallback_available=bool(candidate.fallbacks)), failures[key])
                 covered = []
                 with partial_lock(self.partials_dir, self._key(source.url), wait=False) as acquired:
                     if acquired and remote.ranged:
@@ -432,7 +436,7 @@ class Download:
             if _existing_dest_ok(source):
                 return source.dest.stat().st_size
             # Recheck identity after waiting for another process's partial.
-            remote = self._probe(source.url, source.byte_limit())
+            remote = self._probe(source.url, source.byte_limit(), fallback_available=bool(source.fallbacks))
             covered = self._partial_ranges(source, remote) if remote.ranged else []
             self._durable_done = sum(end - start for start, end in covered)
             tick(covered, remote.total)
@@ -451,7 +455,8 @@ class Download:
             try:
                 size = retry_network(fetch, wait=self._wait_retry,
                                      progress=(lambda: self._durable_done) if self.resume and resumable else None,
-                                     fallback_available=bool(source.fallbacks))
+                                     fallback_available=bool(source.fallbacks),
+                                     keep_retrying=self.keep_retrying and resumable)
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
                     raise DownloadTransportError(source.url, exc) from exc
@@ -473,7 +478,7 @@ class Download:
         if self._paused.wait(delay):
             raise DownloadPaused("download paused during retry backoff")
 
-    def _probe(self, url: str, limit: int | None = None) -> _Remote:
+    def _probe(self, url: str, limit: int | None = None, *, fallback_available: bool = False) -> _Remote:
         def request():
             self._check_pause()
             req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
@@ -491,7 +496,8 @@ class Download:
                     raise DownloadError(f"unexpected download probe status: {response.status}")
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
-            remote = retry_network(request, wait=self._wait_retry)
+            remote = retry_network(request, wait=self._wait_retry,
+                                   fallback_available=fallback_available, keep_retrying=self.keep_retrying)
         except (OSError, http.client.HTTPException) as exc:
             raise DownloadTransportError(url, exc) from exc
         except DownloadError:

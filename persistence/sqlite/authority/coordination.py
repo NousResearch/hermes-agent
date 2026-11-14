@@ -14,16 +14,16 @@ import threading
 import time
 import weakref
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from persistence import (
     AuthorityRefusal, DelegationId, JsonValue, PersistenceError, SessionId, StoreContention, StoreReplaced,
 )
 from persistence.core.errors import HandoffUnsettled
 from persistence.authority.coordination import (
-    DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS, DELEGATION_MAX_DELIVERY_ATTEMPTS,
-    DELEGATION_MAX_DURABLE_PENDING, DELEGATION_MAX_RETAINED_TERMINAL, DELEGATION_ORPHAN_STALE_SECONDS,
-    DELEGATION_REPLAY_MAX_AGE_SECONDS, DELEGATION_RETENTION_SECONDS, TURN_LEASE_SWEEP_GRACE_SECONDS, DelegationRecord,
+    COMPLETION_DELIVERIES, DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS,
+    DELEGATION_MAX_DELIVERY_ATTEMPTS, DELEGATION_MAX_DURABLE_PENDING, DELEGATION_MAX_RETAINED_TERMINAL,
+    DELEGATION_ORPHAN_STALE_SECONDS, DELEGATION_REPLAY_MAX_AGE_SECONDS, DELEGATION_RETENTION_SECONDS, TURN_LEASE_SWEEP_GRACE_SECONDS, DelegationRecord,
     DelegationRecovery, DeliveryState, FinishedDelegationRow, HandoffState, HandoffStatus, InflightDelegation,
     OrphanCompletion, OwnerStamp, PendingCompletion, PendingHandoff, RecordedOwner,
 )
@@ -467,16 +467,20 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         with translated():
             self._ledger_write(_do)
 
-    # The finished state, event and result; the completion then waits for delivery.
+    # The finished state, event and result; a ``pending`` completion then waits for delivery, a ``delivered`` one
+    # (every child of the unit waits on a promised automatic resume) is recorded but never offered.
     def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float,
-                                     event: JsonValue, result: JsonValue) -> None:
+                                     event: JsonValue, result: JsonValue,
+                                     delivery: Literal["pending", "delivered"] = "pending") -> None:
+        if delivery not in COMPLETION_DELIVERIES:
+            raise AuthorityRefusal("invalid_params", field="delivery")
         now = time.time()
         def _do(conn):
             conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-                   event_json=?, result_json=?, delivery_state='pending'
+                   event_json=?, result_json=?, delivery_state=?
                    WHERE delegation_id=?""",
                 (state, completed_at, now,
-                 json.dumps(event), json.dumps(result), delegation_id))
+                 json.dumps(event), json.dumps(result), delivery, delegation_id))
         with translated():
             self._ledger_write(_do)
 
@@ -508,10 +512,11 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             recovered = 0
             for recovery in recoveries:
                 cursor = conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
-                       updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+                       updated_at=?, event_json=?, result_json=?, delivery_state=?
                        WHERE delegation_id=? AND state=? AND updated_at=?""",
                     (recovery.completed_at, now, json.dumps(recovery.event), json.dumps(recovery.result),
-                     recovery.delegation_id, recovery.expected_state, recovery.expected_updated_at))
+                     recovery.delivery, recovery.delegation_id, recovery.expected_state,
+                     recovery.expected_updated_at))
                 recovered += cursor.rowcount
             return recovered
         with translated():

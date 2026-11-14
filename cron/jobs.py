@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
+from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside, retention_cutoff
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
@@ -2836,7 +2836,7 @@ def _sweep_completed_oneshots(
     retention_days = _completed_oneshot_retention_days()
     if retention_days <= 0:
         return False
-    cutoff = now - timedelta(days=retention_days)
+    cutoff = retention_cutoff(now, retention_days)
     removed = False
     for rj in list(raw_jobs):
         try:

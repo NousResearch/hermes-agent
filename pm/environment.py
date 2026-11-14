@@ -329,7 +329,7 @@ class PythonEnvironment:
             # re-resolving its official-index lockfile against a mirror trips
             # `--locked` (#124418), and a fully-pinned graph never needs a
             # mirror to resolve. Index-REDIRECT settings are dropped; transport
-            # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
+            # knobs (UV_NATIVE_TLS / UV_SYSTEM_CERTS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
             # — corporate networks need them to reach the pinned URLs at all.
             from pm.index_config import is_index_redirect
 

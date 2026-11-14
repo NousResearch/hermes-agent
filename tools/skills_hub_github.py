@@ -194,13 +194,15 @@ def _skip_bundle_file(rel_path: str) -> bool:
 
 
 def _tree_members(entries: list[dict], prefix: str):
-    """``(rel_path, item_path, is_regular_blob)`` for every git-tree entry under ``prefix``. Symlinks
-    (mode 120000) and non-blobs report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked
-    symlink instead of silently following it."""
+    """``(rel_path, item_path, is_regular_blob)`` for every git-tree blob under ``prefix``. Symlinks
+    (mode 120000) report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked symlink
+    instead of silently following it. Directory (and submodule) entries are not yielded: a directory's
+    blobs are listed on their own, and a SKILL.md that links a support directory (``references/clues/``)
+    is pointing at prose, not escaping the bundle."""
     for item in entries:
         item_path = item.get("path", "")
-        if item_path.startswith(prefix):
-            yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
+        if item.get("type") == "blob" and item_path.startswith(prefix):
+            yield item_path[len(prefix):], item_path, item.get("mode") != "120000"
 
 
 class GitHubSource(SkillSource):
@@ -260,6 +262,7 @@ class GitHubSource(SkillSource):
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
         self._raw_unusable = False  # raw host unreachable here: later files go straight to the API
+        self._listed_dirs: set = set()  # (repo, ref, path) the Contents API answered with a directory listing
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
@@ -317,6 +320,12 @@ class GitHubSource(SkillSource):
         else:
             for rel_path in referenced:
                 self._add_support_file(repo, _skill_file_path(skill_dir, rel_path), rel_path, files, rel_path)
+            # Without a tree a linked support DIRECTORY can only be fetched as a Contents listing, which
+            # _fetch_file_bytes refuses; installing without it would ship a skill missing those files.
+            if any((repo, pinned_ref, _skill_file_path(skill_dir, rel_path)) in self._listed_dirs
+                   for rel_path in referenced):
+                logger.warning("Skill links a support directory and the repo tree is unavailable: %s", identifier)
+                return None
             revision = ""
         url = (f"https://github.com/{repo}/tree/{revision}" + (f"/{skill_path}" if skill_path else "")
                if revision else f"https://github.com/{repo}/{skill_path}")
@@ -381,7 +390,7 @@ class GitHubSource(SkillSource):
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
                 return None
-            if rel_path not in files:
+            if rel_path not in files and not any(f.startswith(rel_path + "/") for f in files):
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
         return complete
@@ -596,7 +605,15 @@ class GitHubSource(SkillSource):
             f"{_API}/{repo}/contents/{quote(path, safe='/')}", params={"ref": ref} if ref else None,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
-        return resp.content if resp is not None and resp.status_code == 200 else None
+        if resp is None or resp.status_code != 200:
+            return None
+        # A directory ignores the raw Accept header and answers with its JSON listing; a file (even
+        # a .json one) comes back as application/vnd.github.v3.raw. Never hand a listing back as bytes.
+        content_type = resp.headers.get("content-type")
+        if isinstance(content_type, str) and content_type.startswith("application/json"):
+            self._listed_dirs.add((repo, ref, path))
+            return None
+        return resp.content
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[dict[str, str]]:
         """Repo-root ``skills.sh.json`` groupings flattened to ``{skill_name: title}``. ``skills.sh.json``

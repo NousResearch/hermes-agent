@@ -108,10 +108,27 @@ def person_input_joined_turn(runner, session_key):
     path accepted it): the person's text went into the running turn and is never queued, so no
     arrival signal reports it."""
     from gateway.session_authorities import active_authority
-    from gateway.session_contract import SessionRef
     authority = active_authority(runner)
-    if authority is None:
+    # Every steer, /stop and /new lands here on the loop: with no plugin turn waiting (the common
+    # case) nothing touches SessionDB; the owner lookup otherwise runs in a worker, never on the loop.
+    if authority is None or not any(_wait_pending(live) for live in list(authority.sessions.values())):
         return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _wake_joined_turn(runner, authority, session_key)
+        return
+    loop.run_in_executor(None, contextvars.copy_context().run, _wake_joined_turn, runner, authority,
+                         session_key).add_done_callback(_log_wake_failure)
+
+
+def _wait_pending(live):
+    wait = getattr(live, "background_wait", None)
+    return wait is not None and not wait.is_set()
+
+
+def _wake_joined_turn(runner, authority, session_key):
+    from gateway.session_contract import SessionRef
     session_id = runner.session_store.peek_session_id(session_key)
     if session_id:
         wake_background_wait(authority, SessionRef(authority.profile_id, authority.logical_owner(session_id)),

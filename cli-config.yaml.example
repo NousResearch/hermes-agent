@@ -562,6 +562,10 @@ terminal:
 # -----------------------------------------------------------------------------
 # Add sudo_password to any terminal config above to enable sudo commands.
 # The password is piped via `sudo -S`. Works with local, ssh, docker, etc.
+# It is sent to the backend that runs the command, where programs running in
+# that backend can read it: for ssh, docker, modal, daytona, vercel_sandbox and
+# plugin backends, use a password that is only valid there (or passwordless sudo
+# in the image), not this machine's. Hermes logs a one-time warning per backend.
 #
 # SECURITY WARNING: Password stored in plaintext!
 #
@@ -1425,6 +1429,11 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Debug guard: flag SessionDB (state.db) calls made on the gateway event loop,
+  # where slow storage blocks every platform. "warn" logs each call site once with
+  # its stack; "raise" fails the call (CI / development). Off by default.
+  # sessiondb_loop_guard: off
+
 # =============================================================================
 # Toolsets
 # =============================================================================
@@ -1518,10 +1527,15 @@ platform_toolsets:
 #           - my_plugin_command
 #           - my-important-skill
 #   matrix:
+#     # Platform-wide: successful explicit NO_REPLY/[SILENT] finals stay silent in every
+#     # chat on this platform (DMs included), even when addressed. A room's own
+#     # allow_silence (true or false) overrides it; omitted/null inherits.
+#     # allow_silence: true
 #     channel_overrides:
 #       "!exampleTeamRoom:example.org":
 #         # Successful explicit NO_REPLY/[SILENT] finals stay silent, even when addressed.
-#         # Omitted/null/false keeps the current reply policy; failures remain visible.
+#         # Omitted/null takes the platform's allow_silence; false keeps the current
+#         # reply policy. Failures remain visible.
 #         # Restart the gateway after changing room overrides.
 #         allow_silence: true
 #   slack:
@@ -1999,7 +2013,10 @@ display:
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
-  # stalls, media-delivery fallbacks, cron failure alerts) on this surface.
+  # stalls, media-delivery fallbacks, cron failure alerts) on this surface. Also
+  # hides the "returned only a silence marker" notice in groups/channels/threads:
+  # a successful turn ending on a bare [SILENT]/NO_REPLY there stays silent
+  # (failed/partial turns still show; DMs keep the notice).
   # Requested results, approvals, clarifications and command outcomes are never
   # hidden, and nothing is removed from the logs. Per-platform override under
   # display.platforms.<platform>.suppress_warning_notifications.

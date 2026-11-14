@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -715,6 +715,134 @@ def install_node_sidecar(
     return None
 
 
+def _conjuncts(marker: str) -> frozenset[str]:
+    """Top-level ``and`` terms of a PEP 508 marker; a marker with a top-level ``or`` stays one term."""
+    def ungroup(term: str) -> str:
+        """Ignore parentheses surrounding a whole marker conjunction."""
+        term = term.strip()
+        while term.startswith("(") and term.endswith(")"):
+            depth, quote = 0, ""
+            for offset, char in enumerate(term):
+                if quote:
+                    quote = "" if char == quote else quote
+                elif char in ("'", '"'):
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0 and offset != len(term) - 1:
+                        return term
+            if depth:
+                return term
+            term = term[1:-1].strip()
+        return term
+
+    terms, depth, quote, start = [], 0, "", 0
+    for index, char in enumerate(marker):
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in "()":
+            depth += 1 if char == "(" else -1
+        elif depth == 0 and marker.startswith(" or ", index):
+            return frozenset({ungroup(marker)})
+        elif depth == 0 and marker.startswith(" and ", index):
+            terms.append(marker[start:index])
+            start = index + len(" and ")
+    terms.append(marker[start:])
+    return frozenset(ungroup(term) for term in terms)
+
+
+def _seed_fork_pins(forks: Mapping[tuple[str, tuple[str, ...]], list], name: str, markers: Sequence[str]) -> list:
+    """The seed's pins for the fork core's *markers* name, or ``[]`` when no seed fork matches.
+
+    A generation solves only its host (``_solve_only_for``), so each seed fork is core's fork
+    with the host terms ANDed on: a seed fork matches when it holds every term of a core marker.
+    """
+    if not markers:
+        return []
+    exact = forks.get((name, tuple(markers)))
+    if exact is not None:
+        return exact
+    wanted = [_conjuncts(marker) for marker in markers]
+    return [pin for (seed_name, seed_markers), pins in forks.items() if seed_name == name
+            and any(core <= _conjuncts(seed) for core in wanted for seed in seed_markers)
+            for pin in pins]
+
+
+CORE_LOCK_RECORD = "core-uv.lock"
+
+
+def _registry_pins(lock: Path) -> tuple[dict, dict]:
+    """``(name -> pins, (name, resolution-markers) -> pins)`` for a lock's index packages."""
+    import tomllib
+
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    pins: dict[str, list[Version]] = {}
+    forks: dict[tuple[str, tuple[str, ...]], list[Version]] = {}
+    for package in tomllib.loads(lock.read_text(encoding="utf-8-sig")).get("package", []):
+        if "registry" not in package.get("source", {}):
+            continue
+        try:
+            name, pinned = canonicalize_name(package["name"]), Version(package["version"])
+        except (KeyError, InvalidVersion):
+            continue
+        pins.setdefault(name, []).append(pinned)
+        forks.setdefault((name, tuple(package.get("resolution-markers", []))), []).append(pinned)
+    return pins, forks
+
+
+def core_lock_upgrades(core_lock: Path, seed_lock: Path, *, python: Path | None = None) -> list[str]:
+    """``uv lock -P`` requirements moving a seeded generation onto core's newer pins.
+
+    uv keeps every seeded pin that still resolves, so a core uv.lock bump (a security fix in a
+    transitive) never reached an install with plugin members (#91424). Only an index package
+    core's lock holds at a version newer than every pin the seed has for it moves: a package
+    only a plugin brings is not core's to pin, and one a plugin moved above core's pin stays
+    where the plugin needs it. Path, git and URL sources follow core's manifest already.
+    When the seed's generation recorded the core lock it was built from, only a pin core moved
+    since then counts, so a plugin holding a package below core's pin keeps it. A fork the
+    installing *python* never selects is skipped: ``-P`` unpins the name in every fork.
+    """
+    import tomllib
+
+    from packaging.markers import Marker
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    seeded, forks = _registry_pins(seed_lock)
+    record = seed_lock.with_name(CORE_LOCK_RECORD)
+    built_from = _registry_pins(record) if record.is_file() else None
+    target = _target_environment(python) if python is not None else None
+    upgrades = []
+    for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
+        name = canonicalize_name(package.get("name", ""))
+        if "registry" not in package.get("source", {}) or name not in seeded:
+            continue
+        try:
+            version = Version(package["version"])
+        except (KeyError, InvalidVersion):
+            continue
+        markers = package.get("resolution-markers", [])
+        if target is not None and markers and not any(Marker(marker).evaluate(target) for marker in markers):
+            continue
+        if built_from is not None and name in built_from[0]:
+            before = _seed_fork_pins(built_from[1], name, markers) or built_from[0][name]
+            if not all(version > pinned for pinned in before):
+                continue
+        # A platform fork compares against the seed's same fork, so a bump to one fork still moves.
+        prior = _seed_fork_pins(forks, name, markers) or seeded[name]
+        if all(version > pinned for pinned in prior):
+            # A name core forks by platform carries each fork's markers, or the exact pins clash.
+            joined = " or ".join(f"({marker})" for marker in markers)
+            upgrades.append(f"{name}=={version}" + (f"; {joined}" if joined else ""))
+    return upgrades
+
+
 def lock_and_sync(
     plugin_dirs: list[Path] | Mapping[Path, Path],
     extras: list[str],
@@ -725,10 +853,12 @@ def lock_and_sync(
     environment: PythonEnvironment,
     frozen: bool = False,
     replay: Path | None = None,
+    upgrade: Sequence[str] = (),
 ) -> None:
     """Prepare a fresh generation using explicit inputs and a prepared engine.
 
-    The caller selects the seed; uv retains its compatible versions. Repair
+    The caller selects the seed; uv retains its compatible versions except the
+    *upgrade* requirements (``uv lock -P``), which bind like core pins. Repair
     copies the recorded build inputs and never reads current manifests.
     Resolver conflicts remain distinct from download/build failures.
     """
@@ -750,4 +880,4 @@ def lock_and_sync(
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
         frozen = True
 
-    environment.sync(root, extras=extras, frozen=frozen)
+    environment.sync(root, extras=extras, frozen=frozen, upgrade=() if frozen else upgrade)

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_platform.host.facts import os_family
 
 
 def _constants_path(getter_name: str) -> Path:
@@ -69,6 +70,21 @@ def _resolve_each(paths) -> list[Path]:
         with suppress(Exception):
             out.append(p.resolve())
     return out
+
+
+def deny_key(path: str | Path) -> str:
+    """``path`` as text for credential-DENY comparisons: casefolded on macOS and Windows, whose
+    default filesystems open ``~/.ssh`` for ``~/.SSH`` while realpath/resolve keep the typed case;
+    exact on Linux, where the two are different files. Never for allowlist containment (safe roots,
+    cache roots): folding there would widen what is allowed."""
+    text = os.fspath(path)
+    return text.casefold() if os_family() in ("darwin", "win32") else text
+
+
+def deny_path_under(resolved: str | Path, base: str | Path) -> bool:
+    """``_is_under`` for deny lists: ``resolved`` equals ``base`` or lies below it, compared by ``deny_key``."""
+    target, root = deny_key(resolved), deny_key(base)
+    return target == root or target.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def _is_under(resolved: str | Path, base: str | Path) -> bool:
@@ -353,12 +369,13 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if any(resolved in build_write_approval_paths(home) for home in homes):
+    key = deny_key(resolved)
+    if any(key in map(deny_key, build_write_approval_paths(home)) for home in homes):
         return None
 
     if any(
-        resolved in build_write_denied_paths(home)
-        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home))
+        key in map(deny_key, build_write_denied_paths(home))
+        or any(key.startswith(deny_key(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes
     ):
         return "credential"
@@ -366,7 +383,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     for base in _credential_store_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
-                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                if deny_path_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
 
     safe_roots = get_safe_write_roots()
@@ -400,7 +417,7 @@ def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
     homes, resolved = _homes_and_resolved(local_drive_spelling(path))
-    return any(resolved in build_write_approval_paths(home) for home in homes)
+    return any(deny_key(resolved) in map(deny_key, build_write_approval_paths(home)) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.
@@ -467,6 +484,17 @@ def is_blocked_device_path(path: str) -> bool:
     return normalized.startswith("/proc/") and normalized.endswith(_BLOCKED_PROC_SUFFIXES)
 
 
+def is_project_env_basename(name: str) -> bool:
+    """True if ``name`` is a secret-bearing project env filename.
+
+    Shared by the read guard (:func:`get_read_block_error`, which blocks reading
+    these anywhere on disk) and the media-delivery denylist
+    (``gateway/platforms/base.validate_media_delivery_path``) so the delivery /
+    exfil side can't drift from the read side. Case-insensitive basename match.
+    """
+    return name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES
+
+
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
@@ -499,12 +527,13 @@ def get_read_block_error(path: str) -> Optional[str]:
             "is a device or process file: reading it can hang or leak process state "
             "(environment, command line, memory layout)." + _DID_SUFFIX
         )
-    elif any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    elif any(deny_path_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in _CREDENTIAL_FILE_NAMES):
+    elif any(deny_key(resolved) in map(deny_key, _resolve_each(hd / name for hd in hermes_dirs))
+             for name in _CREDENTIAL_FILE_NAMES):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX
@@ -512,8 +541,8 @@ def get_read_block_error(path: str) -> Optional[str]:
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
             for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if _is_under(resolved, blocked_dir):
-                    reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
+                if deny_path_under(resolved, blocked_dir):
+                    reason = (dir_msg if deny_key(resolved) == deny_key(blocked_dir) else file_msg) + _DID_SUFFIX
                     break
             if reason:
                 break

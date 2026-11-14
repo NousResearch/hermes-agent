@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.redact import redact_for_egress as _redact_for_egress
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.config import (
@@ -34,6 +35,7 @@ from gateway.response_filters import (
     strip_trailing_silence_marker as _strip_trailing_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.stream_consumer_redact import redact_settled, redact_to_fixpoint
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -203,6 +205,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_stream_ledger`` mirrors ``_accumulated`` but is NOT truncated when
         # overflow splits seal head chunks (reconcilable turn-final payload).
         self._accumulated = self._stream_ledger = ""
+        self._redacted_prefix = ""   # settled, redacted head of _accumulated (see redact_settled)
+        self._settled_for = ""       # the _accumulated _redacted_prefix was computed for
         self._last_sent_text = ""    # skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
@@ -262,10 +266,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
 
-    def _compose_frame_content(self) -> str:
-        """Native frame content: text, with any tool-progress lines below a rule."""
-        progress = "\n".join(self._tool_progress_lines)
-        return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
+    def _compose_frame_content(self, text: str) -> str:
+        """Native frame content: ``text`` (already redacted), with any tool-progress lines below a rule."""
+        progress = _redact_for_egress("\n".join(self._tool_progress_lines))
+        return "\n\n---\n".join(p for p in (text, progress) if p)
 
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
@@ -531,7 +535,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _finalize_boundary_stream(self, _reason: str) -> bool:
         """Close the open native stream at a boundary; send() the pre-prompt text if that
         fails.  False only when both finalize and the fallback send failed."""
-        finalize_text = self._accumulated or self._boundary_placeholder
+        finalize_text = self._clean_for_display(self._accumulated) or self._boundary_placeholder
         try:
             if await self._send_frame(finalize_text, finalize=True):
                 logger.debug("%s boundary: finalized stream (chat=%s, turn=%s)",
@@ -615,7 +619,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # is split again below. A plain first send would let the adapter split it and
                     # adopt only the LAST chunk as the preview; the next seal then overwrites that
                     # chunk with the head of the whole remainder (duplicated + lost text, #25349).
-                    sent_heads = await self._seal_overflow_heads(final=tick.got_done)
+                    sent_heads = await self._seal_overflow_heads(
+                        final=tick.got_done, done=self._tick_ends_text(tick))
                     if sent_heads and self._turn_reset():  # the sealing edit awaited: no split for a dead turn
                         await self._abandon_native_stream()
                         return
@@ -832,12 +837,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
         # only strips complete deliverable tags, so a half-streamed one would be shown, and
         # a media-only reply cleans to "" at finish, which never edits the bubble away.
-        cleaned = self._clean_for_display(self._accumulated)
+        cleaned = self._display_text(self._accumulated)
+        # The frame is the settled prefix: it can end inside a directive the buffer has completed.
+        settled = self._redact_settled_text(done=False)
+        frame = self._display_text(self._accumulated[:settled])
         return (should_edit and not _is_partial_silence_marker(cleaned)
                 # Raw buffer: the cleaner already drops a COMPLETE trailing marker, but an interim
                 # frame carries the cursor after it, which hides the marker from the cleaner.
                 and not _ends_with_partial_silence_marker(self._accumulated)
-                and not has_pending_media_directive(cleaned))
+                and not has_pending_media_directive(cleaned) and not has_pending_media_directive(frame))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
@@ -845,10 +853,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         True when the turn finished here (the run loop returns)."""
         if (handed_off := await self._ceiling_split_first_send(tick)) is not None:
             return handed_off
-        chunks = self._truncate_for_stream(self._accumulated, self._safe_limit, self._len_fn)
-        if len(chunks) <= 1:
-            # Malformed/legacy adapter result must still be splittable.
-            chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
+        settled = self._redact_settled_text(done=self._tick_ends_text(tick))
+        # Only settled text is split: the held tail rides on as the live preview, so no head is
+        # sealed with a key (or a label whose value is still arriving) cut in two (#56039).
+        head, held = self._accumulated[:settled], self._accumulated[settled:]
+        if not head.strip():
+            return False  # nothing settled yet: wait for the held text to complete
+        if self._len_fn(head) > self._safe_limit:
+            chunks = self._truncate_for_stream(head, self._safe_limit, self._len_fn)
+            if len(chunks) <= 1:
+                # Malformed/legacy adapter result must still be splittable.
+                chunks = self._split_text_chunks(head, self._safe_limit, self._len_fn)
+        else:
+            chunks = [head, ""]  # the held tail is what overflows: seal the settled text whole
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
         for index, chunk in enumerate(chunks[:-1]):
@@ -871,7 +888,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
             tail = chunks[-1]
             indicator = f" ({len(chunks)}/{len(chunks)})"
-            self._accumulated = tail.removesuffix(indicator)
+            self._accumulated = tail.removesuffix(indicator) + held
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -898,25 +915,47 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._fallback_prefix = ""
         return False
 
+    def _tick_ends_text(self, tick: _Tick) -> bool:
+        """No more text joins this message: the turn or segment ends, or commentary resets it."""
+        return (tick.got_done or tick.got_segment_break
+                or (tick.commentary_text is not None and not self._cumulative_transport()))
+
+    def _redact_settled_text(self, *, done: bool) -> int:
+        """Redact _accumulated up to its settled boundary, in place; returns where that ends.
+
+        Every mid-stream egress (frames, sealed heads, split points) stops there: past it the
+        text may still be or complete a secret, which a pattern cannot see yet (#56039)."""
+        if not done and self._accumulated == self._settled_for:
+            return len(self._redacted_prefix)  # several checks per tick, one scan
+        self._accumulated, settled = redact_settled(self._accumulated, self._redacted_prefix, done=done)
+        self._redacted_prefix = self._accumulated[:settled]
+        self._settled_for = "" if done else self._accumulated
+        return settled
+
     def _overflows(self) -> bool:
         return self._len_fn(self._accumulated) > self._safe_limit
 
     def _first_send_overflows(self) -> bool:
         return self._message_id is None and self._overflows()
 
-    async def _seal_overflow_heads(self, *, final: bool = False) -> bool:
+    async def _seal_overflow_heads(self, *, final: bool = False, done: bool = False) -> bool:
         """Existing message overflowing: seal it with the head, start a new message for the rest.
-        True when a head was sent; stops once /stop or /new invalidated the turn mid-seal."""
+        True when a head was sent; stops once /stop or /new invalidated the turn mid-seal.
+        ``done``: no more text joins this message (``final`` implies it)."""
         if final and self._ceiling_final_cut():
             return False  # the final edit would pass the reply's message cap: it goes out as a file
         sent = False
         while self._overflows() and self._message_id is not None and self._edit_supported:
             if sent and self._turn_reset():
                 break
+            settled = self._redact_settled_text(done=done or final)
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
                 split_at = cp_budget
+            split_at = min(split_at, settled)  # never seal text that is not settled yet
+            if not self._accumulated[:split_at].strip():
+                break
             if self._ceiling_seal_cut(split_at, final=final):
                 break  # past the reply's message cap: it goes out as a file once complete
             chunk = self._accumulated[:split_at]
@@ -934,11 +973,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return sent
 
     async def _push_update(self, tick: _Tick) -> None:
-        """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
-        display_text = self._accumulated
+        """Send/edit this tick's visible text (cursor-suffixed unless finalizing).  Mid-segment
+        frames carry only the settled, redacted text (see _redact_settled_text)."""
+        settled = self._redact_settled_text(done=self._tick_ends_text(tick))  # rewrites _accumulated
+        display_text = self._accumulated[:settled]
         if tick.is_interim:
             if self._use_native_streaming:
-                display_text = self._compose_frame_content()
+                display_text = self._compose_frame_content(display_text)
                 if display_text and self.cfg.cursor:
                     display_text += self.cfg.cursor
             else:
@@ -953,7 +994,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # answer.
         tick.update_visible = await self._send_or_edit(
             display_text, finalize=tick.got_done or tick.got_segment_break,
-            is_turn_final=tick.got_done)
+            is_turn_final=tick.got_done, redacted=True)
         self._last_edit_time = time.monotonic()
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
@@ -1099,6 +1140,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         shows as ``!alt`` plus an unfurl (#141806). The tag is removed without trimming the text
         around it, so interim frames stay prefix-stable. A silence marker closing the reply on its own
         line is dropped (``strip_trailing_silence_marker``); a bare marker is left for the silence check.
+
+        Every consumer egress (preview, edit, sealed head, native/draft frame, fallback send) passes
+        through here, so this is where streamed text gets the same forced secret redaction the
+        non-streamed final send applies in ``_sanitize_gateway_final_response`` (#56039).
         """
+        return redact_to_fixpoint(GatewayStreamConsumer._display_text(text))
+
+    @staticmethod
+    def _display_text(text: str) -> str:
+        """``_clean_for_display`` without the redaction: for per-tick checks and for frames
+        already redacted incrementally (``_redact_settled_text``)."""
         return _strip_trailing_silence_marker(
             strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text)))

@@ -100,7 +100,8 @@ from hermes_cli.update_cmd_git import (
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
-    _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
+    _damaged_checkout_message, _discard_lockfile_churn, _enclosing_repo_of_checkout, _ensure_non_trampoline_git,
+    _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
@@ -1588,6 +1589,12 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
     # swap in a real binary up front so git survives instead of degrading to ZIP.
     # See #87876.
     git_cmd = _ensure_non_trampoline_git(git_cmd)
+    if git_dir.exists() and (enclosing := _enclosing_repo_of_checkout(git_cmd, _m().PROJECT_ROOT)):
+        print(f"✗ git resolves this checkout to the enclosing repository {enclosing}; refusing to"
+              " stash, reset or clean it.")
+        print(_damaged_checkout_message(_m().PROJECT_ROOT))
+        _record_stop("not_git_checkout")
+        sys.exit(1)
 
     # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
     # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.

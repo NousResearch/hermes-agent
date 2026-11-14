@@ -19,12 +19,13 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
+from agent.file_safety import is_project_env_basename
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -448,6 +449,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -897,8 +899,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:
             continue
-        hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
-        if hit and resolved_denied != home:
+        if deny_path_under(resolved, resolved_denied) and resolved_denied != home:
             return True
     return False
 
@@ -1071,6 +1072,12 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     resolved = _translate_docker_container_media_path(expanded, session_key=session_key) or _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
+    # Project-local secret env files (.env, .envrc, ...) are read-blocked anywhere on disk by
+    # agent/file_safety.get_read_block_error; mirror that here (the denylist's stated invariant)
+    # before the allowlist, so they are never deliverable in any mode or location. Judged on the
+    # resolved name, so a symlink to a .env is caught; the predicate case-folds.
+    if is_project_env_basename(resolved.name):
+        return None
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():
         resolved_root = _resolve_path(root, expand=True)
@@ -1086,16 +1093,6 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
             and _file_is_recently_produced(resolved, window)):
         return str(resolved)
     return None
-
-
-# Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks: a
-# model-emitted path must not forge a log line.
-_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
-
-
-def _log_safe_path(path: str) -> str:
-    """Return a single-line, length-bounded path for log output."""
-    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str,
@@ -2896,8 +2893,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                logger.info("[%s] Sending image: %s (alt=%s)", self.name,
-                            safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
+                logger.info("[%s] Sending image: %s (alt=%d chars)", self.name,
+                            safe_url_for_log(image_url), len(alt_text or ""))
                 if image_url.startswith("file://"):
                     from urllib.request import url2pathname
                     sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}

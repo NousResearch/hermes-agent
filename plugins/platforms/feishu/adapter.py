@@ -2395,7 +2395,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                                                   actor_id=user_id or open_id, extra=self.config.extra)
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count, state["session_key"], choice, user_name,
+                count, state["session_key"], choice, user_id or open_id,
             )
             if not count and choice != "deny":
                 # The card already reads "Approved" (synchronous callback), but nothing was
@@ -2426,7 +2426,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             self._write_update_prompt_response(answer)
             logger.info(
                 "Feishu update prompt resolved for session %s (answer=%s, user=%s)",
-                state["session_key"], answer, user_name,
+                state["session_key"], answer, user_id or open_id,
             )
         except Exception as exc:
             logger.error("Failed to resolve Feishu update prompt: %s", exc)
@@ -2590,9 +2590,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         )
         chat_id = getattr(message, "chat_id", "") or ""
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text_len=%d media=%d",
             "dm" if chat_type == "p2p" else "group", message_id, inbound_type.value, chat_id,
-            "bot" if is_bot else "user", sender_primary, text[:120], len(media_urls),
+            "bot" if is_bot else "user", sender_primary, len(text), len(media_urls),
         )
 
         chat_info = await self.get_chat_info(chat_id)
@@ -3385,7 +3385,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         )
         if text:
             self._warned_empty_allowlist_deny = True
-            logger.warning(text)
+            logger.warning(text)  # health: allow HX017 -- operator remedy text, built from config, no user content
 
     def _require_mention_for(self, chat_id: str) -> bool:
         rule = self._group_rules.get(chat_id) if chat_id else None

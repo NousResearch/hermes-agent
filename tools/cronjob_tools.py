@@ -367,10 +367,9 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
             # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
             # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
             if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
-                from cron.scheduler_preflight import (
-                    SharedRouteAdapters, _primary_profile_routes_for_current_home)
+                from cron.scheduler_preflight import shared_route_adapters_for_current_home
 
-                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                adapters = shared_route_adapters_for_current_home(adapters)
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the

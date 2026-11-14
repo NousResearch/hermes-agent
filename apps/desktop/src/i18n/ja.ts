@@ -1597,7 +1597,12 @@ export const jaOverrides = {
     noModelUsage: 'モデルの使用履歴はまだありません。',
     topSkills: 'よく使うスキル',
     noSkillActivity: 'スキルのアクティビティはまだありません。',
-    actions: count => `${count} アクション`
+    actions: count => `${count} アクション`,
+    maintenance: {
+      debugShareConfirm: 'デバッグレポートを公開ペーストにアップロードしますか？',
+      debugShareConfirmDesc:
+        'サマリーを公開ペーストサービスにアップロードします：Hermes・Python・OS のバージョン、接続中のプラットフォームとツールセットの名前、設定キー名（値は含みません）、警告/エラーの件数。ログ行やメッセージ本文は含まれません。ペーストは 6 時間後に自動削除されます。paste.rs に接続できない場合は代替の dpaste.com が使われ、1 日間公開されたままとなり、早期に削除できません。'
+    }
   },
 
   messaging: {
@@ -2424,7 +2429,7 @@ export const jaOverrides = {
       '/topup': 'Nous の残高を表示し、請求を管理',
       '/platform': '問題のあるゲートウェイプラットフォームを一時停止、再開、一覧表示',
       '/version': 'Hermes Agent のバージョンを表示',
-      '/debug': 'デバッグレポートを作成',
+      '/debug': 'デバッグレポート（バージョン、設定キー名、エラー件数。ログ本文なし）: まずプライバシー通知を表示し、/debug upload でリンクを共有',
       '/model': 'このセッションのモデルを切り替え'
     },
     hotkeyDescs: {

@@ -420,7 +420,7 @@ def _ensure_windows_gateway_venv_imports() -> None:
     if sys.platform != "win32":
         return
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(project_root_str())
     from pm.environments import committed_venv, venv_python_version
 
     # A PM install's store Python was already activated onto the committed generation by
@@ -1566,9 +1566,10 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import bridge_config_scalars, load_hermes_dotenv
+from hermes_cli._startup_fast import project_root_str
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -1578,8 +1579,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     every profile; it still honors the max_turns bridge."""
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
-        load_hermes_dotenv(
-            hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+        load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
     _bridge_max_turns_from_config(_hermes_home)
 
 
@@ -2042,9 +2042,7 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
 
 def _bridge_config_to_env(_cfg: dict) -> None:
     """Export config.yaml settings to the env vars os.getenv() consumers read."""
-    for _key, _val in _cfg.items():  # top-level scalars: fallback only, never override .env
-        if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-            os.environ[_key] = str(_val)
+    bridge_config_scalars(_cfg, os.environ)  # top-level scalars: fallback only, never override .env
     _terminal_cfg = _cfg.get("terminal", {})
     if _terminal_cfg and isinstance(_terminal_cfg, dict):
         _bridge_terminal_config_to_env(_terminal_cfg)
@@ -2803,7 +2801,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_optional_skills_dir
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(project_root_str())
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
@@ -4301,10 +4299,10 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
-def _housekeeping_curator() -> None:
-    """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
-    from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+def _housekeeping_curator(idle_fence=None) -> None:
+    """The idle poll: the curator (gated by curator.interval_hours), then plugin idle tasks (their own intervals)."""
+    from hermes_cli.plugins_idle_tasks import run_idle_jobs
+    run_idle_jobs(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg), fence=idle_fence)
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4425,9 +4423,9 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
             if (profile_name is not None and adapters
                     and not sched_preflight.has_credential_platform(profile_adapters, owned)):
-                routes = sched_preflight._primary_profile_routes_for_current_home()
-                if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+                shared = sched_preflight.shared_route_adapters_for_current_home(adapters)
+                if shared:
+                    profile_adapters = shared
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 
@@ -4441,6 +4439,7 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from hermes_cli.plugins_idle_tasks import IdleTaskFence
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4464,9 +4463,8 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        # Per served profile: each profile has its own skills tree, curator state, Nous login
-        # and state.db.
-        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        # Per served profile: each has its own skills tree, curator state, Nous login and state.db.
+        (60, "Curator tick", profile_scoped_chore(runner, lambda: _housekeeping_curator(idle_fence))),
         (60, "state.db maintenance tick", profile_scoped_chore(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
@@ -4493,14 +4491,14 @@ def _start_gateway_housekeeping(
             served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
-    tick_count = 0
+    tick_count, idle_fence = 0, IdleTaskFence(stop_event)
     while not stop_event.is_set():
         tick_count += 1
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
         wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
-    logger.info("Gateway housekeeping stopped")
+    logger.info("Gateway housekeeping stopped (idle-task runs settled: %s)", idle_fence.close())
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

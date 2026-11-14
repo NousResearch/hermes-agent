@@ -1,7 +1,8 @@
 """Managed Modal carries sudo password lines on the request's stdin field, not in the command.
 
 The lines lead the caller's own stdin, the same merge ``BaseEnvironment.execute`` does, and the
-command string is the prepared command with nothing prefixed to it.
+command string is the prepared command: the askpass prologue (its timeout filled from the
+command's timeout) plus the askpass rewrite, with no password in it.
 """
 
 import types
@@ -10,10 +11,18 @@ import pytest
 
 from tools import terminal_tool as tt
 from tools import terminal_tool_sudo as tts
+from tools import terminal_tool_sudo_askpass as askpass
 
 CONFIGURED = "canary-configured-pw-7f3a"
 PROMPTED = "canary-typed-at-prompt-91c2"
 SUDO_STDIN_FLAGS = " -S -p ''"
+# ManagedModalEnvironment's default timeout is 60 s; the prologue gets that plus 30.
+FILLED_TIMEOUT = "90"
+
+
+def _askpass_command(command: str) -> str:
+    rewritten, count = tts._rewrite_real_sudo_invocations(command, askpass=True)
+    return askpass.build_prologue(count, FILLED_TIMEOUT, askpass.has_background_sudo(command)) + rewritten
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +87,8 @@ def test_prompted_password_goes_on_the_stdin_field_ahead_of_caller_stdin(monkeyp
 
     (payload,) = _exec_payloads(monkeypatch, "sudo tee /tmp/out", "caller-data\n")
 
-    assert payload["command"] == "sudo" + SUDO_STDIN_FLAGS + " tee /tmp/out"
+    assert payload["command"] == _askpass_command("sudo tee /tmp/out")
+    assert askpass.SUDO_ASKPASS_TIMEOUT_TOKEN not in payload["command"]
     assert PROMPTED not in payload["command"]
     assert payload["stdinData"] == PROMPTED + "\n" + "caller-data\n"
 
@@ -88,7 +98,8 @@ def test_configured_password_goes_on_the_stdin_field_one_line_per_sudo(monkeypat
 
     (payload,) = _exec_payloads(monkeypatch, "sudo true && sudo id", None)
 
-    assert payload["command"] == "sudo" + SUDO_STDIN_FLAGS + " true && sudo" + SUDO_STDIN_FLAGS + " id"
+    assert payload["command"] == _askpass_command("sudo true && sudo id")
+    assert askpass.SUDO_ASKPASS_TIMEOUT_TOKEN not in payload["command"]
     assert CONFIGURED not in payload["command"]
     assert payload["stdinData"] == (CONFIGURED + "\n") * 2
 
@@ -100,3 +111,12 @@ def test_command_without_sudo_keeps_its_command_and_stdin(monkeypatch):
 
     assert payload["command"] == "cat > /tmp/out"
     assert payload.get("stdinData") == "caller-data\n"
+
+
+def test_sudo_with_own_stdin_option_keeps_the_stdin_form(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", CONFIGURED)
+
+    (payload,) = _exec_payloads(monkeypatch, "sudo -S id", None)
+
+    assert payload["command"] == "sudo" + SUDO_STDIN_FLAGS + " -S id"
+    assert payload["stdinData"] == CONFIGURED + "\n"

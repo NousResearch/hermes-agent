@@ -2480,7 +2480,10 @@ export const en: Translations = {
       backup: 'Create backup',
       backupDesc: 'Zip config, memories, skills, and sessions',
       debugShare: 'Debug share',
-      debugShareDesc: 'Upload a redacted report + logs, get shareable links (auto-deletes in 6h)',
+      debugShareDesc: 'Upload a summary (versions, config keys, error counts; no log text), get a shareable link (auto-deletes in 6h)',
+      debugShareConfirm: 'Upload debug report to a public paste?',
+      debugShareConfirmDesc:
+        'Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.',
       debugShareRunning: 'Uploading debug report...',
       debugShareLinks: 'Share links',
       debugShareFailed: 'Debug share failed',
@@ -2788,6 +2791,14 @@ export const en: Translations = {
     fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver payload only',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
+    signatureOptions: {
+      generic: 'Generic (timestamped)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
     nameRequired: 'Name required',
@@ -3454,7 +3465,7 @@ export const en: Translations = {
       '/topup': 'Show your Nous balance and manage billing on the portal',
       '/platform': 'Pause, resume, or list a failing gateway platform',
       '/version': 'Show Hermes Agent version',
-      '/debug': 'Upload debug report (system info + logs) and get shareable links',
+      '/debug': 'Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links',
       '/model': 'Switch the model for this session'
     },
     hotkeyDescs: {

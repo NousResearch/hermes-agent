@@ -106,6 +106,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_line_endings.py
 
+      # `curl URL | tar` makes whatever the server returns part of the image, unverified (#126942).
+      # Fetch to a file and sha256sum -c it first. Local: `python scripts/check --only dockerfile-downloads`.
+      - name: Reject Dockerfile downloads piped into an extractor or interpreter
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_dockerfile_downloads.py
+
       # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
       # merge adds stays in every clone forever. Exact-path exceptions live in
       # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.

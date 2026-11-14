@@ -488,6 +488,7 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 
 :::tip
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
+An `@username` works only for a public channel or supergroup: Telegram answers "Chat not found" for a person's handle, so use the numeric ID for a DM home.
 :::
 
 ### Cron deliveries in topic mode
@@ -1297,6 +1298,7 @@ Behavior:
 - `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
 - A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
 - Use `*` in any of these to allow any sender/chat.
+- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`.
 - This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
 
 ### Migration from before PR #17686

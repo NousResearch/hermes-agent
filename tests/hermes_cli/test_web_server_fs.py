@@ -99,6 +99,9 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
             calls.append(("read", path, max_bytes, read_limit))
             return b"hello", 5, path
 
+        def normalize(self, path):
+            return path
+
         def write_text(self, path, content, *, max_bytes):
             calls.append(("write", path, content, max_bytes))
             return path, len(content.encode("utf-8"))
@@ -276,6 +279,36 @@ def test_fs_ssh_readers_read_the_resolved_path_they_vetted(client, monkeypatch, 
 
     assert response.status_code == 200
     assert reads == ["/srv/repos/notes.txt"]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+def test_fs_ssh_preview_keeps_html_alias_mime_after_resolving_link(client, monkeypatch, endpoint):
+    """An HTML symlink to an extensionless file still previews as HTML after its realpath is vetted."""
+    alias = "/srv/repos/report.html"
+    resolved = "/srv/repos/cache/7f24ab"
+    html = b"<h1>Report</h1>"
+    reads = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            assert path == alias
+            return resolved, len(html)
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            reads.append(path)
+            return html, len(html), path
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": alias, "profile": "remote-dev"})
+
+    assert response.status_code == 200
+    assert reads == [resolved]  # Never re-read the unchecked symlink.
+    if endpoint.endswith("read-text"):
+        assert response.json()["language"] == "html"
+        assert response.json()["mimeType"] == "text/html"
+    else:
+        assert response.json()["dataUrl"] == "data:text/html;base64," + base64.b64encode(html).decode("ascii")
 
 
 @pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
@@ -885,6 +918,9 @@ class _NotOnTheSshMachine:
     def __init__(self):
         self.asked = []
         self.written = []
+
+    def normalize(self, path):
+        return path
 
     def write_text(self, path, content, *, max_bytes):
         self.written.append((path, content))

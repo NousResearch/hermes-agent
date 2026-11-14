@@ -28,7 +28,7 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | **Deprecated / no-op.** Formerly bypassed auth on a non-loopback bind; it no longer disables authentication — a public bind always requires an auth provider (password or OAuth) |
-| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
+| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. It lists only that profile; this is not a security boundary (see [Managing multiple profiles](#managing-multiple-profiles)) |
 
 ```bash
 # Custom port
@@ -70,9 +70,21 @@ whole server lifetime: a deep link that omits `?profile=` (for example a
 sees that profile's MCP servers, model and skills. An explicit `?profile=`
 in the URL always wins.
 
-Pass `--isolated` to opt out and run a dedicated server scoped to that
-profile (the pre-unification behavior — useful if you deliberately expose
-different profiles' dashboards with different auth).
+Pass `--isolated` to opt out and run a dedicated server for that profile
+(the pre-unification behavior). Its profile list, `/api/status` profile
+names, unified session sidebar and the Desktop profile rail (and so its
+SOUL editor) show only the launch profile.
+
+:::warning `--isolated` is not a security boundary
+`--isolated` is a routing and operations convenience, not tenant isolation.
+Every profile under one OS user can read every other profile's files: on
+the dedicated server, routes that take a profile selector, `/api/fs/*` and
+the agent's own terminal and file tools can still reach sibling profiles
+(`~/.hermes/profiles/*`). Different auth per profile's server
+does not change that. To keep people's data apart (family members,
+customers, teams), run each tenant's Hermes as a **separate OS user** or in
+a **separate container**. See [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §2.2.
+:::
 
 The **Chat** tab follows the switcher too: a scoped chat spawns its PTY
 child with the selected profile's `HERMES_HOME`, so the conversation runs
@@ -670,6 +682,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
+| `POST /api/ops/debug-share` | Upload the allowlisted debug summary (no log lines or message text) to a public paste and return the URL (synchronous). Body: `{consent: true, redact?, lines?}`; without `"consent": true` it returns `400` and uploads nothing |
 | `PUT /api/webhooks/{name}/enabled` | Enable / disable a webhook route |
 | `POST /api/skills/hub/install` · `/uninstall` · `/update` | Skills hub actions (backgrounded) |
 | `GET /api/skills/hub/search` | Search the skill hub across all sources |

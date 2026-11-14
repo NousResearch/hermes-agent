@@ -64,29 +64,50 @@ def admit_cli_turn(params):
 
 @contextmanager
 def cli_turn_scope(admission_id, committed):
-    token = _cli_turn.set((admission_id, committed) if committed else None)
+    # Bound even with no committed fields: a ``/moa`` in the admitted text binds its one-turn preset
+    # to this execution (``rebind_model_override``).
+    token = _cli_turn.set((admission_id, committed or {}))
     try:
         yield
     finally:
         _cli_turn.reset(token)
 
 
-def cli_turn(message_id):
-    """The committed CLI turn fields of the admission whose event id is ``message_id``; ``{}`` for
-    any other turn, so a follow-up drained on the same task never inherits them."""
+def _executing(message_id):
+    """The bound ``(admission_id, fields)`` when ``message_id`` is the executing admission's event id."""
     bound = _cli_turn.get()
     if bound is None or message_id is None or str(message_id) != bound[0]:
-        return {}
-    return bound[1]
+        return None
+    return bound
+
+
+def cli_turn(message_id):
+    """The CLI turn fields of the executing admission whose event id is ``message_id``: its committed
+    fields plus any this execution rebound (expanded ``api_text``, a ``/moa`` ``model_override``);
+    ``{}`` for any other turn, so a follow-up drained on the same task never inherits them."""
+    bound = _executing(message_id)
+    return {} if bound is None else bound[1]
 
 
 def rebind_api_text(message_id, text):
     """This admission's ``api_text`` with its ``@`` references expanded, for the rest of this execution
     (``session_context_refs.turn_references``). The committed row keeps what the CLI sent, so a retry
     expands it afresh rather than twice."""
-    bound = _cli_turn.get()
-    if bound is not None and message_id is not None and str(message_id) == bound[0]:
+    bound = _executing(message_id)
+    if bound is not None:
         _cli_turn.set((bound[0], {**bound[1], 'api_text': text}))
+
+
+def rebind_model_override(message_id, override):
+    """``/moa`` typed in a local session's admitted text: ``override`` runs this execution in place of
+    any committed ``model_override``, as the classic CLI's own ``/moa`` does. The committed row keeps
+    the raw command, so a ``/moa`` queued behind a running turn binds its preset when it drains. False
+    when ``message_id`` is not the executing admission: nothing would run the override."""
+    bound = _executing(message_id)
+    if bound is None:
+        return False
+    _cli_turn.set((bound[0], {**bound[1], 'model_override': override}))
+    return True
 
 
 def one_turn_runtime(override, model, runtime_kwargs, config):

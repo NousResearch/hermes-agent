@@ -513,9 +513,11 @@ hermes webhook subscribe github-issues \
   --description "Triage new GitHub issues"
 ```
 
-This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+This returns the webhook URL and a masked form of the auto-generated HMAC secret; the full secret is stored under the route's name in `~/.hermes/webhook_subscriptions.json` (pass `--secret` to choose your own). Configure your service to POST to that URL.
 
-New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route keeps its pin too, and MCP event subscriptions are pinned to `generic` when first created.
+New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route that omits `signature` keeps its pin too (an explicit pick replaces it), and MCP event subscriptions are pinned to `generic` when first created.
+
+The dashboard's **New subscription** form (web dashboard and desktop app) has the same choice as a **Signature** select, defaulting to `generic`; pick GitHub, GitLab or Linear for routes those services deliver to. Through the API, `POST /api/webhooks` takes an optional `signature` (`generic`, `github`, `gitlab` or `linear`; anything else is a `422`): a new route without it is pinned to `generic`, and a re-POST without it keeps the stored pin.
 
 ### List subscriptions
 
@@ -588,7 +590,7 @@ For dynamic subscriptions, add the `toolsets` key by editing `~/.hermes/webhook_
 
 Behavior and safety properties:
 
-- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged).
+- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged). An explicit empty list (`toolsets: []`) is an override too: that route gets no platform toolsets and no MCP servers, the same as `platform_toolsets.webhook: []`.
 - Names are validated through the same path as `platform_toolsets` config — unknown names and platform-restricted toolsets are dropped.
 - `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
 - Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.

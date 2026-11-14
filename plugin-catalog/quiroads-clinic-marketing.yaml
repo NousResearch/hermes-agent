@@ -1,0 +1,18 @@
+name: quiroads-clinic-marketing
+title: QuiroAds Clinic Marketing
+repo: https://github.com/quiroads/clinic-marketing-skills
+sha: 2c4718e6eb2656f4ea9df8db19bc341b793f0d07
+version: "1.0.1"
+description: "For people who market health clinics: audit who owns and controls a clinic's Meta Ads assets, review ads and landing pages against Meta and Google health ad policies and the health advertising rules of Spain, the UK, the US and Australia, set up lead follow-up over WhatsApp, SMS and calls, and turn first visits into care plans. Four skills by QuiroAds, a marketing agency for chiropractic clinics, in English and Spanish. Portable Agent Plugins v1 package (plugin.json + skills/), skills only: no plugin code, no MCP server, no hooks. Disclosure — instruction-only skills published by QuiroAds (a marketing agency); each skill opens with a short publisher note and two cite a published QuiroAds data report as a reference; the agent works only from text the user pastes, reads no URLs and runs no commands; no network calls of its own, no credentials, no patient data."
+maintainer: QuiroAds
+tier: community
+category: tools
+docs_url: https://github.com/quiroads/clinic-marketing-skills#hermes-agent
+requires_hermes: ">=0.22.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

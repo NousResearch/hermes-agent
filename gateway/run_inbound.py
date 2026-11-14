@@ -27,6 +27,7 @@ from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_moa import GatewayInboundMoaMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
@@ -73,7 +74,9 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(
+    GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin, GatewayInboundMoaMixin,
+):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -233,15 +236,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
             behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
             if behavior == "pair":
-                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                logger.warning("Unauthorized user: %s on %s", source.user_id, source.platform.value)
                 await self._hm_offer_pairing_code(source)
             elif behavior == "decline":
-                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                logger.warning("Unauthorized user: %s on %s", source.user_id, source.platform.value)
                 await self._hm_send_unauthorized_decline(source)
             elif pairable_dm:
                 await self._hm_report_ignored_dm(source)
             else:
-                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                logger.warning("Unauthorized user: %s on %s", source.user_id, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not (
@@ -449,15 +452,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _refused_clarify(self, event: MessageEvent, clarify_id: str) -> Optional[str]:
         """The localized refusal when *event*'s sender may not answer clarify *clarify_id* (not its
         requester, an approver, or this bot's admin), else None."""
+        from gateway.relay.admitted_authors import answer_admitted
         from gateway.approval_actor import clarify_refusal, refusal_text
-        requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event))
+        requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event),
+                                    admitted=answer_admitted(event))
         return refusal_text(requester) if requester else None
 
     def _refused_slash_confirm(self, event: MessageEvent, session_key: str, confirm_id: str) -> Optional[str]:
         """The localized refusal when *event*'s sender may not answer slash confirm *confirm_id*, else None."""
+        from gateway.relay.admitted_authors import answer_admitted
         from gateway.approval_actor import refusal_text, slash_confirm_refusal
         requester = slash_confirm_refusal(session_key, confirm_id, event.sender_id() or "",
-                                          admin_ids=self._prompt_admin_ids(event))
+                                          admin_ids=self._prompt_admin_ids(event), admitted=answer_admitted(event))
         return refusal_text(requester) if requester else None
 
     def _prompt_admin_ids(self, event: MessageEvent):
@@ -960,6 +966,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _hm_cmd_new(self, event, source, _quick_key):
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return True, self._telegram_topic_root_new_message()
+        # A plugin turn waiting before its agent exists leaves the chat idle here, so /new asks
+        # first: the person's command still ends that turn's wait for background work at once.
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, _quick_key)
         return await self._hm_confirm_destructive(
             event, "new", t("gateway.confirm.detail_new"),
             self._handle_reset_command,
@@ -1066,35 +1076,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return True, usage
         with suppress(Exception):
             event.text = payload
-        return False, None
-
-    async def _hm_cmd_moa(self, event, source, _quick_key):
-        # /moa is one-shot sugar only: run a single prompt through the default MoA preset, then
-        # restore the prior model. To *switch* to a MoA preset for the session, pick it from the
-        # model picker (MoA presets surface as a virtual "Mixture of Agents" provider).
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-        from hermes_cli.config import load_config
-
-        moa_payload = event.get_command_args().strip()
-        if not moa_payload:
-            return True, moa_usage()
-        try:
-            cfg = load_config()
-            moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-        except Exception:
-            moa_cfg = normalize_moa_config({})
-        try:
-            event.text = moa_payload
-            _moa_state = self._session_state(_quick_key)
-            # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
-            self._claim_one_turn_restore(_quick_key)
-            _moa_state.conversation.model_override = {
-                "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
-                "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
-            }
-            self._evict_cached_agent(_quick_key)
-        except Exception:
-            return True, t("gateway.moa.prepare_failed")
         return False, None
 
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each

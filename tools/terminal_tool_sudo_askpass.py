@@ -6,8 +6,9 @@ sudo invocation through a helper script instead of the stdin shared by the whole
 single password line the caller prepends to stdin, keeps it in a detached writer that serves
 it through a FIFO once per counted sudo, and tears everything down when the command's shell
 (and every child holding fd 19) exits, or a timeout after that shell is gone. The per-environment
-``CAPABILITY_PROBE`` decides whether a backend can use it; ``has_own_stdin_or_askpass`` keeps
-commands that already manage sudo's input on the stdin form.
+``CAPABILITY_PROBE`` decides whether a backend can use it, or the backend sets
+``_sudo_askpass_runtime_checked`` and relies on the prologue's own setup checks alone;
+``has_own_stdin_or_askpass`` keeps commands that already manage sudo's input on the stdin form.
 """
 
 import logging
@@ -46,9 +47,21 @@ _PROLOGUE_TEMPLATE = (
     'case $__hermes_sudo_dir in *[\\"\\\\\\$\\`]*) \\command rm -rf -- "$__hermes_sudo_dir" 2>/dev/null;'
     " __hermes_sudo_dir= ;; esac\n"
     # Setup comes before any read of stdin: when a step fails the password lines stay on stdin
-    # and every counted sudo keeps ``-S -p ''``, which is the stdin form.
-    'if \\builtin test -n "$__hermes_sudo_dir" && \\command mkfifo "$__hermes_sudo_dir/p" "$__hermes_sudo_dir/l"'
-    " 2>/dev/null &&\n"
+    # and every counted sudo keeps ``-S -p ''``, which is the stdin form. The first steps repeat
+    # the sudo and tool checks of ``CAPABILITY_PROBE``, so a backend that runs no probe gets the
+    # same answer here: each sudo word the command runs accepts ``-A`` (``-V`` authenticates
+    # nothing and reads no stdin; @SUDO_CHECKS@ is one such check per word, see
+    # ``build_prologue``) and the helper's programs are executable.
+    'if \\builtin test -n "$__hermes_sudo_dir" &&\n'
+    "@SUDO_CHECKS@"
+    "  \\builtin test -x /bin/cat && \\builtin test -x /bin/rm && \\builtin test -x /bin/sleep &&\n"
+    '  \\command mkfifo "$__hermes_sudo_dir/p" "$__hermes_sudo_dir/l" 2>/dev/null &&\n'
+    # A harmless helper at the same path must run before the real one is written: a writable
+    # but noexec temp directory passes every step above, yet sudo could not run the helper.
+    # The real helper is never run as this check, since it waits on the FIFO for its writer.
+    "  \\builtin printf '#!/bin/sh\\nexit 0\\n' > \"$__hermes_sudo_dir/a\" 2>/dev/null &&\n"
+    '  \\command chmod 700 "$__hermes_sudo_dir/a" 2>/dev/null &&\n'
+    '  "$__hermes_sudo_dir/a" </dev/null >/dev/null 2>&1 &&\n'
     # The helper takes a lock file for its whole exchange, so helpers of sudos that ask at the same
     # time are served one after another instead of sharing one line. The lock is an O_EXCL create
     # (``set -C``), not ``mkdir``: uutils' mkdir (Ubuntu 25.10+) lets two racing callers both
@@ -56,7 +69,8 @@ _PROLOGUE_TEMPLATE = (
     "  \\builtin printf '#!/bin/sh\\nd=\"%s\"\\n"
     'until (set -C; : > "$d/k") 2>/dev/null; do [ -d "$d" ] || exit 1; /bin/sleep 0.1 2>/dev/null || /bin/sleep 1; done\\n'
     '/bin/cat -- "$d/p" 2>/dev/null; r=$?\\n/bin/rm -f "$d/k"\\nexit $r\\n\' "$__hermes_sudo_dir"'
-    ' > "$__hermes_sudo_dir/a" 2>/dev/null && \\command chmod 700 "$__hermes_sudo_dir/a" 2>/dev/null &&\n'
+    # ``>|`` replaces the harmless helper even when the session has ``noclobber`` (``set -C``) on.
+    ' >| "$__hermes_sudo_dir/a" 2>/dev/null && \\command chmod 700 "$__hermes_sudo_dir/a" 2>/dev/null &&\n'
     '  \\exec 19<>"$__hermes_sudo_dir/l"; then\n'
     # One password line per counted sudo is on stdin; the helper form needs the first only.
     "  IFS= \\builtin read -r __hermes_sudo_pw || \\builtin :\n"
@@ -110,16 +124,26 @@ _PROLOGUE_TEMPLATE = (
 )
 
 
-def build_prologue(count: int, timeout_token: str, background: bool = True) -> str:
+# No ``\command``: the check must run whatever the command runs for the word, a shell function
+# or alias from the session snapshot included. The subshell still sees those, but an ``exec`` or
+# ``exit`` in a wrapper then ends only the check, never the command's own shell.
+_SUDO_CHECK = "  ( SUDO_ASKPASS=/bin/false {word} -A -V ) </dev/null >/dev/null 2>&1 &&\n"
+
+
+def build_prologue(count: int, timeout_token: str, background: bool = True,
+                   sudo_words: tuple[str, ...] = ("sudo",)) -> str:
     """Shell text that serves the password read from stdin to *count* askpass helper calls.
 
     Stdin carries *count* password lines, as for the stdin form. *timeout_token* is how long a
     backgrounded sudo is still served after the command's shell has exited: a literal number,
     or ``SUDO_ASKPASS_TIMEOUT_TOKEN`` for ``fill_timeout_token`` to replace later. With
     *background* false (no counted sudo runs in the background) serving stops with the shell.
+    *sudo_words* are the sudo command words the counted invocations run, as written in the
+    command (``sudo_command_words``); each must accept ``-A`` or setup falls back to stdin.
     """
-    return (_PROLOGUE_TEMPLATE.replace("@COUNT@", str(int(count))).replace("@TIMEOUT@", timeout_token)
-            .replace("@BG@", "1" if background else "0"))
+    checks = "".join(_SUDO_CHECK.format(word=word) for word in sudo_words)
+    return (_PROLOGUE_TEMPLATE.replace("@SUDO_CHECKS@", checks).replace("@COUNT@", str(int(count)))
+            .replace("@TIMEOUT@", timeout_token).replace("@BG@", "1" if background else "0"))
 
 
 def fill_timeout_token(command: str, timeout) -> str:
@@ -191,15 +215,24 @@ def has_own_stdin_or_askpass(command: str | None) -> bool:
     (``-u S``, ``-pS``). Such a command keeps the stdin form, since sudo rejects ``-A`` with
     ``-S``.
     """
-    from tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
-
     if not command:
         return False
+    # [0] is the sudo word, [1] the added option word.
+    return any(_option_words_carry_own_input(words[2:]) for words in _counted_sudo_words(command)[1])
+
+
+def _counted_sudo_words(command: str) -> tuple[int, list[list[str]]]:
+    """``(count, word lists)``: the words of each counted sudo after the askpass marker.
+
+    Each counted sudo reads ``<prefix><sudo word> -A <its options...>`` once marked. Text that
+    happens to contain the prefix adds a chunk, so the lists can outnumber *count*.
+    """
+    from tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
+
     marked, count = _rewrite_real_sudo_invocations(command, askpass=True)
     if not count:
-        return False
-    # Each counted sudo now reads ``<prefix><sudo word> -A <its options...>``. Text that happens
-    # to contain the prefix only adds a chunk to check, which can only select the stdin form.
+        return 0, []
+    lists: list[list[str]] = []
     for chunk in marked.split(SUDO_ASKPASS_PREFIX)[1:]:
         words: list[str] = []
         for kind, start, end, _ in _scan_shell(chunk):
@@ -211,9 +244,33 @@ def has_own_stdin_or_askpass(command: str | None) -> bool:
                 break
             if kind == "word":
                 words.append(chunk[start:end])
-        if _option_words_carry_own_input(words[2:]):  # [0] sudo word, [1] the added option word
-            return True
-    return False
+        lists.append(words)
+    return count, lists
+
+
+def sudo_command_words(command: str | None) -> tuple[str, ...] | None:
+    """The distinct sudo command words of the counted invocations, as written in *command*.
+
+    These are the words ``build_prologue`` checks for ``-A`` support, so the check runs the same
+    executable the command runs. For ``env ... sudo`` the word is the sudo word itself: ``env``
+    looks it up through PATH the same way the shell does, so checking the bare word is enough.
+    None when the words cannot be collected (no counted sudo, one list per counted sudo not
+    found) or a word holds ``$`` or a backquote, whose expansion could differ: the caller then
+    uses the stdin form.
+    """
+    if not command:
+        return None
+    count, lists = _counted_sudo_words(command)
+    if not count or len(lists) != count or not all(lists):
+        return None
+    words: list[str] = []
+    for word_list in lists:
+        word = word_list[0]
+        if "$" in word or "`" in word:
+            return None
+        if word not in words:
+            words.append(word)
+    return tuple(words)
 
 
 def has_background_sudo(command: str | None) -> bool:
@@ -266,7 +323,8 @@ def has_background_sudo(command: str | None) -> bool:
 
 
 # Exit 0 only when sudo accepts ``-A`` (``-V`` authenticates nothing) and a 0700 helper in a
-# ``mktemp -d`` under ${TMPDIR:-/tmp} runs, next to a FIFO the shell can open read+write.
+# ``mktemp -d`` under ${TMPDIR:-/tmp} runs, next to a FIFO the shell can open read+write. The
+# prologue repeats the sudo and tool checks at run time, so a passing probe only selects the form.
 CAPABILITY_PROBE = (
     "SUDO_ASKPASS=/bin/false sudo -A -V >/dev/null 2>&1 || exit 1\n"
     'for t in /bin/cat /bin/rm /bin/sleep; do [ -x "$t" ] || exit 1; done\n'
@@ -287,6 +345,9 @@ _PROBE_ERRORS = (OSError, RuntimeError, ValueError, TypeError, AttributeError, s
 def sudo_askpass_supported_once(env) -> bool:
     """Run ``CAPABILITY_PROBE`` once per environment object and cache the answer.
 
+    True without probing when the backend sets ``_sudo_askpass_runtime_checked``: the prologue
+    makes the same sudo and tool checks inside each command and falls back to the stdin form
+    there, so no separate command has to run (and later be cancelled) in the backend. Otherwise
     False without probing when the backend does not opt in to in-backend sudo probes
     (``_passwordless_sudo_probe_supported``) or is the local backend on Windows; False on any
     error or timeout. Bound as ``BaseEnvironment._sudo_askpass_supported``.
@@ -295,7 +356,9 @@ def sudo_askpass_supported_once(env) -> bool:
     if cached is not None:
         return cached
     supported = False
-    if getattr(env, "_passwordless_sudo_probe_supported", False) and not (
+    if getattr(env, "_sudo_askpass_runtime_checked", False):
+        supported = True
+    elif getattr(env, "_passwordless_sudo_probe_supported", False) and not (
         getattr(env, "is_local", False) and platform.system() == "Windows"
     ):
         timeout = getattr(env, "_SUDO_PROBE_TIMEOUT_S", 3)

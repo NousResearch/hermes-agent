@@ -146,3 +146,72 @@ def test_a_disabled_tree_at_an_annotated_tag_pin_is_reused_for_that_pin(world):
     for shown in (tag_object, reviewed):
         assert _rpc("install", inspected_sha=shown, enable=False)["result"]["ok"] is True
     assert _record(home)["revision"] == reviewed
+
+
+def test_a_default_plugin_installs_at_its_homes_catalog_pin_never_as_a_held_ref(world, monkeypatch):
+    """The pass selected a newer pin than this home's catalog cache names. An explicit ref would record the
+    install off-pin, like a user's ``--ref`` hold that unattended updates never move."""
+    from hermes_cli import default_plugins
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    from hermes_cli.plugins_auto_update import held_with_ref
+    home, repo, pin = world
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    old = _commit(repo, "old")
+    selected = PluginCatalogEntry(name="demo", repo=URL, sha=_commit(repo, "selected"), description="d", maintainer="m")
+    pin(old)  # this home's catalog cache still names the older pin
+
+    default_plugins.install_defaults(home, entries=[selected])
+
+    record = _record(home)
+    assert record["catalog"]["pin"] == old and not held_with_ref(record)
+
+
+@pytest.mark.parametrize("repin", ["moved", "annotated-tag"])
+def test_a_tree_a_refused_default_left_is_enabled_by_the_retry(world, monkeypatch, repin):
+    """The retry enables the default whether the catalog re-pinned since (a newer commit) or pins an
+    annotated tag (the record holds its commit as ``sha``), never answering "already exists" forever."""
+    from hermes_cli import default_plugins
+    from hermes_cli.memory_provider_migration import _note_failure
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    home, repo, pin = world
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    first = _commit(repo, "first")
+    if repin == "annotated-tag":
+        _git(repo, "tag", "-a", "v1.0", first, "-m", "v1.0")
+        first = _git(repo, "rev-parse", "v1.0")
+    pin(first)
+    assert _rpc("install", enable=False)["result"]["ok"] is True
+    _note_failure(home, "default-demo")  # the default pass's own refused enable left this tree
+    sha = _commit(repo, "moved") if repin == "moved" else first
+    pin(sha)
+
+    out = default_plugins.install_defaults(
+        home, entries=[PluginCatalogEntry(name="demo", repo=URL, sha=sha, description="d", maintainer="m")])
+
+    assert out == {"installed": ["demo"], "owed": []}
+
+
+def test_a_leftover_default_whose_replacement_failed_is_retried(world, monkeypatch):
+    """The retry removes the leftover tree before installing. When that install fails (offline), the next
+    pass retries: the missing tree is this attempt's removal, not the user's."""
+    from hermes_cli import default_plugins, plugins_cmd
+    from hermes_cli.memory_provider_migration import _note_failure
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    home, repo, pin = world
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    entry = PluginCatalogEntry(name="demo", repo=URL, sha=_commit(repo, "first"), description="d", maintainer="m")
+    pin(entry.sha)
+    assert _rpc("install", enable=False)["result"]["ok"] is True
+    # What a refused enable by the default pass leaves: its failure stamp and the placed marker.
+    _note_failure(home, "default-demo")
+    default_plugins._placed(home, entry).parent.mkdir(parents=True, exist_ok=True)
+    default_plugins._placed(home, entry).touch()
+    clone = plugins_cmd._clone_plugin_repo
+
+    def offline(*args, **kwargs):
+        raise OSError("fatal: unable to access 'https://example.invalid/'")
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo", offline)
+    assert default_plugins.install_defaults(home, entries=[entry])["owed"] == ["demo"]
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo", clone)
+
+    assert default_plugins.install_defaults(home, entries=[entry]) == {"installed": ["demo"], "owed": []}

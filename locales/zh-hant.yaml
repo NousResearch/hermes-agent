@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ 無法上傳除錯報告：{error}"
     header: "**除錯報告已上傳：**"
     auto_delete: "⏱ 貼上的內容將於 6 小時後自動刪除。"
-    full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
+    full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share --nous`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
-    local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug` 可上傳摘要報告。"
+    local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug upload` 可上傳摘要報告。"
+    upload_hint: "未上傳任何內容。傳送 `/debug upload` 可上傳摘要報告。"
+    upload_hint_local: "未上傳任何內容。傳送 `/debug upload` 可上傳摘要報告，或傳送 `/debug local` 在此檢視。"
+    nous_refused: "未上傳任何內容。此處無法使用 Nous 私人上傳：請在終端機執行 `hermes debug share --nous`，或使用桌面應用程式中的 Send diagnostics。`/debug upload` 則會將摘要上傳到公開的貼上服務。"
   deny:
     stale: "❌ 指令已拒絕（批准已過期）。"
     no_pending: "沒有待拒絕的指令。"
@@ -601,6 +604,7 @@ gateway:
     disabled: "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
     enabled: "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"
   shared:
+    fallback_model_suffix: " — 備援，原為 `{primary}`"
     session_db_unavailable: "工作階段資料庫無法使用。"
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found: "資料庫中找不到此工作階段。"
@@ -805,6 +809,7 @@ gateway:
     ack_generate: "正在依專案掃描結果產生 AGENTS.md…"
   moa:
     prepare_failed: "準備 MoA 回合失敗。"
+    managed_session: "此工作階段無法使用 /moa：安全模式、無設定、kanban 與受管 worker 工作階段的每一輪都在自身模型上執行。請直接傳送提示，不要加 /moa。"
   quick_command:
     no_output: "指令沒有回傳任何輸出。"
     timed_out: "快速指令逾時（30 秒）。"
@@ -1249,6 +1254,11 @@ platform:
       affirm: "✓ 是"
       negate: "✗ 否"
       other: "✏️ 其他（輸入答案）"
+      multi_hint: "選擇一個或多個選項，然後點選傳送。"
+      send: "✅ 傳送"
+      selected_count: "已選擇：{count}"
+      select_one: "請先至少選擇一個選項。"
+      toggle_failed: "無法更新選擇，請再點一次。"
       expired_toast: "⚠️ 此提示已逾期 — 請使用 /retry。"
       expired_body: "⚠️ 此問題已逾期或工作階段已重設 — 請使用 /retry。"
       type_answer: "✏️ 請在聊天中輸入你的答案。"
@@ -1706,7 +1716,7 @@ slash:
   version:
     description: "顯示 Hermes Agent 版本"
   debug:
-    description: "上傳除錯報告（系統資訊 + 日誌）並取得可分享的連結"
+    description: "除錯報告（版本、設定鍵名、錯誤計數；不含日誌文字）：先顯示隱私聲明；/debug upload 分享連結"
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
@@ -3820,7 +3830,7 @@ tips:
   t246: "HERMES_HOME_MODE 環境變數（八進位，例如 0701）可設定自訂目錄權限，供網頁伺服器穿越存取。"
   t247: "容器模式：在 HERMES_HOME 放置 .container-mode，主機 CLI 就會自動 exec 進入容器。"
   t248: "Ctrl+C 有 5 個優先層級：取消錄音 → 取消提示 → 取消選擇器 → 中斷代理 → 離開。"
-  t249: "代理執行期間的每次中斷都會連同時間戳記記錄到 ~/.hermes/interrupt_debug.log。"
+  t249: "代理執行期間的中斷會記錄到 agent.log（使用 `hermes logs` 檢視）；設定 HERMES_DEBUG_INTERRUPT=1 可取得詳細追蹤。"
   t250: "BROWSER_CDP_URL 可將瀏覽器工具連接到任何執行中的 Chromium 系列瀏覽器 — 接受 WebSocket、HTTP 或 host:port。"
   t251: "BROWSERBASE_ADVANCED_STEALTH=true 會啟用搭配自訂 Chromium 的進階反偵測（Scale 方案）。"
   t252: "在寬度不足 80 欄的終端機中，CLI 會自動切換為精簡模式。"
@@ -3917,7 +3927,7 @@ tips:
   t343: "/voice tts 切換純 TTS 模式 — 代理以語音回覆，但你仍以打字輸入提示。"
   t344: "/reload-skills 會重新掃描 ~/.hermes/skills/，讓直接放入的技能無需重啟工作階段即可出現。"
   t345: "/indicator kaomoji|emoji|unicode|ascii 可選擇代理執行期間 TUI 顯示的忙碌指示器樣式。"
-  t346: "/debug 會上傳支援套件（系統資訊 + 日誌）並回傳可分享的連結 — 在聊天中也能用。"
+  t346: "/debug upload 會上傳摘要（版本、設定鍵名、錯誤計數；不含日誌文字）並回傳可分享的連結 — 在聊天中也能用。"
   t347: "hermes -z \"<prompt>\" 是最純粹的單次執行：只將最終答案輸出到 stdout，別無其他 — 最適合在腳本中串接管線。"
   t348: "hermes chat --pass-session-id 會將工作階段 ID 注入系統提示詞，讓代理能自我引用。"
   t349: "hermes chat --image path/to/pic.png 可為單次 -q 查詢附加本機圖片，不需另外上傳。"

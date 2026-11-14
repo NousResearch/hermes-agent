@@ -2094,14 +2094,12 @@ DEFAULT_CONFIG = {
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
-        # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
-        # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
-        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
         # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
         # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
         # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
-        # negative disables the timeout entirely (wait indefinitely).
+        # negative disables the timeout entirely (wait indefinitely). Bridged to
+        # HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         "platform_connect_timeout": 30,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
@@ -2115,6 +2113,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Debug: flag SessionDB calls made on the event loop ("warn" logs each site once, "raise" fails it).
+        "sessiondb_loop_guard": "off",
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: max_events per window before a cooldown; max_hops bot messages per exchange.

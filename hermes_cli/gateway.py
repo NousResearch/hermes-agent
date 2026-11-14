@@ -3300,13 +3300,11 @@ def _strip_optional_systemd_directives(text: str) -> str:
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize plist text for staleness checks, ignoring the PATH payload: the generated PATH is
-    captured from the invoking shell and varies across shells."""
-    import re
-    return re.sub(
-        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
-        _normalize_service_definition(text), flags=re.DOTALL,
-    )
+    """Normalize plist text for staleness checks. The Hermes-owned PATH prefix (venv/node bin dirs and
+    the pm-managed Node) is deterministic and IS compared; only the invoking shell's PATH tail is
+    masked, so a Node update cannot leave a stale plist looking current (#144735)."""
+    from hermes_cli.gateway_launchd import normalize_plist_path_for_comparison
+    return normalize_plist_path_for_comparison(text)
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:

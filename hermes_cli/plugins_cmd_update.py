@@ -291,6 +291,7 @@ def cmd_trust_update_url(name: str) -> None:
 def cmd_check_updates(args: Any | None = None) -> None:
     """Read-only: is any installed plugin outdated? NEVER mutates."""
     from rich.console import Console
+    from rich.markup import escape
     from rich.table import Table
 
     console = Console()
@@ -324,7 +325,7 @@ def cmd_check_updates(args: Any | None = None) -> None:
         elif r.update_available is False:
             status = "[dim]up to date[/dim]"
         else:
-            status = f"[yellow]unknown[/yellow]\n[dim]{r.reason}[/dim]"
+            status = f"[yellow]unknown[/yellow]\n[dim]{escape(r.reason or '')}[/dim]"
         table.add_row(
             r.name, r.klass, (r.current or "-")[:12], r.latest or "-", status
         )

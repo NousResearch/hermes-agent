@@ -279,7 +279,9 @@ class CLIInfoMixin:
         except Exception:
             return False
         agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
+        def route(field):
+            return getattr(agent, field, None) or getattr(self, field, None)
+        return model_supports_fast_mode(route("model"), provider=route("provider"), base_url=route("base_url"))
 
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":

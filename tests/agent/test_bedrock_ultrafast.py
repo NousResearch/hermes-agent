@@ -9,7 +9,7 @@ import json
 import httpx
 import pytest
 
-from hermes_cli.models import resolve_fast_mode_overrides
+from hermes_cli.models import model_supports_fast_mode, resolve_fast_mode_overrides
 
 MODEL = "openai.gpt-6.1-sol"
 BASE = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
@@ -68,6 +68,8 @@ def _turn_route(cfg, runtime, surface):
 @pytest.mark.parametrize("auth", ["bearer", "iam"])
 @pytest.mark.parametrize("stream", [False, True])
 def test_config_tier_reaches_real_sdk_preserving_off_body(tmp_path, monkeypatch, surface, auth, stream):
+    pytest.importorskip("botocore.credentials", reason="botocore (bedrock extra) required")
+    pytest.importorskip("boto3", reason="boto3 (bedrock extra) required")
     from botocore.credentials import Credentials
     import boto3
     from agent.codex_runtime import _consume_codex_event_stream
@@ -171,3 +173,15 @@ def test_cli_explicit_ultrafast_is_available_on_supported_mantle_route(monkeypat
     monkeypatch.setattr("hermes_cli.cli_commands_mixin._retire_agent", lambda cli: None)
     HermesCLI._handle_fast_command(shell, "/fast ultrafast")
     assert shell.service_tier == "ultrafast"
+
+
+def test_fast_capability_is_reported_only_on_the_mantle_route():
+    """``/fast`` and the ACP speed picker ask ``model_supports_fast_mode``: Sol is fast only where the
+    request builder sends the tier, never by model name alone."""
+    from cli import HermesCLI
+    assert model_supports_fast_mode(MODEL, provider="bedrock", base_url=BASE)
+    for provider, base in ((None, None), ("bedrock", None), ("bedrock", BASE.replace("us-east-1", "us-west-2")),
+                           ("openai", "https://api.openai.com/v1"), ("openrouter", BASE)):
+        assert not model_supports_fast_mode(MODEL, provider=provider, base_url=base), (provider, base)
+        shell = SimpleNamespace(model=MODEL, provider=provider, base_url=base, agent=None)
+        assert not HermesCLI._fast_command_available(shell), (provider, base)

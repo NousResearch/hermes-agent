@@ -1,0 +1,28 @@
+name: meridian
+repo: https://github.com/unifyWeb3/meridian
+sha: e876f60cd59ada85e2e85a5a2d510ae2cdcc9901
+subdir: ""
+description: "Finds and verifies the implicit state machines hiding in a codebase; enforces the accepted ones in CI. Meridian discovers status/state fields, anchors every state and transition to file:line (Python AST; TS/JS lexical, unguarded), flags unreachable and dead states, and gates on a human-reviewable .meridian.yaml spec (check exits 1 on violation, 2 when nothing is enforced). Every check event is appended to a SHA-256 hash-chained log for audit. No model calls, no network, no dependencies beyond stdlib. Disclosure - post_tool_call observes tools whose names contain write/edit/patch/replace/create/editor and re-runs the local analyzer only when a .meridian.yaml governs the repo (advisory; never blocks or approves); the ledger under HERMES_HOME/plugin-data/meridian/ stores event names, machine ids, aggregate counts and repository/spec/report paths (never verdicts, never file:line anchors, never file contents); its chain is unkeyed SHA-256, so it detects edits but can be recomputed by anyone with write access; no telemetry; no background processes."
+maintainer: unifyWeb3
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.4"
+title: Meridian
+docs_url: https://github.com/unifyWeb3/meridian#readme
+readme: true
+platforms: [linux, macos, windows]
+image: https://raw.githubusercontent.com/unifyWeb3/meridian/e876f60cd59ada85e2e85a5a2d510ae2cdcc9901/docs/banner.svg
+capabilities:
+  provides_tools:
+    - meridian_scan
+    - meridian_verify
+    - meridian_diagram
+    - meridian_spec
+    - meridian_ledger
+    - meridian_report
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -682,8 +682,8 @@ def _reconcile_local_cached_context_length(model: str, base_url: str, cached: in
 
 def is_local_endpoint(base_url: str) -> bool:
     """True for loopback, container-internal DNS, unqualified hosts, RFC-1918,
-    link-local and Tailscale CGNAT (so a trusted Ollama box over Tailscale gets
-    the same timeout auto-bumps as localhost)."""
+    link-local and Tailscale, by CGNAT address or MagicDNS ``*.ts.net`` name (so a
+    trusted Ollama box over Tailscale gets the same timeout auto-bumps as localhost)."""
     try:
         parsed = _parse_base_url(base_url)
         host = parsed.hostname or "" if parsed is not None else None
@@ -692,9 +692,9 @@ def is_local_endpoint(base_url: str) -> bool:
     if host is None:
         return False
     # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
-    # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
-    # they are excluded here and classified by scope below (a global address is not local).
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
+    # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only) and `*.ts.net` (Tailscale MagicDNS, a 100.64/10
+    # name). IPv6 literals have no dots either, so they are classified by scope below (a global address is not local).
+    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith((".local", ".ts.net")) or (host and "." not in host and ":" not in host):
         return True
     try:
         addr = ipaddress.ip_address(host)

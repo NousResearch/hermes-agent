@@ -315,6 +315,30 @@ def test_tool_store_inside_a_package_stays_out_of_the_snapshot(tmp_path):
         assert not (destination / "tools" / entry).exists(), f"store entry {entry} copied into the snapshot"
 
 
+@pytest.mark.parametrize("find_section", [
+    '[tool.setuptools.packages.find]\ninclude=["pm"]\n',
+    '[tool.setuptools.packages.find]\ninclude=["*"]\n',
+    # No include key: setuptools defaults to ["*"], so the directory pass already
+    # matches ``locales`` and a second copy pass must not collide with it.
+    '[tool.setuptools.packages.find]\n',
+])
+def test_locale_catalogs_travel_with_the_core_snapshot(tmp_path, find_section):
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n' + find_section,
+        encoding="utf-8",
+    )
+    (core / "pm").mkdir()
+    (core / "locales").mkdir()
+    (core / "locales" / "en.yaml").write_text("hello: Hello\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "locales/en.yaml").read_text(encoding="utf-8") == "hello: Hello\n"
+
+
 def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
     core = tmp_path / "core"
     data = core / "agent" / "chromium-1208"

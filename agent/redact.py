@@ -22,6 +22,9 @@ from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_stri
 from agent.redact_control_split import mask_control_split_tokens
 from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder, redact_db_url_query_passwords
 from agent.redact_discord import _redact_discord_tokens
+from agent.redact_credential_stores import (
+    _AWS_CREDENTIAL_PROCESS_KEY_RE, _LINE_NUMBER_GUTTER, _SECRET_CFG_NAMES, redact_credential_store_lines,
+)
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
@@ -288,12 +291,6 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # (contains a dot), which is unambiguously a config key — never a prose word. 3. _CFG_ANCHORED_RE matches a
 # bare secret-word key only at line start (optionally after ``export``), so conversational ``I have
 # password=foo`` mid-sentence is left alone.
-_SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
-# Rendered line-number prefix: ``5|line`` (read_file), ``6:line`` (grep -n), ``7-line`` (grep -A/-B/-C
-# context lines) and ``     8\tline`` (cat -n / nl: right-aligned number + TAB). Callers put the ONLY
-# leading ``[ \t]*`` in front of it — stacking a second whitespace run around an optional gutter made
-# the anchored passes quadratic on long indented lines (2s per 5k spaces).
-_LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
 # Linear pre-gate for the _CFG_*_RE subs: no secret keyword => neither can match.
 _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
@@ -459,8 +456,6 @@ def _looks_like_opaque_credential(value: str) -> bool:
 
 
 _CONFIG_LITERAL_VALUES = frozenset({"true", "false", "yes", "no", "on", "off", "null", "none"})
-# The key group of the INI pass carries the gutter and the ``=`` separator.
-_AWS_CREDENTIAL_PROCESS_KEY_RE = re.compile(r"(?:^|[^\w.\-])credential_process[ \t]*=?[ \t]*$")
 
 
 def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> bool:
@@ -1489,58 +1484,10 @@ def _redact_userinfo_passwords(text: str) -> str:
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
 
 
-# Credential-store lines that have no ``KEY=value`` shape, so the assignment passes miss them:
-# ``.netrc`` (``machine h login u password X``), ``.pgpass`` (``host:port:db:user:X``)
-# and ``.npmrc`` (``//registry/:_authToken=X``); a netrc password may be a quoted token with
-# spaces. ``.git-credentials`` URL userinfo is masked by _redact_userinfo_passwords on every read.
-# They run only for a source already classified as secret-bearing. Each is shaped so ``.env``,
-# shell rc and config.yaml lines do not match: ``PATH=/a:/b:/c:/d:/e`` carries ``=`` in its first
-# field and a ``# password ...`` comment does not start with a netrc keyword.
-# A netrc line is ``keyword value`` pairs, several ``machine`` entries may share one line.
-_NETRC_LINE_RE = re.compile(
-    rf"^([ \t]*{_LINE_NUMBER_GUTTER})((?:machine|default|login|account|port|password)\b[^\r\n]*)", re.MULTILINE,
-)
-_NETRC_TOKEN_RE = re.compile(r'"[^"\r\n]*"?|\S+')
-_CREDENTIAL_STORE_RES = (
-    re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{4}})(\S[^\r\n]*)", re.MULTILINE),
-    # npm expands ``${NAME}`` / ``${NAME?}`` here: that reference names a variable, it is not the secret.
-    re.compile(r'(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(?!"?\$\{\w+\??\}"?(?:\s|$))(\S+)'),
-)
-# INI ``password = X`` (``.pypirc``, ``~/.aws/credentials``): the anchored config pass only accepts
-# ``key=value`` with no spaces around ``=``, and stops ``password=a b`` at the first space. The value
-# runs to end of line: configparser keeps internal spaces.
-_INI_SPACED_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*(?:[ \t]+=[ \t]*|=[ \t]+|=(?=\S+[ \t]+[^\s#])))(\S(?:[^\r\n]*\S)?)",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
 def _redact_credential_store_lines(text: str, *, mask_nonreusable: bool) -> str:
-    """Mask the value of every credential-store line (see ``_CREDENTIAL_STORE_RES``). Only
-    for ``secret_file`` sources: in a credential store the value is a secret whatever it
-    looks like, so a weak human password is masked too."""
+    """``secret_file``-only credential-store pass (agent/redact_credential_stores.py)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
-
-    def _sub(m):
-        value = m.group(2)
-        if value == "***" or value.startswith("«redacted"):
-            return m.group(0)
-        return m.group(1) + mask(value)
-
-    def _netrc_sub(m):
-        line, out, pos, after_password = m.group(2), [], 0, False
-        for tok in _NETRC_TOKEN_RE.finditer(line):
-            value = tok.group(0)
-            if after_password and value[0] not in "=:" and value != "***" and not value.startswith("«redacted"):
-                out.append(line[pos:tok.start()] + mask(value))
-                pos = tok.end()
-            after_password = not after_password and value == "password"
-        return m.group(1) + "".join(out) + line[pos:]
-
-    text = _NETRC_LINE_RE.sub(_netrc_sub, text)
-    for pattern in _CREDENTIAL_STORE_RES:
-        text = pattern.sub(_sub, text)
-    return _INI_SPACED_ASSIGN_RE.sub(_assignment_sub(lambda g: f"{g[0]}{mask(g[1])}", check_keyword=True), text)
+    return redact_credential_store_lines(text, mask, lambda k, v: _should_redact_assignment(k, v, check_keyword=True))
 
 
 def _redact_url_credentials(text: str, code_file: bool, *, file_read: bool = False) -> str:

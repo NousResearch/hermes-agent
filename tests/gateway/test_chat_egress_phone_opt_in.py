@@ -23,7 +23,7 @@ SECRETS = {
     "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEow" + "IBAAKCAQEA" * 6 + "\n-----END RSA PRIVATE KEY-----",
 }
 _BODY = {
-    "openai_key": "Zq8Xw7Vu6Ts5Rq4Po3Nm",
+    "openai_key": "a1B2c3D4e5F6g7H8i9J0",
     "bearer_opaque": "Zq8Xw7Vu6Ts5Rq4Po3Nm",
     "db_connstr": "Hunter2PwHunter2Pw",
     "env_assignment": "Tr0ub4dorTr0ub4dor",
@@ -50,6 +50,7 @@ def _replies(text):
 @pytest.mark.parametrize("redact_secrets", [True, False])
 def test_opt_in_keeps_the_phone_number_and_masks_every_other_secret(home, redact_secrets):
     home({"redact_phone_numbers": "false", "redact_secrets": str(redact_secrets).lower()})
+    assert all(body in SECRETS[name] for name, body in _BODY.items())
     for name, secret in SECRETS.items():
         for surface, out in _replies(f"Call {PHONE} now. {secret} done.").items():
             assert PHONE in out, (surface, out)
@@ -63,3 +64,4 @@ def test_phone_numbers_stay_masked_unless_explicitly_false(home, security):
     for surface, out in _replies(f"Call {PHONE} now.").items():
         assert PHONE not in out, (surface, out)
         assert PHONE[:4] + "****" + PHONE[-4:] in out, (surface, out)
+

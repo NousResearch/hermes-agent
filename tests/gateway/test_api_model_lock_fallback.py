@@ -8,12 +8,11 @@ import asyncio
 import json
 import os
 from pathlib import Path
-import socket
 
 import aiohttp
 import pytest
 
-from tests.gateway.fixtures.local_recovery_probe import child_env, daemon
+from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, listen_port
 from tests.gateway.test_managed_worker_construct import Backup, Primary, _serve
 
 
@@ -26,9 +25,7 @@ def test_locked_session_chat_does_not_fall_back_to_the_profile_chain(tmp_path):
     primary, backup = _serve(Primary), _serve(Backup)
     primary.refuse = True
     purl, burl = (f'http://127.0.0.1:{s.server_port}/v1' for s in (primary, backup))
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        api_port = sock.getsockname()[1]
+    api_port = listen_port()
     config = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': purl},
               'gateway': {'multiplex_profiles': False,
                           'platforms': {'api_server': {'enabled': True, 'port': api_port, 'host': '127.0.0.1'}}},

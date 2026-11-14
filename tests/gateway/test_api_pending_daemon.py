@@ -5,12 +5,11 @@ import json
 import shlex
 import os
 from pathlib import Path
-import socket
 import threading
 
 import aiohttp
 
-from tests.gateway.fixtures.local_recovery_probe import daemon, websocket, rpc
+from tests.gateway.fixtures.local_recovery_probe import daemon, websocket, rpc, listen_port
 
 
 class PromptPeer(BaseHTTPRequestHandler):
@@ -57,8 +56,7 @@ def test_api_and_ws_pending_controls_share_identity(tmp_path):
     peer.target.mkdir()
     (peer.target / 'owned.txt').write_text('owned')
     threading.Thread(target=peer.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+    port = listen_port()
     base = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'model': {'provider': 'custom', 'default': 'local-wire-stub', 'base_url': base},
            'gateway': {'platforms': {'api_server': {'enabled': True, 'port': port, 'host': '127.0.0.1'}}, 'multiplex_profiles': False},

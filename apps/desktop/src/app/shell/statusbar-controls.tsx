@@ -113,7 +113,9 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
       <ContextMenuTrigger asChild>
         <footer
           className={cn(
-            'flex h-5 shrink-0 items-stretch justify-between gap-2 bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
+            // Grow by the bottom safe-area inset so installed Android PWAs clear
+            // gesture navigation; env() is 0 on desktop so the bar stays h-5.
+            'flex h-[calc(1.25rem+env(safe-area-inset-bottom,0px))] shrink-0 items-stretch justify-between gap-2 bg-(--ui-sidebar-surface-background) px-1 pt-0 pb-[env(safe-area-inset-bottom,0px)] text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
             className
           )}
           data-slot="statusbar"

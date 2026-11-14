@@ -1203,3 +1203,16 @@ async def test_aiohttp_access_line_never_writes_a_query_credential_to_disk(herme
     log = (hermes_home / "logs" / "agent.log").read_text(encoding="utf-8-sig")
     assert "/p/work/bluebubbles-webhook?password=***&event=new-message" in log
     assert secret not in log
+
+
+def test_strict_url_pass_stays_off_ordinary_log_lines():
+    """Only aiohttp's access line gets the strict pass: magic-link / OAuth URLs in other lines are
+    meant to survive (the redactor's documented web-URL policy)."""
+    from agent.redact import RedactingFormatter
+
+    fmt = RedactingFormatter("%(message)s")
+    line = "open https://example.com/magic?token=abcdef123456 to continue"
+    formatted = {name: fmt.format(logging.LogRecord(name, logging.INFO, __file__, 1, line, None, None))
+                 for name in ("aiohttp.access", "gateway.run")}
+    assert "magic?token=***" in formatted["aiohttp.access"]
+    assert "magic?token=abcdef123456" in formatted["gateway.run"]

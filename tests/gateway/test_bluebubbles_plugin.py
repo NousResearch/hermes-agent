@@ -588,6 +588,33 @@ class TestBlueBubblesErrorTextNeverCarriesThePassword:
         assert "401 Unauthorized" in result.error
         assert "password=secret" not in result.error
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["register", "unregister", "upload", "download"])
+    async def test_every_rest_failure_masks_password(self, monkeypatch, caplog, tmp_path, path):
+        """Real httpx 401s (MockTransport) through each remaining REST path's log line or SendResult."""
+        adapter = _make_adapter(monkeypatch)
+        listed = [{"id": 7, "url": adapter._webhook_register_url}] if path == "unregister" else []
+
+        def answer(request):
+            if request.method == "GET" and request.url.path == "/api/v1/webhook":
+                return httpx.Response(200, json={"data": listed})
+            return httpx.Response(401)
+        adapter.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        attachment = tmp_path / "a.txt"
+        attachment.write_bytes(b"x")
+        calls = {
+            "register": adapter._register_webhook,
+            "unregister": adapter._unregister_webhook,
+            "upload": lambda: adapter._send_attachment("iMessage;-;chat-1", str(attachment)),
+            "download": lambda: adapter._download_attachment("att-1", {}),
+        }
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.bluebubbles.adapter"):
+            result = await calls[path]()
+        await adapter.client.aclose()
+        text = caplog.text + str(getattr(result, "error", ""))
+        assert "401 Unauthorized" in text
+        assert "password=secret" not in text
+
 
 
 

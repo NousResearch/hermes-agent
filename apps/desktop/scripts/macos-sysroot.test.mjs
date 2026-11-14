@@ -51,7 +51,7 @@ it('resolves an explicit SDKROOT path or name through xcrun before any developer
     expect(macosSysroot(override)).toBe(pinned)
     expect(exec).toHaveBeenCalledWith('xcrun', ['--sdk', SDKROOT, '--show-sdk-path'], opts(override))
     expect(exec).not.toHaveBeenCalledWith('xcode-select', expect.anything(), expect.anything())
-    expect(xcrunClangArgv(pinned)).toEqual(['clang', '-isysroot', pinned])
+    expect(xcrunClangArgv(pinned)).toEqual(['--sdk', pinned, 'clang', '-isysroot', pinned])
   }
   expect(warn).not.toHaveBeenCalled()
 })
@@ -68,6 +68,7 @@ it('reports a stale SDKROOT and falls back to the toolchain default instead of f
   ]) {
     toolchain(answer)
     expect(macosSysroot({ ...env, SDKROOT })).toBe(paired)
+    expect(xcrunClangArgv(paired)).toEqual(['--sdk', paired, 'clang', '-isysroot', paired])
     expect(warn).toHaveBeenLastCalledWith(expect.stringContaining(`SDKROOT=${SDKROOT}`))
   }
   expect(warn).toHaveBeenCalledTimes(3)

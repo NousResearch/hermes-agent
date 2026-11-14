@@ -73,14 +73,17 @@ def _verify_one(entry: dict, payload_b64: str, trusted: dict) -> bool:
     try:
         header = json.loads(_b64url_decode(protected_b64))
         signature = _b64url_decode(signature_b64)
-    except Exception:
+    except (ValueError, TypeError):
+        # A malformed protected header or signature is not a valid JWS: base64 decoding raises
+        # binascii.Error (a ValueError) on bad padding, json.loads raises JSONDecodeError
+        # (also a ValueError).
         return False
     if not isinstance(header, dict):
         return False
     alg = header.get("alg")
     if not isinstance(alg, str) or alg not in _ALLOWED_ALGS:
         return False
-    import jwt.algorithms as algorithms
+    from jwt import algorithms
 
     registry = algorithms.get_default_algorithms()
     if alg not in registry:
@@ -105,6 +108,12 @@ def _verify_one(entry: dict, payload_b64: str, trusted: dict) -> bool:
             if algo.verify(signing_input, key, signature):
                 return True
         except Exception:
+            # A trusted key that cannot be loaded (malformed JWK, unsupported curve, a bad
+            # signature encoding) must not abort the whole card check: another candidate key
+            # may still verify. The traceback is logged because a key the operator configured
+            # that cannot be used is a configuration error worth seeing.
+            logger.warning("A2A: trusted signer %r could not verify the card signature", kid,
+                           exc_info=True)
             continue
     return False
 
@@ -141,7 +150,9 @@ def verify_card_signatures(card: dict, trusted_signers: dict, *, require: bool) 
 
     try:
         payload_b64 = _b64url_encode(canonicalize(card))
-    except Exception as exc:
+    except (ValueError, TypeError) as exc:
+        # canonicalize raises ValueError for a float / NaN / Infinity and for a string that is
+        # not UTF-8 encodable, and TypeError for a member json.dumps cannot serialise.
         return False, f"card could not be canonicalised: {exc}"
     for entry in signatures:
         if isinstance(entry, dict) and _verify_one(entry, payload_b64, trusted_signers):
@@ -167,7 +178,8 @@ def load_trusted_signers(raw: str) -> dict:
             return {}
     try:
         data = json.loads(text)
-    except Exception as exc:
+    except ValueError as exc:
+        # JSONDecodeError is a ValueError; a malformed JWKS must fail inert, not block peers.
         logger.warning("A2A: A2A_TRUSTED_SIGNERS is not valid JSON: %s", exc)
         return {}
     keys = data.get("keys") if isinstance(data, dict) else None

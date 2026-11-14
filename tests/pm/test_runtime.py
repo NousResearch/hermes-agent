@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from pm.environments import site_packages
+
 
 def test_pm_runtime_discovers_plugins_without_application_dependencies(tmp_path, monkeypatch):
     from pm.runtime import prepare_runtime
@@ -190,6 +192,11 @@ def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkey
 
     assert launch(home / "tools") == runtime._python(old)
     current = launch(task / "tools", bootstrap=True)  # a per-task home that was already churning re-stages once
+    marker = json.loads((current.parent.parent / "pm-runtime.json").read_text())
+    assert marker["inputs"]
+    assert marker["python"] == current.relative_to(current.parent.parent).as_posix()
+    expected_site_packages = site_packages(current.parent.parent).relative_to(current.parent.parent).as_posix()
+    assert marker["sitePackages"] == expected_site_packages
     for tools in (home / "tools", task / "tools", real, home / "tools"):
         assert launch(tools) == current
     assert len(staged) == 1

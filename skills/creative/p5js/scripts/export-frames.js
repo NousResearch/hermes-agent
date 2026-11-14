@@ -56,6 +56,7 @@ const MIME_TYPES = {
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.mp4': 'video/mp4',
   '.txt': 'text/plain', '.csv': 'text/csv', '.glsl': 'text/plain', '.frag': 'text/plain',
   '.vert': 'text/plain', '.obj': 'text/plain',
+  '.wasm': 'application/wasm',  // WebAssembly.instantiateStreaming rejects any other type
 };
 
 function apparmorRestrictsUserns() {

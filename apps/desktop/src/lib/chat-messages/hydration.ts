@@ -674,11 +674,15 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const failure = message.display_kind === 'failed_turn' ? failedTurnError(message.display_metadata) : null
+    // Both display rows represent one persisted message; compute its identity
+    // once even when older transcripts have no timestamp (Date.now() can tick
+    // between two separate calls).
+    const rowIdentity = `${message.timestamp || Date.now()}-${index}`
 
     if (failure) {
       // Stands for no backend row of its own; the boundary row below counts itself.
       result.push({
-        id: `${message.timestamp || Date.now()}-${index}-failed-turn-error`,
+        id: `${rowIdentity}-failed-turn-error`,
         role: 'assistant',
         parts: [],
         pending: false,
@@ -696,7 +700,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      id: `${rowIdentity}-${displayRole}`,
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),

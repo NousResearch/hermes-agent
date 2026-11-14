@@ -103,6 +103,95 @@ it('recovers only the uncommitted journal suffix until the complete reply become
   expect(readInFlightTurnJournal(state.storedSessionId)).toBeNull()
 })
 
+it('retires a rewritten journal prompt by durable identity after the transcript advances', () => {
+  const base = toChatMessages([
+    prompt,
+    ...round(2, 'Checking the file.'),
+    { id: 4, role: 'assistant', content: 'Done.', timestamp: 4 },
+    { id: 5, role: 'user', content: 'The next question', timestamp: 5 },
+    ...round(6, 'Still working.')
+  ])
+
+  const journaled: ChatMessage[] = [
+    {
+      id: 'user-inflight-old',
+      rowId: prompt.id,
+      role: 'user',
+      attachmentRefs: ['@file:client-notes.txt'],
+      parts: [{ type: 'text', text: 'The client-side prompt before rewriting' }]
+    },
+    {
+      id: 'assistant-stream-old-sealed',
+      role: 'assistant',
+      interim: true,
+      parts: [
+        { type: 'text', text: 'Checking the file.' },
+        { type: 'tool-call', toolCallId: 'tool-2', toolName: 'read_file', args: {} }
+      ]
+    },
+    { id: 'assistant-stream-old-tail', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'Done.' }] }
+  ]
+
+  persistInFlightTurnState({
+    storedSessionId: 'advanced-session',
+    messages: journaled,
+    busy: true,
+    awaitingResponse: false,
+    streamId: journaled.at(-1)!.id,
+    turnStartedAt: 1000
+  })
+  vi.advanceTimersByTime(400)
+
+  const result = recoverInFlightTurnJournal('advanced-session', base, { keepPending: true })
+  expect(result.caughtUp).toBe(true)
+  expect(result.applied).toBe(false)
+  expect(result.messages).toBe(base)
+  expect(result.streamId).toBeNull()
+  expect(readInFlightTurnJournal('advanced-session')).toBeNull()
+  expect(recoverInFlightTurnJournal('advanced-session', base).messages).toBe(base)
+})
+
+it('preserves an unknown journal occurrence despite older matching prose or reused tool ids', () => {
+  const base = toChatMessages([
+    prompt,
+    ...round(2, 'Checking the file.'),
+    { id: 4, role: 'assistant', content: 'Done.', timestamp: 4 },
+    { id: 5, role: 'user', content: 'The next question', timestamp: 5 },
+    ...round(6, 'Still working.')
+  ])
+
+  for (const [toolCallId, conclusion, rowId] of [
+    ['new-tool', 'Done.', undefined],
+    ['tool-2', 'Done.', undefined],
+    ['tool-2', 'An uncommitted conclusion', undefined],
+    ['tool-2', 'Done.', 99]
+  ] as const) {
+    const tail: ChatMessage = {
+      id: 'assistant-stream-new',
+      role: 'assistant',
+      rowId,
+      pending: true,
+      parts: [
+        { type: 'text', text: 'Checking the file.' },
+        { type: 'tool-call', toolCallId, toolName: 'read_file', args: {} },
+        { type: 'text', text: conclusion }
+      ]
+    }
+
+    const unknownPrompt: ChatMessage = {
+      id: 'new-user',
+      rowId: 99,
+      role: 'user',
+      parts: [{ type: 'text', text: prompt.content as string }]
+    }
+
+    const result = mergeInFlightMessages(base, [unknownPrompt, tail], { keepPending: true })
+    expect(result.caughtUp).toBe(false)
+    expect(result.messages.at(-1)?.parts).toEqual(tail.parts)
+    expect(result.streamId).toBe(tail.id)
+  }
+})
+
 it.each(['missing prompt', 'repeated prompt', 'no prompt'])(
   'does not clear an unknown journal occurrence by global text: %s',
   shape => {

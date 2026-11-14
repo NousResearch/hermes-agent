@@ -1,0 +1,22 @@
+name: elm
+repo: https://github.com/Miawd3/ELM-Hermes-plugin
+sha: 25100b248790813861282e71e376d371264c1787
+subdir: elm
+description: Local source-backed memory with bounded retrieval and explicit human control.
+maintainer: Miawd3
+tier: community
+category: memory
+requires_hermes: ">=0.22.7"
+version: "0.1.0-rc1"
+title: "ELM for Hermes"
+readme: true
+known_issues:
+  - Experimental candidate; current-host workspace ownership API is missing and root tests are not green.
+  - Private Hermes imports require review; catalog validation does not establish functional compatibility.
+  - Measured token accounting needs the optional pinned tokenizer and local vocabularies.
+  - Plugin-code update controls are disabled; use Hermes native catalog updates.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

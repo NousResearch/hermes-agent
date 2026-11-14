@@ -640,6 +640,7 @@ export async function loadArtifactsForSessions(
           }
         } catch (error) {
           collectError = error
+
           break
         }
 

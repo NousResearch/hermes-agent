@@ -972,16 +972,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
-  // A turn normally persists its user row before inference begins. session.resume
-  // then returns that stored row *and* the still-live inflight projection; adding
-  // both makes a backgrounded prompt appear twice when its session is reopened.
-  // Only suppress the projection when the latest authoritative user row is the
-  // same turn — older identical prompts must not hide a newly accepted repeat.
-  // A mid-turn redirect gives that turn a RUN of user rows (prompt +
-  // corrections). Arrival order seals already-streamed output BETWEEN those
-  // rows (#73793), so collect the run by walking back over the live tail:
-  // user rows count, live-tail assistant rows are skipped, and a committed
-  // assistant reply ends the turn.
+  // Activation may replay a persisted prompt; only the latest user run counts.
   const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
   const latestUserRun: ChatMessage[] = []
 
@@ -1006,27 +997,36 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
     )
 
+  // Synthetic wakes persist as system rows; match only this turn's typed notice.
+  const displayKind = projection.inflight?.display_kind
+  const typed = inflightUser
+    ? toChatMessages([
+        {
+          role: 'user',
+          content: inflightUser,
+          ...(displayKind ? { display_kind: displayKind } : {}),
+          ...(displayKind && projection.inflight?.display_metadata !== undefined
+            ? { display_metadata: projection.inflight.display_metadata }
+            : {})
+        }
+      ])
+    : []
+
+  const notice = typed.find(message => message.role === 'system')
+  const persistedNotice = notice
+    ? messages.some(
+        message =>
+          message.role === notice.role &&
+          chatMessageText(message) === chatMessageText(notice) &&
+          committedDuringTurn(projection.turn_started_at, message.timestamp)
+      )
+    : false
+
   const inflightUserAlreadyPersisted =
-    projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
+    projection[safelyPersistedInflightUser] === true ||
+    (Boolean(inflightUser) && (persistedInLatestRun(inflightUser) || persistedNotice))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    // Project the prompt through the same conversion history uses, so the live
-    // bubble matches its persisted twin: attachment refs lift into the chip row,
-    // and a synthetic starting prompt (process_complete, hidden, …) takes the
-    // display typing its row will get (#112144) — `hidden` yields nothing.
-    const displayKind = projection.inflight?.display_kind
-
-    const typed = toChatMessages([
-      {
-        role: 'user',
-        content: inflightUser,
-        ...(displayKind ? { display_kind: displayKind } : {}),
-        ...(displayKind && projection.inflight?.display_metadata !== undefined
-          ? { display_metadata: projection.inflight.display_metadata }
-          : {})
-      }
-    ])
-
     projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
   }
 

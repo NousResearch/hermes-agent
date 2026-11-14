@@ -161,27 +161,16 @@ for ex in data.get('results',[]):
 Uses `USDA_API_KEY` env var if set, otherwise falls back to `DEMO_KEY`.
 DEMO_KEY = 30 requests/hour. Free signup key = 1,000 requests/hour.
 
+Use `terminal` to run the bundled helper from the skill directory:
+
 ```bash
-# Search foods by name
-FOOD="$1"
-API_KEY="${USDA_API_KEY:-DEMO_KEY}"
-ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FOOD")
-curl -s "https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${API_KEY}&query=${ENCODED}&pageSize=5&dataType=Foundation,SR%20Legacy" \
-  | python -c "
-import json,sys
-data=json.load(sys.stdin)
-foods=data.get('foods',[])
-if not foods: print('No foods found.'); sys.exit()
-for f in foods:
-    n={x['nutrientName']:x.get('value','?') for x in f.get('foodNutrients',[])}
-    cal=n.get('Energy','?'); prot=n.get('Protein','?')
-    fat=n.get('Total lipid (fat)','?'); carb=n.get('Carbohydrate, by difference','?')
-    print(f\"{f.get('description','N/A')}\")
-    print(f\"  Per 100g: {cal} kcal | {prot}g protein | {fat}g fat | {carb}g carbs\")
-    print(f\"  FDC ID: {f.get('fdcId','N/A')}\")
-    print()
-"
+python scripts/nutrition_search.py "chicken breast"
 ```
+
+The helper selects nutrients by USDA ID and unit, not their display names.
+Calories prefer Energy (1008), then Atwater general (2047), then Atwater
+specific (2048), accepting only kcal values. Missing values remain `?`;
+kJ values are never labeled as kcal. Sugar uses Total Sugars (2000).
 
 ```bash
 # Detailed nutrient profile by FDC ID

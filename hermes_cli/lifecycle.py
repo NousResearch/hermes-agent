@@ -65,6 +65,24 @@ def has_hook(hook_name: str) -> bool:
     return plugins.has_hook(hook_name)
 
 
+def hook_known_unused(hook_name: str) -> bool:
+    """True when nothing in the active profile can consume *hook_name*, decided without loading
+    plugins or reading config, so an event loop may ask before spending a thread on it: safe mode,
+    or this profile's plugins already loaded with none registered for a hook no first-party observer
+    handles. False means it may be consumed: ask :func:`has_hook` off the loop."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return True
+    from hermes_cli.observability.relay_shared_metrics import HANDLED_HOOKS
+
+    if hook_name in HANDLED_HOOKS:
+        return False
+    from hermes_cli import plugins
+
+    return plugins.hook_unused_nowait(hook_name)
+
+
 def session_end_messages(results: Any) -> list[str]:
     """User-facing text from ``on_session_finalize`` results: a non-empty ``str`` or ``{"message": str}``.
 

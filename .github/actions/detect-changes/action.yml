@@ -112,12 +112,13 @@ runs:
           # die with "cannot iterate over: null", which fails every retry
           # and forces the fail-open path (seen on stacked PRs). The full
           # file list (up to the API's 300-file cap) is on page one.
+          # One line per file: the path, then the old path of a rename.
           CHANGED=""
           for i in 1 2 3; do
             if CHANGED="$(gh api \
               --paginate \
               "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
-              --jq '.files[]?.filename')"; then
+              --jq '.files[]? | [.filename, .previous_filename // empty] | @tsv')"; then
               break
             fi
             if [ "$i" = 3 ]; then

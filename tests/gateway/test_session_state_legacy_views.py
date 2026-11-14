@@ -18,6 +18,14 @@ MIGRATED = (
     "_pending_native_image_paths_by_session",
     "_session_ephemeral_pin",
     "_session_vc_last",
+    "_session_reasoning_overrides",
+    "_last_resolved_model",
+    "_update_prompt_pending",
+    "_session_run_generation",
+    "_running_agents_ts",
+    "_busy_ack_ts",
+    "_queued_events",
+    "_pending_approvals",
 )
 
 

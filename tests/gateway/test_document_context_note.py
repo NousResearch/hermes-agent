@@ -44,7 +44,6 @@ class TestTextDocumentNote:
         )
         runner.adapters = {}
         runner._session_model_overrides = {}
-        runner._session_reasoning_overrides = {}
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="text-document",
@@ -92,3 +91,21 @@ class TestBinaryDocumentNote:
         # ...and does NOT steer it into punting back to the user (the bug).
         assert "ask the user" not in note.lower()
 
+
+
+@pytest.mark.asyncio
+async def test_unflagged_text_document_is_not_claimed_inlined():
+    """An adapter that never sets ``media_text_inlined`` (LINE, Signal, ...) did not inject the text."""
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform("line"): PlatformConfig(enabled=True, token="fake")})
+    runner.adapters = {}
+    runner._session_model_overrides = {}
+    source = SessionSource(platform=Platform("line"), chat_id="u1", chat_type="dm", user_id="u1", user_name="u1")
+    event = MessageEvent(text="[file]", message_type=MessageType.DOCUMENT, source=source,
+                         media_urls=["/cache/doc_items.csv"], media_types=["text/csv"])
+
+    prepared = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert "included below" not in prepared
+    assert "/cache/doc_items.csv" in prepared
+    assert "read the cached file" in prepared.lower()

@@ -79,7 +79,7 @@ jobs:
       # runs its own dependency install inside the sandbox.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       - name: Run the update suite under xvfb
         working-directory: apps/desktop

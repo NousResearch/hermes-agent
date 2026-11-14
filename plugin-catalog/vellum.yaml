@@ -1,0 +1,41 @@
+name: vellum
+repo: https://github.com/0xsaltylollipop/vellum
+sha: 5e32982e9210379be52007ccdd84fbcc75ca6273
+description: >-
+  Vellum: Hermes draws inside the paper. Highlight a passage in an arXiv paper (HTML version) in Hermes's browser
+  and your own Hermes session gives you the gist like a friend at a whiteboard, talking while it sketches a live,
+  interactive figure right under the paragraph (built from the paper's own example and numbers); follow-ups, typed
+  or spoken, change the same sketch. Adds tools (vellum_draw / vellum_look / vellum_clear / vellum_read), a skill,
+  hooks on turns started from the paper, a Desktop plugin and dashboard routes under /api/plugins/vellum/.
+  Disclosure — reads arXiv HTML pages (arxiv.org/html, ar5iv) with Desktop's per-site consent and saves the open
+  paper's text when you switch it on; puts Visualize/Ask drafts into your chat box for you to send (never submits a
+  turn itself); the highlighted passage and nearby paper text go to your configured model as part of that turn (the
+  full paper when Hermes calls vellum_read, and a picture of the figure when it calls vellum_look), marked as web
+  text; runs model-written drawing code only in a sandboxed iframe (opaque origin, CSP default-src none with scripts
+  pinned by hash plus 'unsafe-eval' for the drawing steps, WebRTC constructors removed; best effort, since CSP does
+  not cover a frame navigating itself); tools reach the card through plugin events (plugin.vellum.*); speaks with
+  Hermes's own text_to_speech, one call per spoken sentence and at most 60 per turn (Edge TTS by default, an online
+  service; a paid provider bills each sentence); stores the text of the 20 most recently opened papers, the ids of
+  the 50 most recent figure cards opened, the current Ask passage and short-lived request/voice files under
+  plugin-data/vellum; no telemetry, no credentials, no external CLIs, no downloads.
+title: "Vellum: Hermes draws inside the paper"
+maintainer: 0xsaltylollipop
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/0xsaltylollipop/vellum#readme
+version: "0.5.0"
+platforms: []
+capabilities:
+  provides_tools: [vellum_draw, vellum_look, vellum_clear, vellum_read]
+  provides_hooks: [pre_llm_call, pre_tool_call, on_stream_delta, on_stream_end, post_llm_call]
+  provides_middleware: []
+  requires_env: []
+image: https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/demo.gif
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/screenshots/1-attention.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/screenshots/2-multi-head.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/screenshots/3-positional-encoding.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/screenshots/4-scaling-laws.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/0acd510e4da609be152e98c5bf39dc94adf53a17/screenshots/5-grpo.jpg

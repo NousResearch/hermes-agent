@@ -1,7 +1,7 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_driver import HostedRoomBinding
+from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
@@ -43,12 +43,17 @@ class HostedControls:
         rpc = self._resolve_member_transport(binding, task)
         # Canonical receipt commits first. If the driver write fails, exact
         # RPC replay must recover it rather than invent another execution.
-        rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                    session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
-                    execution_generation=task['execution_generation'])
+        discarded = rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
+                                session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+                                execution_generation=task['execution_generation'])
         lease = self.runtime._ensure_lease(binding)
-        result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
-            binding, task, lease, cancel_id=cancel_id)
+        # Resolving the lost attempt may commit its retained answer: settle and publish that.
+        receipt = discarded_receipt(discarded or {}, task)
+        if receipt is not None:
+            result = self.runtime._resolve_indeterminate(binding, task, lease, receipt)
+        else:
+            result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
+                binding, task, lease, cancel_id=cancel_id)
         self.runtime._set_blocked(binding.room_id, False)
         self.runtime.wakeup()
         return result
@@ -89,6 +94,11 @@ class HostedControls:
             # A stalled room preparation, not an attempt: the shared service retries it.
             return super().retry_room_task(
                 room_id, task_id=task_id, member_id=member_id, execution_generation=execution_generation)
+        local = not self._member_is_peer(room_id, member_id)
+        if local:
+            # Every daemon is asked before the policy lock (a reverse RPC under it deadlocks real
+            # gateways); a deferred turn is never admitted meanwhile, and the requeue is fenced.
+            self._local_retry_probe(room_id, member_id, task_id, execution_generation)
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -97,20 +107,36 @@ class HostedControls:
                 raise RuntimeStoreError('unknown_execution')
             if task['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
-            if not self._member_is_peer(room_id, member_id):
-                return self._retry_local(binding, task, room_id)
+            if local:
+                lease = self.runtime._ensure_lease(binding)
+                return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
         return self._retry_peer(binding, task)
 
-    def _retry_local(self, binding, task, room_id):
-        rpc = self._resolve_member_transport(binding, task)
-        info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                        session_id=rpc.ref.session_id)
+    def _local_retry_probe(self, room_id, member_id, task_id, execution_generation):
+        """Refuse Retry while any home could still run this generation. A turn from before attempt
+        homes were recorded may run at an older home of its profile, which must first answer that
+        it holds nothing; then the home the Stop is asked at must be idle (unless it is gone)."""
+        from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
+        task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+        if task['status'] != 'deferred':
+            return  # refused under the lock
+        held = unsettled_legacy_homes(self, room_id, task)
+        if held:
+            raise RuntimeStoreError('session_busy', field='home', detail=(
+                f'an older home of this profile may still run this turn: {held[0]}'))
+        if moved_attempt_gone(self, room_id, task):
+            return
+        rpc, profile = self._resolve_member_transport(binding, task), task['payload']['target_profile']
+        ref = getattr(rpc, 'ref', None)
+        # A fresh transport to another profile's daemon learns its session id by resolving it.
+        session_id = ref.session_id if ref is not None else self.runtime._resume_exact(rpc, room_id, profile)
+        if session_id is None:
+            return  # that daemon answered: no room session, nothing runs
+        info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
         if info.get('status') == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if info.get('active'):
             raise RuntimeStoreError('session_busy')
-        lease = self.runtime._ensure_lease(binding)
-        return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
 
     def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key
@@ -135,20 +161,18 @@ class HostedControls:
             raise RuntimeStoreError(
                 exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
 
-    def status(self, room_id=None):
-        result = super().status(room_id)
-        if room_id is None:
-            return result
-        actions = [a for a in result['pending_actions']
-                   if a['kind'] != 'retry' or str(a.get('task_id', '')).startswith(RETRY_TASK_PREFIX)]
-        for task in tasks.list_tasks(self.db_path, room_id=room_id):
+    def _attempt_actions(self, room_id, tasks_shown):
+        """Exact controls on this gateway: Discard an unknown attempt, Retry a deferred one. A peer
+        member's unknown attempt is the peer's to control; its deferred one offers Retry and Discard.
+        Reads only the rows ``status`` already selected."""
+        actions = []
+        for task in tasks_shown:
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
             peer = self._member_is_peer(room_id, task_member_id(task))
             if task['status'] == 'indeterminate' and peer:
                 continue
-            actions.append(attempt_action(
-                'discard' if task['status'] == 'indeterminate' else 'retry', task))
+            actions.append(attempt_action('discard' if task['status'] == 'indeterminate' else 'retry', task))
             if peer:
                 actions.append(attempt_action('discard', task))
-        return {**result, 'pending_actions': actions}
+        return actions

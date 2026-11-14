@@ -10,7 +10,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
@@ -38,6 +38,7 @@ from pathlib import Path
 
 from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
+from hermes_cli._startup_fast import project_root_str
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -93,7 +94,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 
 _hermes_home = get_hermes_home()  # read by agent_init via _ra()._hermes_home
-_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent / '.env')
+_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 for _env_path in _loaded_env_paths:
     logger.info("Loaded environment variables from %s", _env_path)
 if not _loaded_env_paths:
@@ -123,7 +124,7 @@ from agent.vision_message_prep import VisionMessagePrepMixin
 from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import implicit_non_stream_stale_timeout
 from agent.message_sanitization import (
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
@@ -292,8 +293,9 @@ class AIAgent(
         advertised ``session_search`` tool stays usable."""
         # Persistence-isolated forks (background review) must not lazily open the canonical state DB —
         # that would re-arm the flush to write the fork's harness turn into the user's real session.
-        if getattr(self, "_persist_disabled", False):
-            return None
+        from tools.hosted_tool_policy import host_feature_enabled
+        if getattr(self, "_persist_disabled", False) or not host_feature_enabled("session_recall"):
+            return None  # hosted: the profile's state.db is not the agent's recall store
         if self._session_db is not None:
             return self._session_db
         try:
@@ -342,6 +344,13 @@ class AIAgent(
                 origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
+            if getattr(self, "_session_db_reserved", False) is True:
+                # A reserved child row already exists, and first-turn writers (prompt-refresh epoch,
+                # usage anchor) may have patched its model_config before this create, so the
+                # keep-existing upsert dropped the constructor config. Merge it beside them.
+                patch = {k: v for k, v in (self._session_row_model_config() or {}).items() if v is not None}
+                if patch:
+                    self._session_db.patch_session_model_config(self.session_id, patch)
             self._session_db_created = True
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
@@ -561,15 +570,17 @@ class AIAgent(
         """Effective non-stream stale timeout for ``api_payload`` (an ``api_kwargs`` dict or legacy ``messages``
         list), scaled by estimated context size and capped by the run budget."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
-        base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
-            return float("inf")
+        implicit = implicit_non_stream_stale_timeout(self, uses_implicit_default)
+        if implicit is not None:
+            return implicit
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
         from agent.gemini_long_decode import long_decode_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
-        timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
+        # The context tiers raise only an implicit base: an explicit value can shorten patience (#115024).
+        timeout = stale_base if explicit else (
+            max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base)
         # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
         # cap below, so the floor can never outlive the run budget.
         if self.api_mode == "codex_responses" and not explicit:
@@ -758,6 +769,9 @@ class AIAgent(
         (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
         ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("background_review"):
+            return  # hosted: the review fork writes the profile's memory and skills on this host
         # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
         if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return

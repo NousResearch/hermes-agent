@@ -1,0 +1,36 @@
+# Catalog entry for NousResearch/hermes-agent plugin-catalog/hermes-notify.yaml.
+# 0.2.0 merged in #149220. 0.2.3 (SHA-bump PR #153618): Linux and Windows, `hermes notify setup`, phone approvals by default,
+# inbound answer webhooks, stale-runtime and reply-collection fixes.
+name: hermes-notify
+title: Hermes Pocket
+repo: https://github.com/Belweave/hermes-notify
+sha: "48f79c821de97118aecffd11bbcc585c3d698914"
+description: "Phone notifications, questions, release progress and exact command approvals through Notify. Run `hermes notify setup` to sign in, connect the phone app, send a test and route command approvals to the phone. Disclosure — when enabled, sends model-written notifications and questions, optional release workspace data, and (when security.approval.transport is notify) each Hermes approval request's redacted command and description to the third-party Notify service (notify.belweave.ai); release Apps also go to a Cloudflare Worker you deploy yourself (uses HERMES_NOTIFY_PUBLISH_TOKEN). `hermes notify setup` signs in to notify.belweave.ai with a device code (sending a \"Hermes on <hostname> (<OS>)\" device label), saves the resulting 90-day NOTIFY_API_TOKEN to the profile .env and, once a phone is registered and no other transport is chosen, runs `hermes config set` to select security.approval.transport notify and transport_fallback builtin (terminal prompt when Notify is unreachable; skip with --no-approvals, undo with `hermes notify approvals off`). Phone approvals are approve-once or deny only; a phone timeout denies. Phone replies are injected into the session only when you set allow_reply_injection. Optional `hermes notify webhooks on` creates a Notify reply webhook, saves NOTIFY_WEBHOOK_SECRET to the profile .env, may run `boat host` to give the port a public HTTPS URL, sets allow_reply_injection and plugins.entries.hermes-notify.allow_gateway_injection, and then listens on 127.0.0.1 (inbound_webhook_port) for signed answer events that it re-checks with Notify before injecting the answer into the asking session as untrusted input; `hermes notify webhooks off` removes it. Runs one background delivery thread, plus a webhook listener thread when webhooks are on."
+maintainer: belweave
+tier: community
+category: automation
+version: "0.2.3"
+readme: true
+platforms: [macos, linux, windows]
+screenshots:
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/release-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/approval-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/shipped-phone.png
+known_issues:
+  - Hosted release Apps need a configured Cloudflare Worker and a verified origin-specific owner; notifications and questions do not.
+  - The Notify iPhone app is distributed through public TestFlight; Android is a self-built APK.
+capabilities:
+  provides_tools:
+    - notify_release
+    - notify_publish_app
+    - notify_send
+    - notify_ask
+    - notify_replies
+    - notify_status
+  provides_hooks:
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env:
+    - NOTIFY_API_TOKEN
+requires_hermes: ">=0.22.6"

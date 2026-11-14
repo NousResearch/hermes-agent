@@ -1,0 +1,18 @@
+name: opportunity-check
+repo: https://github.com/ronigrv/hermes-opportunity-check
+sha: 9e8f4cf6a372733eeab056e5366dc577095f5806
+description: Read-only discovery and evidence checks for agent-work listings.
+maintainer: ronigrv
+tier: community
+category: tools
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - find_agent_work
+    - check_github_task
+    - screen_github_tasks
+    - screen_agent_work
+    - watch_agent_work
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

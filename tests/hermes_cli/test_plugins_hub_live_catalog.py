@@ -48,7 +48,7 @@ def test_failed_live_fetch_is_remembered_until_the_failure_ttl(monkeypatch, tmp_
     clock = {"now": 1_000_000.0}
     monkeypatch.setattr(pc.time, "time", lambda: clock["now"])
     unreachable = _UnreachableCatalog()
-    monkeypatch.setattr("httpx.get", unreachable)
+    monkeypatch.setattr("httpx.stream", unreachable)
 
     assert pc.fetch_live_catalog() is None
     assert pc.fetch_live_catalog() is None
@@ -78,7 +78,7 @@ def test_hub_rebuild_and_plugins_list_resolve_the_kill_list_once(monkeypatch, tm
     """Both listing surfaces cost at most ONE network attempt with the catalog unreachable — not
     one per installed plugin — and still report an in-tree removal for every affected row."""
     unreachable = _UnreachableCatalog()
-    monkeypatch.setattr("httpx.get", unreachable)
+    monkeypatch.setattr("httpx.stream", unreachable)
     monkeypatch.setattr(pc, "get_catalog_dir", lambda: tmp_path)
     (tmp_path / "removed.yaml").write_text("removed:\n- name: demo\n  reason: exfiltrated env vars\n")
 
@@ -113,7 +113,7 @@ def test_dropped_cache_no_longer_outvotes_the_in_tree_catalog(monkeypatch):
     is fresh, even with the catalog host dead. After the update drops it, the same dead host
     yields ``None`` — callers fall back to the in-tree catalog the update just installed —
     instead of resurrecting the pre-update snapshot for the rest of the TTL."""
-    monkeypatch.setattr("httpx.get", _UnreachableCatalog())
+    monkeypatch.setattr("httpx.stream", _UnreachableCatalog())
     cache = pc._live_cache_path()
     cache.parent.mkdir(parents=True)
     cache.write_text(json.dumps({"entries": [], "removed": []}))

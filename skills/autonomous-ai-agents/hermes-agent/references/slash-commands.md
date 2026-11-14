@@ -103,7 +103,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /image <path>            Attach a local image file (CLI)
 /update                  Update Hermes to latest
 /version (/v)            Show version
-/debug [nous|local]      Upload debug report, get shareable links
+/debug [upload|nous upload|local]  Privacy notice; `upload` uploads debug report
 ```
 
 ### Exit

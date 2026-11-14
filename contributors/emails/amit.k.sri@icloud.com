@@ -1,0 +1,1 @@
+aks-cmyk

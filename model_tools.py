@@ -289,11 +289,13 @@ def _tool_defs_cache_key(
         cfg_fp = config_version(get_config_path())
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
+    from tools.environments.sandbox_scope import hosted_scope
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, check_fn_cache_epoch(),
+        hosted_scope() is not None,
     )
 
 
@@ -444,9 +446,14 @@ _VAULT_INPUT_TOOL_HINT = "the browser's input tool"
 def _rewrite_browser_vault(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Name the concrete input tool for typing the login identifier (`fill_input` inside browser_exec code).
     Resolved here because the two live in different toolsets."""
-    if "browser_exec" not in available:
+    preview = "drive_preview" in available
+    if "browser_exec" in available:
+        concrete = "`fill_input` inside browser_exec" + (
+            " (or drive_preview action=type on the in-app browser)" if preview else "")
+    elif preview:
+        concrete = "drive_preview action=type"
+    else:
         return td
-    concrete = "`fill_input` inside browser_exec"
     fn = td["function"]
     return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
 
@@ -463,7 +470,10 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
     if "browser_vault" not in available:
         return td
     fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
+    note = _VAULT_NO_PASSWORD_NOTE
+    if fn["name"] == "drive_preview":
+        note += " For this in-app page pass target=preview (the default when no managed browser page is open)."
+    return _fn_def({**fn, "description": fn.get("description", "") + note})
 
 
 def _compose_rewriters(*fns):
@@ -483,6 +493,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_browser_exec_vision, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
+    "drive_preview": _rewrite_input_tool_for_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 
@@ -551,7 +562,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
-    return filtered_tools
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    # A hosted scope runs only its allowlist (the tool_search bridge included): advertising the
+    # rest would only earn refusals.
+    return [tool for tool in filtered_tools if hosted_tool_refusal(tool["function"]["name"]) is None]
 
 
 def _active_model_config() -> tuple[str, dict[str, Any]]:
@@ -846,6 +860,11 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
     else:
         dispatch_kwargs["user_task"] = user_task
+    from agent.plugin_session_fork import current_turn_origin
+    if (turn_origin := current_turn_origin()) is not None:
+        # Only inside a plugin session fork ("plugin_fork:<plugin id>"), so a plugin's tool can
+        # refuse calls the live agent makes; live-turn handlers see no new kwarg.
+        dispatch_kwargs["turn_origin"] = turn_origin
 
     def _dispatch(next_args: dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
@@ -909,6 +928,11 @@ def handle_function_call(
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
     start = time.monotonic()
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if refusal := hosted_tool_refusal(function_name):
+        # Callers outside the agent loop (execute_code RPC, the session kernel, the MCP bridge,
+        # connector batches) meet the same allowlist before bridges, connectors or the registry.
+        return tool_error(refusal)
 
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""

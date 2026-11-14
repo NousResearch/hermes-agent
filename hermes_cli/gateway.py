@@ -20,7 +20,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import gateway_service_owner, setup_platforms
+from hermes_cli import _startup_fast, gateway_service_owner, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -30,7 +30,7 @@ if os.name == "posix":
     if _missing:
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(_startup_fast.project_root_str())
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
@@ -70,6 +70,9 @@ from hermes_cli.setup import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
+# Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
+# import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
+from hermes_cli.gateway_restart_env import restart_watcher_env
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1051,14 +1054,6 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
         return False
 
 
-def _host_gateway_watcher_env() -> dict[str, str]:
-    """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
-    from tools.environments.local import host_gateway_child_env
-    env = host_gateway_child_env()
-    env.pop("_HERMES_GATEWAY", None)
-    return env
-
-
 def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None, home: str | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
@@ -1169,12 +1164,10 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
-    # into the gateway child, so the scrub has to be the watcher's own environ.
-    watcher_env = _host_gateway_watcher_env() if (
-        _restart_argv_is_host_gateway(run_argv) if host is None else host
-    ) else None
-    popen_env = {"env": watcher_env} if watcher_env is not None else {}
+    # The watcher copies os.environ into the gateway child, so the child's env is the watcher's: a
+    # host respawn gets the default root's secrets, a sibling profile's its own (never the launcher's).
+    popen_env = {"env": restart_watcher_env(
+        run_argv, host=_restart_argv_is_host_gateway(run_argv) if host is None else host, home=home)}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
         subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
@@ -3156,7 +3149,7 @@ def _systemd_command(argv: list[str]) -> str:
 
 def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None = None) -> None:
     """Publish the source command before a service definition references it."""
-    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, publishes_service_launcher
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     root, home = PROJECT_ROOT, get_hermes_home()
@@ -3170,8 +3163,8 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
     try:
         # Publication gate: ask what stage_launcher will bind, so an inherited
         # HERMES_RUNTIME_DIR cannot stand in for this install's store (#131745).
-        if resolve_store_python(root, publication=True) is None:
-            return  # Externally owned Nix/developer runtime.
+        if not publishes_service_launcher(root):
+            return  # Externally owned Nix/developer runtime, or a macOS app's own signed launcher.
         local = root / ".hermes" / "bin"
         paths = ensure_install_launchers(root, local)
         if len(paths) != len(ENTRY_POINTS):
@@ -3307,13 +3300,11 @@ def _strip_optional_systemd_directives(text: str) -> str:
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize plist text for staleness checks, ignoring the PATH payload: the generated PATH is
-    captured from the invoking shell and varies across shells."""
-    import re
-    return re.sub(
-        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
-        _normalize_service_definition(text), flags=re.DOTALL,
-    )
+    """Normalize plist text for staleness checks. The Hermes-owned PATH prefix (venv/node bin dirs and
+    the pm-managed Node) is deterministic and IS compared; only the invoking shell's PATH tail is
+    masked, so a Node update cannot leave a stale plist looking current (#144735)."""
+    from hermes_cli.gateway_launchd import normalize_plist_path_for_comparison
+    return normalize_plist_path_for_comparison(text)
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:
@@ -4557,7 +4548,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
-    sys.path.insert(0, str(PROJECT_ROOT))
+    sys.path[:0] = [] if str(PROJECT_ROOT) in sys.path else [str(PROJECT_ROOT)]
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process
     begin_process("gateway")
@@ -5667,24 +5658,3 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
-    """The venv pm provisioned for this install, resolved through
-    ``runtime_paths.selected_venv`` — the committed-environment contract —
-    never from interpreter state.
-
-    Under no-boot-through-venv the gateway runs the store python with the
-    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
-    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
-    prefix/env probing silently degrades. Resolution follows the committed-
-    environment contract: a committed selection is returned as-is, a host
-    with nothing committed yields nothing launchable, and a malformed
-    selection raises — fail closed, never a silently wrong venv.
-    """
-    root = Path(project_root) if project_root is not None else PROJECT_ROOT
-    from pm.environments import selected_venv
-
-    venv = selected_venv(root)  # a malformed committed selection raises: fail closed
-    return venv if venv.is_dir() else None
-

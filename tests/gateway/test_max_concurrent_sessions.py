@@ -56,10 +56,7 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     )
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
@@ -70,10 +67,8 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner._restart_drain_timeout = 0.0
     runner._stop_task = None
     runner._exit_code = None
-    runner._busy_ack_ts = {}
     runner._busy_input_mode = "interrupt"
     runner._busy_text_mode = "interrupt"
-    runner._queued_events = {}
     runner._update_runtime_status = MagicMock()
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
@@ -87,7 +82,7 @@ def _occupy_session(runner: GatewayRunner, chat_id: str = "busy"):
     source = _make_source(chat_id)
     session_key = build_session_key(source)
     runner._running_agents[session_key] = MagicMock()
-    runner._running_agents_ts[session_key] = time.time()
+    runner._session_state(session_key).turn.started_ts = time.time()
     return session_key
 
 

@@ -1,0 +1,35 @@
+name: scope-recall
+repo: https://github.com/410979729/scope-recall-hermes
+sha: 424e5703df73ea594e7a121a260371a15ab7c7ee
+subdir: distribution/hermes
+title: Scope Recall
+description: "Local, source-backed long-term memory: recalls what you told an agent in your own words, with when you said it, keeps earlier versions as history when you change your mind, and shares one store with your other agents (other Hermes profiles, Codex, Claude Code). Disclosure — captured messages, assistant replies and tool results are kept in a local SQLite store under ~/.scope-recall/shared, outside the Hermes home and shared by every Hermes profile and other agent (Codex, Claude Code) you attach to it; it makes no network calls by default; if you configure a model or embedding route, message excerpts go to that endpoint within the budget you set; keys are read only through Hermes's secret routes; it starts short detached background worker processes that inherit Hermes's environment; setup sets memory.provider in config.yaml and installs two skills (scope-recall-setup, scope-recall-memory) into your Hermes skills folder."
+maintainer: "410979729"
+tier: community
+category: memory
+requires_hermes: ">=0.22.5"
+version: "4.0.3"
+docs_url: https://github.com/410979729/scope-recall-hermes/blob/424e5703df73ea594e7a121a260371a15ab7c7ee/docs/install/hermes.md
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+  - recall
+  - inspect
+  - trace
+  - profile
+  - entity
+  - revise
+  - forget
+  - status
+  - handoff_write
+  - handoff_list
+  - handoff_accept
+  - handoff_cancel
+  provides_hooks:
+  - pre_llm_call
+  - api_request_error
+  - post_tool_call
+  - post_llm_call
+  provides_middleware: []
+  requires_env: []

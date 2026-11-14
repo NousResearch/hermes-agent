@@ -8,6 +8,8 @@ import pytest
 
 from tests.waiting import async_wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.mark.asyncio
 async def test_model_prepare_waiting_on_a_contended_writer_keeps_the_loop_live(tmp_path, monkeypatch):

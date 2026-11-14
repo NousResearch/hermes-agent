@@ -1,0 +1,38 @@
+# plugin-catalog/pwn-board.yaml — catalog PR: 1 commit, 1 file.
+name: pwn-board
+repo: https://github.com/t4lus-sec/pwn-board
+sha: "7896f5e853ffca04dfd5f97a5b6a7a80eafee120"
+description: "Pwn boards for Hermes: engagements and problems with a known origin, a testable goal and no known path (a foothold to reach, a privilege to escalate, a flag to capture; also flaky failures and regressions), and the workflow that takes a finished one to complete. The agent keeps a frontier of intents rooted at the board's origin, claims them (subagents too), and records findings that must cite real tool output: while a board is open every tool result carries an evidence id, and a finding citing an id no tool returned is refused. It never scores itself: the goal test is fixed at open, run through the terminal tool under normal approvals, and the plugin writes the verdict. A finished board is written up with the files as delivered, goes to the operator's review (notes the agent must answer before the next round), then to verification: an independent verifier subagent and the agent check it separately, the verifier's report held from the agent until it files its own, and the agent reconciles them for the operator to accept or send back. /pwnboard and a Desktop pane drive all of it. The board carries no offensive tooling of its own. Provenance — the fact-intent-hint board model originates in Cairn (https://github.com/oritera/Cairn, AGPL-3.0); this is an independent implementation for Hermes and contains no Cairn source. Disclosure — while at least one board is open, records an excerpt of every tool result (first and last 2,000 characters, 1,000 of the arguments, length, SHA-256) in <hermes home>/plugin-data/pwn-board/boards.db and tags the result with an evidence id (an added _evidence key in JSON objects, else a last line); uncited evidence is deleted after 14 days; pwn_board_test runs the board's goal-test command through the terminal tool (same backend and approval rules as any agent command); pwn_board_report reads the files the agent names through the read_file tool and keeps them in the database; each verification launches one leaf subagent through ctx.subagent_lifecycle with the terminal and file toolsets (Hermes's child-agent rules, backend and approvals apply), whose goal and context carry the board, write-up, delivered files and cited tool output, on the user's configured model (a memory provider, if any, is told of the delegation); with allow_gateway_injection granted, the operator's workflow moves start a turn in the board's session through ctx.inject_message; pre_llm_call adds one line per board to the main agent's current turn; a daemon thread, started on first use, polls the plugin's own database every 3 s to deliver those turns (verifiers start only inside a main-agent turn); the plugin records its own version in its database, at load only if that database already exists so loading creates no files, for the pane's build check; the Desktop pane renders write-ups, checks, reports, notes and findings as Markdown with the chat's renderer in preview mode, loading no images and running nothing; no other network calls, no telemetry, credentials, shell commands of its own or self-updater."
+maintainer: t4lus-sec
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/t4lus-sec/pwn-board/7896f5e853ffca04dfd5f97a5b6a7a80eafee120/docs/pane-dark.png
+  - https://raw.githubusercontent.com/t4lus-sec/pwn-board/7896f5e853ffca04dfd5f97a5b6a7a80eafee120/docs/pane-light.png
+capabilities:
+  provides_tools:
+    - pwn_board_list
+    - pwn_board_open
+    - pwn_board_read
+    - pwn_board_leads
+    - pwn_board_claim
+    - pwn_board_finding
+    - pwn_board_rule_out
+    - pwn_board_test
+    - pwn_board_close
+    - pwn_board_report
+    - pwn_board_answer
+    - pwn_board_review
+    - pwn_board_verify
+    - pwn_board_verification
+  provides_hooks:
+    - transform_tool_result
+    - pre_llm_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

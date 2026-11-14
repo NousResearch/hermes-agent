@@ -13,6 +13,7 @@
       "entries": [
         "agent.account_usage",
         "agent.acp_client",
+        "agent.browser_page_backend:BrowserPageBackend",
         "agent.browser_provider",
         "agent.context_engine",
         "agent.credential_pool",
@@ -30,6 +31,8 @@
         "agent.terminal_env_provider",
         "agent.transports",
         "agent.transports.chat_completions",
+        "agent.vault_backends.base:LoginBackend",
+        "agent.vault_store:VaultItemMeta",
         "agent.video_gen_provider",
         "agent.web_search_provider",
         "cli",
@@ -91,12 +94,19 @@
         "gateway.platforms.access_policy_mixin:OwnAccessPolicyMixin",
         "tools.approval:resolve_gateway_approval",
         "tools.approval:resolve_gateway_approval_card",
+        "gateway.approval_actor:approval_refusal",
+        "gateway.approval_actor:refusal_text",
+        "gateway.approval_actor:slash_confirm_refusal",
+        "gateway.approval_actor:clarify_refusal",
+        "gateway.approval_actor:picker_refusal",
+        "gateway.approval_actor:update_prompt_refusal",
         "tools.clarify_gateway:get_pending",
         "tools.clarify_gateway:resolve_gateway_clarify",
         "tools.clarify_gateway:mark_awaiting_text",
         "tools.clarify_gateway:SKIPPED",
         "tools.url_safety:is_safe_url",
         "tools.url_safety:create_ssrf_safe_async_client",
+        "tools.url_safety:create_ssrf_safe_client",
         "gateway.platforms._http_client_limits:platform_httpx_limits",
         "hermes_cli.gateway_setup_wizard:print_setup_header",
         "hermes_cli.gateway_setup_wizard:confirm_reconfigure",
@@ -107,6 +117,13 @@
         "hermes_cli.setup:prompt_choice",
         "hermes_cli.setup:prompt_yes_no",
         "hermes_cli.cli_output"
+      ]
+    },
+    {
+      "source": "adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter)",
+      "entries": [
+        "gateway.platforms.session_model:SessionModelPickerProvider",
+        "gateway.platforms.session_model:SessionModelSettings"
       ]
     },
     {
@@ -125,6 +142,46 @@
       "source": "plugins/index.md § platform plugins: read session identity through the task-local context",
       "entries": [
         "gateway.session_context:get_session_env"
+      ]
+    },
+    {
+      "source": "plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave)",
+      "entries": [
+        "agent.redact:redact_sensitive_text"
+      ]
+    },
+    {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session",
+      "entries": [
+        "hermes_cli.plugin_session:session_client"
+      ]
+    },
+    {
+      "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
+      "entries": [
+        "agent.file_safety:get_read_block_error",
+        "agent.file_safety:raise_if_read_blocked",
+        "agent.file_safety:is_write_denied",
+        "agent.file_safety:get_write_denied_error",
+        "hermes_yaml:safe_load",
+        "hermes_yaml:safe_dump"
+      ]
+    },
+    {
+      "source": "plugins/index.md § Send a credentialed HTTP request without leaking it on redirect",
+      "entries": [
+        "hermes_cli.urllib_security:open_credentialed_url"
+      ]
+    },
+    {
+      "source": "user-guide/features/plugins.md § A plugin with its own chat client",
+      "entries": [
+        "hermes_cli.chat_launch:hermes_command",
+        "hermes_cli.chat_launch:print_exit_summary",
+        "hermes_cli.gateway_chat:shell_client_env",
+        "hermes_cli.session_worktree:create",
+        "hermes_cli.session_worktree:restore",
+        "hermes_cli.session_worktree:finish"
       ]
     }
   ]

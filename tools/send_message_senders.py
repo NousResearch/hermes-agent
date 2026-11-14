@@ -1,12 +1,11 @@
 """Standalone per-platform senders and error helpers for send_message."""
 
 from pm import install_hint
-import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import re
-import time
 
 from agent.redact import redact_sensitive_text
 
@@ -16,11 +15,9 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
-_TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}  # sendAudio accepts only these; other audio -> sendVoice / document
 # Captionable on the media bubble; voice/audio notes excluded (a caption there reads as a separate label).
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip"}
-# Native caption limits (chars): Telegram caps photo/video at 1024; one conservative shared ceiling elsewhere.
-_TELEGRAM_CAPTION_LIMIT = 1024
+# Native caption limit (chars): one conservative shared ceiling (Telegram's 1024 lives in its plugin).
 _DEFAULT_CAPTION_LIMIT = 4096
 
 
@@ -28,8 +25,8 @@ def _media_caption_split(text, media_files, *, max_caption_len):
     """Single chokepoint deciding whether text rides on the media bubble as its caption:
     ``(caption, "")`` only for exactly one captionable file (not a voice/audio note) whose
     text fits ``max_caption_len``, else ``(None, text)`` — multi-file caption→file association
-    is ambiguous. Length is codepoints (never under-counts Telegram's UTF-16 units for BMP
-    text); the Telegram sender re-checks the *formatted* caption since escaping inflates it."""
+    is ambiguous. Length is codepoints. The Telegram plugin's standalone sender keeps its own copy
+    (it re-checks the *formatted* caption in UTF-16 units, since escaping inflates it)."""
     stripped = (text or "").strip()
     media = media_files or []
     if (not stripped or len(media) != 1 or len(stripped) > max_caption_len or media[0][1]
@@ -63,86 +60,6 @@ def _success(platform: str, chat_id, warnings=None, **fields) -> dict:
 
 _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA tags"
 
-_TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "service unavailable", "503",
-                               "gateway timeout", "504")
-
-
-def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
-    """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
-    never retried (the send may have gone through); 5xx/429 back off exponentially."""
-    retry_after = getattr(exc, "retry_after", None)
-    if retry_after is not None:
-        try:
-            return max(float(retry_after), 0.0)
-        except (TypeError, ValueError):
-            return 1.0
-    text = str(exc).lower()
-    if "timed out" in text or "timeout" in text:
-        return None
-    return float(2 ** attempt) if any(marker in text for marker in _TELEGRAM_TRANSIENT_MARKERS) else None
-
-
-async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
-    """``bot.send_message`` with bounded retries on transient failures."""
-    for attempt in range(attempts):
-        try:
-            return await bot.send_message(**kwargs)
-        except Exception as exc:
-            delay = _telegram_retry_delay(exc, attempt)
-            if delay is None or attempt >= attempts - 1:
-                raise
-            logger.warning("Transient Telegram send failure (attempt %d/%d), retrying in %.1fs: %s",
-                           attempt + 1, attempts, delay, _sanitize_error_text(exc))
-            await asyncio.sleep(delay)
-
-
-def _is_telegram_thread_not_found(error: Exception) -> bool:
-    """Mirror of the gateway adapter's ``_is_thread_not_found_error``.
-
-    Matches the gateway adapter's ``_is_thread_not_found_error`` for the standalone ``_send_telegram`` path
-    (issue #27012).
-    """
-    return "thread not found" in str(error).lower()
-
-
-def _telegram_bot(token):
-    """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
-    from telegram import Bot
-    try:
-        from gateway.platforms.base import resolve_proxy_url
-        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        if not proxy:
-            return Bot(token=token)
-        from telegram.request import HTTPXRequest
-        logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
-    except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
-    return Bot(token=token)
-
-
-def _telegram_thread_kwargs(thread_id):
-    """Topic id -> ``message_thread_id`` kwargs. Forum "General" is thread "1" inbound but
-    the Bot API rejects message_thread_id=1, so it maps to no thread — same as the adapter."""
-    if thread_id is None:
-        return {}
-    try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
-        effective = TelegramAdapter._message_thread_id_for_send(str(thread_id))
-    except Exception:  # adapter import failed (python-telegram-bot missing): explicit mapping
-        effective = None if str(thread_id) == "1" else int(thread_id)
-    return {} if effective is None else {"message_thread_id": effective}
-
-
-def _strip_mdv2_safe(text):
-    """Strip MarkdownV2 escapes for the plain-text fallback; identity if unavailable."""
-    try:
-        from plugins.platforms.telegram.adapter import _strip_mdv2
-        return _strip_mdv2(text)
-    except Exception:
-        return text
-
 
 def _adapter_media_method(ext, voice, force_document=False):
     """``(adapter method, kind)``: document when forced, else image / video / voice by
@@ -156,161 +73,14 @@ def _adapter_media_method(ext, voice, force_document=False):
     return ("send_voice", "audio") if voice else ("send_document", "document")
 
 
-async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **kwargs):
-    """Bot API media method by extension: photo (unless forced document), video, voice note,
-    sendAudio (MP3/M4A only), else document."""
-    kind = next((k for exts, k in ((() if force_document else _IMAGE_EXTS, "photo"), (_VIDEO_EXTS, "video"),
-                                    (_VOICE_EXTS if is_voice else (), "voice"), (_TELEGRAM_SEND_AUDIO_EXTS, "audio"))
-                 if ext in exts), "document")
-    return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
+class SharedBotTargetRefused(PermissionError):
+    """``_live_adapter`` refused a shared-bot satellite a target no route maps to it. Raised, not
+    ``None``: ``None`` means "no live adapter" and sends the caller to a standalone fallback.
+    A ``PermissionError`` so bundled platform plugins catch it by the builtin type without
+    importing a core name outside the published plugin API."""
 
 
-async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
-    """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
-    ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
-    -> plain text."""
-    async def send(text, mode):
-        return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
-    try:
-        return await send(chunk, parse_mode)
-    except Exception as md_error:
-        # Thread not found — retry without message_thread_id so the message still delivers (matching the
-        # gateway adapter's fallback behaviour, issue #27012).
-        if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
-            logger.warning("Thread %s not found in _send_telegram, retrying without message_thread_id",
-                           text_kwargs.pop("message_thread_id"))
-            return await send(chunk, parse_mode)
-        err_text = str(md_error).lower()
-        if "parse" in err_text or "markdown" in err_text or "html" in err_text:
-            logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s",
-                           parse_mode, _sanitize_error_text(md_error))
-            return await send(chunk if has_html else _strip_mdv2_safe(chunk), None)
-        raise
-
-
-async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, caption, parse_mode, has_html,
-                                   thread_kwargs, force_document):
-    """Upload one file with adapter-matching fallbacks (thread-not-found -> no
-    ``message_thread_id``; caption parse failure -> plain caption); retries re-seek the file."""
-    ext = os.path.splitext(media_path)[1].lower()
-    voice_note = ext in _VOICE_EXTS and is_voice
-    # ``caption`` is only set for a single captionable file, so this never double-captions
-    # a multi-file send or a voice note.
-    media_kwargs = {**thread_kwargs, **({"caption": caption, "parse_mode": parse_mode}
-                                        if caption is not None and not voice_note else {})}
-    if voice_note or ext in _TELEGRAM_SEND_AUDIO_EXTS:
-        with contextlib.suppress(Exception):
-            from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
-            duration = await asyncio.to_thread(_probe_voice_duration_seconds, media_path)
-            if duration is not None:
-                media_kwargs["duration"] = duration
-    thumb_path = None
-    if ext in _VIDEO_EXTS:
-        # Telegram processes only small video uploads itself; past that the message carries no
-        # geometry and no thumbnail, so clients draw a square tile (see the adapter helpers).
-        # Keyed on the extension because ``_telegram_send_media`` routes every video extension to
-        # ``sendVideo`` regardless of ``force_document`` (which only forces images to documents).
-        with contextlib.suppress(Exception):
-            from plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
-            geometry = await asyncio.to_thread(_probe_video_geometry, media_path)
-            if geometry:
-                media_kwargs.update(geometry)
-                thumb_path = await asyncio.to_thread(_video_thumbnail_jpeg, media_path, geometry.get("duration"))
-                if thumb_path:
-                    media_kwargs["thumbnail"] = thumb_path
-    try:
-        with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
-            try:
-                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
-            except Exception as media_err:
-                err_text = str(media_err).lower()
-                if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
-                    logger.warning("Thread %s not found for media send, retrying without message_thread_id",
-                                   media_kwargs.pop("message_thread_id"))
-                elif media_kwargs.get("parse_mode") and ("parse" in err_text or "caption" in err_text):
-                    logger.warning("Caption parse failed for media send, retrying plain: %s",
-                                   _sanitize_error_text(media_err))
-                    media_kwargs.pop("parse_mode", None)
-                    if not has_html and media_kwargs.get("caption"):
-                        media_kwargs["caption"] = _strip_mdv2_safe(media_kwargs["caption"])
-                else:
-                    raise
-                f.seek(0)
-                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
-    finally:
-        if thumb_path:
-            with contextlib.suppress(OSError):
-                os.remove(thumb_path)
-
-
-def _telegram_format(message):
-    """``(formatted, parse_mode, has_html)``: text already containing HTML tags is sent as
-    HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
-    from telegram.constants import ParseMode
-    if re.search(r'<[a-zA-Z/][^>]*>', message):
-        return message, ParseMode.HTML, True
-    try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
-        return TelegramAdapter.__new__(TelegramAdapter).format_message(message), ParseMode.MARKDOWN_V2, False
-    except Exception:
-        return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
-
-
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
-    try:
-        formatted, send_parse_mode, _has_html = _telegram_format(message)
-        bot = _telegram_bot(token)
-        from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
-        from gateway.platforms.base import BasePlatformAdapter, utf16_len
-        # Telegram accepts a numeric chat_id OR an @username string; never force-int.
-        # See #13206.
-        int_chat_id = normalize_telegram_chat_id(chat_id)
-        media_files = media_files or []
-        thread_kwargs = _telegram_thread_kwargs(thread_id)
-        # disable_web_page_preview is only valid for send_message, not media sends.
-        text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        last_msg, warnings, _tg_caption = None, [], None
-        # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
-        # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
-        _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
-        if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
-            _tg_caption, formatted = formatted, ""  # suppress the separate text send below
-        # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                warnings.append(f"Media file not found, skipping: {media_path}")
-                logger.warning(warnings[-1])
-                # Caption mode suppressed the text send; the file is gone, so deliver the words alone.
-                if _tg_caption is not None and last_msg is None:
-                    try:
-                        last_msg = await _send_telegram_message_with_retry(
-                            bot, chat_id=int_chat_id, text=_tg_caption, parse_mode=send_parse_mode, **text_kwargs)
-                        _tg_caption = None  # delivered — don't re-caption a later file
-                    except Exception as _cap_err:
-                        logger.warning("Telegram caption-fallback send failed for missing media: %s",
-                                       _sanitize_error_text(_cap_err))
-                continue
-            try:
-                last_msg = await _telegram_send_one_media(
-                    bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
-                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
-            except Exception as e:
-                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
-                logger.error(warnings[-1])
-        if last_msg is None:
-            return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
-        return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
-    except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: "
-                f"{install_hint('telegram')}"}
-    except Exception as e:
-        return _error(f"Telegram send failed: {e}")
-
-
-def _live_adapter(platform, *, lookup_failed_warning=None):
+def _live_adapter(platform, chat_id=None, thread_id=None, *, lookup_failed_warning=None):
     """``(runner, adapter)`` for the in-process gateway; ``(None, None)`` standalone (cron);
     ``(runner, None)`` when the lookup fails — logged when a warning is given, never silently
     swallowed (a silent fall-through could recreate a reconnect storm).
@@ -319,7 +89,11 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     ``runner.adapters`` hit — that map holds the default profile's bots, so a secondary profile's turn
     would post/react with the default bot's identity. A profile with no adapter for the platform
     yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
-    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
+    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``.
+
+    A shared-bot satellite's map borrows the primary's bots unscoped, so the borrowed bot is only
+    handed out for a (*chat_id*, *thread_id*) a default-bot route maps to that profile
+    (``_shared_bot_target_allowed``, #147602); every caller here picks its own target."""
     try:
         from gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
@@ -332,11 +106,19 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
         if not callable(resolve):  # bare runner stubs without the authz mixin
             return runner, runner.adapters.get(platform)
         from hermes_cli.profiles import get_active_profile_name
-        return runner, resolve(platform, get_active_profile_name())
+        profile = get_active_profile_name()
+        adapter = resolve(platform, profile)
+        allowed = adapter is None or runner._shared_bot_target_allowed(platform, profile, chat_id, thread_id)
     except Exception:
         if lookup_failed_warning:
             logger.warning(lookup_failed_warning, exc_info=True)
         return runner, None
+    if not allowed:
+        where = f"{getattr(platform, 'value', platform)}:{chat_id}" + (f" thread {thread_id}" if thread_id else "")
+        raise SharedBotTargetRefused(
+            f"Profile '{profile}' shares the default profile's bot and no gateway.profile_routes entry routes "
+            f"{where} to it; refusing to send through the shared bot.")
+    return runner, adapter
 
 
 def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
@@ -350,6 +132,23 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     if entry is None or entry.standalone_sender_fn is None:
         return None, {"error": f"{label or platform_name} plugin not registered or missing standalone_sender_fn"}
     return entry.standalone_sender_fn, None
+
+
+def _accepts_kwarg(fn, name):
+    """True when ``fn`` takes keyword ``name`` (named or through ``**kwargs``); an uninspectable
+    callable is assumed to (the documented contract). Uncached: a plugin's sender may be an
+    unhashable callable object, and one signature read per send is cheap."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(p.kind is p.VAR_KEYWORD or (p.name == name and p.kind is not p.POSITIONAL_ONLY) for p in params)
+
+
+def _optional_sender_kwargs(sender, **kwargs):
+    """``kwargs`` minus the optional ones ``sender`` does not take: a ``standalone_sender_fn``
+    written to the earlier contract (no ``notify``) keeps working. ``None`` values are dropped too."""
+    return {k: v for k, v in kwargs.items() if v is not None and _accepts_kwarg(sender, k)}
 
 
 async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
@@ -369,9 +168,10 @@ async def _resolve_slack_user_target(token, chat_id):
     except ImportError:
         return None, {"error": "aiohttp not installed. Run: "
                       f"{install_hint('messaging')}"}
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url()
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             async def post_api(method, payload):
@@ -405,7 +205,8 @@ async def _resolve_slack_user_target(token, chat_id):
             dm_id = (opened.get("channel") or {}).get("id")
             return (dm_id, None) if dm_id else (None, _error("Slack conversations.open did not return a DM channel ID"))
     except Exception as e:
-        return None, _error(f"Slack DM resolution failed: {e}")
+        # aiohttp echoes a malformed proxy URL (password included) as the InvalidURL text.
+        return None, _error(f"Slack DM resolution failed: {describe_proxy_error(e, proxy) or e}")
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
@@ -421,9 +222,12 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
     from gateway.config import Platform
-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
-        "Matrix: live gateway adapter lookup failed; falling back to an "
-        "ephemeral connect (may re-init E2EE per send)"))
+    try:
+        _, live_adapter = _live_adapter(Platform.MATRIX, chat_id, thread_id, lookup_failed_warning=(
+            "Matrix: live gateway adapter lookup failed; falling back to an "
+            "ephemeral connect (may re-init E2EE per send)"))
+    except SharedBotTargetRefused as e:
+        return _error(str(e))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
         return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)

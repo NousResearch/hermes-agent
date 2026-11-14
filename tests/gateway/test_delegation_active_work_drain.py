@@ -41,17 +41,23 @@ class TestDrainWaitsForBackgroundDelegations:
         instantly) -- the exact repro from the upgrade-killed-subagent incident."""
         import tools.async_delegation as ad
 
+        from tests.waiting import async_wait_until
+
         runner, _adapter = make_restart_runner()
-        state = {"n": 1}
-        monkeypatch.setattr(ad, "active_count", lambda: state["n"])
+        finished = asyncio.Event()
+        polls = {"n": 0}
 
-        async def finish_delegation():
-            await asyncio.sleep(0.12)  # health: allow HX013 -- the delegation must outlive the drain start
-            state["n"] = 0
+        def active_count():
+            polls["n"] += 1
+            return 0 if finished.is_set() else 1
 
-        task = asyncio.create_task(finish_delegation())
-        _snapshot, timed_out = await runner._drain_active_agents(2.0)
-        await task
+        monkeypatch.setattr(ad, "active_count", active_count)
+        drain = asyncio.create_task(runner._drain_active_agents(30.0))
+        # The drain has seen the delegation more than once (past its entry check) and is still waiting.
+        await async_wait_until(lambda: polls["n"] >= 3 or drain.done(), what="drain polled the live delegation")
+        assert not drain.done(), "drain returned while a background delegation was still in flight"
+        finished.set()
+        _snapshot, timed_out = await asyncio.wait_for(drain, 10.0)
 
         assert timed_out is False, (
             "drain must wait for the in-flight background delegation to finish, "

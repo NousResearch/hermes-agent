@@ -1173,12 +1173,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         key = (getattr(source, "profile", None), platform) if source is not None else None
         if adapter is None:
             # The watcher requeues silently every tick; say once per outage which lane has no transport.
+            evt["_no_transport"] = True  # stays durable; a restart wait does not hold for it
             if key is not None and key not in warned:
                 warned.add(key)
                 logger.warning("Async completion held: %s", _held_reason(
                     source, platform, getattr(getattr(self, "config", None), "multiplex_profiles", False)))
             return False
         warned.discard(key)
+        evt.pop("_no_transport", None)
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)
             try:

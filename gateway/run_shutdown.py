@@ -29,7 +29,7 @@ from gateway.restart import (
 )
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
-from gateway.session_runtime_workers import uncounted_runtime_work_units
+from gateway.session_runtime_workers import uncounted_runtime_work_units, wedged_managed_turn_count
 from gateway.run_shutdown_home_notice import (
     HOME_NOTICE_MUTED,
     GatewayHomeShutdownNoticeMixin,
@@ -1529,7 +1529,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             except Exception:
                 return None
 
-        return sum(
+        return wedged_managed_turn_count(self, timeout) + sum(  # + managed worker turns (no frame)
             1
             for agent in list((getattr(self, "_running_agents", None) or {}).values())
             if agent is not None and agent is not _AGENT_PENDING_SENTINEL

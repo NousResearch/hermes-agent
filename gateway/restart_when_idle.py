@@ -62,7 +62,9 @@ def process_units(runner, now: float) -> list[dict]:
 
 def queued_notice_units(runner) -> list[dict]:
     """Completion notices queued for delivery, or dequeued by the watcher and not yet admitted
-    (``_async_notices_in_delivery``): their turn has not started, but it will."""
+    (``_async_notices_in_delivery``): their turn has not started, but it will. One the watcher found
+    no transport for here (``_no_transport``: a disabled or unavailable platform) is not counted: it
+    would hold the restart forever, and its ledger row replays it after the restart."""
     from tools.process_registry import process_registry
     queue = process_registry.completion_queue
     with queue.mutex:
@@ -73,7 +75,8 @@ def queued_notice_units(runner) -> list[dict]:
              "session": evt.get("parent_session_id") or evt.get("session_key") or None}
             # Only delegation completions: process completion events are re-queued by the shared
             # watcher until their own per-process watcher (counted above) consumes them.
-            for evt in events if isinstance(evt, dict) and evt.get("type") == "async_delegation"]
+            for evt in events if isinstance(evt, dict) and evt.get("type") == "async_delegation"
+            and not evt.get("_no_transport")]
 
 
 def background_units(runner) -> list[dict]:

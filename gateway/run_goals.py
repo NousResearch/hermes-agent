@@ -25,6 +25,22 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+_LOOP_SCAN_WARN_INTERVAL_S = 86400.0
+_loop_scan_warned_at: dict[str, float] = {}
+
+
+def _warn_loop_scan_error(scope: str, exc: Exception) -> bool:
+    """Rate-limited report of a per-scope loop-scan failure. The watcher logged every scan error
+    at DEBUG, so a store that keeps failing sat its loops in "active, due" with a dead watcher
+    (#144966); once per scope per day it must surface at WARNING. Returns True when the warning
+    fired, so the caller can stay DEBUG-quiet the rest of the time."""
+    now = time.time()
+    if now - _loop_scan_warned_at.get(scope, 0.0) < _LOOP_SCAN_WARN_INTERVAL_S:
+        return False
+    _loop_scan_warned_at[scope] = now
+    logger.warning("loop wakeup watcher: scope %s scan failed — %s", scope, exc)
+    return True
+
 
 class GatewayGoalsMixin:
     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
@@ -466,8 +482,13 @@ class GatewayGoalsMixin:
         if adapter is None:
             if sid not in warned_no_route:
                 warned_no_route.add(sid)
-                logger.debug(
-                    "loop wakeup: no adapter for platform %r (session %s, profile %s)", platform_name, sid, profile,
+                # A desktop-local session's platform is invisible between process boot and the
+                # session's restore: the loop sits in "active, due" with no adapter to deliver
+                # it (#144966). Report once per session at INFO, not DEBUG.
+                logger.info(
+                    "loop wakeup: no adapter for platform %r (session %s, profile %s) — the tick "
+                    "stays due until the platform connects or the session restores",
+                    platform_name, sid, profile,
                 )
             return
 
@@ -478,6 +499,19 @@ class GatewayGoalsMixin:
             **{k: route.get(k, "") for k in ("chat_type", "thread_id", "user_id", "user_name")},
         })
         if source is None:
+            if sid not in warned_no_route:
+                warned_no_route.add(sid)
+                # #144966: a /loop armed programmatically on a desktop-local session rides a route
+                # with no chat_type/user_id, so no synthetic source resolves, the fire returned and
+                # the loop kept reporting "active, due" with nothing in the log. Name the route's
+                # empty fields; the tick stays due.
+                missing = [k for k in ("chat_type", "user_id") if not str(route.get(k) or "").strip()]
+                logger.info(
+                    "loop wakeup: no messaging source for %r chat=%r (profile %s) — route fields "
+                    "%s are empty, so the synthetic event has no resolvable source; the tick "
+                    "stays due (arming must come from the session's own route)",
+                    platform_name, chat_id, profile, ", ".join(missing) or "chat_type",
+                )
             return
         if profile and not getattr(source, "profile", None):
             source.profile = profile  # session key + runtime scope of the injected turn
@@ -519,6 +553,26 @@ class GatewayGoalsMixin:
             # Under a session authority the tick commits to the FIFO (never a classic turn beside an
             # admitted one); a slash-command loop is a command and keeps the command path.
             if wakeup.lstrip().startswith("/") or not await admit_route_wake(self, adapter, source, wakeup, "loop-tick"):
+                # A LOCAL adapter has no message handler of its own (its delivery is the session
+                # authority); base.handle_message would drop the synthetic event with a one-time
+                # "no gateway message handler" ERROR and the claimed tick would sit "wakeup
+                # running" forever (#144966). Refuse the fallback when the adapter would drop it
+                # (no handler and still the base's own handle_message); an adapter that overrides
+                # handle_message keeps its own delivery. Release the claim so the tick stays due.
+                from gateway.platforms.base import BasePlatformAdapter
+                if (not getattr(adapter, "_message_handler", None)
+                        and type(adapter).handle_message is BasePlatformAdapter.handle_message):
+                    if sid not in warned_no_route:
+                        warned_no_route.add(sid)
+                        logger.warning(
+                            "loop wakeup: %s adapter for session %s (profile %s) has no message "
+                            "handler and the session authority did not admit the tick — releasing "
+                            "the claim; the tick stays due (check agent.log for loop wakeup)",
+                            platform_name, sid, profile,
+                        )
+                    with suppress(Exception):
+                        mgr.abandon_tick()
+                    return
                 await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
             # Slash-command loops dispatch through the command path and never hit the post-turn
             # completion hook — complete the tick immediately (caps + scheduling).
@@ -567,17 +621,28 @@ class GatewayGoalsMixin:
                 await self._loop_wakeup_fire_one(sid, state, now, warned_no_route, profile_name)
 
         while self._running:
+            # Multiplex resolution walks the filesystem off-loop; a stalled walk on the loop
+            # trips the loop-liveness watchdog (exit 75). Its failure is resolution-best-effort,
+            # not a store failure, and stays at DEBUG.
             try:
-                # Multiplex resolution walks the filesystem off-loop; a stalled walk on the loop
-                # trips the loop-liveness watchdog (exit 75).
-                for profile_name, profile_home in await _resolve_handoff_watch_scopes(self):
-                    # Idle gate (run_idle_gates): skip the scope entry when the profile's store holds
-                    # no active loop. The root scan (None) is unscoped and stays cheap.
+                scopes = await _resolve_handoff_watch_scopes(self)
+            except Exception as exc:  # health: allow BLE001 -- unchanged from main: multiplex resolution is best-effort, never a store failure
+                logger.debug("loop wakeup watcher error: %s", exc)
+                scopes = []
+            for profile_name, profile_home in scopes:
+                try:
+                    # Idle gate (run_idle_gates): skip the scope entry when the profile's store
+                    # holds no active loop. The root scan (None) is unscoped and stays cheap.
                     if profile_home is not None and not await self._run_in_executor_with_context(
                             profile_has_active_loop, profile_home):
                         continue
                     async with _scope(profile_home):
                         await _scan_one_store(profile_name)
-            except Exception as exc:
-                logger.debug("loop wakeup watcher error: %s", exc)
+                except Exception as exc:  # health: allow BLE001 -- scan boundary: a dead store must not stop the other scopes; WARN rate-limited, traceback at DEBUG
+                    # WARN the failure (rate-limited to once per scope per day); keep the
+                    # traceback at DEBUG the rest of the time.
+                    if not _warn_loop_scan_error(profile_name or "default", exc):
+                        logger.debug(
+                            "loop wakeup watcher: %s scan failed (WARNING is rate-limited)",
+                            profile_name or "default", exc_info=exc)
             await asyncio.sleep(interval)

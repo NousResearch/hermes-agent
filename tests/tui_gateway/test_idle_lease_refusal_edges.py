@@ -139,3 +139,110 @@ def test_g3_compute_host_slash_exec_model_answers_4090(taken, monkeypatch):
     err = resp.get("error") or {}
     assert {"code": err.get("code"), "result": resp.get("result"), "sent": sent} == {
         "code": 4090, "result": None, "sent": []}, resp
+
+
+# ── A refused notification turn releases only its own claim on ``running``
+def _user_turn_in_refusal_gap(chat, monkeypatch, competitor):
+    user_turn = []
+
+    def emit(event, sid, payload=None, **_kw):
+        if event == "error" and not user_turn:  # admission already set running=False here
+            competitor.release()
+            err, _ = server._lock_in_submit_turn("user", chat.sid, chat.record, "hello", {}, False, None, None, None)
+            user_turn.append(err)
+    monkeypatch.setattr(server, "_emit", emit)
+    return user_turn
+
+
+def test_n1_refused_heartbeat_tick_never_clears_a_user_turn(taken, monkeypatch):
+    from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
+    mgr = HeartbeatManager(taken.sid)
+    mgr.set("check the build", interval_seconds=600)
+    mgr.state.created_at = time.time() - 3600
+    save_heartbeat(taken.sid, mgr.state)
+    user_turn = _user_turn_in_refusal_gap(taken, monkeypatch, taken.lease)
+    try:
+        server._maybe_fire_tui_heartbeat_tick(taken.sid, taken.record)
+        assert {"user_turn_admitted": user_turn == [None], "running": taken.record["running"]} == {
+            "user_turn_admitted": True, "running": True}
+    finally:
+        taken.record["running"] = False
+        HeartbeatManager(taken.sid).clear()
+
+
+def test_n2_refused_notification_submit_never_clears_a_user_turn(taken, monkeypatch):
+    user_turn = _user_turn_in_refusal_gap(taken, monkeypatch, taken.lease)
+    assert server._notif_claim_turn(taken.record)
+    try:
+        accepted = server._notif_submit("__notif__1", taken.sid, taken.record, "process finished", "probe")
+        assert {"accepted": accepted, "user_turn_admitted": user_turn == [None],
+                "running": taken.record["running"]} == {"accepted": False, "user_turn_admitted": True, "running": True}
+    finally:
+        taken.record["running"] = False
+
+
+# ── The same race against a holder that never released (no idle reap involved)
+@pytest.fixture
+def foreign(monkeypatch):
+    sid = "idle-edge-foreign"
+    from hermes_constants import get_hermes_home
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    monkeypatch.setattr(server, "_db", db)
+    db.create_session(sid, source="desktop")
+    ready = threading.Event()
+    ready.set()
+    record = {
+        "session_key": sid, "source": "desktop", "history_version": 0, "history_lock": threading.Lock(),
+        "history": [], "agent_ready": ready, "running": False, "created_at": time.time(), "last_active": time.time(),
+        "transport": _LiveSocket(), "agent": _Agent(sid), "attached_images": [], "cols": 80}
+    server._sessions[sid] = record
+    lease, _ = try_acquire_active_session(session_id=sid, surface="telegram", config={})
+    assert lease is not None
+    try:
+        yield SimpleNamespace(sid=sid, record=record, db=db, lease=lease)
+    finally:
+        lease.release()
+        server._release_active_session_slot(record)
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def _user_turn_after_refusal(chat, monkeypatch):
+    user_turn = []
+
+    def emit(event, sid, payload=None, **_kw):
+        if event == "error" and not user_turn:
+            chat.lease.release()
+            # The user's own turn claims running in the gap (any admitted turn source does the same).
+            with chat.record["history_lock"]:
+                chat.record["running"] = True
+                chat.record.pop("_notif_turn_claim", None)
+            user_turn.append(True)
+    monkeypatch.setattr(server, "_emit", emit)
+    return user_turn
+
+
+def test_m1_heartbeat_refusal_keeps_running_of_a_turn_started_in_the_gap(foreign, monkeypatch):
+    from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
+    mgr = HeartbeatManager(foreign.sid)
+    mgr.set("check the build", interval_seconds=600)
+    mgr.state.created_at = time.time() - 3600
+    save_heartbeat(foreign.sid, mgr.state)
+    user_turn = _user_turn_after_refusal(foreign, monkeypatch)
+    try:
+        server._maybe_fire_tui_heartbeat_tick(foreign.sid, foreign.record)
+        assert {"gap_turn": user_turn, "running": foreign.record["running"]} == {"gap_turn": [True], "running": True}
+    finally:
+        foreign.record["running"] = False
+        HeartbeatManager(foreign.sid).clear()
+
+
+def test_m2_notif_submit_refusal_keeps_running_of_a_turn_started_in_the_gap(foreign, monkeypatch):
+    user_turn = _user_turn_after_refusal(foreign, monkeypatch)
+    assert server._notif_claim_turn(foreign.record)
+    try:
+        server._notif_submit("__notif__1", foreign.sid, foreign.record, "process finished", "probe")
+        assert {"gap_turn": user_turn, "running": foreign.record["running"]} == {"gap_turn": [True], "running": True}
+    finally:
+        foreign.record["running"] = False

@@ -805,6 +805,9 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
 # (`if true; then kill N; fi`). Peeled only for the PID check; shlex has already dropped quotes, so a
 # quoted `'then' kill N` peels too — a harmless over-block of a command that sends nothing.
 _PID_SCAN_SYNTAX_PREFIXES = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
+# A redirection operator, longest first: a partial `<<` match on `<<<` would leave the here-string
+# word (`kill <<< -0 N`) to be read as an argument. Operator-only tokens also consume the next word.
+_REDIRECT_OPERATOR_RE = re.compile(r"\d*(?:<<<|<<-|<<|<>|>>|>\||<|>)")
 _KILL_LISTING_OPTIONS = frozenset({"-l", "-L", "--list", "--table"})
 _KILL_SIGNAL_VALUE_OPTIONS = frozenset({"-s", "-n", "--signal"})
 # Signals that leave the gateway running: 0 sends nothing, and SIGUSR2 is the documented
@@ -854,7 +857,7 @@ def _kill_targets_pid(args: list[str], pid: int) -> bool:
             continue
         if _is_pid_operand(arg, pid, group=signal_given):
             return True
-        if redirect := re.match(r"\d*(?:>>?|<<?|<>|>\|)", arg):  # `kill 2>/dev/null -0 N`: not an operand
+        if redirect := _REDIRECT_OPERATOR_RE.match(arg):  # `kill 2>/dev/null -0 N`: not an operand
             position += 2 if redirect.end() == len(arg) else 1
             continue
         if not arg.startswith("-"):
@@ -938,7 +941,7 @@ def _targets_gateway_pid(
             token = segment[offset]
             if token in _PID_SCAN_SYNTAX_PREFIXES:
                 offset += 2 if token == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
-            elif redirect := re.match(r"\d*(?:>>?|<<?|<>|>\|)", token):  # `>/dev/null kill N`
+            elif redirect := _REDIRECT_OPERATOR_RE.match(token):  # `>/dev/null kill N`
                 offset += 2 if redirect.end() == len(token) else 1  # `> f kill` vs `>f kill`
             else:
                 break
@@ -1368,9 +1371,8 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command, written_body=not charge):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    # Before the scans: a kill payload rescanned below (`sh -c 'bash P'`) resolves P to its written body.
-    if depth < _MAX_REFERENCED_SCRIPT_DEPTH:
-        written = _collect_heredoc_written_scripts(command, cwd, written)
+    # Before the PID check: a kill payload it rescans (`sh -c 'bash P'`) resolves P to its written body.
+    written = _collect_heredoc_written_scripts(command, cwd, written)
 
     def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(

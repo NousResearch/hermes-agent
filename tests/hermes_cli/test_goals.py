@@ -138,6 +138,27 @@ class TestGoalManager:
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
 
+    def test_continuation_prompt_carries_judge_feedback(self, hermes_home):
+        """After a CONTINUE verdict the continuation prompt must include the judge's
+        objection and an inline-evidence instruction — the judge is stateless per turn,
+        so without this the agent never learns why 'complete' was rejected and repeats
+        the same terse stop reply forever (loop seen in 20260922_213245_d6d272)."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="cont-feedback")
+        mgr.set("port goal command to hermes")
+        assert mgr.state is not None
+        mgr.state.last_verdict = "continue"
+        mgr.state.last_reason = "no matrix path citing failure modes with log lines"
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "no matrix path citing failure modes with log lines" in prompt
+        assert "Judge feedback" in prompt
+        assert "judge sees only this response" in prompt
+        # No pending objection -> no feedback block (prompt-cache stable shape).
+        mgr.state.last_verdict = "done"
+        assert "Judge feedback" not in (mgr.next_continuation_prompt() or "")
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired

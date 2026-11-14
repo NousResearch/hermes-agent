@@ -478,6 +478,13 @@ class TestPersistence:
         assert convo[0]["role"] == "user"
         assert convo[1]["text"] == "hi back"
 
+    @pytest.mark.parametrize("sep", ["\u2028", "\u2029", "\u0085"])
+    def test_message_with_unicode_line_separator_survives(self, monkeypatch, tmp_path, sep):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        protocol.persist_message("ctx-sep", "user", f"pasted{sep}text", "t1")
+        protocol.persist_message("ctx-sep", "agent", "ok", "t1")
+        assert [e["text"] for e in protocol.load_conversation("ctx-sep")] == [f"pasted{sep}text", "ok"]
+
     def test_list_conversations(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         protocol.persist_message("ctx-1", "user", "a", "t")

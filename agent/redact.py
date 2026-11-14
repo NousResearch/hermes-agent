@@ -18,6 +18,7 @@ from urllib.parse import unquote_plus
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_discord import _redact_discord_tokens
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
@@ -1509,8 +1510,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:
-        _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
-        text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
+        _mask = _mask_token_nonreusable if file_read else _mask_token
+        text = _ZHIPU_API_KEY_RE.sub(lambda m: _mask(m.group(1)), text)
+        text = _redact_discord_tokens(text, _mask)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

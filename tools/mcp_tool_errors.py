@@ -111,11 +111,12 @@ def _make_http_rejection_recorder(sink: dict):
                 body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""
-        # The URL lands in WARNING / ConnectionError text: a ``?token=`` credential must not ride along.
+        # URL and body land in WARNING / ConnectionError text: a ``?token=`` credential must not ride
+        # along, including one a server or proxy echoes back in its error body.
         from agent.redact import redact_sensitive_text
         sink.update(status=response.status_code, method=response.request.method,
-                    url=redact_sensitive_text(str(response.request.url), redact_url_credentials=True),
-                    body=body[:_HTTP_REJECTION_BODY_CHARS])
+                    url=_shown_url(str(response.request.url)),
+                    body=redact_sensitive_text(body[:_HTTP_REJECTION_BODY_CHARS], redact_url_credentials=True))
 
     return _record
 
@@ -343,6 +344,12 @@ _SSE_BOUNDARY_RE = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
 _SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
 
 
+def _shown_url(url: str) -> str:
+    """*url* for error text that reaches the model and ``hermes mcp test``: credential params masked."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(url, redact_url_credentials=True)
+
+
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
     """Wrap ``inner_transport`` so every response body is size-capped. ``httpx_mod`` must be the SDK's
     own httpx module (``sdk_httpx()``): the transport is handed to that SDK's ``AsyncClient``."""
@@ -352,7 +359,7 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
             self._inner, self._is_sse, self._url = inner, is_sse, url
 
         def _reject(self, kind: str):
-            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
+            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {_shown_url(self._url)})")
 
         async def __aiter__(self):
             counted = 0
@@ -394,7 +401,7 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
                 if declared is not None and int(declared) > limit:
                     await response.aclose()
                     raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
-                                              f"bytes cap (from {request.url})")
+                                              f"bytes cap (from {_shown_url(str(request.url))})")
             is_sse = "text/event-stream" in response.headers.get("content-type", "").lower()
             response.stream = _CappedStream(response.stream, is_sse, str(request.url))
             return response

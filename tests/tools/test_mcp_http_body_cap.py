@@ -41,6 +41,27 @@ async def test_oversized_body_rejected_via_content_length():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("declare_length", [True, False])
+async def test_cap_error_masks_url_query_credentials(declare_length):
+    """The ReadError text reaches the model and ``hermes mcp test`` (#133713)."""
+    secret = "s1g" + "Value" + "0123456789"
+
+    class _Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"y" * (LIMIT + 1)
+
+    async def handler(request):
+        if declare_length:
+            return httpx.Response(200, content=b"x" * (LIMIT + 1))
+        return httpx.Response(200, stream=_Stream())
+    async with _client_for(handler) as client:
+        with pytest.raises(httpx.ReadError) as exc:
+            await client.get(f"http://mcp.test/rpc?sig={secret}&v=1")
+    assert secret not in str(exc.value)
+    assert "/rpc?sig=***&v=1" in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_oversized_streamed_body_rejected_without_content_length():
     # A streaming body with no Content-Length must still trip the cap.
     async def gen():

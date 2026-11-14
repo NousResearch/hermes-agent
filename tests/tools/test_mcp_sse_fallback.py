@@ -163,3 +163,25 @@ def test_rejection_recorder_masks_url_query_credentials():
     recorded = asyncio.run(_roundtrip())
     assert recorded["status"] == 504
     assert recorded["url"] == "http://127.0.0.1:1/mcp?token=***&region=eu"
+
+
+def test_rejection_recorder_masks_url_credentials_echoed_in_body():
+    """A proxy that echoes the request URL in its error body must not leak ``sig=`` (#133713)."""
+    from tools.mcp_tool import sdk_httpx
+    from tools.mcp_tool_errors import _make_http_rejection_recorder
+
+    httpx2 = sdk_httpx()
+    secret = "opaque" + "Sig" + "0123456789"
+
+    async def _roundtrip():
+        sink: dict = {}
+        transport = httpx2.MockTransport(lambda req: httpx2.Response(
+            403, text=f"denied: https://mcp.example/mcp?sig={secret}&v=1"))
+        async with httpx2.AsyncClient(transport=transport, event_hooks={
+                "response": [_make_http_rejection_recorder(sink)]}) as client:
+            await client.post("http://127.0.0.1:1/mcp", json={})
+        return sink
+
+    recorded = asyncio.run(_roundtrip())
+    assert secret not in recorded["body"]
+    assert recorded["body"] == "denied: https://mcp.example/mcp?sig=***&v=1"

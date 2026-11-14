@@ -227,4 +227,5 @@ def test_standalone_requests_match_the_gateway_adapter_build(monkeypatch: pytest
     assert general["connection_pool_size"] == 64
     assert general["httpx_kwargs"]["verify"] is shared
     assert general["httpx_kwargs"]["limits"].max_connections == 64
-    assert updates["httpx_kwargs"]["limits"].max_keepalive_connections == 0
+    from plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
+    assert updates["httpx_kwargs"]["limits"].max_keepalive_connections == getupdates_keepalive_connections()

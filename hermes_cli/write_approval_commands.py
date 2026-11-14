@@ -136,7 +136,7 @@ def _apply_one(subsystem: str, rec, memory_store):
             result = apply_memory_pending(payload, memory_store)
         else:
             from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
+            result = json.loads(apply_skill_pending(payload, origin=rec.get("origin", "foreground")))
         return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:
         return False, str(e), {}

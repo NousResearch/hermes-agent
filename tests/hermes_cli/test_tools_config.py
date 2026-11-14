@@ -93,6 +93,34 @@ def test_null_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
+def test_explicit_empty_platform_toolsets_merge_no_mcp_servers():
+    """An explicitly saved empty list means zero toolsets and no MCP merge."""
+    config = {
+        "mcp_servers": {"claudius": {"url": "http://x"}, "evil": {"url": "http://y"}},
+        "platform_toolsets": {"cli": []},
+    }
+
+    assert _get_platform_tools(config, "cli") == set()
+
+    config["platform_toolsets"]["cli"] = ["no_mcp"]
+    assert _get_platform_tools(config, "cli") == set()
+
+
+def test_explicit_empty_gateway_platform_toolsets_keep_mcp_controls():
+    """Only the explicit empty list is zero: an absent key still gets every enabled server, a named
+    server still narrows to itself, and a non-empty list still inherits the enabled servers."""
+    servers = {"alpha": {"url": "http://x"}, "beta": {"url": "http://y"}}
+
+    assert _get_platform_tools({"mcp_servers": servers, "platform_toolsets": {"email": []}}, "email") == set()
+    assert {"alpha", "beta"} <= _get_platform_tools({"mcp_servers": servers}, "email")
+    assert _get_platform_tools(
+        {"mcp_servers": servers, "platform_toolsets": {"email": ["terminal", "alpha"]}}, "email",
+    ) == {"terminal", "alpha"}
+    assert _get_platform_tools(
+        {"mcp_servers": servers, "platform_toolsets": {"email": ["terminal"]}}, "email",
+    ) == {"terminal", "alpha", "beta"}
+
+
 def test_scalar_platform_toolsets_fall_back_to_platform_default():
     """A non-list platform value is ignored by the resolver."""
     config = {"platform_toolsets": {"cli": "bogus"}}

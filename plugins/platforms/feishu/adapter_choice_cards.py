@@ -9,12 +9,12 @@ it answers anything.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 from typing import Any, Optional
 
 from agent.i18n import t
+from gateway.platforms.helpers import prompt_id_counter
 from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class FeishuChoiceCardsMixin:
         self._clarify_state: dict[str, dict[str, str]] = {}
         # picker_id -> {session_key, message_id, chat_id, body, choices, on_choice_selected, metadata}
         self._choice_picker_state: dict[int, dict[str, Any]] = {}
-        self._choice_picker_counter = itertools.count(1)
+        self._choice_picker_counter = prompt_id_counter()
 
     # --- clarify ---
     async def send_clarify(
@@ -102,7 +102,11 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="clarify", ident=clarify_id)
         if checked is None:
             return self._card_response()
-        user_name = checked[2]
+        open_id, _chat_id, user_name, user_id, _union_id = checked
+        from gateway.approval_actor import clarify_refusal, refusal_text
+        # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
+        if requester := clarify_refusal(clarify_id, user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         from tools import clarify_gateway
 
         entry = clarify_gateway.get_pending(clarify_id)
@@ -126,7 +130,8 @@ class FeishuChoiceCardsMixin:
         answer = str(choices[int(token)])
         if not clarify_gateway.resolve_gateway_clarify(clarify_id, answer):
             return self._card_response(self._settled_clarify_card(state, t("gateway.clarify.expired"), "grey"))
-        logger.info("Feishu clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, answer, user_name)
+        logger.info("Feishu clarify button resolved (id=%s, choice_index=%s, user=%s)", clarify_id, token, user_id or open_id)
+        logger.debug("Feishu clarify choice text (id=%s): %.100r", clarify_id, answer)
         return self._card_response(self._settled_clarify_card(state, f"**{user_name}:** {answer}", "green"))
 
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
@@ -194,6 +199,9 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
             return self._card_response()
+        from gateway.approval_actor import picker_refusal, refusal_text
+        if requester := picker_refusal(state["on_choice_selected"], checked[3] or checked[0], extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # another member's tap: only they see it, card stays open
         token = str(action_value.get("hermes_choice_picker_action") or "")
         choices = state["choices"]
         if not (token.isdigit() and int(token) < len(choices)):
@@ -221,8 +229,13 @@ class FeishuChoiceCardsMixin:
         action = getattr(getattr(data, "event", None), "action", None)
         if action is not None:
             action.value = ((payload.get("event") or {}).get("action") or {}).get("value")
-        card = getattr(self._on_card_action_trigger(data), "card", None)
-        return {"card": {"type": card.type, "data": card.data}} if card is not None else {}
+        response = self._on_card_action_trigger(data)
+        body: dict[str, Any] = {}
+        if (card := getattr(response, "card", None)) is not None:
+            body["card"] = {"type": card.type, "data": card.data}
+        if (toast := getattr(response, "toast", None)) is not None:  # a refusal only the clicker sees
+            body["toast"] = {"type": toast.type, "content": toast.content}
+        return body
 
     async def _apply_choice_picker_selection(self, state: dict[str, Any], value: str) -> None:
         """Run the picker's applier and send its confirmation to the chat."""

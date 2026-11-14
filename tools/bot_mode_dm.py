@@ -842,8 +842,9 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     try:
         from tools.terminal_tool import terminal_tool
 
+        from hermes_cli._startup_fast import project_root_str
         raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
-                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
+                            workdir=project_root_str(), _host_local=True,
                             _completion_output_chars=completion_chars)
         try:
             parsed = json.loads(raw)

@@ -9,6 +9,7 @@ import time as _time
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli import _early_recovery as _early_recovery_mod
+from hermes_cli._startup_fast import project_root_str
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -53,7 +54,7 @@ def _pytest_owns_live_checkout(root: Path) -> bool:
     """True under pytest when ``root`` is this checkout: unsandboxed update/recovery tests must
     neither litter the live repo root with breadcrumbs (false-arming the developer's next launch)
     nor run a real reinstall against the executing venv (cf. ``managed_scope._under_pytest``)."""
-    return "PYTEST_CURRENT_TEST" in os.environ and root == Path(__file__).resolve().parent.parent
+    return "PYTEST_CURRENT_TEST" in os.environ and root == Path(project_root_str())
 
 
 def _clear_marker_file(path: Path, *, label: str) -> None:

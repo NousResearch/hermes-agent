@@ -33,6 +33,8 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_custom_credentials import (
+    _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
@@ -1761,8 +1763,7 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
-        # Per-request HTTP headers (OpenCode session affinity) — the Anthropic SDK accepts
-        # ``extra_headers`` on messages.create/stream too.
+        # Per-request HTTP headers (OpenCode session affinity); Messages create/stream accept them too.
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             anthropic_kwargs["extra_headers"] = {
                 **(anthropic_kwargs.get("extra_headers") or {}),
@@ -1771,9 +1772,8 @@ class _AnthropicCompletionsAdapter:
         # response_format: top-level gets the same translation as the extra_body form; when both
         # are present the extra_body form wins. Passthrough excludes ``reasoning``/``response_format``
         # (already TRANSLATED to native fields — raw would 400 on strict gateways) and ``_`` Hermes plumbing.
-        # The adapter builds the Messages body from a fixed allow-list of kwargs, so before this an
-        # unrecognized top-level kwarg was dropped on the floor: the request succeeded but the schema
-        # contract silently became prompt compliance (#85626 review, point 2).
+        # The Messages body is built from a fixed allow-list of kwargs (``timeout`` included, below): an
+        # unlisted kwarg is dropped, so a schema contract became prompt compliance (#85626 review, point 2).
         top_level_response_format = kwargs.get("response_format")
         if top_level_response_format is not None:
             _translate_anthropic_response_format(anthropic_kwargs, top_level_response_format)
@@ -1789,6 +1789,8 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
+        if isinstance(kwargs.get("timeout"), (int, float)) and kwargs["timeout"] > 0:  # else the client's 900 s read
+            anthropic_kwargs["timeout"] = kwargs["timeout"]
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
@@ -3535,15 +3537,15 @@ def _recoverable_pool_provider(
 
 
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "",
-                           verdict: Optional[aux_errors.ClassifiedError] = None) -> bool:
+                           verdict: Optional[aux_errors.ClassifiedError] = None, base_url: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
-    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
-    another process already rotated (current() would be None).
+    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if another process already
+    rotated (current() would be None). ``base_url``: where the failed request went (a custom entry rotates its rows bound there).
     """
     normalized = _normalize_aux_provider(provider)
     try:
-        pool = pool_for_aux_provider(provider, normalized, load_pool)
+        pool = pool_for_aux_provider(provider, normalized, load_pool, base_url)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
         return False
@@ -4396,7 +4398,7 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
-        fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
+        fast_model = _get_aux_model_for_provider(fast_catalog_provider(runtime, main_provider), prefer_fast=True)
         if fast_model and fast_model != main_model:
             logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
                          task, fast_model, main_model)
@@ -4632,7 +4634,7 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry, custom_base)) is None or not pool.has_credentials():
                     continue
                 if (pool_entry := pool.select(model=model)) is None:
                     continue
@@ -4732,13 +4734,6 @@ class _ResolveRequest(NamedTuple):
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
-
-
-def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
-    """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
-    if callable(raw) and not isinstance(raw, str):
-        return raw
-    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
@@ -4936,12 +4931,15 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            custom_key = (
-                _normalize_api_key(req.explicit_api_key)
-                or _scoped_key_env("OPENAI_API_KEY")
-                or _read_main_api_key_if_same_origin(custom_base)
-                or "no-key-required"  # local servers don't need auth
-            )
+            # Only THIS route's credentials (main same-origin, owning providers: entry) beat env keys (#145452).
+            from hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
+            paired = any(openai_env_key_authoritative_for(u, _scoped_key_env("OPENAI_BASE_URL"))  # requested URL too:
+                         for u in (req.explicit_base_url, custom_base))  # _to_openai_base_url rewrites its path
+            custom_key = (_normalize_api_key(req.explicit_api_key) or _read_main_api_key_if_same_origin(custom_base)
+                          or declared_custom_key_for_base_url(req.explicit_base_url, req.original_provider or provider)
+                          or declared_custom_key_for_base_url(custom_base, req.original_provider or provider)
+                          or (_scoped_key_env("OPENAI_API_KEY") if paired else "")
+                          or "no-key-required")  # local servers don't need auth
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
@@ -5654,7 +5652,9 @@ def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_ke
     # Same normalization as the client build, which treats a blank explicit key as keyless.
     if _normalize_api_key(api_key):
         return ()
-    borrowed = _read_main_api_key_if_same_origin(_to_openai_base_url(base_url).strip())
+    custom_base = _to_openai_base_url(base_url).strip()  # the providers: entry's key is borrowed the same way
+    borrowed = (_read_main_api_key_if_same_origin(custom_base) or declared_custom_credential_identity(base_url, provider)
+                or declared_custom_credential_identity(custom_base, provider))  # raw URL first, as the build does
     return (_runtime_cache_discriminator("api_key", borrowed),)
 
 
@@ -5886,10 +5886,10 @@ def _get_cached_client(
             del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
-    # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
+    # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
     effective_api_key = api_key
     if not effective_api_key:
-        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
+        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
         if _pool is not None and (_pe := _peek_pool_entry(provider, _pool, model)) is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
@@ -6587,7 +6587,7 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
     # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
     # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
-    from agent.reasoning_effort import clamp_reasoning_config
+    from agent.reasoning_effort import chat_endpoint_efforts, clamp_reasoning_config
     from agent.auxiliary_reasoning_floor import known_reasoning_floor
     if isinstance(extra_body, dict):
         task_reasoning = extra_body.get("reasoning")
@@ -6596,7 +6596,7 @@ def _build_call_kwargs(
             extra_body.pop("reasoning")
             if reasoning_config is None:
                 reasoning_config = task_reasoning
-    reasoning_config = clamp_reasoning_config(known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
+    reasoning_config = clamp_reasoning_config(known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task), chat_endpoint_efforts(model, effective_base))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, data_use_requirement(messages))
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
@@ -7630,7 +7630,7 @@ def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Opt
 def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> bool:
     pool_provider, failed_api_key = _failure_pool(route, failure)
     return bool(pool_provider) and _recover_provider_pool(
-        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict)
+        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict, base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or ""))
 
 
 def _ladder_credential_rungs(

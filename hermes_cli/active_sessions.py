@@ -13,6 +13,7 @@ import collections
 import errno
 import math
 import os
+import stat
 import threading
 import time
 import uuid
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
-from utils import atomic_json_write
+from utils import atomic_json_write, default_new_file_mode
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +254,10 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
             raise invalid("unreadable") from exc
         logger.warning("Ignoring corrupt active session registry at %s", path)
         return []
+    # A registry an older build wrote world-readable is closed on the first read, not left
+    # exposed until the next write (read-only callers like attach discovery never write).
+    _strip_other_access(path)
+    _strip_other_access(path.parent)
     entries = data.get("entries") if isinstance(data, dict) else data
     if not isinstance(entries, list):
         if strict:
@@ -353,7 +358,33 @@ def _valid_process_start(v: Any) -> bool:
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True)
+    # The registry carries the lease ids that key the session-attach MACs, so other users must
+    # never read it. Only the "other" bits are stripped: a shared-group HERMES_HOME (the NixOS
+    # module's setgid 2770 home, UMask 0007) needs group rw for cross-user session fencing. The
+    # mode is applied to the temp file before the replace, so the payload never lands world-readable.
+    try:
+        base = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        base = default_new_file_mode() or 0o600
+    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True, mode=base & 0o770)
+    _strip_other_access(path.parent)
+
+
+def _strip_other_access(target: Path) -> None:
+    """Best effort: clear the 'other' permission bits of *target*, keeping owner, group and setgid.
+
+    Applied to the registry directory on every write and to a registry an older build left
+    world-readable when it is read. Never raises: a non-owner, a shared mount or a filesystem
+    without POSIX modes may refuse the chmod, and registry I/O must not fail because of that.
+    """
+    if os.name != "posix":
+        return
+    try:
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+        if mode & 0o007:
+            os.chmod(target, mode & ~0o007)
+    except OSError:
+        pass
 
 
 def _process_start_time(pid: int) -> Optional[float]:

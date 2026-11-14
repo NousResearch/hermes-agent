@@ -1,0 +1,73 @@
+name: piloterr
+title: Piloterr
+repo: https://github.com/piloterr/hermes-plugin-piloterr
+sha: eabca8db8b72f3b761f71af2b3b8d06139593a7a
+version: "1.1.0"
+description: "Web scraping for Hermes through the Piloterr API. piloterr_fetch_page fetches any page with the crawler (plain HTTP), rendering (headless browser) or webunlocker (anti-bot) engine; 53 more tools return structured data from Google, Bing, Brave, DuckDuckGo, Yahoo, LinkedIn, Instagram, X, GitHub, Pinterest, Amazon, eBay, Walmart, AliExpress, Target, Best Buy, Crunchbase, Trustpilot, G2, Similarweb, Indeed, Glassdoor, Yelp, Expedia and Zillow. Also a backend for the built-in web_extract tool. Disclosure — sends each URL and the tool arguments to api.piloterr.com with your PILOTERR_API_KEY, and calls use Piloterr credits (1 to 3 per call, stated in each tool description). Reads the key only through Hermes's secret scope. Registers 54 tools and a web_extract backend, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: piloterr
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/piloterr/hermes-plugin-piloterr#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - piloterr_fetch_page
+    - piloterr_website_antibot
+    - piloterr_website_technology
+    - piloterr_website_contacts
+    - piloterr_google_search
+    - piloterr_google_news
+    - piloterr_google_images
+    - piloterr_google_videos
+    - piloterr_google_shopping
+    - piloterr_google_maps
+    - piloterr_google_jobs
+    - piloterr_bing_search
+    - piloterr_brave_search
+    - piloterr_duckduckgo_search
+    - piloterr_yahoo_search
+    - piloterr_linkedin_company
+    - piloterr_linkedin_profile
+    - piloterr_linkedin_post
+    - piloterr_linkedin_job_search
+    - piloterr_linkedin_job
+    - piloterr_instagram_user
+    - piloterr_instagram_post
+    - piloterr_x_profile
+    - piloterr_x_post
+    - piloterr_pinterest_user
+    - piloterr_github_user
+    - piloterr_amazon_search
+    - piloterr_amazon_product
+    - piloterr_amazon_offers
+    - piloterr_ebay_search
+    - piloterr_ebay_product
+    - piloterr_walmart_search
+    - piloterr_walmart_product
+    - piloterr_aliexpress_search
+    - piloterr_aliexpress_product
+    - piloterr_target_search
+    - piloterr_target_product
+    - piloterr_bestbuy_search
+    - piloterr_bestbuy_product
+    - piloterr_crunchbase_company
+    - piloterr_crunchbase_person
+    - piloterr_trustpilot_company
+    - piloterr_g2_product
+    - piloterr_similarweb_domain
+    - piloterr_indeed_job_search
+    - piloterr_indeed_job
+    - piloterr_glassdoor_company
+    - piloterr_yelp_search
+    - piloterr_yelp_business
+    - piloterr_yelp_reviews
+    - piloterr_expedia_hotels
+    - piloterr_zillow_search
+    - piloterr_zillow_property
+    - piloterr_usage
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PILOTERR_API_KEY

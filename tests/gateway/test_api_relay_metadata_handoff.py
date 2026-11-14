@@ -4,6 +4,7 @@ import pytest
 
 from gateway.session_ingress import execute_admission
 from gateway.session_api_turn import admit_api_turn
+from tests.gateway.session_claims import claim
 
 
 @pytest.mark.asyncio
@@ -20,7 +21,7 @@ async def test_request_relay_metadata_reaches_the_executing_turn(api, owner):
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     assert seen['relay_metadata'] == metadata
 
 

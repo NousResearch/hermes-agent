@@ -154,9 +154,21 @@ class GatewayBusySessionMixin:
         if pending_event is None:
             # An eventless follow-up (leftover /steer, interrupt text) has no slot entry of its
             # own; give it one so it survives like any queued turn.
-            prompt, pinned_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
-            pending_event = MessageEvent(text=pending or "", source=pinned_source, channel_prompt=prompt)
+            pending_event = self._carry_over_event(session_key, source, pending or "")
         self._requeue_event_at_front(session_key, pending_event, adapter)
+
+    def _carry_over_event(self, session_key: str, source: SessionSource, text: str) -> MessageEvent:
+        """A stand-alone event for input the running turn leaves over (a late /steer, interrupt text).
+
+        It continues the active channel context (the pinned prompt and source) and keeps the actor
+        of the turn it came from: ``turn.running_event()``'s sender, ``""`` once another member's
+        input folded into that turn. Built from the source alone it would run as the turn opener.
+        """
+        prompt, pinned_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
+        running = self._session_state(session_key).turn.running_event()
+        actor = running if getattr(running, "user_id", None) is not None else getattr(running, "source", None)
+        return MessageEvent(text=text, source=pinned_source, channel_prompt=prompt,
+                            user_id=getattr(actor, "user_id", None), user_name=getattr(actor, "user_name", None))
 
     def _requeue_event_at_front(self, session_key: str, event: MessageEvent, adapter: Any) -> None:
         """Restore *event* at the FIFO head without dropping a staged next turn.
@@ -198,9 +210,8 @@ class GatewayBusySessionMixin:
         """
         leftover_steer = (result.get("pending_steer") or "").strip()
         if leftover_steer:
-            steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
             self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
-            pending_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt)
+            pending_event = self._carry_over_event(session_key, source, leftover_steer)
         adapter._pending_messages[session_key] = pending_event
         logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
 
@@ -239,17 +250,8 @@ class GatewayBusySessionMixin:
                     session_key, pending[:40],
                 )
             elif pending and not pending_event:
-                from gateway.platforms.base import MessageEvent
-                # A deferred steer continues the active channel context, just like an
-                # eventless follow-up. Reuse its pins without marking the user as internal.
-                steer_prompt, steer_source = self._pinned_channel_inputs(
-                    session_key, None, source, internal=True,
-                )
-                steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
-                )
                 if session_key:
-                    self._enqueue_fifo(session_key, steer_event, adapter)
+                    self._enqueue_fifo(session_key, self._carry_over_event(session_key, source, leftover_steer), adapter)
                 logger.debug(
                     "Enqueued leftover /steer behind pending message for session %s: '%s...'",
                     session_key or "?", leftover_steer[:40],
@@ -566,12 +568,17 @@ class GatewayBusySessionMixin:
         return (enriched_text or text).strip() if successful_transcripts else text
 
     def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
-        """Keep event origin in this injection, never in the cached system prompt."""
+        """Keep event origin in this injection, never in the cached system prompt. In a shared
+        session the text carries the same ``[Name]`` sender label a turn-opening message gets."""
         if not text.strip():
             return text
         import json
+        from gateway.session import label_shared_sender
 
         source = event.source
+        text = label_shared_sender(
+            source, text, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
         origin = {
             "platform": source.platform.value,
             **{key: getattr(source, key) for key in (
@@ -580,6 +587,7 @@ class GatewayBusySessionMixin:
             )},
             "message_id": event.message_id,
             "source_message_id": source.message_id,
+            "from_bot": True if source.is_bot else None,  # a bot/integration post, not the person helped
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
         from gateway.run import _load_gateway_config
@@ -595,7 +603,7 @@ class GatewayBusySessionMixin:
                 "chat_id": _hash_chat_id, "chat_id_alt": _hash_chat_id,
                 "parent_chat_id": _hash_chat_id,
             }
-            origin = {key: (value if key in ("platform", "chat_type") else
+            origin = {key: (value if key in ("platform", "chat_type", "from_bot") else
                             hashers.get(key, _hash_id)(value)) for key, value in origin.items()}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of
         # normalizing them into another destination. Escape marker delimiters too.
@@ -805,11 +813,18 @@ class GatewayBusySessionMixin:
 
     def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
-        the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
-        turn already owns the slot."""
+        the bot, a bare silence marker must not end the turn, and once another sender's input joins
+        it the turn has no single actor (approvals raised after it fail closed). Returns the turn,
+        or None when a newer turn already owns the slot. A plugin turn waiting for the session's
+        background work stops waiting, as for a person's queued input."""
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, session_key)
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
+        running = turn.running_event()  # a drained queued follow-up's event, else the opener's
+        if running is not None and running is not event:
+            running.absorb_turn_input(event)
         if turn.event is not None and turn.event is not event:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
@@ -950,7 +965,7 @@ class GatewayBusySessionMixin:
         if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
-                "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
+                "user=%s, platform=%s, session=%s", event.source.user_id,
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
@@ -1173,6 +1188,7 @@ class GatewayBusySessionMixin:
         return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
         from gateway.run import _INTERRUPT_REASON_STOP
         await _busy_accepted()
@@ -1228,6 +1244,12 @@ class GatewayBusySessionMixin:
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
         from gateway.run import _AGENT_PENDING_SENTINEL
+
+        # A steer carries text only; media cannot ride one. The plain-message busy gate already
+        # demotes non-text input to queue for exactly this reason (#70253) — a /steer caption must
+        # not be the one path that still drops the photo: queue the whole event instead (#132371).
+        if getattr(event, "media_urls", None) or getattr(event, "media_types", None):
+            return await self._busy_queue_command(event, quick_key, source)
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")
@@ -1400,7 +1422,7 @@ class GatewayBusySessionMixin:
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
         )
-        allowed_preview = sorted(policy.user_allowed_commands)
+        allowed_preview = sorted(policy.user_runnable_commands)
         if allowed_preview:
             suffix = (
                 t("gateway.unauthorized.admin_only_can_run") + ", ".join(f"/{c}" for c in allowed_preview[:12])
@@ -1479,9 +1501,10 @@ class GatewayBusySessionMixin:
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
         """True if this /restart is a Telegram re-delivery we already handled.
 
-        The previous gateway wrote ``.restart_last_processed.json`` (platform + update_id). A
-        /restart with update_id <= that value is a redelivery when this process booted from that
-        restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
+        The previous gateway wrote ``.restart_last_processed.json`` (platform + transport +
+        update_id). Within that bot's stream, update_id <= that value is a redelivery when this
+        process booted from that restart; otherwise the marker must be < 5 minutes old.
+        Telegram only (numeric ordering); legacy markers retain their unscoped behavior.
         """
         from gateway.run import _hermes_home
         if event is None or event.source is None or event.platform_update_id is None:
@@ -1511,6 +1534,14 @@ class GatewayBusySessionMixin:
                 return False
             data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
         except Exception:
+            return False
+
+        from gateway.session_identity import transport_profile_of
+
+        # Telegram update IDs are ordered per bot, not across the multiplexed process.
+        # Runtime profiles may be shared by several bots, so use the receiving transport.
+        recorded_profile = data.get("transport_profile")
+        if recorded_profile is not None and recorded_profile != transport_profile_of(event.source):
             return False
 
         recorded_uid = data.get("update_id")
@@ -1637,12 +1668,16 @@ class GatewayBusySessionMixin:
         # object.__new__ test runners lack the counter; fall back to a local one.
         counter = getattr(self, "_slash_confirm_counter", None)
         if counter is None:
-            import itertools as _itertools
-            counter = self._slash_confirm_counter = _itertools.count(1)
+            from gateway.platforms.helpers import prompt_id_counter
+            counter = self._slash_confirm_counter = prompt_id_counter()
         confirm_id = f"{next(counter)}"
 
-        # Register FIRST so a fast button click cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        # Register FIRST so a fast button click cannot race the send_slash_confirm return. The
+        # command runs outside any turn: its sender is the requester, never a bound turn's actor.
+        from tools.approval_context import prompt_authority
+        actor = event if event.user_id is not None else source  # as session_context binds it
+        _slash_confirm_mod.register(session_key, confirm_id, command, handler, authority=prompt_authority(
+            str(event.sender_id() or ""), str(actor.user_name or ""), str(getattr(source, "chat_type", None) or "")))
 
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))

@@ -1,0 +1,34 @@
+name: elcaro
+title: Elcaro
+repo: https://github.com/udirobert/elcaro
+sha: a1bcb95cec626497d9e4b60ab8b6ec83e94143a5
+subdir: hermes-plugin
+version: "1.1.0"
+description: "Runtime prompt-injection defense and tamper-evident flight recorder. Every tool result is scanned before it reaches the model by a deterministic detector taxonomy (sub-10 ms, fully local, vendored — no network by default); quarantined content is replaced in place with a signed [CONTENT QUARANTINED] notice via transform_tool_result, and tool-call arguments (write_file, terminal, memory) are scanned for smuggled payloads via pre_tool_call. Beyond content, a kernel gate: a quarantine taints the session, and while tainted credential-path reads/writes and instruction-file writes are refused, network egress and outside-workspace writes escalate to the approval gate — tool_call, execute_code and process_manage are evaluated as the action they really make, and taint propagates into subagents via subagent_start. A canary-baited decoy credentials file (ELCARO-DECOY-* marker) forces a deterministic 1.0 quarantine on exfiltration; canary provenance edges record an injection propagating between scans; every verdict lands in a hash-chained, Ed25519-signed threat log with a Desktop pane (chain-verified badge, honeypot status, propagation rows, signed-receipts drawer), a /elcaro slash command (status / calibrate / verify / explain), and a `hermes elcaro` CLI. Two on-demand tools close the loop input scanning can't: elcaro_lint_response flags concealed-compromise artifacts in agent output (canary echoes, text-channel tool calls, tracking pixels, secrets — caught 148/152 compromised transcripts in the public 24-task IPI benchmark), and elcaro_harden_prompt returns a hardened system prompt plus a gullibility score. Engine validated on that benchmark: 22/22 attack tasks flagged (regression coverage, not held-out proof). Disclosure — scanning is fully local by default: the vendored engine's env-driven LLM second passes (api.openai.com, inference-api.openserv.ai and others) and its Postgres canary registry are built disabled; scanned tool-result text leaves the machine only when the user sets the optional `api_url` hosted lane, which POSTs it there with the optional `ELCARO_API_KEY`; the optional `ELCARO_SIGNING_KEY` is read from the profile secret store; it writes only to its plugin data dir (threat-log.jsonl, decoy-marker.txt, and a bait service-credentials.env decoy it never reads); a quarantine taints the session so credential-path and instruction-file writes are refused and network/outside-workspace actions escalate to Hermes approval (nothing auto-approves); Python deps pydantic, cryptography, httpx; no core overrides."
+maintainer: udirobert
+tier: community
+category: general
+requires_hermes: ">=0.22"
+docs_url: https://github.com/udirobert/elcaro/tree/main/hermes-plugin
+platforms: [windows, macos, linux]
+screenshots:
+  - https://raw.githubusercontent.com/udirobert/elcaro/a1bcb95cec626497d9e4b60ab8b6ec83e94143a5/hermes-plugin/screenshots/01-architecture-overview.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/a1bcb95cec626497d9e4b60ab8b6ec83e94143a5/hermes-plugin/screenshots/02-scanner-calibrate.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/a1bcb95cec626497d9e4b60ab8b6ec83e94143a5/hermes-plugin/screenshots/03-enforcement-decoy-honeypot.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/a1bcb95cec626497d9e4b60ab8b6ec83e94143a5/hermes-plugin/screenshots/04-flight-recorder-verify.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/a1bcb95cec626497d9e4b60ab8b6ec83e94143a5/hermes-plugin/screenshots/05-response-lint.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/a1bcb95cec626497d9e4b60ab8b6ec83e94143a5/hermes-plugin/screenshots/06-prompt-armor.png
+capabilities:
+  provides_tools:
+    - elcaro_scan
+    - elcaro_quick_scan
+    - elcaro_explain
+    - elcaro_lint_response
+    - elcaro_harden_prompt
+  provides_hooks:
+    - transform_tool_result
+    - pre_tool_call
+    - pre_llm_call
+    - subagent_start
+  provides_middleware: []
+  requires_env: []

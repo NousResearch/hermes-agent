@@ -39,6 +39,7 @@ from hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,
     _note_failure, _unattended_consent,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
     from hermes_cli.platforms import PLATFORMS
     try:
-        bundled = {p.name for p in (Path(__file__).resolve().parents[1] / "plugins" / "platforms").iterdir()
+        bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
                    if (p / "plugin.yaml").is_file()}
     except OSError:
         bundled = set()
@@ -850,11 +851,12 @@ def installs_held():
         _installs_held.reset(token)
 
 
-def defer_startup_notice(message: str) -> None:
+def defer_startup_notice(message: str, *, log: bool = True) -> None:
     """Hand *message* to the active home's next turn someone sees (:func:`claim_kept_notices`), once.
-    For boot-path work that runs before any agent exists."""
+    For boot-path work that runs before any agent exists. *log* False: the caller already logged it."""
     from hermes_constants import get_hermes_home
-    logger.warning(message)
+    if log:
+        logger.warning(message)
     _queue_notice(Path(get_hermes_home()), message)
 
 
@@ -1141,11 +1143,14 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
-    def _install(name: str) -> dict:
+    def _install(name: str, discard: Optional[Path] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
+            if discard is not None:  # the caller's own leftover tree, removed under this same binding
+                from hermes_cli.plugins_cmd_remove import _remove_plugin_core
+                _remove_plugin_core(discard)
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
                                             assume_deps_consent=_unattended_consent() if consent is None
                                             else consent)

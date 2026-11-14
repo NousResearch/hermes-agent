@@ -69,8 +69,8 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[ComputerUseProvider]
     name = provider_dir.name
     is_bundled = provider_dir.parent == _CU_PLUGINS_DIR
     mod = _loader.load_plugin_module(
-        f"plugins.computer_use.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}", provider_dir,
-        parents=("plugins", "plugins.computer_use"), logger=logger,
+        f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}", provider_dir,
+        parents=(__package__.rpartition(".")[0], __package__), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
     return mod and _loader.instance_from_module(
         mod, collector=_ProviderCollector(), collected_attr="provider", base_cls=ComputerUseProvider,

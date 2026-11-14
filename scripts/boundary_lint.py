@@ -28,6 +28,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "boundary_lint_baseline.json"
@@ -40,6 +41,7 @@ _SKIP_PARTS = {"tests", "__pycache__", "node_modules", "dist", ".venv", "venv"}
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from hermes_agent.compat.paths import original_module, original_path, tree_moves
 from hermes_cli.plugin_validate_private_imports import (
     _hermes_packages,
     _imported,
@@ -48,9 +50,16 @@ from hermes_cli.plugin_validate_private_imports import (
 )
 
 
+def _nothing_to_scan(what: str) -> NoReturn:
+    print(f"{what}: a scan root that moved would be skipped in silence", file=sys.stderr)
+    raise SystemExit(2)
+
+
 def module_dirs(root: Path = ROOT) -> list[Path]:
     """Every bundled module directory under ``plugins/``."""
-    plugins = root / "plugins"
+    plugins = root / tree_moves(root).current("plugins")
+    if not plugins.is_dir():
+        _nothing_to_scan(f"{plugins} does not exist")
     dirs = {p.parent for p in plugins.rglob("plugin.yaml") if not _SKIP_PARTS.intersection(p.relative_to(plugins).parts)}
     dirs |= {p.parent.parent for p in plugins.glob("*/dashboard/manifest.json")}
     return sorted(dirs)
@@ -61,22 +70,28 @@ def module_to_core(root: Path = ROOT) -> list[str]:
     An in-tree module's full-path import of itself (``plugins.web.exa.provider``) or of another module
     is not a core import, so it is left out."""
     modules = module_dirs(root)
-    return [f"{d.relative_to(root).as_posix()}/{hit}" for d in modules for hit in private_import_findings(d)
-            if not _in_module(hit.split(" ", 1)[1], root, modules)]
+    hits = [(d, *hit.split(" ", 1)) for d in modules for hit in private_import_findings(d)]
+    return [f"{d.relative_to(root).as_posix()}/{loc} {original_module(target)}" for d, loc, target in hits
+            if not _in_module(target, root, modules)]
 
 
 def _core_files(root: Path, modules: list[Path]):
-    tops = sorted(_hermes_packages())
-    for top in tops:
-        package = root / top
-        paths = sorted(package.rglob("*.py")) if package.is_dir() else [root / f"{top}.py"]
+    seen: set[Path] = set()
+    for top in sorted(_hermes_packages()):
+        package = root / tree_moves(root).current(top)
+        paths = sorted(package.rglob("*.py")) if package.is_dir() else [root / tree_moves(root).current(f"{top}.py")]
         for path in paths:
             rel = path.relative_to(root)
-            if not path.is_file() or _SKIP_PARTS.intersection(rel.parts[:-1]) or path.name.startswith("test_"):
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            if _SKIP_PARTS.intersection(rel.parts[:-1]) or path.name.startswith("test_"):
                 continue
             if any(path.is_relative_to(d) for d in modules):
                 continue
             yield path, rel
+    if not seen:
+        _nothing_to_scan(f"no core file under {root}")
 
 
 def _absolute(rel: Path, node: ast.ImportFrom) -> str:
@@ -96,11 +111,11 @@ def _targets(rel: Path, node: ast.AST) -> list[list[str]]:
 
 def _in_module(target: str, root: Path, modules: list[Path]) -> bool:
     """Whether the dotted ``target`` (a module, or a name in one) is a file or package inside a module."""
-    parts = target.split(".")
+    parts = original_module(target).split(".")
     if parts[0] != "plugins":
         return False
     for end in range(len(parts), 1, -1):
-        path = root.joinpath(*parts[:end])
+        path = root / tree_moves(root).current("/".join(parts[:end]))
         for candidate in (path, path.with_suffix(".py")):
             if candidate.exists():
                 return any(candidate.is_relative_to(d) for d in modules)
@@ -124,7 +139,7 @@ def core_to_module(root: Path = ROOT) -> list[str]:
                 # Collapse the spellings of one alias to one target; distinct aliases count separately.
                 if hits := [t for t in spellings if _in_module(t, root, modules)]:
                     found.add((rel.as_posix(), getattr(node, "lineno", 0), min(hits, key=len)))
-    return [f"{rel}:{line} {target}" for rel, line, target in sorted(found)]
+    return [f"{rel}:{line} {original_module(target)}" for rel, line, target in sorted(found)]
 
 
 def collect(root: Path = ROOT) -> dict[str, list[str]]:
@@ -136,7 +151,7 @@ def _key(site: str) -> str:
     branches that add the same target from different files add two different keys; a file that imports
     one target twice counts 2 under one key."""
     loc, target = site.split(" ", 1)
-    return f"{loc.rsplit(':', 1)[0]} {target}"
+    return f"{original_path(loc.rsplit(':', 1)[0])} {original_module(target)}"
 
 
 def tally(found: dict[str, list[str]]) -> dict[str, dict[str, int]]:

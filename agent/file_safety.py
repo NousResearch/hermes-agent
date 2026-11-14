@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from hermes_platform.host.facts import os_family
 
 
@@ -277,7 +277,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # ("true containment belongs in Docker/remote backends and OS permissions,
     # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
     hermes_files = (
-        ".env", ".anthropic_oauth.json",
+        *HOME_ENV_FILES, ".anthropic_oauth.json",
         os.path.join("auth", "google_oauth.json"),
         *SECRET_CACHE_STORES,
     )
@@ -325,13 +325,13 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
+# CREDENTIAL_STORE_DIRS (vault/ holds key + ciphertext side by side),
 # browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
 # browser credential and its grants to native apps) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
 _HERMES_PROTECTED_SUBPATHS = (
-    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
+    "state.db", "sessions", "browser-profile", "webapp", *CREDENTIAL_STORE_DIRS)
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -383,7 +383,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     for base in _credential_store_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
-                if deny_path_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                if deny_path_under(resolved, os.path.realpath(os.path.join(str(base), *sub.split("/")))):
                     return "credential"
 
     safe_roots = get_safe_write_roots()
@@ -432,7 +432,7 @@ _DID_SUFFIX = (
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
 _CREDENTIAL_FILE_NAMES = (
-    "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    "auth.json", "auth.lock", ".anthropic_oauth.json", *HOME_ENV_FILES, "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
 )
 
@@ -456,6 +456,11 @@ _READ_DENIED_DIRS = (
      "is the Hermes Webapp sign-in directory and cannot be read directly.",
      "is a Hermes Webapp sign-in file (the browser credential or its sign-in records) and cannot be read directly."),
 )
+# The other credential trees (pairing, messaging-platform sessions) get a generic message.
+_READ_DENIED_DIRS += tuple(
+    (store, "is a Hermes credential store directory and cannot be read directly.",
+     "is inside a Hermes credential store and cannot be read directly.")
+    for store in CREDENTIAL_STORE_DIRS if store not in {entry[0] for entry in _READ_DENIED_DIRS})
 
 
 # Device/fd paths whose reads hang the process. Checked by path only — no I/O.

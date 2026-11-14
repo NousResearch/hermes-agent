@@ -11,7 +11,8 @@ latest). It crosses the restart: the next gateway reads it from the same store. 
 came due during the hold (and was not already expired when it began) counts its grace from the
 hold's last tick instead of its due time, so it fires once when dispatch resumes; a hold whose
 gateway never came back within the grace still retires it (#93526: no stale reminders after
-downtime).
+downtime). ``hermes pause`` (ESTOP) holds dispatch the same way and stamps the same file, so a
+pause longer than the grace no longer drops a reminder due during it (#153683).
 """
 
 from __future__ import annotations

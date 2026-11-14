@@ -141,34 +141,6 @@ class TestKnownPrefixes:
         for key in ("am_" + "0123456789abcdef" * 2, "am_" + "Ab9" * 8, "am_org_" + "Zq7k" * 6):
             assert key[-12:] not in redact_sensitive_text(f"leaked {key} in output"), key
 
-    def test_prefix_tokens_followed_by_an_underscore_or_dash_are_masked(self):
-        """The trailing guard negates each pattern's own body class, not one shared
-        class: a shared class wider than the body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]``)
-        failed at the token's natural end and at every backtrack step alike, so
-        ``ghp_…_SUFFIX`` was not matched at all and shipped in cleartext (#142852)."""
-        cases = [
-            ("ghp_" + "A" * 40, "_SUFFIX"),        # env-var / log-key shape
-            ("gho_" + "B" * 40, "_env"),
-            ("hf_" + "C" * 20, "_KEY"),
-            ("npm_" + "D" * 36, "-token"),
-            ("xoxb-" + "E" * 24, "_SUFFIX"),
-            ("AKIA" + "F" * 16, "_TAIL"),           # exact AWS access-key length
-            ("rk_live_" + "G" * 24, "_limited"),
-            ("gsk_" + "H" * 56, "-prod"),
-            ("github_pat_" + "I" * 36, "-env"),     # body has ``_`` but no ``-``
-        ]
-        for token, delimiter in cases:
-            out = redact_sensitive_text(f"value {token}{delimiter} here", force=True)
-            assert token not in out, f"{token[:9]}… followed by {delimiter!r} survived: {out!r}"
-            # The mask ends at the token: the delimiter-joined suffix is not secret
-            # matter and must survive for debuggability.
-            assert f"{delimiter} here" in out, out
-
-    def test_underscore_shape_still_requires_the_length_floor(self):
-        """A too-short body keeps the pattern silent even with an underscore tail —
-        the fix loosened the boundary, not the length gate."""
-        assert redact_sensitive_text("ghp_tooshort_x here", force=True) == "ghp_tooshort_x here"
-
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)

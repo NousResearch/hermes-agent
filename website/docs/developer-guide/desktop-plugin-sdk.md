@@ -1420,7 +1420,7 @@ ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? }
 ctx.os.openExternal(url)                   // OS default handler (browser, mail, spotify:) → Promise<boolean>
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
-ctx.files.requestFolder()                  // the app's folder picker → { ok, folder: { id, name, path } | null }
+ctx.files.requestFolder({ title?, defaultPath? }) // the app's folder picker → { ok, folder: { id, name, path } | null }
 ctx.files.readText(folder, 'notes/a.md')   // folder = 'data' or a granted folder's id; path is relative
 ctx.pet.say(text, { id?, tone?, ttlMs? })   // line in the core pet's speech bubble → disposer
 ctx.pet.clear(id?)                         // drop one line (or all of yours)
@@ -1618,11 +1618,15 @@ computer running Desktop. A plugin reaches exactly two kinds of folder:
 - **Its own data folder**, handle `'data'`: private to the plugin, always
   available, no prompt. Use it for caches, indexes and exports that are too big
   for `ctx.storage`.
-- **Folders the user granted it**: `ctx.files.requestFolder()` opens the app's
-  own folder picker (titled with your plugin's name; you cannot change its
-  copy). The grant is remembered for your plugin across restarts, listed under
-  your plugin in **Capabilities → Plugins → Folder access**, and the user can
-  revoke it there at any time. Uninstalling the plugin drops its grants.
+- **Folders the user granted it**: `ctx.files.requestFolder({ title?, defaultPath? })` opens the app's
+  own folder picker. By default it uses your plugin's name as the title and the
+  platform's normal starting location; you can supply a custom title and a
+  starting directory for workflows such as opening an existing project. The
+  starting directory is only a navigation hint: the user must still choose a
+  folder, and the normal protected-folder and grant checks apply. The grant is
+  remembered for your plugin across restarts, listed under your plugin in
+  **Capabilities → Plugins → Folder access**, and the user can revoke it there
+  at any time. Uninstalling the plugin drops its grants.
 
 Every call names a folder handle and a path **relative to that folder**. The
 app's main process checks each call: `..`, absolute paths, drive letters and
@@ -1641,7 +1645,10 @@ the app's check and its open is refused rather than followed.
 // First run: ask once, remember the handle.
 let vault = (await ctx.files.folders())[0]
 if (!vault) {
-  const picked = await ctx.files.requestFolder()
+  const picked = await ctx.files.requestFolder({
+    title: 'Choose a project folder',
+    defaultPath: '/path/to/project'
+  })
   if (!picked.ok || !picked.folder) return   // cancelled, refused, or an older app
   vault = picked.folder
 }
@@ -2485,7 +2492,7 @@ pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFolderDialogOptions`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |

@@ -36,13 +36,20 @@ export type PluginFilesResult<T extends object = object> =
   | ({ ok: true } & T)
   | { ok: false; error: string; message: string }
 
+export interface PluginFolderDialogOptions {
+  /** Custom title for the native folder picker. Defaults to the plugin name. */
+  title?: string
+  /** Directory the native folder picker should open in initially. */
+  defaultPath?: string
+}
+
 export interface PluginFiles {
   /** Handle of this plugin's private data folder (always available). */
   readonly dataFolder: 'data'
   /** Ask the user for a folder with the app's own picker. `folder` is null on
    *  cancel. A folder holding Hermes data is refused (`error: 'protected'`)
    *  and the app tells the user why. */
-  requestFolder: () => Promise<PluginFilesResult<{ folder: PluginFolder | null }>>
+  requestFolder: (options?: PluginFolderDialogOptions) => Promise<PluginFilesResult<{ folder: PluginFolder | null }>>
   /** Folders the user has granted this plugin and not revoked. */
   folders: () => Promise<PluginFolder[]>
   /** Give a granted folder back (the user can also revoke it in Settings). */
@@ -114,7 +121,7 @@ export function createPluginFiles(pluginId: string): PluginFiles {
   return {
     dataFolder: 'data',
 
-    async requestFolder() {
+    async requestFolder(options?: PluginFolderDialogOptions) {
       const door = bridge()
 
       if (!door) {
@@ -126,7 +133,11 @@ export function createPluginFiles(pluginId: string): PluginFiles {
       try {
         const result = await door.request(pluginId, {
           buttonLabel: translateNow('skills.plugins.folderAccess.pickerButton'),
-          title: translateNow('skills.plugins.folderAccess.pickerTitle', name)
+          title:
+            typeof options?.title === 'string' && options.title.trim()
+              ? options.title.trim()
+              : translateNow('skills.plugins.folderAccess.pickerTitle', name),
+          defaultPath: options?.defaultPath
         })
 
         if (!result.ok) {

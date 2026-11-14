@@ -35,7 +35,7 @@ import { $pluginRecords } from './plugins-store'
 import { registry } from './registry'
 import { type PluginSettingsPage, settingsPageContribution } from './settings-pages'
 
-export type { PluginFileEntry, PluginFiles, PluginFilesResult, PluginFolder } from './plugin-files'
+export type { PluginFileEntry, PluginFiles, PluginFilesResult, PluginFolder, PluginFolderDialogOptions } from './plugin-files'
 export type { PluginPreview } from './plugin-preview'
 import type { Contribution } from './types'
 

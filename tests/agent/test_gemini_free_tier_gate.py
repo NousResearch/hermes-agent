@@ -44,9 +44,13 @@ class TestProbeGeminiTier:
         assert _run_probe(resp) == "free"
 
 
-    def test_successful_200_without_rpd_header_is_paid(self):
+    def test_successful_200_without_rpd_header_is_unknown(self):
         resp = _mock_response(200, {}, '{"candidates":[]}')
-        assert _run_probe(resp) == "paid"
+        assert _run_probe(resp) == "unknown"
+
+    def test_malformed_rpd_header_falls_through(self):
+        resp = _mock_response(200, {"x-ratelimit-limit-requests-per-day": "abc"}, "{}")
+        assert _run_probe(resp) == "unknown"
 
 
 

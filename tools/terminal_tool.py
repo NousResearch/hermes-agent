@@ -1187,10 +1187,50 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run the command guards; ``force`` skips them entirely.
-    Raises :class:`_Rejected` when the command may not run (denied, or pending
-    gateway approval)."""
+def _protected_instruction_block(command: str, *, env_type: str, cwd: Optional[str],
+                                 workdir: Optional[str], task_id: Optional[str]) -> Optional[str]:
+    """Blocked-result JSON when *command* writes a protected agent-instruction file.
+
+    Wraps ``tools.protected_instruction_guard.terminal_write_block``: the guard module owns the
+    matching rules and the approval round-trip (shared with the file tools), this keeps the
+    terminal tool's error shape. Any failure inside the guard fails CLOSED — a gate that
+    silently disables itself is worse than a false prompt.
+    """
+    try:
+        from tools.protected_instruction_guard import terminal_write_block
+        body = terminal_write_block(command, cwd, env_type=env_type or "local",
+                                    workdir=workdir, task_id=task_id or "default")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("protected-instruction terminal gate failed: %s", exc, exc_info=True)
+        return _error_json(
+            "BLOCKED: the protected agent-instruction file check could not run "
+            f"({type(exc).__name__}); the command was not executed.", status="blocked")
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = {"error": str(body)}
+    if isinstance(payload, dict):
+        payload.setdefault("status", "blocked")
+        return json.dumps(payload, ensure_ascii=False)
+    return _error_json(str(payload), status="blocked")
+
+
+def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool,
+                         cwd: Optional[str] = None, workdir: Optional[str] = None,
+                         task_id: Optional[str] = None) -> _ApprovalVerdict:
+    """Run the command guards; ``force`` skips the DANGEROUS-COMMAND ladder entirely.
+
+    The protected-instruction-file gate is not part of that ladder: it runs before the
+    ``force`` short-circuit, because it is an always-ask gate over files that steer future
+    agent behavior (same contract as ``write_file`` / ``patch``, #143266). Raises
+    :class:`_Rejected` when the command may not run (denied, or pending gateway approval).
+    """
+    protected = _protected_instruction_block(command, env_type=env_type, cwd=cwd,
+                                            workdir=workdir, task_id=task_id)
+    if protected:
+        raise _Rejected(protected)
     if force:
         return _ApprovalVerdict(approved_run=True)
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
@@ -1646,7 +1686,8 @@ def terminal_tool(
                 ))
             # Pre-exec security checks (floors + dangerous command detection);
             # force=True means the user already confirmed.
-            verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+            verdict = _run_approval_guards(command, env_type, plan.config, force=force,
+                                           cwd=cwd, workdir=workdir, task_id=task_id)
 
             pty_disabled = pty and _command_requires_pipe_stdin(command)
             if plan.promoted_from_foreground_timeout is not None:

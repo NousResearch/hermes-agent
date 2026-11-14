@@ -605,6 +605,9 @@ terminal:
 #   # (AGENTS.md, CLAUDE.md, SOUL.md, ...) always ask for human approval,
 #   # even under --yolo, and are refused when nobody can answer. Set false to
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
+#   # Covers write_file / patch, terminal commands that write those files, and
+#   # execute_code (whose child process refuses the write outright: it has no
+#   # approval channel, so the message points at the file tools instead).
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
 

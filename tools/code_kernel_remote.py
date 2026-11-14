@@ -50,6 +50,10 @@ import sys
 import time
 import traceback
 
+# Protected agent-instruction write guard, installed before the first cell runs (#143266).
+# Fatal on import failure by design: an unguarded cell is the hole this closes.
+import hermes_protected_instruction_guard  # noqa: F401
+
 KDIR = os.environ["HERMES_KERNEL_DIR"]
 CELLS = os.path.join(KDIR, "cells")
 _CAPTURE_LIMIT = {capture_limit}
@@ -251,8 +255,13 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                                                 f"{kernel_dir}/rpc"),
                          "remote kernel dir setup", timeout=15)
         rpc_token = secrets.token_urlsafe(32)
+        from tools.protected_instruction_guard import (
+            CHILD_GUARD_FILENAME, SPEC_ENV, child_guard_source, guard_spec, guard_spec_json,
+        )
+        spec = guard_spec(task_env_id)
         _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
             cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
+        _ship_file_to_remote(env, f"{kernel_dir}/{CHILD_GUARD_FILENAME}", child_guard_source(spec))
         _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
         # kernel.env is removed after sourcing: the runner's env keeps the
@@ -265,7 +274,8 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
             "rm -f ./kernel.env && touch runner.log && chmod 600 runner.log && "
             '{ nohup python3 kernel_runner.py > runner.log 2>&1 & echo "PID:$!"; }',
             rpc_dir=f"{kernel_dir}/rpc", rpc_token=rpc_token,
-            HERMES_KERNEL_DIR=kernel_dir, PYTHONPATH=kernel_dir)
+            HERMES_KERNEL_DIR=kernel_dir, PYTHONPATH=kernel_dir,
+            **{SPEC_ENV: guard_spec_json(task_env_id)})
         started = _sh(env, launch_cmd, timeout=20)
         pid = next((line.strip()[4:].strip() for line in started.splitlines()
                     if line.strip().startswith("PID:")), "")

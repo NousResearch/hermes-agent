@@ -209,6 +209,20 @@ def generate_hermes_tools_module(enabled_tools: list[str],
     )
 
 
+# Per-call remote launcher: the guard must install before the user's script runs, and a
+# script cannot install a hook over its own already-executing body. One process, same
+# interpreter, so the hook covers every later statement in user_code.py (#143266). The
+# launcher keeps the historical `script.py` name, so the launch command is unchanged.
+GUARDED_LAUNCHER_SOURCE = '''\
+"""Run the cell's user code under the protected-instruction guard."""
+import runpy
+
+import hermes_protected_instruction_guard  # noqa: F401  (installs the audit hook)
+
+runpy.run_path("user_code.py", run_name="__main__")
+'''
+
+
 # ---- Shared helpers section (embedded in both transport headers) ----------
 
 _COMMON_HELPERS = '''\
@@ -620,9 +634,18 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         _execute_checked(env, _private_dirs_cmd(sandbox_dir, f"{sandbox_dir}/rpc"),
                          "remote sandbox setup", timeout=10)
         rpc_token = secrets.token_urlsafe(32)
+        from tools.protected_instruction_guard import (
+            CHILD_GUARD_FILENAME, SPEC_ENV, child_guard_source, guard_spec, guard_spec_json,
+        )
+        spec = guard_spec(effective_task_id)
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
-        _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
+        _ship_file_to_remote(env, f"{sandbox_dir}/{CHILD_GUARD_FILENAME}", child_guard_source(spec))
+        # The guard must install before the script's first statement, so the cell's code runs
+        # under a launcher that imports it first (#143266). `script.py` stays the launcher, so
+        # the launch command keeps its historical shape; the user's code moves to user_code.py.
+        _ship_file_to_remote(env, f"{sandbox_dir}/script.py", GUARDED_LAUNCHER_SOURCE)
+        _ship_file_to_remote(env, f"{sandbox_dir}/user_code.py", code)
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
         # See #30882.
@@ -636,7 +659,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # files, and user code keeps the remote's default file modes.
         launch_cmd = _ship_env_file_and_launch(
             env, sandbox_dir, "sandbox.env", "exec python3 script.py",
-            rpc_dir=f"{sandbox_dir}/rpc", rpc_token=rpc_token)
+            rpc_dir=f"{sandbox_dir}/rpc", rpc_token=rpc_token,
+            **{SPEC_ENV: guard_spec_json(effective_task_id)})
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
         script_result = env.execute(launch_cmd, timeout=timeout)
         stdout_text = script_result.get("output", "") or ""

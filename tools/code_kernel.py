@@ -125,6 +125,11 @@ import sys
 import threading
 import traceback
 
+# Protected agent-instruction write guard: installed before the first cell runs, so no cell
+# can rewrite AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules without human approval (#143266).
+# A hard failure here is fatal on purpose — an unguarded cell is the hole this closes.
+import hermes_protected_instruction_guard  # noqa: F401
+
 _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {_RUNNER_CAPTURE_BYTES}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
@@ -634,16 +639,25 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
+    from tools.protected_instruction_guard import (
+        CHILD_GUARD_FILENAME, SPEC_ENV, child_guard_source, guard_spec, guard_spec_json,
+    )
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
     rpc_endpoint = _bind_rpc_socket(kernel)
+    spec = guard_spec(task_id)
     for name, src in (("hermes_tools.py", generate_hermes_tools_module(list(sandbox_tools))),
+                      (CHILD_GUARD_FILENAME, child_guard_source(spec)),
                       ("hermes_kernel_runner.py", KERNEL_RUNNER_SOURCE)):
         Path(kernel.tmpdir, name).write_text(src, encoding="utf-8")
     child_env = _build_child_env(rpc_endpoint=rpc_endpoint, rpc_token=kernel.rpc_token,
                                  tmpdir=kernel.tmpdir, child_python=child_python)
     child_env["HERMES_KERNEL_SENTINEL"] = kernel.sentinel
+    # The child installs the protected-instruction write guard from this spec before any cell
+    # runs (#143266). Always set — "off" is the explicit gate-disabled marker — so a child can
+    # tell a disabled gate from a spawn that never went through this path.
+    child_env[SPEC_ENV] = guard_spec_json(task_id)
     # Full clipped stdout spills to the kernel's tmpdir so the agent can read_file the middle.
     child_env["HERMES_KERNEL_SPILL_DIR"] = kernel.tmpdir
     # Generated client reconnects after the RPC server's 300s idle timeout between cells.

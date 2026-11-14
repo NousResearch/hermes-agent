@@ -2,7 +2,7 @@
 
 Each entry translates the unified inputs (prompt + aspect_ratio) into the model's native
 payload. ``size_style``: ``"image_size_preset"`` (FAL preset enum), ``"aspect_ratio"`` (ratio
-enum), ``"gpt_literal"`` (literal "WxH"). ``supports`` / ``edit_supports`` are whitelists —
+enum). ``supports`` / ``edit_supports`` are whitelists —
 other keys are stripped so models never receive rejected parameters. ``upscale`` is False
 everywhere: Clarity redraws content (creativity 0.35) and degraded text/CJK/faces when
 default-on, so upscaling is strictly per-call opt-in. Pricing strings may drift.
@@ -119,26 +119,9 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=14,
     ),
-    "fal-ai/gpt-image-1.5": _model(
-        "GPT Image 1.5", "~15s", "Prompt adherence", "$0.034/image",
-        style="gpt_literal", sizes={
-            "landscape": "1536x1024", "square": "1024x1024", "portrait": "1024x1536",
-        },
-        # quality pinned to medium (also for gpt-image-2) so portal billing stays
-        # predictable: low is too rough, high is 3-6x the per-image cost.
-        defaults={"quality": "medium", "num_images": 1, "output_format": "png"},
-        supports={
-            "prompt", "image_size", "quality", "num_images", "output_format", "background", "sync_mode",
-        },
-        edit_endpoint="fal-ai/gpt-image-1.5/edit",
-        edit_supports={
-            "prompt", "image_urls", "image_size", "quality", "num_images", "output_format", "sync_mode",
-        },
-        max_reference_images=16,
-    ),
-    # GPT Image 2 uses FAL's preset enum (unlike 1.5's literal dims) mapped to the
-    # 4:3 variants: the 16:9 presets (1024x576) fall below its 655,360 min-pixel
-    # requirement. openai_api_key (BYOK) is deliberately not in `supports` — all
+    # GPT Image 2 uses FAL's preset enum mapped to the 4:3 variants: the 16:9 presets
+    # (1024x576) fall below its 655,360 min-pixel requirement. Quality is pinned to medium
+    # so portal billing stays predictable (low is too rough, high is 3-6x the cost). openai_api_key (BYOK) is deliberately not in `supports` — all
     # users go through the shared FAL billing path. Its edit endpoint lives under
     # the OpenAI namespace (NOT fal-ai/) and auto-infers size, so no image_size.
     "fal-ai/gpt-image-2": _model(
@@ -382,6 +365,11 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
 
 # Fastest reasonable option; cheap and sub-1s.
 DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
+
+# Ids whose upstream model was shut down -> the catalog entry a stored ``image_gen.model``
+# resolves to instead (so a saved pick keeps the same vendor, not the generic default).
+# OpenAI shuts gpt-image-1.5 down 2026-12-01 (platform deprecations page, 2026-06-02 notice).
+RETIRED_FAL_MODELS = {"fal-ai/gpt-image-1.5": "fal-ai/gpt-image-2"}
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")

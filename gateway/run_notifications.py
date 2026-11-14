@@ -145,6 +145,8 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         metadata["notification_category"] = "diagnostic"
+    if evt.get("type") == "async_delegation" and evt.get("origin_message_type") == "voice":
+        metadata["presentation_origin"] = "voice"
     if session_key.startswith("agent:"):
         metadata["gateway_session_key"] = session_key
     parent_session_id = str(evt.get("parent_session_id") or "").strip()
@@ -1658,7 +1660,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 try:
                     for evt in async_events:
                         self._enrich_async_delegation_routing(evt)
-                        groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
+                        groups.setdefault((*self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS),
+                                           "voice" if evt.get("origin_message_type") == "voice" else "text"), []).append(evt)
                     await self._deliver_async_delegation_groups(groups, _pr)
                 finally:
                     self._async_notices_in_delivery = []

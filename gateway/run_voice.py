@@ -449,6 +449,8 @@ class GatewayVoiceMixin:
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
+        is_completion_voice = (event.internal and event.message_type == MessageType.TEXT
+                               and event.metadata.get("presentation_origin") == "voice")
         adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
         adapter_auto_tts_mode = "all"
@@ -457,9 +459,9 @@ class GatewayVoiceMixin:
             adapter_auto_tts_mode = getattr(adapter, "_auto_tts_mode", "all")
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
-        if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
+        if not (voice_mode == "all" or (voice_mode == "voice_only" and (is_voice_input or is_completion_voice))
                 or (voice_mode is None and adapter_auto_tts
-                    and (adapter_auto_tts_mode == "all" or is_voice_input))):
+                    and (adapter_auto_tts_mode == "all" or is_voice_input or is_completion_voice))):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
@@ -473,7 +475,9 @@ class GatewayVoiceMixin:
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
         # connected) — unless streaming consumed the text (already_sent): then the runner must.
-        return not (is_voice_input and not already_sent)
+        recovered_voice = (getattr(event, "_adapter_drains_after", True) is False
+                           and getattr(event, "_voice_result_committed", False) is True)
+        return not (is_voice_input and not already_sent and not recovered_voice)
 
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
@@ -484,6 +488,22 @@ class GatewayVoiceMixin:
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
         try:
+            # Deferred completions and recovered voice admissions bypass the adapter's
+            # normal auto-TTS gate, so extract the deliverable content before speaking.
+            deferred_completion = (event.internal
+                                   and event.metadata.get("presentation_origin") == "voice"
+                                   and getattr(event, "_voice_result_committed", False) is True)
+            recovered_voice = (event.message_type == MessageType.VOICE
+                               and getattr(event, "_adapter_drains_after", True) is False
+                               and getattr(event, "_voice_result_committed", False) is True)
+            if deferred_completion or recovered_voice:
+                adapter = self._delivery_adapter_for(event.source)
+                session_key = self._session_key_for_source(event.source)
+                extracted = await adapter._extract_response_content(text, event, session_key,
+                                                                    is_ephemeral_response=False)
+                if extracted.media_files or not extracted.text_content:
+                    return
+                text = extracted.text_content
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)

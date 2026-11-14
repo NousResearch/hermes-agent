@@ -202,8 +202,15 @@ def _capture_routing_origin() -> dict[str, Any]:
     has no contextvars) so a restart-replayed completion can rebuild a SessionSource.
     Best-effort: empty values are omitted."""
     try:
-        from gateway.session_context import get_session_env
-        return {k: v for k in _ROUTING_KEYS if (v := get_session_env(f"HERMES_SESSION_{k.upper()}", ""))}
+        from gateway.session_context import current_turn_event, get_session_env
+        origin = {k: v for k in _ROUTING_KEYS if (v := get_session_env(f"HERMES_SESSION_{k.upper()}", ""))}
+        event = current_turn_event()
+        message_type = getattr(getattr(event, "message_type", None), "value", None)
+        if event is not None and event.internal and (event.metadata or {}).get("presentation_origin") == "voice":
+            message_type = "voice"
+        if isinstance(message_type, str) and message_type:
+            origin["origin_message_type"] = message_type
+        return origin
     except Exception:
         return {}
 
@@ -219,7 +226,7 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", "origin_message_type", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -389,6 +396,7 @@ def recover_abandoned_delegations() -> int:
                 "status": "unknown", "summary": None, "error": error, **diagnostics,
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
+                **({"origin_message_type": task["origin_message_type"]} if task.get("origin_message_type") else {}),
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
             result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
@@ -1224,6 +1232,7 @@ def completion_event(record: dict[str, Any], result: dict[str, Any], status: str
             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
+        **({"origin_message_type": record["origin_message_type"]} if record.get("origin_message_type") else {}),
         # session_key routes back to the originating gateway session; "" => CLI.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),

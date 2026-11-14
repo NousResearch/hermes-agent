@@ -22,7 +22,7 @@ from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -790,7 +790,18 @@ class GatewayTurnPersistenceMixin:
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
-        if not _streaming_tts_done and self._should_send_voice_reply(
+        from gateway.session_ingress import executing_admission
+        deferred_completion = (event.internal and executing_admission.get()
+                               and event.metadata.get("presentation_origin") == "voice")
+        recovered_voice = (executing_admission.get() and event.message_type == MessageType.VOICE
+                           and getattr(event, "_adapter_drains_after", True) is False)
+        if not _streaming_tts_done and (deferred_completion or recovered_voice):
+            # Preserve the candidate independently of the mode, which may change before settlement.
+            # The eventual delivery must still check the current mode and this turn's TTS calls.
+            event._deferred_voice_response = response
+            event._deferred_voice_messages = agent_messages
+            event._deferred_voice_execution = agent_result.get('_queued_voice_execution', agent_result)
+        elif not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
             await self._send_voice_reply(event, response)

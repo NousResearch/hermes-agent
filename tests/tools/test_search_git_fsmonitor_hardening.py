@@ -65,3 +65,15 @@ class TestPathNotFoundHint:
         (parent / "gone_sibling.txt").write_text("x\n")
         r = json.loads(search_tool("TOKEN_ALPHA", path=str(parent / "gone"), task_id="t-dash"))
         assert "gone_sibling.txt" in r.get("error", "")
+
+    def test_missing_relative_path_hint_lists_dash_named_parent(self, tmp_path):
+        # An absolute parent starts with `/` and is never an ls option; the relative
+        # spelling `--width/gone` is what the `--` separator actually protects.
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        (tmp_path / "--width").mkdir()
+        (tmp_path / "--width" / "gone_sibling.txt").write_text("x\n")
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        result = ops._path_not_found_result("--width/gone")
+        assert "gone_sibling.txt" in (result.error or "")

@@ -8,7 +8,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { type ReactNode, StrictMode } from 'react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, vi } from 'vitest'
 
 import type { RosterRow } from './types'
@@ -21,7 +21,6 @@ interface CapabilitiesViewProps {
 export function createMocks() {
   return {
     activeConnection: { value: 'local' },
-    completeMcpOAuth: vi.fn(),
     connections: vi.fn(async () => [] as { id: string; label: string }[]),
     createCanonicalChat: vi.fn(async () => 'session-1'),
     deleteBot: vi.fn(async () => undefined),
@@ -59,7 +58,6 @@ export function sdkMock(original: Record<string, any>, mocks: CreateAgentMocks, 
         ...original.host.state,
         connectionId: { ...original.host.state.connectionId, get: () => mocks.activeConnection.value }
       },
-      completeMcpOAuth: mocks.completeMcpOAuth,
       connections: mocks.connections,
       dropLeftoverProfilePrefs: mocks.dropLeftoverProfilePrefs,
       notify: mocks.notify,
@@ -153,15 +151,14 @@ export function createAgentHarness(mocks: CreateAgentMocks) {
     await new Promise(resolve => setTimeout(resolve, 0))
   })
 
-  /** `strict` renders under StrictMode, like the app root (main.tsx). */
-  async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void, strict = false) {
+  async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void) {
     mocks.hasCapabilitiesView.value = hasCapabilitiesView
     vi.resetModules()
 
     const { CreateAgentDialog } = await import('./create-dialog')
 
     const dialog = <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
-    const view = render(withQueryClient(strict ? <StrictMode>{dialog}</StrictMode> : dialog))
+    const view = render(withQueryClient(dialog))
 
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))

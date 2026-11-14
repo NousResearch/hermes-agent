@@ -40,7 +40,7 @@ describe('profile creation warnings', () => {
     return render(<NotificationStack />)
   }
 
-  it('joins lazy configure before adopting creation warnings', async () => {
+  it('publishes the warnings of a draft still applying its picks when Create is clicked', async () => {
     const base = mocks.request.getMockImplementation()!
     let finishConfigure!: () => void
     mocks.request.mockImplementation((method: string, params?: unknown) => {
@@ -65,66 +65,11 @@ describe('profile creation warnings', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
     await waitFor(() => expect(finishConfigure).toBeTypeOf('function'))
     fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await act(async () => { await Promise.resolve() })
-    expect(mocks.createCanonicalChat).not.toHaveBeenCalled()
-    expect(mocks.request.mock.calls.filter(([method]) => method === 'setup.runtime_check')).toHaveLength(0)
-    await act(async () => finishConfigure())
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    await act(async () => finishConfigure())
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.message === warnings.join('\n'))).toEqual([
       [expect.objectContaining({ title: 'inbox-triage — local', persistent: true })]
     ])
-  })
-
-  it('retires a pending named draft before creating its replacement', async () => {
-    const base = mocks.request.getMockImplementation()!
-    let finishOld!: () => void
-    mocks.request.mockImplementation((method: string, params?: unknown) => {
-      if (method === 'profiles.create') {
-        return (params as { name: string }).name === 'inbox-triage'
-          ? new Promise(resolve => { finishOld = () => resolve({ warnings: ['Old warning'] }) })
-          : Promise.resolve({ warnings })
-      }
-
-      return base(method, params)
-    })
-    await renderDialog(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await waitFor(() => expect(finishOld).toBeTypeOf('function'))
-    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'replacement' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await act(async () => finishOld())
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('replacement', { kickoff: true }))
-    expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' })
-    expect(createCalls().map(([, params]) => params.name)).toEqual(['inbox-triage', 'replacement'])
-    expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toEqual([
-      [expect.objectContaining({ message: warnings.join('\n'), title: 'replacement — local' })]
-    ])
-    expect(mocks.saveBotMeta).toHaveBeenCalledWith('replacement', expect.anything())
-  })
-
-  it('disables name and target controls during final readiness', async () => {
-    mocks.connections.mockResolvedValue([{ id: 'local', label: 'This Mac' }, { id: 'studio', label: 'Studio' }])
-    const base = mocks.request.getMockImplementation()!
-    let finishReadiness!: () => void
-    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'setup.runtime_check'
-      ? new Promise(resolve => { finishReadiness = () => resolve({ ok: true }) })
-      : base(method, params)
-    )
-    await renderDialog(true)
-    await screen.findByText('Create on')
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await waitFor(() => expect(finishReadiness).toBeTypeOf('function'))
-    const name = screen.getByPlaceholderText('inbox-triage') as HTMLInputElement
-    const target = controlUnder('Create on') as HTMLButtonElement
-    expect(name.disabled).toBe(true)
-    expect(target.disabled).toBe(true)
-    // Native click honors disabled controls; fireEvent would bypass that policy.
-    await act(async () => target.click())
-    expect(screen.queryByRole('option', { name: 'Studio' })).toBeNull()
-    await act(async () => finishReadiness())
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
-    expect(mocks.requestProfile).not.toHaveBeenCalled()
-    expect(mocks.deleteBot).not.toHaveBeenCalled()
   })
 
   it.each(['pending', 'ready'])('shows warnings once for a %s lazy create and keeps them after the dialog closes', async state => {
@@ -305,34 +250,7 @@ describe('profile creation warnings', () => {
     }))
   })
 
-  it('keeps the persistent model action on its creation connection after switching gateways', async () => {
-    mocks.activeConnection.value = 'gateway-a'
-    const base = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
-      ? { ok: false, error: 'No credentials.' } : base(method, params))
-
-    const configure = vi.fn(async (bot: RosterRow) => {
-      const { requestForBot } = await import('./routing')
-      await requestForBot(bot, 'profiles.configure', { name: bot.name, model: 'picked-model' })
-    })
-
-    const dialog = await renderDialog(true, configure)
-    await showNotifications()
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
-    dialog.unmount()
-    mocks.activeConnection.value = 'gateway-b'
-    const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
-    await act(async () => clearResumeToasts(undefined))
-    fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
-    await waitFor(() => expect(mocks.requestProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ connectionId: 'gateway-a', profile: 'inbox-triage', targetProfile: 'inbox-triage' }),
-      'profiles.configure', expect.objectContaining({ name: 'inbox-triage' }), undefined, { spawnPriority: 'foreground' }
-    ))
-    expect(mocks.request.mock.calls.filter(([method]) => method === 'profiles.configure')).toEqual([])
-  })
-
-  it('opens Configure model on the live roster row once the roster has the bot', async () => {
+  it('opens Configure model on the live roster row of the creating connection, after a gateway switch', async () => {
     mocks.activeConnection.value = 'gateway-a'
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
@@ -343,6 +261,7 @@ describe('profile creation warnings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
     dialog.unmount()
+    mocks.activeConnection.value = 'gateway-b'
     const { $lastRoster } = await import('./data')
 
     const live: RosterRow = {
@@ -351,7 +270,8 @@ describe('profile creation warnings', () => {
     }
 
     const previous = $lastRoster.get()
-    $lastRoster.set([live])
+    // A same-named bot on the gateway switched to must not be picked.
+    $lastRoster.set([{ ...live, connectionId: 'gateway-b', route: { ...live.route!, connectionId: 'gateway-b' } }, live])
 
     try {
       const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')

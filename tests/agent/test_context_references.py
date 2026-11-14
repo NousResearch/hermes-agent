@@ -796,3 +796,25 @@ async def test_blocklisted_url_reference_explains_policy_refusal(tmp_path: Path,
     assert "blocked.example" in result.warnings[0]
     assert "no content extracted" not in result.message
     assert "--- Attached Context ---" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_refused_url_reference_explains_the_refusal(tmp_path: Path, monkeypatch):
+    """An SSRF or secret-URL refusal must reach the warning, not read as an empty page."""
+    from agent.context_references import preprocess_context_references_async
+    from tools import web_tools
+
+    async def private(_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", private)
+    result = await preprocess_context_references_async(
+        "Inspect @url:http://10.0.0.1/admin @url:https://example.com/?api_key=sk-abcdefghijklmnopqrstuvwxyz0123",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert len(result.warnings) == 2
+    assert "private or internal network address" in result.warnings[0]
+    assert "API key or token" in result.warnings[1]
+    assert "no content extracted" not in result.message

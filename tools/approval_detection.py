@@ -15,7 +15,6 @@ import tempfile
 import unicodedata
 
 from agent.file_safety import SHELL_RC_FILES
-from hermes_cli.home_data_layout import HERMES_PROTECTED_SUBPATHS
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
@@ -23,6 +22,7 @@ from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_es
 from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
 from tools.approval_env_split import _env_split_payload
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
+from tools.approval_hermes_store import _HERMES_HOME_BARE, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
@@ -49,26 +49,6 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     _HERMES_HOME_DIR + r'config\.yaml\b'
 )
-# The Hermes home itself and the application-owned stores the file tools refuse to write
-# (HERMES_PROTECTED_SUBPATHS: state.db, sessions/, vault/, ...). Destroying them is recoverable only
-# from backup, so destructive shell verbs on these targets prompt; reads and copies OUT stay clean.
-_HERMES_HOME_ROOT = r'(?:~/\.hermes|(?:\$home|\$\{home\})/\.hermes|(?:\$hermes_home|\$\{hermes_home\}))'
-_PATH_WORD_END = r'["\']?(?=[\s"\'`;|&<>()]|$)'
-# A store, its SQLite sidecars (state.db-wal) or a path inside a directory store (sessions/x.jsonl).
-# Neighbours such as state.db.bak or sessions-old.tar are not stores (agent.file_safety agrees).
-_HERMES_STORE_FILE = (
-    _HERMES_HOME_ROOT + r'/(?:' + '|'.join(
-        re.escape(sub) + (r'(?:-wal|-shm|-journal)?' if sub.endswith('.db') else r'(?:/[^\s"\'`;|&<>()]*)?')
-        for sub in HERMES_PROTECTED_SUBPATHS) + r')' + _PATH_WORD_END
-)
-# The store itself, for the overwrite rules: a new file written into sessions/ (`> sessions/x`) stays clean.
-_HERMES_STORE_ROOT = (
-    _HERMES_HOME_ROOT + r'/(?:' + '|'.join(
-        re.escape(sub) + (r'(?:-wal|-shm|-journal)?' if sub.endswith('.db') else r'/?')
-        for sub in HERMES_PROTECTED_SUBPATHS) + r')' + _PATH_WORD_END
-)
-_HERMES_HOME_BARE = rf'{_HERMES_HOME_ROOT}/?\*?{_PATH_WORD_END}'
-_HERMES_STORE_PATH = rf'(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE})'
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"

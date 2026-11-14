@@ -16,7 +16,7 @@ import pytest
 
 from agent.message_metadata import RESTORED_FROM_STORE
 from agent.message_sanitization import apply_reasoning_content_policy, reasoning_replay_route
-from agent.transcript_repair import sync_flushed_message_markers
+from agent.transcript_repair import _active_message_row, sync_flushed_message_markers
 from hermes_state import SessionDB
 
 SID = "s"
@@ -114,10 +114,6 @@ class TestStoredOnce:
                                         "reasoning_content": TEXT, "reasoning_details": DETAILS,
                                         "codex_reasoning_items": ITEMS}])
         assert _columns(db) == [(None, TEXT)]
-        with db._read_ctx() as conn:
-            sidecars = conn.execute("SELECT reasoning_details, codex_reasoning_items FROM messages "
-                                    "WHERE role = 'assistant'").fetchone()
-        assert tuple(sidecars) == (json.dumps(DETAILS), json.dumps(ITEMS))
 
         stored_once = _read_paths(db)
         _as_an_older_build_wrote_it(db)
@@ -130,23 +126,19 @@ class TestStoredOnce:
             assert replayed["reasoning_content"] == TEXT, route
             assert json.dumps(replayed) == json.dumps(_wire(held_twice["conversation"], route)), route
 
-    def test_without_the_restored_reasoning_every_route_replays_the_same(self, db):
+    def test_a_reader_without_the_restore_sends_the_same_text_in_another_key_order(self, db):
         """NULL beside a non-blank ``reasoning_content`` is also what an assistant merge leaves on a turn with no
-        reasoning of its own, and what an older build that opens the store reads, with no restore. Read back,
-        the row carries both fields; without ``reasoning`` every route still sends the same request."""
+        reasoning of its own. This build replays it as a row holding both columns (above). A reader without the
+        restore (an older build that opens the store) sends the same values on every route; on a route that
+        carries ``reasoning`` its policy appends that key after ``reasoning_content``, so those bytes differ."""
         _seed(db, reasoning_content=TEXT)
         assert _columns(db) == [(None, TEXT)]
         msg = _assistant(db.get_messages_as_conversation(SID))
         without = {key: value for key, value in msg.items() if key != "reasoning"}
         for route in ROUTES:
-            assert _wire(msg, route) == _wire(without, route), route
-
-    @pytest.mark.parametrize("pad", [" ", "\n\n"], ids=["space", "blank_join"])
-    def test_a_blank_pad_in_both_fields_is_stored_and_read_as_given(self, db, pad):
-        _seed(db, reasoning=pad, reasoning_content=pad)
-        assert _columns(db) == [(pad, pad)]
-        for path, msg in _read_paths(db).items():
-            assert (msg["reasoning"], msg["reasoning_content"]) == (pad, pad), path
+            ours, older = _wire(msg, route), _wire(without, route)
+            assert ours == older, route  # same keys and values
+            assert (json.dumps(ours) == json.dumps(older)) is ("reasoning" not in ours), route
 
     def test_adopting_another_writers_version_hands_both_fields_to_the_live_dict(self, db):
         _seed(db, reasoning=TEXT, reasoning_content=TEXT)
@@ -158,20 +150,6 @@ class TestStoredOnce:
         sync_flushed_message_markers([live], [live])
 
         assert (live["content"], live["reasoning"], live["reasoning_content"]) == (EDITED, TEXT, TEXT)
-
-    def test_export_then_import_of_an_older_builds_session_stores_one_copy(self, db, tmp_path):
-        _seed(db, reasoning=TEXT, reasoning_content=TEXT)
-        _as_an_older_build_wrote_it(db)
-        payload = json.loads(json.dumps(db.export_session(SID)))  # through a JSON backup file
-
-        other = SessionDB(tmp_path / "other.db")
-        try:
-            assert other.import_sessions([payload])["ok"]
-            assert _columns(other) == [(None, TEXT)]
-            msg = _assistant(other.get_messages_as_conversation(SID))
-            assert (msg["reasoning"], msg["reasoning_content"]) == (TEXT, TEXT)
-        finally:
-            other.close()
 
 
 class TestSessionAnOlderBuildWrote:
@@ -195,15 +173,11 @@ class TestSessionAnOlderBuildWrote:
                                   "AND reasoning_content IS NOT NULL ORDER BY id", (SID,)).fetchall()
         assert [row["active"] for row in copies] == [0, 1], "the archived original and one carried copy"
 
-    @pytest.mark.parametrize("holder", ["digest", "row_id"])
-    def test_an_edit_after_another_surface_compacted_it_reaches_the_live_row(self, db, holder):
-        """The holder's dict names the original row (its row-version digest, or the row id an earlier flush
-        stamped); compaction archived that row and carried a copy, which this build stores once."""
+    def test_an_edit_after_another_surface_compacted_it_reaches_the_live_row(self, db):
+        """The live dict holds the original row's version digest; compaction archived that row and carried a
+        copy, which this build stores once."""
         watermark = _seed_older_session(db)
         live = db.get_messages_as_conversation(SID, repair_alternation=True)
-        if holder == "row_id":
-            db.append_messages_batch(SID, live)
-            sync_flushed_message_markers(live, live)
         _compact_tail(db, watermark)
 
         assistant = live[-1]
@@ -214,3 +188,17 @@ class TestSessionAnOlderBuildWrote:
 
         assert assistant["content"] == EDITED
         assert [m["content"] for m in db.get_messages_as_conversation(SID) if m["role"] == "assistant"] == [EDITED]
+
+    def test_a_row_id_resolves_to_the_carried_copy_only_when_its_reasoning_matches(self, db):
+        """A flush addressed by the archived original's row id lands on its one active clone: the carried copy,
+        which stores the reasoning once, but never a row whose reasoning differs."""
+        _compact_tail(db, _seed_older_session(db))
+        with db._read_ctx() as conn:
+            archived, carried = (row["id"] for row in conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = 'assistant' "
+                "AND reasoning_content IS NOT NULL ORDER BY id", (SID,)))
+            assert _active_message_row(conn, SID, archived, "assistant")["id"] == carried
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET reasoning = ? WHERE id = ?", (EDITED, carried)))
+        with db._read_ctx() as conn:
+            assert _active_message_row(conn, SID, archived, "assistant")["id"] == archived

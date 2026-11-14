@@ -6,13 +6,17 @@ Reasoning-content providers, and every turn ``build_assistant_message`` promotes
 text as both fields. The row keeps it in ``reasoning_content``, the replay carrier
 (``_replayable_reasoning_text`` prefers it, the must-echo pad sends it verbatim), and stores
 ``reasoning`` as NULL. NULL rather than a marker string: an older build that opens the store reads
-it as no ``reasoning``, so its displays and exports fall back to ``reasoning_content``, its replay
-sends the same text, and the dict it rebuilds still equals the row, so it inserts nothing. A marker
-would reach those displays, exports and ``<think>`` blocks as text, and SQLite's ``quote()``
-(``.dump``, ``.recover``, ``iterdump``) cuts a NUL-led marker down to ``''``. The cost: a row that
-only ever held a non-blank ``reasoning_content`` (an assistant merge carried it onto a turn without
-reasoning) reads back with ``reasoning`` equal to it, the text that turn replays anyway. Blank pads
-are never folded.
+it as no ``reasoning``, so its displays and exports fall back to ``reasoning_content``, and the dict
+it rebuilds still equals the row, so it inserts nothing. Its replay sends the same text, but on
+routes that carry ``reasoning`` (OpenRouter-format gateways, local servers, Ollama) its replay policy
+appends ``reasoning`` after ``reasoning_content``: the same values in a different key order, so a
+switch from this build to an older one misses the prompt cache once. NULLing ``reasoning_content``
+instead would keep that order, but an older build's native must-echo pad (Kimi) then sends ``" "``
+for a tool-call turn. A marker would reach displays, exports and ``<think>`` blocks as text, and
+SQLite's ``quote()`` (``.dump``, ``.recover``, ``iterdump``) cuts a NUL-led marker down to ``''``.
+The cost: a row that only ever held a non-blank ``reasoning_content`` (an assistant merge carried it
+onto a turn without reasoning) reads back with ``reasoning`` equal to it, the text that turn replays
+anyway. Blank pads are never folded.
 """
 
 from __future__ import annotations

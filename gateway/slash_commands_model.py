@@ -430,7 +430,8 @@ class GatewayModelCommandsMixin:
             if one_turn:
                 return t("gateway.model.error_prefix", error=t("gateway.model.err_once_local"))
             from hermes_constants import parse_reasoning_effort
-            effort = (ctx.reasoning_effort or "").strip().lower()
+            from agent.reasoning_effort import alias_reasoning_level
+            effort = (ctx.reasoning_effort or "").strip().lower() or alias_reasoning_level(result)
             level = effort if parse_reasoning_effort(effort) is not None else ""
             await asyncio.to_thread(defer_local_model_pick, authority, live, result, level)
             self._record_switch_metrics(result, ctx, source)
@@ -451,9 +452,12 @@ class GatewayModelCommandsMixin:
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
+        if live is None and not one_turn and not ctx.reasoning_effort:
+            # A deliberate switch supersedes reasoning pinned by the previous model or router.
+            self._set_session_reasoning_override(ctx.session_key, result.reasoning_config)
         if level:
             # Committed with the local pick: only the config write-through and the reply remain.
-            saved = (ctx.persist_global and global_error is None
+            saved = (ctx.persist_global and ctx.reasoning_effort and global_error is None
                      and self._save_gateway_config_key("agent.reasoning_effort", level))
             reply += "\n" + t("gateway.reasoning.set_global" if saved else "gateway.reasoning.set_session",
                               effort=level)

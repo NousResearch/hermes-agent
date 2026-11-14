@@ -62,3 +62,22 @@ def test_reasoning_flag_with_global_writes_config_and_drops_the_pin(_quiet_switc
 
     with pytest.raises(ValueError):
         server._apply_model_switch("sid", {"agent": _Agent()}, "new/model --reasoning turbo")
+
+
+@pytest.mark.parametrize("flag, expected", [
+    ("", {"enabled": True, "effort": "low"}),  # the alias's bundled effort applies to the session
+    (" --reasoning high", {"enabled": True, "effort": "high"}),  # an explicit level still wins
+])
+def test_alias_bundled_reasoning_rides_a_plain_switch(_quiet_switch, monkeypatch, flag, expected):
+    import hermes_cli.model_switch as ms
+    switched = ms.switch_model(raw_input="")
+    monkeypatch.setattr(ms, "switch_model", lambda **_kw: SimpleNamespace(
+        **vars(switched), reasoning_config={"enabled": True, "effort": "low"}))
+    agent = _Agent()
+    session = {"agent": agent}
+
+    server._apply_model_switch("sid", session, f"fast{flag} --global")
+
+    assert agent.reasoning_config == expected
+    # An alias's level is session-scoped: --global persists the model, never the alias's effort.
+    assert _quiet_switch.get("agent.reasoning_effort") == (None if not flag else "high")

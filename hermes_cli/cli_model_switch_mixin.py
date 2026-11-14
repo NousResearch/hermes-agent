@@ -379,8 +379,14 @@ def _commit_model_switch(
         if snapshot is not None and getattr(result, "resolved_via_alias", ""):
             snapshot["one_turn_alias"] = result.resolved_via_alias  # the agent chat rebuilds carries it
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
+    if not reasoning_effort:
+        from agent.reasoning_effort import alias_reasoning_level
+        reasoning_effort = alias_reasoning_level(result)  # session-scoped: never persisted by --global
+        persist_reasoning = False
+    else:
+        persist_reasoning = persist_global
     if reasoning_effort:
-        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn,
+        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_reasoning and not one_turn,
                                       one_turn=one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection

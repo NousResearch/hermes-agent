@@ -52,3 +52,33 @@ async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_
             runtime = _resolve_policy_agent_runtime(runner, switched)[1]
             assert runtime['base_url'].rstrip('/') == far_url
             assert runtime['api_key'] == expected, f'{alias}: the next turn ran without the alias key'
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload, expected", [
+    ({"model": "deep"}, "xhigh"),  # the alias's bundled effort pins the session
+    ({"model": "deep", "reasoning": "low"}, "low"),  # an explicit level still wins
+])
+async def test_session_mutate_pick_applies_the_alias_effort(tmp_path, monkeypatch, payload, expected):
+    """Desktop/TUI picks reach ``prepare_model`` (``session.mutate``), not the slash path."""
+    import json
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+    monkeypatch.setattr(model_switch, "switch_model", lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model="opus", target_provider="openrouter", resolved_via_alias="deep",
+        reasoning_config={"enabled": True, "effort": "xhigh"}))
+    with SessionDB(tmp_path / "state.db") as db:
+        authority = SimpleNamespace(instance_id="i", epoch=1, profile_id="p", db=db)
+        authority.runner = SimpleNamespace(session_authority=authority,
+                                           _resolve_session_agent_runtime=lambda **k: (None, {}))
+        config = {"model": {"provider": "openrouter", "default": "flash"}, "agent": {"reasoning_effort": "medium"}}
+        policy = build_policy({"cwd": str(tmp_path), "model": "flash", "provider": "openrouter"}, config)
+        prepared = {"snapshot": {"receipt": {"session_id": "sid", "policy": asdict(policy)}}}
+        out = await prepare_model(authority, SimpleNamespace(source=None, route="r"), payload, prepared)
+    switched = json.loads(restore_policy(out["policy"]).config_json)
+    assert switched["agent"]["reasoning_effort"] == expected

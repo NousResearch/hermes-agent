@@ -27,10 +27,12 @@ _FIELD_TYPES: dict[str, str] = {
     "bool": "boolean", "boolean": "boolean",
     "list": "json", "array": "json", "dict": "json", "object": "json",
     "secret": "secret",
+    "text": "text",
 }
 # wire field type → Python types a saved value must have (bool is excluded from number on purpose).
 _VALUE_TYPES: dict[str, tuple] = {
     "string": (str,), "enum": (str,), "number": (int, float), "boolean": (bool,), "json": (list, dict),
+    "text": (str,),
 }
 _ENV_NAME_CLEAN_RE = re.compile(r"[^A-Z0-9]+")
 
@@ -105,6 +107,11 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
         except ValueError:
             continue  # a key the plugin could never read through ctx.get_config
         kind = _field_type(spec)
+        # ``rows`` turns a string into a multiline field. Declared on the string
+        # kind so a manifest stays valid on a backend that has never heard of
+        # ``text``: there the key is ignored and the user keeps a single line.
+        if kind == "string" and spec.get("rows"):
+            kind = "text"
         field: dict[str, Any] = {
             "key": key, "type": kind,
             "label": str(spec.get("label") or spec.get("title") or key),
@@ -121,6 +128,13 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
             if "default" in spec:
                 field["default"] = spec["default"]
             field["value"] = current.get(key, spec.get("default"))
+        if kind == "text":
+            rows = spec.get("rows")
+            if isinstance(rows, int) and 1 <= rows <= 20:
+                field["rows"] = rows
+            placeholder = spec.get("placeholder")
+            if placeholder:
+                field["placeholder"] = str(placeholder)
         fields.append(field)
     return fields
 

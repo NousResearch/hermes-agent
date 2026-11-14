@@ -367,7 +367,7 @@ provides_hooks:
 
 This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
 
-List every tool your `register()` registers in `provides_tools`. The field does **not** decide whether a user-installed plugin's tools load: once the plugin is enabled, everything `register()` registers is available, declared or not. What it does drive:
+List every tool your `register()` registers in `provides_tools`. Also list every tool a memory provider returns from `get_tool_schemas()`; `hermes plugins validate` currently warns when one is missing. The field does **not** decide whether a user-installed plugin's tools load: once the plugin is enabled, everything `register()` registers is available, declared or not. What it does drive:
 
 - **`hermes plugins validate`**: the "declared tools" check fails when the registered tools don't match the list, which blocks catalog admission.
 - **Catalog listing**: the "N tools" chips and tool-name search in the catalog and the dashboard/Desktop Plugins page.

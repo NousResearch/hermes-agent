@@ -423,6 +423,25 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+# Where a Docker worker's sandbox can mount the task workspace (docker.py's /workspace and its fallbacks).
+_SANDBOX_WORKSPACE_MOUNTS = ("/workspace", "/host-cwd", "/host-cwd-2", "/host-cwd-3")
+
+
+def _host_artifact_path(artifact: str, workspace_root: Path) -> Path:
+    """Host path of a declared completion artifact.
+
+    A worker in a Docker sandbox names files by the path its sandbox mounts the task workspace at
+    (``/workspace``), which is not a host path: mapped onto *workspace_root* the file is found, checked and
+    preserved like any other. A path that exists on the host, or does not start with a mount, is unchanged.
+    """
+    src = Path(artifact).expanduser()
+    text = artifact.replace("\\", "/")
+    for mount in _SANDBOX_WORKSPACE_MOUNTS:
+        if text == mount or text.startswith(mount + "/"):
+            return src if src.exists() else workspace_root / text[len(mount):].lstrip("/")
+    return src
+
+
 def _cleanup_worktree_workspace(
     task_id: str, path: str, branch_name: Optional[str] = None
 ) -> None:

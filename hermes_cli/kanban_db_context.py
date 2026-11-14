@@ -84,14 +84,22 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
     )
 
 
-def _ctx_header(lines: list[str], task: Task) -> None:
+def _ctx_header(lines: list[str], task: Task, sandbox_workspace: Optional[str] = None) -> None:
+    """*sandbox_workspace*: where the worker's sandbox mounts the workspace, when not at its host path."""
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    if sandbox_workspace and task.workspace_path:
+        # The worker's terminal runs in a sandbox that mounts the workspace elsewhere: the host
+        # path does not exist there, and a shell command writing to it lands outside the mount.
+        lines.append(f"Workspace: {task.workspace_kind} @ {sandbox_workspace}")
+        lines.append(f"Host path: {task.workspace_path} (mounted at {sandbox_workspace}; not present "
+                     f"inside the sandbox; your working directory starts at {sandbox_workspace})")
+    else:
+        lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _kb._worker_terminal_timeout_env(
             task.max_runtime_seconds, os.environ.get("TERMINAL_TIMEOUT"),

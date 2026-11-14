@@ -2947,7 +2947,7 @@ def _persist_scratch_completion_artifacts(
         artifact = str(item).strip() if isinstance(item, str) else ""
         if not artifact:
             continue
-        src = Path(artifact).expanduser()
+        src = _host_artifact_path(artifact, workspace_root)
         try:
             resolved_src = src.resolve()
         except OSError:
@@ -3893,7 +3893,7 @@ def schedule_task(
 
 # --- Worker context builder (what a spawned worker sees) ---
 
-def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+def build_worker_context(conn: sqlite3.Connection, task_id: str, *, sandbox_workspace: Optional[str] = None) -> str:
     """Everything a worker should read about its task: header, body,
     attachments, prior attempts, done-parent handoffs, the assignee's recent
     work, comments. Lists are tail-capped and fields char-capped
@@ -3908,7 +3908,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
-    _ctx_header(lines, task)
+    _ctx_header(lines, task, sandbox_workspace)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
@@ -4211,7 +4211,7 @@ from hermes_cli.kanban_db_connect import (
     write_txn,
 )
 from hermes_cli.kanban_db_workspace import (
-    _cleanup_workspace,
+    _cleanup_workspace, _host_artifact_path,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,

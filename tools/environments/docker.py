@@ -641,6 +641,51 @@ def _abs_host_cwd(host_cwd: str) -> str:
     return os.path.abspath(expanded)
 
 
+def _volume_args(volumes) -> list[str]:
+    """``-v`` arguments for the configured ``docker_volumes`` entries; malformed ones are skipped."""
+    volume_args: list[str] = []
+    for vol in (volumes or []):
+        if not isinstance(vol, str):
+            logger.warning("Docker volume entry is not a string: %r", vol)
+            continue
+        vol = vol.strip()
+        if not vol:
+            continue
+        if ":" not in vol:
+            logger.warning("Docker volume '%s' missing colon, skipping", vol)
+            continue
+        volume_args.extend(["-v", vol])
+    return volume_args
+
+
+def _plan_host_cwd_mount(volume_args: list[str], host_cwd, auto_mount_cwd) -> tuple[str, str | None, str | None]:
+    """``(host_cwd_abs, mount, bind_target)`` for the configured host working directory.
+
+    ``mount`` is the container path that directory is reachable at (None: not mounted);
+    ``bind_target`` is set only when a new ``-v`` must be added for it (a user volume that
+    already binds the directory is reused). One rule for the container and for callers that
+    must name the in-sandbox path before the container exists.
+    """
+    host_cwd_abs = _abs_host_cwd(host_cwd) if host_cwd else ""
+    windows_cwd = _is_windows_drive_path(host_cwd or "") or _is_windows_drive_path(host_cwd_abs)
+    host_dir_exists = bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
+    if (auto_mount_cwd or windows_cwd) and host_cwd and not host_dir_exists:
+        logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+    if not (host_dir_exists and (auto_mount_cwd or windows_cwd)):
+        return host_cwd_abs, None, None
+    existing_mount = _existing_host_mount(volume_args, host_cwd_abs)
+    if existing_mount:
+        return host_cwd_abs, existing_mount, None
+    workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
+    bind_target = "/workspace" if not workspace_explicitly_mounted else _free_host_cwd_mount(volume_args)
+    return host_cwd_abs, bind_target, bind_target
+
+
+def host_cwd_container_path(volumes, host_cwd, auto_mount_cwd) -> str | None:
+    """The container path a Docker sandbox started with this config reaches *host_cwd* at, or None."""
+    return _plan_host_cwd_mount(_volume_args(volumes), host_cwd, auto_mount_cwd)[1]
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution (caps dropped, no-new-privileges, PID limits,
     size-limited tmpfs). The container is the security boundary — its filesystem stays
@@ -858,44 +903,14 @@ class DockerEnvironment(BaseEnvironment):
         the host — it can never be a path inside the Linux container, and the check
         is the drive shape, not a username.
         """
-        volume_args: list[str] = []
-        for vol in (volumes or []):
-            if not isinstance(vol, str):
-                logger.warning("Docker volume entry is not a string: %r", vol)
-                continue
-            vol = vol.strip()
-            if not vol:
-                continue
-            if ":" not in vol:
-                logger.warning("Docker volume '%s' missing colon, skipping", vol)
-                continue
-            volume_args.extend(["-v", vol])
+        volume_args = _volume_args(volumes)
         workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
-
-        host_cwd_abs = _abs_host_cwd(host_cwd) if host_cwd else ""
-        windows_cwd = _is_windows_drive_path(host_cwd or "") or _is_windows_drive_path(host_cwd_abs)
-        host_dir_exists = bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
-        should_bind = host_dir_exists and (auto_mount_cwd or windows_cwd)
-        if (auto_mount_cwd or windows_cwd) and host_cwd and not host_dir_exists:
-            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
-
-        existing_mount = _existing_host_mount(volume_args, host_cwd_abs) if should_bind else None
-        if existing_mount:
-            # Already bind-mounted (often the volume that claimed /workspace). Point
-            # tools at that container path instead of adding a second -v.
-            self.host_cwd = host_cwd_abs
-            self.host_cwd_mount = existing_mount
-            bind_target = None
-        elif should_bind:
-            bind_target = (
-                "/workspace" if not workspace_explicitly_mounted
-                else _free_host_cwd_mount(volume_args))
-            self.host_cwd = host_cwd_abs
-            self.host_cwd_mount = bind_target
-        else:
-            self.host_cwd = None
-            self.host_cwd_mount = None
-            bind_target = None
+        # An already bind-mounted cwd (often the volume that claimed /workspace) points
+        # tools at that container path instead of adding a second -v.
+        host_cwd_abs, mount, bind_target = _plan_host_cwd_mount(volume_args, host_cwd, auto_mount_cwd)
+        existing_mount = mount if mount and not bind_target else None
+        self.host_cwd = host_cwd_abs if mount else None
+        self.host_cwd_mount = mount
 
         bind_at_workspace = bind_target == "/workspace"
         mount_workspace = not bind_at_workspace and not workspace_explicitly_mounted

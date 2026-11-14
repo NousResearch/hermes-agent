@@ -11,6 +11,22 @@ import sqlite3
 from hermes_state_runtime import RuntimeStoreError
 
 
+def sandbox_workspace_path(terminal, workspace):
+    """Where the worker's Docker sandbox mounts *workspace*, or None (host backends, no cwd mount,
+    or a shared container, whose mount belongs to whichever session created it)."""
+    from gateway.session_policy import terminal_uses_host_cwd
+    if not workspace or str(terminal.get('TERMINAL_ENV') or '').strip().lower() != 'docker':
+        return None
+    if not terminal_uses_host_cwd(terminal) or str(terminal.get('TERMINAL_DOCKER_SHARED_CONTAINER_KEY') or '').strip():
+        return None
+    try:
+        volumes = json.loads(terminal.get('TERMINAL_DOCKER_VOLUMES') or '[]')
+    except (TypeError, ValueError):
+        return None
+    from tools.environments.docker import host_cwd_container_path
+    return host_cwd_container_path(volumes if isinstance(volumes, list) else [], workspace, True)
+
+
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
@@ -41,7 +57,11 @@ def build_kanban_policy(connection, params, config):
                                  (task.id, task.current_run_id)).fetchone()
             if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
                 raise RuntimeStoreError('stale_kanban_claim')
-            context = kb.build_worker_context(conn, task.id)
+            from hermes_constants import get_hermes_home
+            from tools.terminal_scope import build_profile_terminal_scope
+            # The terminal scope build_policy freezes for this worker (profile_terminal=True).
+            sandbox = sandbox_workspace_path(build_profile_terminal_scope(get_hermes_home()), task.workspace_path)
+            context = kb.build_worker_context(conn, task.id, sandbox_workspace=sandbox)
             skills = list(task.skills or ())
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.

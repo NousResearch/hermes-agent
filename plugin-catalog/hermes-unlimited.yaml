@@ -1,6 +1,6 @@
 name: hermes-unlimited
 repo: https://github.com/rrglab/hermes-unlimited
-sha: ef0ce2138a3abd5396b12782fde950d307c843ba
+sha: f461a386a0ed614edbc20bc0a58b333bbc720bd4
 description: "AI-native company operating tools with scoped Hermes Kanban, mission planning, memory, economics and read-only tool-to-agent discovery. Disclosure — Uses configured local Hermes CLI, per-tenant SQLite storage and loopback JustYou validation. Three feedback hooks collect local aggregate usage only with explicit, unexpired consent; publishing is separately opt-in. Host-dependent execution and connection tools are hidden unless trusted host capabilities are available; Socratic Council refuses if no real model seats are configured. No live payment settlement or independently verified customer fulfillment."
 maintainer: rrglab
 tier: community
@@ -14,7 +14,7 @@ known_issues:
   - "No live payment settlement or independently attested customer fulfillment."
   - "Host-dependent mission, company-cycle, service-factory and connection-management capabilities are gated by check_fn; a default Hermes host lacks those custom callbacks."
   - "Tool-to-agent discovery generates unprivileged drafts and schema fingerprints only; it does not execute junior agents, choose models or connect accounts."
-  - "Socratic Council needs five configured real Hermes model seats and refuses when unavailable; it grants no execution authority."
+  - "Socratic Council needs five configured real Hermes model seats; chair synthesis on large evidence uses explicitly labelled excerpts and records omitted source text as uncertainty. Roles on one model are not independent model-family verification. No execution authority."
   - "Feedback events are profile-scoped, require explicit unexpired consent and do not independently verify customer outcomes."
 capabilities:
   provides_tools:

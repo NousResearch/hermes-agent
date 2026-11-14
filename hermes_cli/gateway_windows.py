@@ -112,6 +112,22 @@ def _decode_schtasks_output(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def utf8_console_argv(argv: list[str] | tuple[str, ...]) -> list[str]:
+    """Run a console probe (``schtasks.exe``, ``whoami.exe``) on a UTF-8 console so its output keeps
+    the characters that identify a path (#150136).
+
+    ``windows_hide_flags()`` gives the child a fresh hidden console on the system OEM code page, and a
+    tool that converts its output to that page replaces whatever the page cannot represent with ``?``:
+    an Arabic or CJK account directory in a task's launcher path reached ``read_definition`` as an
+    illegal Windows path and raised ``OSError``, so the installed task could never be verified and
+    every cold start refused. Decoding cannot recover a character that was never written, so the
+    console itself is switched first — ``cmd /d`` skips AutoRun, and ``_decode_schtasks_output``
+    already prefers the UTF-8 bytes that follow.
+    """
+    command = subprocess.list2cmdline(list(argv))
+    return ["cmd.exe", "/d", "/c", f"chcp 65001>nul & {command}"]
+
+
 def _assert_windows() -> None:
     if sys.platform != "win32":
         raise RuntimeError("gateway_windows is Windows-only")

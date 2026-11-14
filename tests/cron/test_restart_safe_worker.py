@@ -1367,3 +1367,47 @@ def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
     keys = {scheduler._inflight_key(job_id) for job_id in jobs}
     assert not keys & scheduler._scope_isolated_job_ids
     assert not keys & set(scheduler._running_worker_pids)
+
+
+def test_worker_that_acks_and_exits_between_checks_is_handed_off(tmp_path, monkeypatch):
+    """#154901: a fast worker can publish its ack and exit 0 between the dispatcher's
+    ``ack_path.exists()`` check and its ``process.poll()``. The dispatcher must re-read the ack
+    instead of reporting a completed run as 'exited before ownership acknowledgement'."""
+    from cron import scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("degraded", list(command)),
+    )
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending",
+                        lambda _eid: {"id": "exec-1", "handoff_pending": 1})
+    monkeypatch.setattr(scheduler, "get_execution",
+                        lambda _eid: {"id": "exec-1", "status": "completed"})
+
+    class AckThenExit:
+        """Writes the ack only when polled, then reports exit 0: the race window."""
+
+        returncode = None
+
+        def __init__(self, ack):
+            self.ack = ack
+
+        def poll(self):
+            if self.returncode is None:
+                self.ack.write_text(json.dumps({"pid": 4321, "execution_id": "exec-1"}),
+                                    encoding="utf-8")
+                self.returncode = 0
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.poll()
+
+    def popen(command, **_kwargs):
+        return AckThenExit(Path(command[command.index("--ack-file") + 1]))
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+
+    assert scheduler._launch_external_cron_worker(
+        {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}) is True

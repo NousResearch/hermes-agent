@@ -129,6 +129,27 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
     return result
 
 
+def _is_hermes_install_environment_site_packages(path: Path) -> bool:
+    """Recognise exact site-packages paths from this install's PM generations.
+
+    PM activates a generation once at process boot, so inherited PYTHONPATH can
+    still name an older generation after the committed selection changes. Its
+    location proves provenance even if collection has removed pyvenv.cfg.
+    """
+    try:
+        from hermes_cli._startup_fast import project_root_str
+        from pm.environments import install_state_dir, site_packages
+
+        environments = install_state_dir(Path(project_root_str())) / "environments"
+        relative = path.relative_to(environments)
+        if not relative.parts:
+            return False
+        generation = environments / relative.parts[0]
+        return _same_path(path, site_packages(generation))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
     """Strip Hermes-owned PYTHONPATH entries, then the runtime marker vars. Order is
     load-bearing: PYTHONPATH filtering runs BEFORE the markers go so a validated Windows
@@ -152,7 +173,13 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
+    stripped = [
+        e for e in entries
+        if e and (
+            any(_same_path(Path(e), p) for p in owned_paths)
+            or _is_hermes_install_environment_site_packages(Path(e))
+        )
+    ]
     kept = [e for e in entries if e not in stripped]
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)

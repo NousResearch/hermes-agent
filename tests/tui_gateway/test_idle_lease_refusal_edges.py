@@ -246,3 +246,45 @@ def test_m2_notif_submit_refusal_keeps_running_of_a_turn_started_in_the_gap(fore
         assert {"gap_turn": user_turn, "running": foreign.record["running"]} == {"gap_turn": [True], "running": True}
     finally:
         foreign.record["running"] = False
+
+
+# ── Refused gated writers change nothing: no side effect runs before the ownership gate
+def test_r1_rollback_restore_on_a_taken_chat_restores_nothing_and_answers_4090(taken, monkeypatch):
+    restored = []
+
+    class _Mgr:
+        enabled = True
+
+        def unsupported_backend_reason(self, task_id):
+            return None
+
+        def list_checkpoints(self, cwd):
+            return []
+
+        def restore(self, cwd, commit, file_path=None, safe=True):
+            restored.append(commit)
+            return {"success": True}
+    taken.record["agent"]._checkpoint_mgr = _Mgr()
+    resp = server.handle_request({"id": "r", "method": "rollback.restore",
+                                  "params": {"session_id": taken.sid, "hash": "abcdef1234567"}})
+    err = resp.get("error") or {}
+    assert {"code": err.get("code"), "restored": restored, "transcript_tail": _transcript(taken)[-2:]} == {
+        "code": 4090, "restored": [], "transcript_tail": ["telegram message", "telegram answer"]}, resp
+
+
+@pytest.mark.parametrize("command", ["/model other/model", "/compress"])
+def test_r3_in_process_slash_writer_on_a_taken_chat_never_runs_the_worker(taken, monkeypatch, command):
+    ran = []
+
+    class _Worker:
+        def run(self, cmd):  # the worker's CLI writes the session row before the live mirror's gate
+            ran.append(cmd)
+            return "done"
+
+        def pop_seed(self):
+            return ""
+    monkeypatch.setattr(server, "_slash_worker_for", lambda rid, sid, session: (_Worker(), None))
+    resp = server.handle_request({"id": "r", "method": "slash.exec",
+                                  "params": {"session_id": taken.sid, "command": command}})
+    err = resp.get("error") or {}
+    assert {"code": err.get("code"), "ran": ran} == {"code": 4090, "ran": []}, resp

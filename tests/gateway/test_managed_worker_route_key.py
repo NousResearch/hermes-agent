@@ -106,6 +106,8 @@ def test_bound_launch_key_wins_over_the_route_key(tmp_path, monkeypatch):
     monkeypatch.setenv(KEY_ENV, 'fake-route-' + secrets.token_hex(8))
     built = _execute(_minimax_frame(tmp_path, monkeypatch, api_key=launch), monkeypatch)
     assert built['api_key'] == launch
+    # A bound launch key is the credential itself: the resolver returns no pool to rotate away from it.
+    assert built.get('credential_pool') is None
 
 
 @pytest.mark.parametrize('model, block, env, expected', [
@@ -313,3 +315,57 @@ def test_keyless_worker_on_a_fallback_never_sends_its_key_to_the_primary_endpoin
     assert primary and fallback_key not in primary
     assert all(fallback_key != key for key, _ in clients)
     assert built['api_key'] is None
+
+
+def test_keyless_kanban_worker_constructs_its_agent_with_the_pool(tmp_path, monkeypatch):
+    """End to end through ``execute``: the pool reaches the AIAgent the Kanban worker builds, so the
+    agent's 429/402 recovery has entries to rotate to (not just ``worker_route``'s return value)."""
+    from gateway import session_worker_construct as swc
+    pool = object()
+    runtime = {'api_key': 'fake-pool-entry', 'base_url': 'https://api.anthropic.com',
+               'api_mode': 'anthropic_messages', 'provider': 'anthropic', 'credential_pool': pool}
+    monkeypatch.setattr(swc, 'route_runtime', lambda *a, **k: (runtime, None))
+    frame = _routed_frame(tmp_path, monkeypatch, 'claude-opus-4-1', {'provider': 'anthropic'})
+    built = _execute(frame, monkeypatch)
+    assert built['credential_pool'] is pool and built['api_key'] == 'fake-pool-entry'
+
+
+def _parity_runtime(**over):
+    """A resolved runtime with a distinct value for EVERY key ``runtime_agent_kwargs`` reads, so a
+    field added there is exercised here without touching this test."""
+    from gateway.session_worker_construct import runtime_agent_kwargs
+    runtime = {key: f'fake-{key}' for key in runtime_agent_kwargs({})}
+    runtime.update({'provider': 'anthropic', 'args': ['--fake'], 'credential_pool': object(),
+                    'request_overrides': {'extra_body': {'fake': 1}}}, **over)
+    return runtime
+
+
+def _route_for(monkeypatch, runtime, construct):
+    from gateway import session_worker_construct as swc
+    monkeypatch.setattr(swc, 'route_runtime', lambda *a, **k: (runtime, None))
+    policy = SimpleNamespace(effective=lambda: ({'model': {'provider': 'anthropic'}}, 'claude-opus'))
+    return swc.worker_route(policy, {'api_key': None, **construct})
+
+
+def test_worker_route_carries_every_in_process_route_kwarg(monkeypatch):
+    """Parity with the in-process turn: every kwarg it builds from a resolved runtime
+    (``runtime_agent_kwargs``: credential pool, request_overrides, ACP command, ...) reaches the
+    worker's agent unchanged, except the worker's own WORKER_OWN_ROUTE_KEYS. A hand-picked
+    whitelist (which silently dropped the pool, so Kanban workers never rotated on a 429) fails."""
+    from gateway import session_worker_construct as swc
+    runtime = _parity_runtime()
+    route = _route_for(monkeypatch, runtime, {})
+    expected = swc.runtime_agent_kwargs(runtime)
+    for key in expected.keys() - swc.WORKER_OWN_ROUTE_KEYS:
+        assert route[key] == expected[key], key
+    assert route['credential_pool'] is runtime['credential_pool']
+    assert not swc.WORKER_OWN_ROUTE_KEYS & route.keys()
+
+
+def test_worker_deep_merges_its_fast_tier_over_the_providers_request_overrides(monkeypatch):
+    """As ``_resolve_turn_agent_config`` does in-process: the provider's request_overrides survive,
+    with a static fast tier's (from the worker's construct kwargs) merged over them."""
+    runtime = _parity_runtime(request_overrides={'extra_body': {'provider_flag': True}})
+    route = _route_for(monkeypatch, runtime, {'request_overrides': {'service_tier': 'priority'}})
+    assert route['request_overrides'] == {'extra_body': {'provider_flag': True}, 'service_tier': 'priority'}
+    assert _route_for(monkeypatch, _parity_runtime(request_overrides=None), {})['request_overrides'] is None

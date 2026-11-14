@@ -18,6 +18,56 @@ const SHELL_DRIVE_RE = /^\/(?:cygdrive\/|mnt\/)?([a-z])(?:\/|$)/i
 
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
+let cachedWslAvailability: null | boolean = null
+
+function isWslAvailable(): boolean {
+  if (cachedWslAvailability !== null) {
+    return cachedWslAvailability
+  }
+
+  if (!IS_WINDOWS) {
+    cachedWslAvailability = true
+
+    return cachedWslAvailability
+  }
+
+  // Distributions normally belong to HKCU. Neither an empty Lxss shell nor
+  // a stale DefaultDistribution value proves a registered distribution exists.
+  // Query registry data only: never launch the WSL stub or touch its UNC shares
+  // to establish availability (either can activate WSL installation machinery).
+  cachedWslAvailability = false
+  for (const hive of ['HKCU', 'HKLM']) {
+    const root = `${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss`
+    try {
+      const out = execFileSync('reg.exe', ['query', root, '/s'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1000,
+        windowsHide: true
+      })
+      // reg.exe prints full HKEY_* names even when queried with abbreviations.
+      const fullRoot = root.replace(hive, hive === 'HKCU' ? 'HKEY_CURRENT_USER' : 'HKEY_LOCAL_MACHINE')
+      let distributionSubkey = false
+      for (const line of out.split(/\r?\n/)) {
+        const key = line.trim()
+        if (/^(?:HKEY_|HKCU\\|HKLM\\)/i.test(key)) {
+          distributionSubkey = [root, fullRoot].some(prefix => {
+            const tail = key.slice(prefix.length + 1)
+            return key.toLowerCase().startsWith(`${prefix.toLowerCase()}\\`) && Boolean(tail) && !tail.includes('\\')
+          })
+        } else if (distributionSubkey && /^\s*DistributionName\s+REG_SZ\s+\S/i.test(line)) {
+          cachedWslAvailability = true
+          break
+        }
+      }
+      if (cachedWslAvailability) break
+    } catch {
+      // Missing keys, inaccessible registry data and timeouts are not evidence.
+    }
+  }
+
+  return cachedWslAvailability
+}
 
 /**
  * WSL path eligibility belongs to the backend profile that produced the path.
@@ -51,8 +101,18 @@ export function setWslBridgeActive(active: boolean): void {
 
 export function isWslBridgeActive(profile?: null | string): boolean {
   const key = profile == null ? activeWslBridgeProfile : normalizeWslBridgeProfile(profile)
+  const configured = wslBridgeProfiles.get(key)
 
-  return wslBridgeProfiles.get(key) ?? true
+  if (configured !== undefined) {
+    // Local backend intent alone does not imply this Windows host has WSL.
+    // Remote profiles still short-circuit without even a registry query.
+    return configured && isWslAvailable()
+  }
+
+  const detected = isWslAvailable()
+  wslBridgeProfiles.set(key, detected)
+
+  return detected
 }
 
 /**

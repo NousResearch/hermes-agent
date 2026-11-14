@@ -1,0 +1,58 @@
+name: harness2
+repo: https://github.com/shrinedogg/harness2-hermes
+sha: 941fee06d1e6c70c97061cd2e079e38e96bed206
+version: "1.0.0"
+description: >-
+  The Harness^2 self-improvement loop for Hermes profiles. The plugin edits
+  the files that shape the agent (system prompt + config overlay + skills)
+  for a class of work. A harness is that set of files. It runs a contrastive
+  Propose-Probe-Compose cycle over isolated probe sessions. A contrastive
+  cycle runs each edit against the unedited base. A probe is a fresh one-shot
+  agent session under one harness. After the cycle, the plugin saves the
+  lessons that the evidence supports. It saves them in a per-profile
+  improvement library. The library is what future tasks read before editing.
+  After each round, the promote stage writes a carry-over report. The report
+  shows what the banked harness changed and what to apply to the live
+  profile. A banked harness is the saved harness from a finished round. A
+  live profile is the profile you use day to day. The user applies it. The
+  plugin never writes the live profile. The fixed machinery (profile
+  materialization, probe runs, structural gate, library) is tools. The
+  judgment stages run in the host session under bundled skills that point at
+  the verbatim stage prompts from arXiv:2610.14224. Disclosure: the plugin
+  runs `hermes profile create --clone` and one-shot `hermes -p
+  harness2-<task>-<probe> chat` subprocesses. Each probe is a full agent
+  session billed to the configured model. Each probe has a time limit (900
+  seconds by default, a per-plugin setting). The plugin creates and refreshes
+  probe profiles named harness2-*. The clone carries the active profile's
+  configuration and .env once, under Hermes' own clone policy. The overlay
+  keys apply per key via `hermes -p config set`. The plugin never rewrites
+  the profile's configuration or touches its .env. The overlay pins
+  approvals.mode: smart, with single_query_mode and cron_mode denied, and
+  security.redact_secrets: true. The plugin reads and writes only its own
+  plugin data directory and the probe profile directories. It never writes
+  the installed plugin tree. It sends no telemetry and makes no third-party
+  network calls of its own. Probes inherit the profile's full tool access
+  (including web) like any profile.
+maintainer: shrinedogg
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/shrinedogg/harness2-hermes#readme
+image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/loop.png
+screenshots:
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/loop.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/library.png
+capabilities:
+  provides_tools:
+  - harness2_init
+  - harness2_probe
+  - harness2_seed
+  - harness2_check
+  - harness2_adopt
+  - harness2_promote
+  - harness2_library
+  - harness2_status
+  - harness2_gc
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

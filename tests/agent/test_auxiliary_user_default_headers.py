@@ -44,6 +44,14 @@ class TestApplyUserDefaultHeadersHelper:
         assert merged == {"User-Agent": "curl/8.7.1"}
         assert "X-Drop" not in merged
 
+    def test_case_variant_replaces_existing_header(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "m", "default_headers": {"user-agent": "curl/8.7.1", "x-trace": "1"}},
+        })
+        from agent.auxiliary_client import _apply_user_default_headers
+        merged = _apply_user_default_headers({"User-Agent": "hermes", "X-Trace": "0"})
+        assert merged == {"User-Agent": "curl/8.7.1", "x-trace": "1"}
+
 
 class TestAuxClientHonorsUserDefaultHeaders:
     """Integration: resolve_provider_client must pass overridden headers to OpenAI."""

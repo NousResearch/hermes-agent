@@ -59,6 +59,15 @@ def test_non_list_skills_is_invalid_shape():
     assert out == {"status": "invalid-shape", "detail": "skills field is not a list (got dict)"}
 
 
+def test_remote_newlines_cannot_add_output_lines():
+    data = _index(HEALTHY_COUNTS)
+    data["generated_at"] += "\nstatus=forged"
+    data["skills"].append({"name": "x", "source": "lobehub\r\nstatus=forged"})
+    lines = probe.evaluate(data, NOW)
+    assert all("\n" not in line and "\r" not in line for line in lines)
+    assert [line.split("=", 1)[0] for line in lines] == ["status", "detail", "summary"]
+
+
 def test_script_reports_parse_failure_and_exits_zero(tmp_path):
     index = tmp_path / "skills-index.json"
     index.write_text("<html>502</html>", encoding="utf-8")

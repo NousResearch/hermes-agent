@@ -666,14 +666,15 @@ DANGEROUS_PATTERNS = [
     # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean.
     (_CMDPOS + rf'mv\b[^;|&\n]*\s["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE}(?=\s+[^\s;|&<>]))',
      "delete/move/wipe Hermes home or session store"),
-    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}{_COMMAND_TAIL}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}(?=\s*(?:$|[;&|#<>\n]|\d+[<>]))', "overwrite Hermes session/credential store"),
     (_CMDPOS + rf'dd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     (_CMDPOS + rf'tee\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
-    # deletes the same rows). SELECT/.dump/.schema and the `VACUUM INTO` backup stay clean.
-    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|update\s+\S+\s+set|drop\s+\w+'
-     r'|insert\s+(?:or\s+\w+\s+)?into|replace\s+into|alter\s+table|vacuum(?!\s+into))\b|\.restore\b))',
+    # deletes the same rows), and any heredoc into a store prompts (its SQL sits past the newline).
+    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|drop\s+\w+'
+     r'|update\s+(?:or\s+\w+\s+)?\S+\s+(?:as\s+\S+\s+)?set|insert\s+(?:or\s+\w+\s+)?into|replace\s+into'
+     r'|alter\s+table|vacuum(?!\s+(?:\w+\s+)?into))\b|\.restore\b|(?<!<)<<(?!<)))',
      "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.

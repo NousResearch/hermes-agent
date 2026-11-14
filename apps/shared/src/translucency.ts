@@ -286,10 +286,20 @@ export function defaultTranslucencyState(
   glassSupported: boolean,
   isWindows: boolean
 ): TranslucencyState {
-  return {
-    ...defaultTranslucencyValues(appearance, isWindows),
-    mode: normalizeMode(undefined, glassSupported)
-  }
+  const mode = normalizeMode(undefined, glassSupported)
+  const defaults = defaultTranslucencyValues(appearance, isWindows)
+
+  return { ...defaults, intensity: defaultIntensityFor(mode, defaults), mode }
+}
+
+/**
+ * The default tables tune glass's TINT. Clear reads the same lever as native
+ * window opacity, so inheriting the tint would fade the whole window wherever
+ * glass is unavailable and the mode collapses to clear (Linux, Windows 10).
+ * Clear stays off until the user moves the slider.
+ */
+function defaultIntensityFor(mode: TranslucencyMode, defaults: TranslucencyValues): number {
+  return mode === 'glass' ? defaults.intensity : TRANSLUCENCY_MIN
 }
 
 /** Keep only the value keys actually present, each normalized. Unknown keys drop. */
@@ -357,7 +367,7 @@ export function resolveTranslucency(
 
   return {
     mode: book.mode,
-    intensity: slot.intensity ?? book.base.intensity ?? fallback.intensity,
+    intensity: slot.intensity ?? book.base.intensity ?? defaultIntensityFor(book.mode, fallback),
     fade: slot.fade ?? book.base.fade ?? fallback.fade,
     material: slot.material ?? book.base.material ?? fallback.material,
     scope: slot.scope ?? book.base.scope ?? fallback.scope

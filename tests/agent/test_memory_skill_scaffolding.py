@@ -143,3 +143,15 @@ class TestMemoryManagerStripsScaffolding:
         mgr.flush_pending(timeout=5.0)
         assert provider.synced == []
 
+    def test_bare_auto_load_skipped_and_lookalike_text_kept(self):
+        bare = (
+            '[IMPORTANT: The "example" skill is auto-loaded. Follow its instructions for this session.]\n'
+            f"Skill body.\n[Skill directory: /skills/example]\nResolve paths, {_SKILL_DIR_NOTE_END}\n\n"
+        )
+        lookalike = '[IMPORTANT: The "config" file is broken] please   look'
+        mgr, provider = _manager_with_recorder()
+        mgr.sync_all(bare, "Ready.")
+        mgr.sync_all(lookalike, "Looking.")
+        mgr.flush_pending(timeout=5.0)
+        assert provider.synced == [lookalike]
+

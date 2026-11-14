@@ -22,6 +22,23 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture()
+def installed_skills():
+    """``maps`` / ``blogwatcher`` as real skill dirs: ``hermes cron create|edit`` refuses a skill
+    name that resolves to nothing (tests/tools/test_cronjob_skill_validation.py), so the CLI
+    plumbing tests need the names to be installed the way they are on a live host."""
+    from hermes_constants import get_hermes_home
+
+    for name in ("maps", "blogwatcher"):
+        skill_dir = get_hermes_home() / "skills" / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Fixture skill for CLI cron tests.\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+    return ("maps", "blogwatcher")
+
+
 class TestCronCommandLifecycle:
 
     def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
@@ -48,7 +65,7 @@ class TestCronCommandLifecycle:
         assert updated["provider"] == "nous"
         assert "Updated job" in capsys.readouterr().out
 
-    def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
+    def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, installed_skills, capsys):
         job = create_job(
             prompt="Combine skill outputs",
             schedule="every 1h",
@@ -106,7 +123,7 @@ class TestCronCommandLifecycle:
         out = capsys.readouterr().out
         assert "Updated job" in out
 
-    def test_create_with_multiple_skills(self, tmp_cron_dir, capsys):
+    def test_create_with_multiple_skills(self, tmp_cron_dir, installed_skills, capsys):
         cron_command(
             Namespace(
                 cron_command="create",

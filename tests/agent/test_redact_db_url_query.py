@@ -20,6 +20,10 @@ def _ensure_redaction_enabled(monkeypatch):
      "jdbc:mysql://db:3306/app?user=app&password=***&useSSL=true"),
     ("url = 'jdbc:mariadb://db/app?user=app&PWD=Zq7x9LmP2kk'",
      "url = 'jdbc:mariadb://db/app?user=app&PWD=***'"),
+    ("postgresql+psycopg2://db/app?user=app&password=Zq7x9LmP2kk",
+     "postgresql+psycopg2://db/app?user=app&password=***"),
+    ("mongodb+srv://cluster.example.net/app?password=Zq7x9LmP2kk",
+     "mongodb+srv://cluster.example.net/app?password=***"),
     ("mysql://db/app?password=first1&password=second2",
      "mysql://db/app?password=***&password=***"),
 ])

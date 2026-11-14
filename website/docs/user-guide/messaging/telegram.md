@@ -863,6 +863,15 @@ If you work on several long-running projects, topics keep their context separate
 
 Each topic gets its own conversation session, history, and context — completely isolated from the others.
 
+With BotFather **Threaded Mode** on, Telegram also stamps a thread id on ordinary DM messages (a reply inside a thread, or a client that opens a new thread per question), and by default each of those threads is its own session too. If one DM keeps fanning out into parallel sessions you didn't ask for, set `platforms.telegram.extra.dm_threads: shared`: the whole DM becomes one session (one history, one turn at a time), and replies still go back to the thread each message came from. Topics declared in `extra.dm_topics` and `/topic` multi-session lanes stay isolated either way. The default, `per_thread`, keeps one session per thread; any other value logs a warning and is treated as `per_thread`.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      dm_threads: shared   # per_thread (default) | shared
+```
+
 ### Configuration
 
 :::caution Prerequisites

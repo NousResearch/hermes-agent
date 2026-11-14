@@ -21,7 +21,7 @@ def _need(module: str, package: str):
     try:
         return __import__(module)
     except ImportError:
-        print(f"Missing dependency: install with 'python3 -m pip install {package}'", file=sys.stderr)
+        print(f"Missing dependency: '{package}' is not importable here; rerun with the documents interpreter $PY from the pdf skill's Prerequisites setup block", file=sys.stderr)
         raise SystemExit(2)
 
 

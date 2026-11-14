@@ -60,6 +60,7 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
             authority.db.create_session(sid, source=SURFACES[surface])
             live = authority.sessions[sid]
             store._record_gateway_session_peer(sid, live.route, live.source)
+            authority.db.append_message(sid, 'user', 'hi')
         rows = {sid: authority.db.get_session(sid) for sid in created.values()}
         assert {(row['source'], row['created_source']) for row in rows.values()} == {
             ('local', 'cli'), ('local', 'tui'), ('local', 'desktop')}
@@ -68,6 +69,199 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
         for family in ('cli', 'tui'):
             result = await _call(owner, 'session.resume', latest=family)
             assert isinstance(result, dict) and result['session_id'] == created[family], (family, result)
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_usage_cannot_replace_the_insert_stamp(tmp_path, monkeypatch):
+    """Auxiliary usage creates a missing row as created_source='unknown'.
+
+    The creator upsert repairs 'unknown', but session.create's DO NOTHING insert does
+    not, so it stamps the surface itself; a later record_auxiliary_usage must leave it,
+    and session.resume latest='cli' still finds the row.
+    """
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='chat', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        authority.db.record_auxiliary_usage(sid, 'compression', model='m', input_tokens=4, output_tokens=1)
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        authority.db.append_message(sid, 'user', 'hi')
+        authority.sessions.clear()
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
+        row = authority.db.get_session(sid)
+        assert (row['source'], row['created_source']) == ('local', 'cli')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+def _set_created(db, sid, value):
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (value, sid))
+        db._conn.commit()
+
+
+def _reset(authority, store, sid, child):
+    from gateway.session import SessionEntry
+    from hermes_state_local import local_receipt
+    from hermes_state_local_lineage import reset_local_target
+
+    live = authority.sessions[sid]
+    store._record_gateway_session_peer(sid, live.route, live.source)
+    old = SessionEntry.from_dict(local_receipt(authority.db, sid)['entry'])
+    entry = SessionEntry(old.session_key, child, old.created_at, old.updated_at, origin=old.origin,
+                         platform=old.platform, chat_type=old.chat_type, is_fresh_reset=True)
+    reset_local_target(authority.db, epoch=authority.epoch, parent_session_id=sid, entry=entry.to_dict())
+    return child
+
+
+@pytest.mark.asyncio
+async def test_reset_copies_the_parent_surface_and_falls_back_to_policy(tmp_path, monkeypatch):
+    """A real parent created_source is copied. NULL, local and unknown are not.
+
+    /new publishes with the policy label (cli), not the live local source. Copying
+    tui is not the policy fallback; a parent with no surface becomes cli.
+    """
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        copied = await _call(owner, 'session.create', request_id='copy', source='cli',
+                             cwd=str(tmp_path), toolsets=[], model='m')
+        sid = copied['session_id']
+        _set_created(authority.db, sid, 'tui')
+        child = _reset(authority, store, sid, 'reset-copied')
+        assert authority.db.get_session(child)['created_source'] == 'tui'
+
+        for parent_created, name in ((None, 'reset-null'), ('unknown', 'reset-unknown'), ('local', 'reset-local')):
+            created = await _call(owner, 'session.create', request_id=name, source='cli',
+                                  cwd=str(tmp_path), toolsets=[], model='m')
+            sid = created['session_id']
+            _set_created(authority.db, sid, parent_created)
+            child = _reset(authority, store, sid, name + '-child')
+            row = authority.db.get_session(child)
+            assert row['created_source'] == 'cli', (parent_created, row['source'], row['created_source'])
+            assert row['source'] == 'cli'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_path, monkeypatch):
+    """The compress mutation copies the parent's surface. A NULL or ``local`` parent is not a
+    surface, so the child falls back to the policy label."""
+    from hermes_state_mutation_compress import compress_in_transaction
+    from hermes_state_mutation_prepared import local_snapshot
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        def compress(sid):
+            def write(conn):
+                snapshot = local_snapshot(authority.db, conn, sid)
+                prepared = {'snapshot': snapshot, 'in_place': False,
+                            'messages': [{'role': 'user', 'content': 'hi'}]}
+                return compress_in_transaction(authority.db, conn, sid, {}, prepared)
+            return authority.db._execute_write(write)[1]['target_session_id']
+
+        for parent_created, expected in (('desktop', 'desktop'), (None, 'cli'), ('local', 'cli')):
+            created = await _call(owner, 'session.create', request_id=f'compress-{parent_created}',
+                                  source='cli', cwd=str(tmp_path), toolsets=[], model='m')
+            sid = created['session_id']
+            _set_created(authority.db, sid, parent_created)
+            row = authority.db.get_session(compress(sid))
+            assert row['created_source'] == expected, (parent_created, row['created_source'])
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+def _listed(db, source, capsys):
+    from argparse import Namespace
+    from hermes_cli.sessions_cmd import _cmd_list
+    _cmd_list(db, Namespace(limit=20, source=source, workspace=None))
+    return capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('surface', 'labels'), [('gui', ('gui', 'desktop')), ('acp', ('acp',))])
+async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
+        tmp_path, monkeypatch, capsys, surface, labels):
+    """session.create stamps the agent surface (gui is desktop). --source accepts
+    either name, before the peer refresh and after the row is stored as local."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id=surface, source=surface,
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'before peer')
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_oneshot_keeps_its_own_created_source_and_stays_out_of_cli(tmp_path, monkeypatch, capsys):
+    """created_source is provenance: a oneshot run is stamped oneshot, not the cli it runs as."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='z', source='oneshot',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        assert authority.db.get_session(sid)['created_source'] == 'oneshot'
+        assert sid not in _listed(authority.db, 'cli', capsys)
+        assert sid in _listed(authority.db, 'oneshot', capsys)
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('admission', [None, 'queued', 'unknown'])
+async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch, admission):
+    """CLI-31: the insert stamps the surface, so a 0-message launch stub left by a crash or a
+    failed resume is the newest CLI row. Neither ``session.resume latest`` nor ``-c`` picks it.
+    A newer session whose first prompt is admitted (queued, or ``unknown`` after a restart) but
+    not yet written is a conversation, not a stub: both still pick it."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        ids = []
+        for name in ('real', 'stub'):
+            created = await _call(owner, 'session.create', request_id=name, source='cli',
+                                  cwd=str(tmp_path), toolsets=[], model='m')
+            ids.append(sid := created['session_id'])
+            authority.db.create_session(sid, source='cli')
+            live = authority.sessions[sid]
+            store._record_gateway_session_peer(sid, live.route, live.source)
+        real, stub = ids
+        authority.db.append_message(real, 'user', 'hello')
+        with authority.db._lock:
+            authority.db._conn.execute("UPDATE sessions SET started_at = started_at + 60 WHERE id = ?", (stub,))
+            if admission:
+                authority.db._conn.execute(
+                    "INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,"
+                    "lineage_json,payload_json,payload_digest,intent,status) "
+                    "VALUES('adm','req','human',?,'[]','{}','d','queue',?)", (stub, admission))
+            authority.db._conn.commit()
+        authority.sessions.clear()
+        expected = stub if admission else real
+
+        from hermes_cli.main import _resolve_last_session
+        monkeypatch.setattr('hermes_cli.main._resolve_workspace_key', lambda: None)
+        monkeypatch.setattr('hermes_cli.main.get_hermes_home', lambda: authority.db.db_path.parent)
+        assert _resolve_last_session('cli') == expected
+
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == expected, resumed
     finally:
         await owner.close()
         store.close_all_db_handles()

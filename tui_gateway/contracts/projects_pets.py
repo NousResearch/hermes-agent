@@ -9,6 +9,8 @@ The pet wire predates the snake_case rule and travels camelCase (``displayName``
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result
@@ -360,6 +362,8 @@ class PetCellsParams(ProfileParams):
     state: str | None = None
     cols: int | None = None
     graphics: bool = False
+    # The client's own ``auto`` pick from its terminal's env (ui-tui lib/terminalGraphics.ts).
+    terminal: Literal["kitty", "unicode"] = "unicode"
 
 
 class PetCellsResult(Result):

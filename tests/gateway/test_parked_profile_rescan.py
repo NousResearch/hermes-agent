@@ -134,7 +134,9 @@ async def test_api_work_queued_before_the_park_is_recovered_by_the_rescan(multip
 @pytest.mark.asyncio
 async def test_native_recovery_runs_once_the_rescanned_adapters_connect(multiplexed, monkeypatch):
     """Boot recovers queued native rows after the adapters connect
-    (``recover_gateway_native_sessions``); the rescan runs the same step for the served profile."""
+    (``recover_gateway_native_sessions``); the rescan runs the same step once the served profile's
+    bots connect, in every serving ledger: a ``bot_profile`` route runs a bot's messages on another
+    profile, so the rows those bots carry can be queued in the default profile's ledger."""
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.session_authority import SessionAuthority
     runner, beta = multiplexed
@@ -149,4 +151,5 @@ async def test_native_recovery_runs_once_the_rescanned_adapters_connect(multiple
     await initialize_gateway_runtime(runner)
     await _boot_with_beta_parked(runner, beta, monkeypatch)
     await _rescan(runner, beta, monkeypatch, connected)
-    assert recovered == [('beta', ['beta'])], f'native recovery after the rescan: {recovered}'
+    launch = Path(runner.session_authorities.launch.profile_id).name
+    assert sorted(recovered) == [(launch, ['beta']), ('beta', ['beta'])], f'native recovery after the rescan: {recovered}'

@@ -1,0 +1,20 @@
+name: glass-theme
+title: Glass Theme
+repo: https://github.com/mykeura/glass-theme-for-hermes
+sha: c55c64af8c8742e12b55d384b5bd4a4674137fc8
+description: "Translucent glass surfaces for Hermes Desktop in light and dark, teal accent, with terminal colors that match. Disclosure — theme-only plugin: it registers one theme through the Desktop plugin SDK and injects no CSS, no DOM access and no stylesheet of its own; the palette ships light and dark sets and the desktop terminal pane takes its colours from them. The package also ships two optional CLI/TUI skins (glass-light, glass-dark) as plain YAML files the user copies into ~/.hermes/skins, plus an inert __init__.py whose register() does nothing so the Agent loader imports the package cleanly instead of reporting a missing module. No network requests, no agent tools, no hooks, no background processes, no settings page."
+maintainer: mykeura
+tier: community
+category: desktop
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/mykeura/glass-theme-for-hermes#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/mykeura/glass-theme-for-hermes/c55c64af8c8742e12b55d384b5bd4a4674137fc8/images/glass-theme-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mykeura/glass-theme-for-hermes/c55c64af8c8742e12b55d384b5bd4a4674137fc8/images/light-glass-mode.jpg
+  - https://raw.githubusercontent.com/mykeura/glass-theme-for-hermes/c55c64af8c8742e12b55d384b5bd4a4674137fc8/images/dark-glass-mode.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

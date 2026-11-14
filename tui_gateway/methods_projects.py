@@ -321,9 +321,22 @@ def _discover_repos_payload(
     return out
 
 
-# Automation sources are not user conversations, even without a parent session.
-# include_children=False separately hides delegate/compression lineage children.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["acp", "cron", "kanban", "oneshot", "subagent", "tool"]
+# Not user conversations; subagent/compression children are dropped by include_children=False.
+# Messaging-platform rows are user conversations, but the desktop lists them in their own
+# per-platform Messaging section. With no workspace cwd they would all fall into Home too, so the
+# same chat showed twice. Keep in step with MESSAGING_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts: dropping a source the desktop does not render under
+# Messaging would hide its rows from the sidebar entirely.
+_MESSAGING_SESSION_SOURCES = (
+    "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
+    "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
+    "yuanbao", "dingtalk", "feishu",
+)
+# Automation sources are not user conversations, even without a parent session. Keep these
+# exclusions alongside messaging sources so projects.tree matches the desktop's sidebar sections.
+_PROJECT_TREE_EXCLUDED_SOURCES = [
+    "acp", "cron", "kanban", "oneshot", "subagent", "tool", *_MESSAGING_SESSION_SOURCES,
+]
 
 
 def _project_tree_row(r: dict) -> dict:

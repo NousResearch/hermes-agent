@@ -15,13 +15,13 @@ GITHUB = "skills/software-development/github"
 QUESTIONNAIRE = "optional-skills/productivity/decision-questionnaire"
 ACTUAL = "optional-skills/devops/actual-setup"
 DARWINIAN = "optional-skills/research/darwinian-evolver"
-PINECONE = "optional-skills/research/pinecone-research"
 EMAIL = "skills/email/email-inbox-triage"
 MEETING = "skills/productivity/meeting-action-items"
 PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
+OSS_FORENSICS = "optional-skills/security/oss-forensics"
 
 
 def _document(skill):
@@ -32,14 +32,13 @@ def _document(skill):
     (GITHUB, "benbarclay"), (MEETING, "benbarclay"), (PRICE, "benbarclay"),
     (WEEKLY, "benbarclay"), (EMAIL, "benbarclay"), (SOCIAL, "benbarclay"),
     (ACTUAL, "shl0ms"), (DARWINIAN, "Bihruze"),
-    (QUESTIONNAIRE, "mattpocock"), (PINECONE, None), (MCP, None),
+    (QUESTIONNAIRE, "mattpocock"), (MCP, None),
 ])
 def test_required_document_and_credit(skill, contributor):
     metadata, _ = _document(skill)  # A corpus glob alone cannot catch a deleted skill.
     if contributor:
         assert contributor in metadata["author"]
-    if skill != PINECONE:
-        assert not metadata["author"].startswith("Hermes Agent")
+    assert not metadata["author"].startswith("Hermes Agent")
 
 
 @pytest.mark.parametrize("skill,references", [
@@ -99,6 +98,26 @@ def test_issue_to_pr_disciplines():
         assert text in body, text
     assert "sabotage" in body.lower() or "FAILS" in body
     assert "/home/" not in body and not re.search(r"[A-Z]:\\+Users", body)
+
+
+def test_oss_forensics_raw_secrets_stay_out_of_working_files():
+    _, body = _document(OSS_FORENSICS)
+    # "Log them internally only" read as permission to keep plaintext secrets
+    # anywhere in the investigation directory except the report (#134909).
+    assert "Log them internally only" not in body
+    guardrail = body.split("**Secret Redaction**", 1)[1].split("\n", 1)[0]
+    for surface in ("`iocs.md`", "sub-agent `context`", "evidence-store"):
+        assert surface in guardrail, surface
+    assert "references, not copies" in guardrail
+    assert "access-controlled" in guardrail
+    assert "Phase 7 archive" in guardrail
+    archive_step = body.split("Archive the full investigation directory", 1)[1].split(
+        "\n", 1
+    )[0]
+    assert "no plaintext secrets" in archive_step
+    # The Phase 1 IOC schema must not demand the raw value for secret types.
+    ioc_value = body.split("- Value", 1)[1].split("\n", 1)[0]
+    assert "never the raw secret" in ioc_value
 
 
 def test_optional_platform_declarations():

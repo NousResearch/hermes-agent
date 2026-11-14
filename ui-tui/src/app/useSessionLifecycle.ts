@@ -4,27 +4,29 @@ import { writeFileSync } from 'node:fs'
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
-import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
-
-import { localCreationOptions } from '../canonicalGateway.js'
-import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
-import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
-import { introMsg, toTranscriptMessages } from '../domain/messages.js'
-import { ZERO } from '../domain/usage.js'
-import { type GatewayClient } from '../gatewayClient.js'
 import type {
   SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
   SessionDetachResponse,
+  SessionInfo,
   SessionTitleResponse,
   SetupStatusResponse
-} from '../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
+
+import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { introMsg, toTranscriptMessages } from '../domain/messages.js'
+import { ZERO } from '../domain/usage.js'
+import { type GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
+import { launchRouteServes, localCreationOptions } from '../launchOptions.js'
 import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo } from '../types.js'
+import type { Msg, PanelSection } from '../types.js'
 
+import { noteBackgroundHandoff } from './backgroundSessionNotices.js'
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -149,6 +151,24 @@ export interface UseSessionLifecycleOptions {
   setVoiceProcessing: StateSetter<boolean>
   setVoiceRecording: StateSetter<boolean>
   sys: (text: string) => void
+}
+
+/** The subscription a view hands back when it leaves *sid*. A session left mid-turn while it stays
+ * live (`/new`, the switcher) keeps working in the background and keeps this view's subscription:
+ * the owner asks its questions (clarify, sudo, secret, vault) only while a viewer is attached and
+ * settles them as unanswered otherwise, so they must stay routed here until the user answers. */
+function releasedOnLeave(sid: null | string, held: Map<string, string>, staysLive: boolean): string | undefined {
+  if (!sid) {
+    return undefined
+  }
+
+  if (staysLive && getUiState().busy) {
+    noteBackgroundHandoff(sid)
+
+    return undefined
+  }
+
+  return held.get(sid)
 }
 
 export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
@@ -405,17 +425,20 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     async (msg?: string, title?: string, keepCurrent = false) => {
       const flight = ++attachmentFlight.current
       const previousSid = getUiState().sid
-      const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
+      const previousSubscription = releasedOnLeave(previousSid, canonicalSubscriptions.current, keepCurrent)
       pendingAttachments.current.add(flight)
 
       try {
-        const setup = gw.isCanonical ? null : await rpc<SetupStatusResponse>('setup.status', {})
+        const setup = await rpc<SetupStatusResponse>('setup.status', {})
+
+        const ready =
+          setup?.provider_configured !== false || (gw.isCanonical && (await launchRouteServes(rpc)))
 
         if (flight !== attachmentFlight.current) {
           return null
         }
 
-        if (setup?.provider_configured === false) {
+        if (!ready) {
           panel(setupRequiredTitle(), buildSetupRequiredSections())
           patchUiState({ status: t('session.status.setupRequired') })
 
@@ -551,7 +574,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const flight = ++attachmentFlight.current
       pendingAttachments.current.add(flight)
       const previousSid = getUiState().sid
-      const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
+      const previousSubscription = releasedOnLeave(previousSid, canonicalSubscriptions.current, previousSid !== id)
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.switchingSession') })
       // The card belongs to the session being left; the activated one answers with its own.
@@ -660,6 +683,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.resuming') })
 
+      // The legacy transport builds the resumed agent from the profile's config. On the shared gateway
+      // the stored session's frozen policy carries its own route, so only a failed resume asks.
       return (gw.isCanonical ? Promise.resolve(null) : rpc<SetupStatusResponse>('setup.status', {}))
         .then(setup => {
           if (flight !== attachmentFlight.current) {
@@ -743,12 +768,25 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
               adoptAttachment(r, previousSid, previousSubscription, true)
             })
-            .catch((e: Error) => {
+            .catch(async (e: Error) => {
               if (flight !== attachmentFlight.current) {
                 return
               }
 
               sys(`error: ${e.message}`)
+
+              const setup = gw.isCanonical ? await rpc<SetupStatusResponse>('setup.status', {}) : null
+
+              if (flight !== attachmentFlight.current) {
+                return
+              }
+
+              if (setup?.provider_configured === false) {
+                panel(setupRequiredTitle(), buildSetupRequiredSections())
+
+                return patchUiState({ status: t('session.status.setupRequired') })
+              }
+
               patchUiState({ status: 'ready' })
             })
             .finally(() => gw.settleAttach?.(hold))

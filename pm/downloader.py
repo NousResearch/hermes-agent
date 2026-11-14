@@ -5,6 +5,11 @@ packages (pinned sha256 from lock.json) and local models (deliberately
 unverified — catalog sizes may lag an upstream re-upload, so sha256 is
 optional per source).
 
+Transport is https, plus plain http on loopback (test servers) and on the
+user's own npm registry when it is http (``Source.http_mirror``, #150032).
+Bytes from that registry are pinned by sha256 and bounded in size before the
+hash check; anything it refuses or cannot serve falls back to the next source.
+
 Partial state is the downloader's own. Files land in a managed
 partials area keyed by sha256(url). One process owns each key while it
 transfers or publishes. Complete bytes are copied to destination-local
@@ -33,6 +38,7 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import suppress
 from dataclasses import dataclass
@@ -46,22 +52,53 @@ from pm.network import edge_block, is_transient, retry_network
 # their docs require a real User-Agent. A browser-shaped one is the
 # least-privileged string every asset CDN accepts.
 _UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Accept-Encoding": "identity"}
-_LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
+_CHECKPOINT_SECONDS = 5.0
+# The largest npm-hosted artifact in pm/lock.json is ~25 MB (a pnpm executable).
+# Lock rows pin no size, so this ceiling is what keeps a plain-http mirror (or
+# whoever sits on its path) from filling the disk before the hash check runs.
+_HTTP_MIRROR_MAX_BYTES = 256 << 20
+_PINNED = re.compile(r"[a-f0-9]{64}")
+
+
+def _pinned(sha256: str) -> bool:
+    return _PINNED.fullmatch(sha256) is not None
+
+
+def _host(url: str) -> str | None:
+    return urllib.parse.urlsplit(url).hostname
+
+
+def _loopback(url: str) -> bool:
+    """Plain http to a local test server. Parsed, not prefix-matched:
+    ``http://127.0.0.1:@evil.com/`` names evil.com as its host."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:  # malformed bracketed host
+        return False
+    return parts.scheme == "http" and "@" not in parts.netloc and host in _LOOPBACK_HOSTS
 
 
 class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """The https-only gate must hold across redirects, not just the first
-    hop — an https URL could otherwise bounce to http mid-download and
-    carry the payload in the clear."""
+    """Redirects keep the transport rule: an https hop never lands on http.
+
+    Only a request already on plain http (loopback, or the user's http npm
+    registry) may be redirected to http, and only to the same host: registries
+    such as Nexus or Artifactory 30x tarballs for path normalisation or to a blob
+    port. Another http host is refused, so an injected 302 cannot aim a request
+    at arbitrary LAN or loopback services; the pinned hash still decides the bytes.
+    """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        # Plain-http loopback exists for test servers, and only a download that
-        # started on loopback may stay there: an https origin bouncing to a local
-        # listener would hand an unpinned model file to whatever is bound there.
-        loopback = req.full_url.startswith(_LOOPBACK) and newurl.startswith(_LOOPBACK)
-        if not (newurl.startswith("https://") or loopback):
-            raise DownloadError(f"refusing redirect to non-https url: {newurl}")
+        # An https origin bouncing to a local listener would hand an unpinned
+        # model file to whatever is bound there.
+        loopback = _loopback(req.full_url) and _loopback(newurl)
+        same_host_http = (req.full_url.startswith("http://") and newurl.startswith("http://")
+                          and _host(req.full_url) == _host(newurl))
+        if not (newurl.startswith("https://") or loopback or same_host_http):
+            raise MirrorRefused(req.full_url, f"refusing redirect to non-https url: {newurl}")
         # urllib preserves our User-Agent and range headers. Do not re-add
         # arbitrary headers after its redirect policy has processed them.
         return super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -134,12 +171,24 @@ class DownloadTransportError(DownloadError):
         # A host that does not resolve is not worth a retry, but the pinned
         # mirror is a different host and the hash still guards the bytes.
         unresolved = isinstance(getattr(cause, "reason", cause), socket.gaierror)
+        # Any 5xx is the upstream host failing, not its bytes changing: a CDN's
+        # origin-down codes (520-527) are what a dead third-party host returns.
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
+            self.status in (401, 403, 404, 410) or (self.status or 0) >= 500
+            or unresolved or is_transient(cause)
         )
         refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
         reason = f"{cause}; {refused}" if refused else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
+
+
+class MirrorRefused(DownloadTransportError):
+    """A source the transport policy will not use (a refused redirect, an oversized
+    plain-http body); the pinned fallback is tried, as for an unreachable host."""
+
+    def __init__(self, url: str, reason: str):
+        self.url, self.status, self.fallback_allowed = url, None, True
+        DownloadError.__init__(self, f"download failed from {url}: {reason}")
 
 
 @dataclass(frozen=True)
@@ -148,6 +197,15 @@ class Source:
     dest: Path
     sha256: str = ""  # "" = no integrity check (model catalog policy)
     fallbacks: tuple[str, ...] = ()
+    # The user's plain-http npm registry (pinned_source sets it). Only ``url``
+    # under this prefix may use http; fallbacks and other pins stay https.
+    http_mirror: str = ""
+
+    def plain_http(self) -> bool:
+        return bool(self.http_mirror) and self.url.startswith(self.http_mirror) and _pinned(self.sha256)
+
+    def byte_limit(self) -> int | None:
+        return _HTTP_MIRROR_MAX_BYTES if self.plain_http() else None
 
 
 _Ranges = list[tuple[int, int]]
@@ -265,7 +323,7 @@ class Download:
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
     ):
-        self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks)) for s in sources]
+        self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks), s.http_mirror) for s in sources]
         self.resume = resume
         self.connections = max(1, int(connections))
         if partials_dir:
@@ -276,6 +334,7 @@ class Download:
             self.partials_dir = paths.partials_root()
         self._owns_pause_event = pause_event is None
         self._paused = pause_event if pause_event is not None else threading.Event()
+        self._durable_done = 0
 
     def pause(self) -> None:
         """Request a stop between chunks; run() raises DownloadPaused."""
@@ -288,10 +347,13 @@ class Download:
         self._check_pause()
         self.partials_dir.mkdir(parents=True, exist_ok=True)
         for source in self.sources:
-            if source.fallbacks and not re.fullmatch(r"[a-f0-9]{64}", source.sha256):
+            if source.fallbacks and not _pinned(source.sha256):
                 raise ValueError("mirror fallback requires a full lowercase SHA256")
+            # A pinned SHA256 is verified before anything is published, so the user's
+            # http npm registry (Verdaccio, Nexus) cannot change what installs (#150032).
             for url in (source.url, *source.fallbacks):
-                if not (url.startswith("https://") or url.startswith(_LOOPBACK)):
+                plain = url == source.url and source.plain_http()
+                if not (url.startswith("https://") or _loopback(url) or plain):
                     raise ValueError(f"refusing non-https url: {url}")
 
         # Probe the whole plan before reporting a denominator. A missing
@@ -311,7 +373,7 @@ class Download:
                 remote = _Remote(source.dest.stat().st_size, False)
                 covered = [(0, remote.total)]
             else:
-                source, remote = self._try_sources(source, lambda candidate: self._probe(candidate.url), failures[key])
+                source, remote = self._try_sources(source, lambda candidate: self._probe(candidate.url, candidate.byte_limit()), failures[key])
                 covered = []
                 with partial_lock(self.partials_dir, self._key(source.url), wait=False) as acquired:
                     if acquired and remote.ranged:
@@ -349,7 +411,7 @@ class Download:
         urls = tuple(dict.fromkeys((source.url, *source.fallbacks)))
         for index, url in enumerate(urls):
             self._check_pause()
-            candidate = Source(url, source.dest, source.sha256, urls[index + 1:])
+            candidate = Source(url, source.dest, source.sha256, urls[index + 1:], source.http_mirror)
             try:
                 return candidate, operation(candidate)
             except DownloadTransportError as exc:
@@ -370,21 +432,26 @@ class Download:
             if _existing_dest_ok(source):
                 return source.dest.stat().st_size
             # Recheck identity after waiting for another process's partial.
-            remote = self._probe(source.url)
-            tick(self._partial_ranges(source, remote) if remote.ranged else [], remote.total)
+            remote = self._probe(source.url, source.byte_limit())
+            covered = self._partial_ranges(source, remote) if remote.ranged else []
+            self._durable_done = sum(end - start for start, end in covered)
+            tick(covered, remote.total)
+            resumable = bool(remote.total and remote.ranged and (source.sha256 or remote.etag))
 
             def report(written: _Ranges) -> None:
                 tick(written, remote.total)
 
             def fetch() -> int:
                 self._check_pause()
-                if remote.total and remote.ranged and (source.sha256 or remote.etag):
+                if resumable:
                     return self._fetch_ranged(source, remote, report)
                 return self._fetch_single(source, remote, report)
 
             configured_connections = self.connections
             try:
-                size = retry_network(fetch, wait=self._wait_retry)
+                size = retry_network(fetch, wait=self._wait_retry,
+                                     progress=(lambda: self._durable_done) if self.resume and resumable else None,
+                                     fallback_available=bool(source.fallbacks))
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
                     raise DownloadTransportError(source.url, exc) from exc
@@ -406,7 +473,7 @@ class Download:
         if self._paused.wait(delay):
             raise DownloadPaused("download paused during retry backoff")
 
-    def _probe(self, url: str) -> _Remote:
+    def _probe(self, url: str, limit: int | None = None) -> _Remote:
         def request():
             self._check_pause()
             req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
@@ -424,13 +491,16 @@ class Download:
                     raise DownloadError(f"unexpected download probe status: {response.status}")
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
-            return retry_network(request, wait=self._wait_retry)
+            remote = retry_network(request, wait=self._wait_retry)
         except (OSError, http.client.HTTPException) as exc:
             raise DownloadTransportError(url, exc) from exc
         except DownloadError:
             raise
         except ValueError:
             return _Remote(0, False)
+        if limit is not None and remote.total > limit:
+            raise MirrorRefused(url, f"declares {remote.total} bytes, over the {limit}-byte plain-http limit")
+        return remote
 
     def _key(self, url: str) -> str:
         return hashlib.sha256(url.encode("utf-8")).hexdigest()
@@ -462,14 +532,14 @@ class Download:
 
     @staticmethod
     def _write_sidecar(side: Path, part: Path, covered: _Ranges, remote: _Remote, sha256: str) -> None:
-        from pm.filesystem import durable_write_bytes
+        from pm.filesystem import durable_write_bytes, retry_held
 
-        # All writers have closed before coverage is persisted. A sidecar can
-        # describe durable bytes, never data still buffered in a worker.
+        # Workers flush before announcing coverage. Snapshot those ranges,
+        # fsync the data, then atomically publish only that durable snapshot.
         with part.open("r+b") as stream:
             os.fsync(stream.fileno())
         record = {"total": remote.total, "etag": remote.etag, "sha256": sha256, "ranges": covered}
-        durable_write_bytes(side, json.dumps(record).encode("utf-8"))
+        retry_held(lambda: durable_write_bytes(side, json.dumps(record).encode("utf-8")))
 
     def _fetch_ranged(self, source: Source, remote: _Remote, tick) -> int:
         key = self._key(source.url)
@@ -488,6 +558,7 @@ class Download:
                 side.unlink(missing_ok=True)
                 raise protocol_error
             self._write_sidecar(side, part, covered, remote, source.sha256)
+            self._durable_done = sum(end - start for start, end in covered)
             if self._paused.is_set():
                 raise DownloadPaused(source.url)
             if errors:
@@ -501,10 +572,39 @@ class Download:
                     self.connections = 1
                     continue
                 raise next((error for error in errors if not is_transient(error)), errors[0])
-            written = sum(end - start for start, end in covered)
+            written = self._durable_done
             if written != remote.total:
                 raise http.client.IncompleteRead(b"", remote.total - written)
             return written
+
+    def _read_range(self, source: Source, remote: _Remote, part: Path,
+                    start: int, end: int, stop: threading.Event, record) -> None:
+        if self._paused.is_set() or stop.is_set():
+            return
+        headers = {**_UA, "Range": f"bytes={start}-{end - 1}"}
+        if remote.etag:
+            headers["If-Range"] = remote.etag
+        request = urllib.request.Request(source.url, headers=headers)
+        with _OPENER.open(request, timeout=120) as response, part.open("r+b") as stream:
+            _validate_range(response, start, end, remote.total)
+            if remote.etag and _strong_etag(response) != remote.etag:
+                raise _RangeError("remote representation changed during download")
+            stream.seek(start)
+            position = start
+            while position < end:
+                if self._paused.is_set() or stop.is_set():
+                    return
+                chunk = response.read(min(_CHUNK, end - position))
+                if not chunk:
+                    raise http.client.IncompleteRead(b"", end - position)
+                stream.write(chunk)
+                stream.flush()
+                position += len(chunk)
+                # A complete checkpoint must not bypass the body-bounds check
+                # if the process dies between the last write and EOF validation.
+                if position == end and response.read(1):
+                    raise _RangeError("range body exceeds its declared bounds")
+                record(start, position)
 
     def _ranged_attempt(self, source: Source, remote: _Remote, part: Path,
                         covered: _Ranges, connections: int, tick) -> tuple[_Ranges, list[Exception]]:
@@ -522,35 +622,18 @@ class Download:
         pending = len(ranges)
         covered = list(covered)
         reported = list(covered)
+        checkpointed = list(covered)
+        next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
+
+        def record(start: int, position: int) -> None:
+            with lock:
+                covered[:] = _coalesce(covered + [(start, position)])
+                updated.set()
 
         def worker(start: int, end: int) -> None:
             nonlocal pending
             try:
-                if self._paused.is_set() or stop.is_set():
-                    return
-                headers = {**_UA, "Range": f"bytes={start}-{end - 1}"}
-                if remote.etag:
-                    headers["If-Range"] = remote.etag
-                request = urllib.request.Request(source.url, headers=headers)
-                with _OPENER.open(request, timeout=120) as response, part.open("r+b") as stream:
-                    _validate_range(response, start, end, remote.total)
-                    if remote.etag and _strong_etag(response) != remote.etag:
-                        raise _RangeError("remote representation changed during download")
-                    stream.seek(start)
-                    position = start
-                    while position < end:
-                        if self._paused.is_set() or stop.is_set():
-                            return
-                        chunk = response.read(min(_CHUNK, end - position))
-                        if not chunk:
-                            raise http.client.IncompleteRead(b"", end - position)
-                        stream.write(chunk)
-                        position += len(chunk)
-                        with lock:
-                            covered[:] = _coalesce(covered + [(start, position)])
-                            updated.set()
-                    if response.read(1):
-                        raise _RangeError("range body exceeds its declared bounds")
+                self._read_range(source, remote, part, start, end, stop, record)
             except Exception as exc:
                 if isinstance(exc, urllib.error.HTTPError):
                     exc.close()
@@ -567,11 +650,27 @@ class Download:
             observer_failed = False
             finished = not ranges
             while not finished:
-                updated.wait()
+                updated.wait(max(0.0, next_checkpoint - time.monotonic()))
                 with lock:
                     snapshot = list(covered)
                     finished = pending == 0
                     updated.clear()
+                now = time.monotonic()
+                if now >= next_checkpoint:
+                    if snapshot != checkpointed:
+                        try:
+                            self._write_sidecar(part.with_suffix(".ranges"), part, snapshot, remote, source.sha256)
+                        except OSError as exc:
+                            logging.getLogger(__name__).warning(
+                                "could not save download progress for %s; continuing: %s", source.dest.name, exc,
+                            )
+                        except BaseException:
+                            stop.set()
+                            raise
+                        else:
+                            self._durable_done = sum(end - start for start, end in snapshot)
+                            checkpointed = snapshot
+                    next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
                 # Only the coordinator observes progress. Slow UI/worker IPC
                 # coalesces intermediate snapshots, never holds up range writes.
                 if not observer_failed and snapshot != reported:
@@ -607,13 +706,18 @@ class Download:
                 if response.headers.get("Content-Encoding", "identity").lower() != "identity":
                     raise DownloadError("encoded response cannot be used as an identity download")
                 declared = int(response.headers.get("Content-Length") or 0)
+                limit = source.byte_limit()
+                if limit is not None and declared > limit:
+                    raise MirrorRefused(source.url, f"declares {declared} bytes, over the {limit}-byte plain-http limit")
                 position = 0
                 while True:
                     if self._paused.is_set():
                         raise DownloadPaused(source.url)
-                    chunk = response.read(_CHUNK)
+                    chunk = response.read(_CHUNK if limit is None else min(_CHUNK, limit - position + 1))
                     if not chunk:
                         break
+                    if limit is not None and position + len(chunk) > limit:
+                        raise MirrorRefused(source.url, f"sent more than the {limit}-byte plain-http limit")
                     stream.write(chunk)
                     position += len(chunk)
                     covered = [(0, position)]
@@ -624,6 +728,10 @@ class Download:
                     raise http.client.IncompleteRead(b"", (declared or remote.total) - position)
                 if (declared and position != declared) or (remote.total and position != remote.total):
                     raise DownloadError(f"download incomplete ({position} bytes, expected {declared or remote.total})")
+        except MirrorRefused:
+            part.unlink(missing_ok=True)
+            side.unlink(missing_ok=True)
+            raise
         except BaseException:
             if part.exists():
                 self._write_sidecar(side, part, covered, remote, source.sha256)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import time
 
 _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "session_output_tokens"),
              ("cache_read_tokens", "session_cache_read_tokens"),
@@ -57,6 +58,23 @@ def _rate_limit(agent):
     return None
 
 
+def plan_gauge(agent) -> dict | None:
+    """Window plans only: the allowance the status bar shows at a glance (today's, else the one that binds),
+    from the reply headers the agent already tracks — no extra round trip, None for everyone else."""
+    with contextlib.suppress(Exception):
+        state = getattr(agent, "_credits_state", None)
+        if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
+            binding = state.binding_gauge
+            day = next((g for g in state.gauges if g.id == "day" and g.scope == "all"), None)
+            # A full allowance is what blocks, so it wins over today's; a passed reset is no longer current.
+            gauge = binding if binding is not None and binding.full else (day or binding)
+            reset = getattr(gauge, "resets_at_ms", None)
+            if gauge is not None and not (isinstance(reset, int) and 0 < reset <= int(time.time() * 1000)):
+                return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp),
+                        "resets_at_ms": gauge.resets_at_ms}
+    return None
+
+
 def usage_stats(agent) -> dict:
     """The frozen ``session.usage`` / ``session.stats`` dict; zeros before the first turn built an agent."""
     stats: dict = {key: int(getattr(agent, attr, 0) or 0) for key, attr in _COUNTERS}
@@ -80,6 +98,8 @@ def usage_stats(agent) -> dict:
                  model=str(getattr(agent, "model", "") or ""), provider=str(getattr(agent, "provider", "") or ""),
                  fallback_model=(str(getattr(agent, "model", "") or "") or None)
                  if getattr(agent, "_fallback_activated", False) is True else None)
+    if (gauge := plan_gauge(agent)) is not None:  # absent off a window plan, as on the embedded path
+        stats["plan_gauge"] = gauge
     return stats
 
 
@@ -134,6 +154,8 @@ def tui_usage(stats: dict) -> dict:
             usage[key] = round(float(stats[source_key]), 1)
     if isinstance(stats.get("active_subagents"), int):
         usage["active_subagents"] = stats["active_subagents"]
+    if isinstance(stats.get("plan_gauge"), dict):
+        usage["plan_gauge"] = stats["plan_gauge"]
     return usage
 
 
@@ -178,6 +200,31 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
             captured = execution_result.get()
             if captured is not None:
                 captured["session_usage"] = stats
+
+
+_STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def _stored_stats(row: dict) -> dict:
+    """A session row's cumulative counters in ``usage_stats``' shape. The row's ``input_tokens`` excludes cache
+    reads and writes, so the prompt total adds them back for the cache hit rate."""
+    counts = {key: int(row.get(key) or 0) for key in _STORED_COUNTERS}
+    return {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+            "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+            "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+
+
+def snapshot_usage(authority, ref, agent) -> dict | None:
+    """The status-bar ``usage`` a resume / ``session.info`` snapshot carries, so a viewer switching to the
+    session paints its own cache hit and ``t/s`` instead of the last-viewed session's. An agent that has
+    called the model answers as its ``session.usage`` frames do; otherwise (no agent since a restart, or one
+    not used yet) the stored row answers, with no ``t/s`` since latency is not stored."""
+    if agent is not None and getattr(agent, "session_api_calls", 0):
+        result = usage_stats(agent)
+        result["compression_count"] = carried_compression_count(authority.sessions.get(ref.session_id), agent)
+        return tui_usage(result)
+    row = authority.db.get_session(ref.session_id)
+    return tui_usage(_stored_stats(row)) if row else None
 
 
 async def stats(connection, ref, params):

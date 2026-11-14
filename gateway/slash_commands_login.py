@@ -29,10 +29,11 @@ class _SignInAttempt:
     key: tuple
     source: Any
     cancelled: bool = False
+    saving: bool = False   # past the final cancel check: the save is committed, a replacement waits
 
 
-# These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a consent
-# link and sign-in code there would publish them rather than deliver them to one person.
+# These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a sign-in
+# link and code there would publish them rather than deliver them to one person.
 _LOGIN_BLOCKED_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
 
 
@@ -102,7 +103,7 @@ class GatewayLoginCommandsMixin:
         # replacement command would wait behind the very attempt it needs to stop.
         with lock:
             live = attempts.get(_LOGIN_SINGLE)
-            if live is not None and live.key != key:
+            if live is not None and (live.key != key or live.saving):
                 return anon_auth.LOGIN_BUSY_ELSEWHERE
             if live is not None:
                 live.cancelled = True
@@ -113,7 +114,7 @@ class GatewayLoginCommandsMixin:
 
         with lock:
             live = attempts.get(_LOGIN_SINGLE)
-            if live is not None and live.key != key:
+            if live is not None and (live.key != key or live.saving):
                 return anon_auth.LOGIN_BUSY_ELSEWHERE
             if live is not None:
                 live.cancelled = True
@@ -131,11 +132,18 @@ class GatewayLoginCommandsMixin:
             with lock:
                 return attempt.cancelled
 
-        gen = anon_auth.run_sign_in(
-            timeout_seconds=15.0,
-            cancelled=_cancelled,
-            cancel_wins_after_promotion=False,
-        )
+        @contextlib.contextmanager
+        def _persist_guard():
+            # The final cancel check claims the save under the registry lock, so a replacing /login
+            # either cancels first or is told a sign-in is finishing. The save itself runs outside
+            # the lock: the event loop takes that lock, and a save can wait on the auth store.
+            with lock:
+                if not attempt.cancelled:
+                    attempt.saving = True
+                may_persist = attempt.saving
+            yield may_persist
+
+        gen = anon_auth.run_sign_in(timeout_seconds=15.0, cancelled=_cancelled, persist_guard=_persist_guard)
         pushed_terminal = False
         try:
             while True:

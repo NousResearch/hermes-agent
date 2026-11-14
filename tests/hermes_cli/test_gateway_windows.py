@@ -492,6 +492,23 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
 
 
+def test_reconcile_rewrites_an_older_startup_entry_as_utf16(monkeypatch, tmp_path):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page: an older UTF-8 Startup entry chaining a
+    non-ASCII path quits silently at logon (FileExists on the garbled target is false). The update
+    reconcile rewrites it as UTF-16 with a BOM."""
+    import codecs
+    startup, script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "Usuário 方舟")
+    (startup / "Hermes_Gateway_alice.cmd").unlink()
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+
+    assert gateway_windows.reconcile_autostart_launchers() == ([], [])
+    raw = (startup / "Hermes_Gateway_alice.vbs").read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE)
+    assert raw.decode("utf-16") == gateway_windows._build_startup_launcher(script)
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.vbs"]
+
+
 def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
     """#80569: no task, legacy .cmd locked. The .vbs gets written but the .cmd survives, so both fire
     at logon; reconcile must warn instead of reporting a migration, and doctor --fix must not count it."""

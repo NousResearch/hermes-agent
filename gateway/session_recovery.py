@@ -300,6 +300,8 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            from gateway.session_bot import release_superseded_bot_chat
+            release_superseded_bot_chat(db, self, session_key, session_id)
             # Stop the departed conversation's schedule in its owning profile, even when
             # the in-memory watch still holds a pre-reset session id.
             heartbeat_key = f"heartbeat:{session_id}"
@@ -317,6 +319,19 @@ class SessionRecoveryMixin:
                 logger.debug("%s: %s", log_prefix, exc)
             else:
                 logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+
+    def _adopt_delegate_row(self, session_key: str, session_id: str) -> bool:
+        """An explicit repoint (``/resume <child> --all``, handoff) makes a delegate subagent's row the
+        chat's conversation: mark it adopted so the route guard (``is_delegate_child_row``, #138210) does
+        not read the session the user chose as a stale capture and move the chat off it. ``_delegate_from``
+        is kept: compression lineage and the still-running worker's publish check both read it."""
+        from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
+        db = self._db_for_key(session_key)
+        row = db.get_session(session_id)
+        if not (row and is_delegate_child_row(row)):
+            return False
+        db.patch_session_model_config(session_id, {CHAT_ADOPTED_MARKER: True})
+        return True
 
     def _record_gateway_session_peer(
         self, session_id: str, session_key: str, source: Optional[SessionSource],
@@ -409,6 +424,19 @@ class SessionRecoveryMixin:
                     "self-healing peer refresh on the next turn",
                     create_kwargs.get("session_id"), session_key, during, e),
             )
+
+    def _announce_route(self, session_key: str, entry) -> None:
+        """*session_key* now names *entry*'s conversation: tell the owner (``route_named``), so a
+        live conversation still on that route leaves it before anything else can run there."""
+        listener = getattr(self, "route_named", None)
+        if listener is not None and entry is not None:
+            listener(session_key, entry.session_id, entry.origin)
+
+    def _row_settled(self, session_id: str) -> None:
+        """The route transition that published *session_id* returned (its state.db half done or
+        failed): from here a missing or ended row is real again (see ``_is_session_ended_in_db``)."""
+        with self._lock:
+            self._rows_pending.discard(session_id)
 
     @staticmethod
     def _session_create_kwargs(

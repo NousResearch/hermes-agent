@@ -19,6 +19,7 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     },
     { id: 'fallbacks', labelKey: 'modelFallbacks', fields: ['fallback_providers'] },
     { id: 'auxiliary', labelKey: 'modelAuxiliary', prefixes: ['auxiliary.'] },
+    { id: 'delegation', labelKey: 'advancedDelegation', prefixes: ['delegation.'] },
     { id: 'moa', labelKey: 'modelMoa', prefixes: ['moa.'] }
   ],
   chat: [
@@ -87,7 +88,6 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     },
     { id: 'tools', labelKey: 'advancedTools', fields: ['toolsets', 'agent.tool_use_enforcement'] },
     { id: 'terminal', labelKey: 'advancedTerminal', prefixes: ['terminal.'] },
-    { id: 'delegation', labelKey: 'advancedDelegation', prefixes: ['delegation.'] },
     { id: 'output', labelKey: 'advancedOutput', prefixes: ['tool_output.', 'checkpoints.'] }
   ]
 }

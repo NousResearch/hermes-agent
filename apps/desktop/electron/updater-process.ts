@@ -38,38 +38,82 @@ export function resolveInstallationLauncher(
   isWindows: boolean = process.platform === 'win32',
   hermesHome: string = process.env.HERMES_HOME ?? ''
 ): string | null {
-  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+  const staged: string | null = stagedInstallationLauncher(updateRoot, isWindows)
 
-  for (const name of names) {
-    const candidate: string = path.join(updateRoot, '.hermes', 'bin', name)
+  if (staged) {
+    return staged
+  }
 
-    if (stagedFileExists(candidate)) {
+  for (const candidate of historicalLauncherCandidates(updateRoot, isWindows, hermesHome)) {
+    if (launcherTargetsInstallation(candidate, updateRoot)) {
       return candidate
     }
   }
 
-  // Earlier PM installers published only to user-bin. Trust that historical
-  // launcher only after its existing version surface proves exact source identity.
-  if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
-    const extraDirs: string[] = isWindows ? [path.join(path.dirname(updateRoot), 'bin')] : []
+  return legacyInstallationLauncher(updateRoot, isWindows)
+}
 
-    for (const candidate of userBinLaunchers(isWindows, hermesHome, extraDirs)) {
-      if (launcherTargetsInstallation(candidate, updateRoot)) {
-        return candidate
-      }
+/**
+ * resolveInstallationLauncher for callers on Electron's main thread that run
+ * repeatedly (the About/version refresh): the historical user-bin rung proves
+ * identity with the launcher's own `--version`, which may take seconds, so it
+ * runs asynchronously here and never stalls the event loop.
+ */
+export async function resolveInstallationLauncherAsync(
+  updateRoot: string,
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): Promise<string | null> {
+  const staged: string | null = stagedInstallationLauncher(updateRoot, isWindows)
+
+  if (staged) {
+    return staged
+  }
+
+  const realRoot: string | null = realpathOrNull(updateRoot)
+
+  for (const candidate of realRoot ? historicalLauncherCandidates(updateRoot, isWindows, hermesHome) : []) {
+    if ((await launcherInstallDirectoryAsync(candidate, updateRoot)) === realRoot) {
+      return candidate
     }
   }
 
-  // An old shim is a migration rung, never a damaged PM install fallback.
-  if (!existsSync(path.join(updateRoot, 'pm'))) {
-    const legacy: string = path.join(updateRoot, 'venv', isWindows ? 'Scripts' : 'bin', names[0])
+  return legacyInstallationLauncher(updateRoot, isWindows)
+}
 
-    if (stagedFileExists(legacy)) {
-      return legacy
-    }
+function stagedInstallationLauncher(updateRoot: string, isWindows: boolean): string | null {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+
+  return names.map(name => path.join(updateRoot, '.hermes', 'bin', name)).find(stagedFileExists) ?? null
+}
+
+// Earlier PM installers published only to user-bin. Trust that historical
+// launcher only after its existing version surface proves exact source identity.
+function historicalLauncherCandidates(updateRoot: string, isWindows: boolean, hermesHome: string): string[] {
+  if (!stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
+    return []
   }
 
-  return null
+  return userBinLaunchers(isWindows, hermesHome, isWindows ? [path.join(path.dirname(updateRoot), 'bin')] : [])
+}
+
+// An old shim is a migration rung, never a damaged PM install fallback.
+function legacyInstallationLauncher(updateRoot: string, isWindows: boolean): string | null {
+  if (existsSync(path.join(updateRoot, 'pm'))) {
+    return null
+  }
+
+  const legacy: string = path.join(updateRoot, 'venv', isWindows ? 'Scripts' : 'bin', isWindows ? 'hermes.exe' : 'hermes')
+
+  return stagedFileExists(legacy) ? legacy : null
+}
+
+function realpathOrNull(target: string): string | null {
+  try {
+    return realpathSync(target)
+  } catch {
+    return null
+  }
 }
 
 // cmd.exe re-parses its command line, so a launcher path carrying any of
@@ -210,8 +254,8 @@ export function launcherInstallDirectory(launcher: string, root?: string): strin
 }
 
 /** launcherInstallDirectory without blocking the caller's event loop. */
-function launcherInstallDirectoryAsync(launcher: string): Promise<string | null> {
-  const probe: LauncherVersionProbe | null = launcherVersionProbe(launcher)
+function launcherInstallDirectoryAsync(launcher: string, root?: string): Promise<string | null> {
+  const probe: LauncherVersionProbe | null = launcherVersionProbe(launcher, root)
 
   if (!probe) {return Promise.resolve(null)}
 

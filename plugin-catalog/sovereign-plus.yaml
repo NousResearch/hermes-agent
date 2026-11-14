@@ -1,0 +1,18 @@
+name: sovereign-plus
+title: S+ CIS & Right to Work
+repo: https://github.com/Sovereignplus/splus-cis-mcp
+sha: 7811002351725c7e7775723469e57fb21c681d6a
+version: "1.0.0"
+description: "UK Construction Industry Scheme (CIS) and right to work answers for construction contractors who pay subcontractors, through Sovereign Plus's read-only MCP server (Streamable HTTP at https://mcp.sovereignplus.com/mcp, no sign-in, no keys in config): yearly CIS exposure from the contractor's own numbers, late CIS300 penalties, deduction rates, verification, gross payment status, the April 2026 fraud rules, right to work checks for subcontractors from 1 October 2026, and how to book a free CIS check. Every figure comes with its GOV.UK or legislation.gov.uk source and is an estimate, not tax advice; the tools never ask for names, share codes or passport numbers. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code; every tool call goes to mcp.sovereignplus.com, run by Sovereign Plus (S+), a UK CIS bureau, and tool results end by offering S+'s free CIS check (the user contacts S+ themselves; the tools book and send nothing). All four tools are annotated read-only; the package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Sovereign Plus
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Sovereignplus/splus-cis-mcp#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

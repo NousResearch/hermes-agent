@@ -383,6 +383,73 @@ def test_stale_lease_cannot_start_or_commit_task(db):
     assert driver.get_task(db, identity)["status"] == "indeterminate"
 
 
+def test_live_settlement_commits_after_plain_lease_expiry(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock, ttl=5)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+
+    clock.advance(5)  # plain expiry of our own unreleased, un-reclaimed lease
+    with pytest.raises(driver.StaleLeaseError):
+        driver.settle_task(
+            db,
+            attempt,
+            settlement_id="settlement-strict",
+            status="settled",
+            result={"text": "late"},
+            clock=clock,
+        )
+    settled = driver.settle_task(
+        db,
+        attempt,
+        settlement_id="settlement-live",
+        status="settled",
+        result={"text": "late"},
+        clock=clock,
+        allow_expired_lease=True,
+    )
+
+    assert settled["status"] == "settled"
+    assert driver.get_task(db, identity)["status"] == "settled"
+
+
+def test_live_settlement_after_expiry_still_fences_on_reclaim(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock, ttl=5)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+
+    clock.advance(5)
+    second = _lease(db, clock, process="process-b")
+    driver.recover_room(db, second, clock=clock)
+
+    with pytest.raises(driver.StaleLeaseError):
+        driver.settle_task(
+            db,
+            attempt,
+            settlement_id="settlement-live",
+            status="settled",
+            result={"text": "late"},
+            clock=clock,
+            allow_expired_lease=True,
+        )
+    assert driver.get_task(db, identity)["status"] == "indeterminate"
+
+
 @pytest.mark.parametrize("status", ["settled", "failed"])
 def test_terminal_settlement_is_idempotent(db, status):
     clock = FakeClock()
@@ -1220,3 +1287,27 @@ def test_renewal_never_shortens_an_active_lease(db):
     renewed = driver.renew_lease(db, lease, ttl_seconds=2, clock=clock)
 
     assert renewed.expires_at == lease.expires_at
+
+
+def test_room_task_summary_counts_and_rows_come_from_one_snapshot(db, monkeypatch):
+    """``groups.state`` counts the room's tasks and decodes only the shown ones in two reads; a task moving
+    between them (another process starting or recovering it) must be neither doubled nor lost."""
+    clock = FakeClock()
+    _admit(db, _identity(), clock)
+    real_execute = sqlite3.Connection.execute
+
+    class MovesBetweenReads(sqlite3.Connection):
+        def execute(self, sql, *args):
+            result = real_execute(self, sql, *args)
+            if "GROUP BY status" in sql:
+                with sqlite3.connect(db) as other:
+                    other.execute("UPDATE hosted_room_driver_tasks SET status='indeterminate'")
+            return result
+
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: real_connect(*a, **{**k, "factory": MovesBetweenReads}))
+    counts, tasks = driver.room_task_summary(db, room_id="room-1", statuses=("queued", "indeterminate"))
+    monkeypatch.undo()
+    assert counts == {"queued": 1}
+    assert [(task["identity"].task_id, task["status"]) for task in tasks] == [("task-1", "queued")]
+    assert driver.room_task_summary(db, room_id="room-1", statuses=("queued",)) == ({"indeterminate": 1}, [])

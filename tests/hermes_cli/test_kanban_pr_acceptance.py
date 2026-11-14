@@ -145,7 +145,8 @@ def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     assignee_home = launch_home / "profiles" / "b"
     assignee_home.mkdir(parents=True)
-    (assignee_home / ".env").write_text("GH_TOKEN=b-token\n", encoding="utf-8")
+    (assignee_home / ".env").write_text("GH_TOKEN=b-token\nBWS_ACCESS_TOKEN=b-vault\n"
+                                        "OP_SERVICE_ACCOUNT_TOKEN=b-op\n", encoding="utf-8")
     # Ambient residue that must NOT decide the login.
     monkeypatch.setenv("GH_TOKEN", "launch-token")
     monkeypatch.setenv("GH_CONFIG_DIR", "/nonexistent/launch/gh")
@@ -171,6 +172,8 @@ def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
         assert "acme/repo" in receipts[-1]["detail"]
     captured = json.loads(env_dump.read_text())
     assert captured["GH_TOKEN"] == "b-token"
+    # gh never needs the profile's vault bootstrap token, even though its .env holds one.
+    assert "BWS_ACCESS_TOKEN" not in captured and "OP_SERVICE_ACCOUNT_TOKEN" not in captured
     assert captured.get("GH_CONFIG_DIR") != "/nonexistent/launch/gh"
     assert "credentials" in (kb.get_task(conn, tid).last_failure_error or "")
 

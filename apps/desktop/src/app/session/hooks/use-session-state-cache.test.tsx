@@ -948,6 +948,34 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
 
+  it("publishes a queued prompt's started mark, its only change, to the view resume reads", () => {
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+
+    const queued = userMessage('user-queued-thread-A', 'next question')
+    const transcript = [userMessage('user-a', 'first'), assistantText('assistant-a', 'working'), queued]
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: transcript }), 'stored-A')
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-a', 'assistant-a', queued.id])
+    expect($messages.get().at(-1)?.queuedTurnStarted).toBeUndefined()
+
+    // message.start for the queued prompt's turn marks only that row.
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({
+        ...state,
+        messages: state.messages.map(message =>
+          message.id === queued.id ? { ...message, queuedTurnStarted: true } : message
+        )
+      }))
+    })
+
+    expect($messages.get().at(-1)?.queuedTurnStarted).toBe(true)
+  })
+
   it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {
     let cache!: Cache
     render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)

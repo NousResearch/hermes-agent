@@ -13,11 +13,12 @@ import os
 import shutil
 import threading
 import time
+from typing import Any, NamedTuple
 
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -92,19 +93,46 @@ def _skill_line(item: dict) -> str:
     return f"    - {nm}: {desc}" if desc else f"    - {nm}"
 
 
+class BannerPlan(NamedTuple):
+    """What the welcome banner draws, shared by startup (``show_banner``) and ``/clear`` so the two
+    cannot drift apart."""
+    store: Any  # the gateway session store, or None off the gateway
+    inventory: dict | None  # a gateway session's tools: its snapshot, never this process's registry
+    ctx_len: int | None
+    banner_kw: dict | None  # build_welcome_banner's common kwargs; None → the compact banner
+
+
+def banner_plan(cli, console) -> BannerPlan:
+    """The welcome banner's plan. The compact banner (``banner_kw`` None) is for a narrow terminal,
+    ``display.compact``, or a gateway session with no snapshot yet."""
+    from agent.context_pin import agent_context_marker
+    from hermes_cli.gateway_tools_notify import gateway_store
+    store = gateway_store(cli)
+    inventory = store.banner_inventory() if store is not None else None
+    agent = getattr(cli, "agent", None)
+    compressor = getattr(agent, "context_compressor", None)
+    ctx_len = compressor.context_length if compressor is not None else None
+    if cli.compact or shutil.get_terminal_size().columns < 80 or (store is not None and inventory is None):
+        return BannerPlan(store, inventory, ctx_len, None)
+    return BannerPlan(store, inventory, ctx_len, dict(
+        console=console, model=cli.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+        enabled_toolsets=cli.enabled_toolsets, session_id=cli.session_id, context_length=ctx_len,
+        provider=cli.provider, context_marker=agent_context_marker(agent) if agent is not None else ""))
+
+
 class CLIInfoMixin:
     """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
     insights, MCP/skills reload, bang shell."""
 
-    def _show_gateway_banner(self, build_welcome_banner, inventory, banner_kw, cwd, ctx_len):
+    def _show_gateway_banner(self, build_welcome_banner, inventory, banner_kw):
         """Main's banner from the gateway session's snapshot (the TUI banner's data): the CLI
         enumerates nothing. The canonical id shows as main's 8-character label (display only)."""
         from hermes_cli.gateway_session_store import session_label
-        self._defer_tool_warnings = True
         build_welcome_banner(
             tools=inventory["tools"], get_toolset_for_tool=inventory["get_toolset_for_tool"],
             availability=inventory["availability"], skills_by_category=inventory["skills_by_category"],
-            **{**banner_kw, "cwd": inventory["cwd"] or cwd, "context_length": inventory["context_length"] or ctx_len,
+            **{**banner_kw, "cwd": inventory["cwd"] or banner_kw["cwd"],
+               "context_length": inventory["context_length"] or banner_kw["context_length"],
                "session_id": session_label(self.session_id)})
 
     def _print_gateway_tool_warnings(self, lines):
@@ -120,17 +148,11 @@ class CLIInfoMixin:
         from cli import _build_compact_banner, get_tool_definitions, logger
         from hermes_cli.banner import build_welcome_banner
         self.console.clear()
-        ctx_len = None
-        gateway_inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
-        from hermes_cli.gateway_tools_notify import gateway_store
-        on_gateway = gateway_store(self) is not None  # its tools come from the gateway: never enumerated here
-        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-            ctx_len = self.agent.context_compressor.context_length
-        from agent.context_pin import is_context_pinned
-        ctx_pinned = is_context_pinned(ctx_len, getattr(getattr(self, "agent", None), "_config_context_length", None))
+        store, gateway_inventory, ctx_len, banner_kw = banner_plan(self, self.console)
+        on_gateway = store is not None  # its tools come from the gateway: never enumerated here
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
-        if self.compact or shutil.get_terminal_size().columns < 80 or (on_gateway and gateway_inventory is None):
+        if banner_kw is None:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
@@ -144,14 +166,9 @@ class CLIInfoMixin:
                 snapshot = load_banner_snapshot(self.enabled_toolsets)
             except Exception:
                 snapshot = None
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())  # where commands will execute
-            banner_kw = dict(
-                console=self.console, model=self.model, cwd=cwd,
-                enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
             if gateway_inventory is not None:
-                self._show_gateway_banner(build_welcome_banner, gateway_inventory, banner_kw, cwd, ctx_len)
+                self._show_gateway_banner(build_welcome_banner, gateway_inventory, banner_kw)
             elif snapshot is not None:
                 self._defer_tool_warnings = True
                 toolset_map = snapshot["toolset_map"]
@@ -205,7 +222,8 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.process_transport import is_local_server
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -220,7 +238,7 @@ class CLIInfoMixin:
                 fix = t("cli.banner.fix_ollama", tokens=str(MINIMUM_CONTEXT_LENGTH))
             elif _port == 1234:
                 fix = t("cli.banner.fix_lm_studio")
-            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+            elif is_local_server(base_url, getattr(self, "provider", None)):  # llama.cpp / vLLM / any local server — not Ollama
                 fix = t("cli.banner.fix_local_server",
                         tokens_k=str(MINIMUM_CONTEXT_LENGTH // 1000), tokens=str(MINIMUM_CONTEXT_LENGTH))
             else:
@@ -261,7 +279,9 @@ class CLIInfoMixin:
         except Exception:
             return False
         agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
+        def route(field):
+            return getattr(agent, field, None) or getattr(self, field, None)
+        return model_supports_fast_mode(route("model"), provider=route("provider"), base_url=route("base_url"))
 
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
@@ -758,8 +778,8 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        from agent.context_pin import context_pin_suffix
-        pin_suffix = context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))
+        from agent.context_pin import agent_context_suffix
+        pin_suffix = agent_context_suffix(agent)  # " (pinned)" / " (fallback)"
         print(f"  {t('cli.usage.label_current_context'):<17} {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%){pin_suffix}")
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
@@ -846,7 +866,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import hermes_yaml as _yaml
+        from hermes_cli.config_backend import config_version_or_none, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -855,19 +875,15 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not cfg_path.exists():
-            return
-        try:
-            sig = file_signature(cfg_path.stat())
-        except OSError:
+        sig = config_version_or_none(cfg_path)
+        if sig is None:
             return
         if sig == self._config_sig:
             return  # unchanged — fast path
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+            new_cfg = read_config_doc(cfg_path) or {}
         except Exception:
             return
 

@@ -48,7 +48,7 @@ _PROBE_REDACTION_RES: Optional[tuple[re.Pattern[str], ...]] = None
 
 
 def _credential_header_names() -> str:
-    from agent.redact import _SECRET_HEADER_NAMES
+    from agent.redact_headers import _SECRET_HEADER_NAMES
 
     return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
 
@@ -122,7 +122,7 @@ def redact_mcp_probe_text(text: object) -> str:
     """Fully redact MCP probe/display strings before they leave the process.
 
     Recognized credential header fields (Authorization / Proxy-Authorization
-    and ``agent.redact._SECRET_HEADER_NAMES``) have their complete associated
+    and ``agent.redact_headers._SECRET_HEADER_NAMES``) have their complete associated
     value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
     covered the same way. The generic secret redactor then runs with
     ``force=True`` as defense in depth.
@@ -615,6 +615,22 @@ def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[s
     return len(chosen_names)
 
 
+def _add_probe_timeout(server_config: dict) -> Optional[float]:
+    """Connect bound for the probe ``hermes mcp add`` runs; None keeps the server's connect_timeout.
+
+    An OAuth server's first connect IS the browser sign-in: the probe waits on the callback while the user
+    reads and approves the consent page. It gets the ``hermes mcp login`` window (login_connect_timeout:
+    oauth.timeout + exchange headroom), not the 30 s connect_timeout default, which closed the loopback
+    listener under people still on the consent page — the provider's redirect then hit
+    ERR_CONNECTION_REFUSED, the code was lost, and "Save config anyway?" defaulted to No (#49759).
+    """
+    if server_config.get("auth") != "oauth":
+        return None
+    from tools.mcp_oauth import login_connect_timeout
+
+    return login_connect_timeout(server_config)
+
+
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
@@ -684,7 +700,7 @@ def cmd_mcp_add(args):
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=_add_probe_timeout(server_config))
     except Exception as exc:
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
@@ -783,6 +799,10 @@ def cmd_mcp_list(args=None):
 
         enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        if not enabled and mcp_server_enabled({k: v for k, v in cfg.items() if k != "disabled"}):
+            escaped = str(name).replace(".", "\\.")
+            status += color(f" (legacy `disabled` key; `hermes config set mcp_servers.{escaped}.enabled true` "
+                            "clears it)", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
 
@@ -1124,7 +1144,6 @@ _MCP_USAGE = (
     "hermes mcp                                    Open the catalog picker (default)",
     "hermes mcp catalog                            List Nous-approved MCPs",
     "hermes mcp install <name>                     Install a catalog MCP",
-    "hermes mcp serve                              Run as MCP server",
     "hermes mcp add <name> --url <endpoint>        Add a custom MCP server",
     "hermes mcp add <name> --command <cmd>         Add a stdio server",
     "hermes mcp add <name> --preset <preset>       Add from a known preset",
@@ -1140,10 +1159,6 @@ _MCP_USAGE = (
 def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
-    if action == "serve":
-        from mcp_serve import run_mcp_server
-        run_mcp_server(verbose=getattr(args, "verbose", False))
-        return
     if action in ("picker", "catalog", "install"):
         # Catalog subcommands live in mcp_picker / mcp_catalog; import lazily to keep this module cheap.
         from hermes_cli import mcp_picker

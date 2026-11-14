@@ -169,9 +169,10 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     'use-prompt-actions /handoff',
     'handoff.request',
     { session_id: 's', platform: 'telegram' },
-    /handoff\.request is not available/
+    ['handoff.request']
   ],
-  ['use-prompt-actions handoff poll', 'handoff.state', { session_id: 's' }, /handoff\.state is not available/],
+  ['use-prompt-actions handoff poll', 'handoff.state', { session_id: 's' }, ['handoff.state']],
+  ['use-prompt-actions handoff fail', 'handoff.fail', { session_id: 's', error: 'boom' }, ['handoff.fail']],
   [
     'use-preview-routing restart',
     'preview.restart',
@@ -233,6 +234,7 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
+      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
       sent.push(frame)
       const fields = problems(frame.method, frame.params)
       const error = { code: 4001, message: 'invalid_params', data: { reason: 'invalid_params', fields } }

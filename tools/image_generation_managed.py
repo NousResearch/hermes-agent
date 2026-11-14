@@ -32,6 +32,7 @@ _PORTAL_DUPLICATE_OF = {
     "krea/krea-2-medium": "krea-2-medium",
     "krea/krea-2-medium-turbo": "krea-2-medium-turbo",
     "krea/krea-2-large": "krea-2-large",
+    "krea/krea-3": "krea-3",
 }
 _FAL_KREA_PREFIX = "fal-ai/krea/"
 

@@ -1,0 +1,27 @@
+name: canonry
+title: Canonry
+repo: https://github.com/Canonry/canonry
+sha: d70ff15cc8c2e5dd342cfd1f2d8785a7addb67e0
+subdir: plugins/canonry
+description: >-
+  Open-source, agent-first Answer Engine Optimization (AEO) platform. Measure
+  brand mentions and source citations across ChatGPT, Claude, Gemini, Perplexity, and
+  Meta; research competitors and SEO opportunities; audit AI readiness; analyze
+  AI crawler and referral traffic; create and publish content; manage ChatGPT
+  Ads; and get pages indexed. Connect Search Console, GA4, WordPress, and more,
+  then measure what changed across brands, locations, and markets. Includes
+  Canonry operator and Aero analyst skills with MCP tools. Requires a configured
+  Canonry runtime.
+maintainer: Canonry
+tier: community
+category: tools
+docs_url: https://canonry.ai
+version: "7.97.3"
+known_issues:
+  - Install and bootstrap the Canonry runtime first; canonry-mcp must be on PATH and its configured API must be running.
+  - MCP access follows the runtime's configured API key. Write-capable keys expose mutations and operations that can consume provider quotas.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

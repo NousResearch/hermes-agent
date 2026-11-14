@@ -12,15 +12,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from tests.waiting import wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 CHILD = """import json, os, sys, time, psutil
+from hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 def send(frame):
     out.write((json.dumps(frame) + '\\n').encode())
-send({'type': 'hello', 'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]})
+send({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]})
 for line in sys.stdin.buffer:
     frame = json.loads(line)
     if 'version' in frame:
@@ -51,7 +54,7 @@ def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch,
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     bootstrapped = tmp_path / 'bootstrapped'

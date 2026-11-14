@@ -1,0 +1,23 @@
+name: concord-for-hermes
+title: Concord for Hermes
+repo: https://github.com/Null007Void/concord-for-hermes
+sha: d0b0e4c1ca46d09952dc76f217b00efb4853ccc2
+subdir: plugin
+description: "Coordinates allowlisted GitHub existing-file writes with revision checks, verified receipts and exact-operation replay. Disclosure — writes file contents directly to the GitHub repositories you allowlist, via your own `gh` CLI and its authentication (GH_TOKEN/GITHUB_TOKEN are forwarded to `gh` only, never logged or stored); keeps a local coordination/receipt database under the Hermes plugin-data directory, which `hermes plugins remove` does not delete."
+maintainer: Null007Void
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+version: "0.1.0"
+docs_url: https://github.com/Null007Void/concord-for-hermes/blob/d0b0e4c1ca46d09952dc76f217b00efb4853ccc2/README.md
+readme: false
+known_issues:
+  - Requires the GitHub CLI and operator-configured authentication; credential delegation is disclosed for maintainer review.
+  - Protects only enrolled tool calls sharing a coordinator database; other tools and direct GitHub writes bypass it.
+  - Replaces existing text files only; does not create files or modify GitHub Actions workflows.
+capabilities:
+  provides_tools:
+    - concord_github_write
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

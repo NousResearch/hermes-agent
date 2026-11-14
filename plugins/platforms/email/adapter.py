@@ -28,7 +28,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes, cache_image_from_bytes,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, hash_for_log
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
@@ -449,6 +449,7 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    serial_receive_loop = True  # the IMAP poll loop awaits each message before dispatching the next
     # One email carries the whole body, so cron delivery hands over the full payload untruncated.
     splits_long_messages = True
 
@@ -813,7 +814,8 @@ class EmailAdapter(BasePlatformAdapter):
             auth_reason = msg_data.get("auth_reason", "no verdict")
             hint = _DROP_HINTS.get(auth_reason, "")
             if is_listed or (granted and hint):
-                logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s).%s", sender_addr, auth_reason, hint)
+                logger.warning("[Email] Dropping sender %s with unauthenticated From (%s).%s", hash_for_log(sender_addr), auth_reason, hint)
+                logger.debug("[Email] Unauthenticated From address: %s", sender_addr)
             else:
                 logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",
                              "authorized" if granted else "unknown", sender_addr, auth_reason)
@@ -839,7 +841,8 @@ class EmailAdapter(BasePlatformAdapter):
                                      message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
-        logger.info("[Email] New message from %s: %s", sender_addr, subject)
+        logger.info("[Email] New message from %s (%d chars, %d attachments)", hash_for_log(sender_addr), len(body), len(attachments))
+        logger.debug("[Email] Message from %s, subject: %s", sender_addr, subject)
         await self.handle_message(event)
 
     async def _run_send(self, fn, args: tuple, log_fmt: str, *log_args) -> SendResult:
@@ -891,7 +894,8 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email via SMTP. Runs in executor thread."""
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         self._smtp_send(msg)
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        logger.info("[Email] Sent reply %s to %s", msg_id, hash_for_log(to_addr))
+        logger.debug("[Email] Reply to %s, subject: %s", to_addr, subject)
         return msg_id
 
     def _send_with_files(self, to_addr: str, body: str, files: list[tuple[Path, str]], *, lenient: bool,
@@ -942,7 +946,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: list[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
         msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
-        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        logger.info("[Email] Sent multi-attachment email to %s (%d files)", hash_for_log(to_addr), len(file_paths))
         return msg_id
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,

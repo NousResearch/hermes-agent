@@ -54,7 +54,7 @@ def build_form(spec: dict, out_path: str) -> int:
         from reportlab.lib import colors
         from reportlab.pdfgen import canvas
     except ImportError:
-        print("Missing dependency: install with 'python3 -m pip install reportlab'", file=sys.stderr)
+        print("Missing dependency: 'reportlab' is not importable here; rerun with the documents interpreter $PY from the pdf skill's Prerequisites setup block", file=sys.stderr)
         return 2
 
     width, height = _page_size(spec)

@@ -80,7 +80,7 @@ export function ConnectorRowCard({
   return (
     <div
       className={cn(
-        'relative flex items-center gap-3 rounded-lg border p-3 transition-colors duration-100',
+        'relative flex items-center gap-3 rounded-lg border p-3 transition-colors duration-500 hover:transition-none',
         selected
           ? 'border-(--theme-primary) bg-(--ui-row-active-background)'
           : 'border-(--ui-stroke-quaternary) bg-(--ui-bg-elevated) hover:bg-(--chrome-action-hover)'
@@ -98,7 +98,7 @@ export function ConnectorRowCard({
       <div className="grid min-w-0 flex-1 gap-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <button
-            className="min-w-0 truncate text-[0.8125rem] font-semibold text-(--ui-text-primary) outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-[0.1875rem] focus-visible:after:ring-ring/50"
+            className="min-w-0 truncate text-[0.8125rem] font-semibold text-(--ui-text-primary) outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:outline-hidden focus-visible:after:ring-[0.1875rem] focus-visible:after:ring-ring/50"
             onClick={onOpen}
             type="button"
           >

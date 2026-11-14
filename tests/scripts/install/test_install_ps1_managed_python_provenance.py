@@ -14,7 +14,8 @@ INSTALLER = Path(__file__).resolve().parents[3] / "scripts" / "install.ps1"
 
 @pytest.mark.parametrize("stage,exit_code,skip_browser", [
     ("venv", 0, False), ("python-deps", 0, False), ("python-deps", 17, False),
-    # -SkipBrowser is PM's persisted opt-out, handed over as `--without`.
+    # -SkipBrowser is PM's persisted opt-out, handed over as `--without` under
+    # the legacy name every PM accepts (the stable one rejects `chromium`).
     ("python-deps", 0, True),
 ])
 def test_python_stage_delegates_to_pin_without_touching_existing_env(tmp_path, stage, exit_code, skip_browser):

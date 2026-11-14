@@ -29,7 +29,7 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
 
 
 def test_list_exposes_run_error_and_clears_it_after_success(tmp_path, capsys):
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from hermes_cli.cli_cron_lines import cron_list_lines
     from tools.cronjob_job_args import _format_job
 
     with jobs.use_cron_store(tmp_path):
@@ -40,7 +40,7 @@ def test_list_exposes_run_error_and_clears_it_after_success(tmp_path, capsys):
         assert displayed["last_error"].startswith("RuntimeError:") and "localhost" in displayed["last_error"]
         assert "password" not in displayed["last_error"] and "secret-token" not in displayed["last_error"]
         assert displayed["last_delivery_error"] is None and displayed["last_fire_error"] is None
-        CLICommandsMixin._cron_list(object(), "list", {"all": False})
+        print(*cron_list_lines(), sep="\n")
         console = capsys.readouterr().out
         assert f"error: {displayed['last_error']}" in console
         assert "password" not in console and "secret-token" not in console

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-JOB_GROUPS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64",
+JOB_GROUPS = ("darwin-arm64", "win32-arm64", "win32-x64",
               "win32-bundle", "linux-x64", "linux-arm64", "termux")
 ALL_JOBS = ",".join(JOB_GROUPS)
 
@@ -19,7 +19,6 @@ ALL_JOBS = ",".join(JOB_GROUPS)
 # result requires.
 GROUP_JOBS = {
     "darwin-arm64": ("build-darwin-arm64",),
-    "darwin-x64": ("build-darwin-x64",),
     "win32-arm64": ("build-win32-arm64",),
     "win32-x64": ("build-win32-x64",),
     "win32-bundle": ("assemble-win32-bundle",),
@@ -29,7 +28,6 @@ GROUP_JOBS = {
 # tests runs none of them.
 GROUP_SMOKES = {
     "darwin-arm64": ("smoke-darwin-arm64",),
-    "darwin-x64": ("smoke-darwin-x64",),
     "win32-arm64": ("smoke-win32-arm64",),
     "win32-x64": ("smoke-win32-x64",),
 }

@@ -844,3 +844,26 @@ def test_project_tree_discovery_counts_only_visible_sources(
     assert discovery_counts[root_ids["mixed"]] == 2
     with SessionDB(db_path=home / "state.db") as db:
         assert db.get_session("hidden-only")["git_repo_root"] == root_ids["automation-only"]
+
+def test_projects_tree_leaves_messaging_sessions_to_their_own_section(monkeypatch, tmp_path):
+    """Telegram/Slack rows have their own Messaging section; with no workspace cwd they
+    used to land in Home as well, listing the same conversation twice."""
+    from hermes_state import SessionDB
+
+    launch_home = _profile_dir(tmp_path, "launch")
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+    db = SessionDB(db_path=launch_home / "state.db")
+    try:
+        for session_id, source in (("local-chat", "desktop"), ("tg-chat", "telegram"), ("slack-chat", "slack")):
+            db.create_session(session_id, source)
+        db._conn.execute("UPDATE sessions SET message_count = 1")
+        db._conn.commit()
+    finally:
+        db.close()
+
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+
+    assert tree["scoped_session_ids"] == ["local-chat"]
+    home = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert [s["id"] for s in home["previewSessions"]] == ["local-chat"]

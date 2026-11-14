@@ -182,7 +182,7 @@ async def test_a_compacted_secondary_receipt_missing_its_origin_profile_restores
     from gateway.run import _profile_runtime_scope
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from hermes_state_local import POLICY_PREFIX
     from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
@@ -197,7 +197,7 @@ async def test_a_compacted_secondary_receipt_missing_its_origin_profile_restores
         await initialize_gateway_runtime(first)
         home = homes[1][1]
         authority = first.session_authorities.for_home(home)
-        actor = Principal('owner', authority.profile_id,
+        actor = SessionActor('owner', authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
         with _profile_runtime_scope(home, {}):
             ref = create_local_session(authority, actor, {'request_id': 'old-desktop', 'source': 'gui',
@@ -353,7 +353,7 @@ async def test_the_resume_hint_the_tui_prints_opens_the_session(tmp_path, monkey
     """The TUI's exit epilogue prints ``_short_resume_id`` (``local-`` + 16 hex); in-TUI ``/resume``
     sends that hint as ``session_id``."""
     from gateway.session_local import create_local_session
-    from hermes_cli.main_tui_launch import _short_resume_id
+    from hermes_cli.chat_launch import _short_resume_id
 
     authority, connection = await _owner(tmp_path, monkeypatch, 'first')
     try:

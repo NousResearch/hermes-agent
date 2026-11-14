@@ -40,3 +40,13 @@ def test_raw_headers_mask_all_values_without_consuming_shell_or_next_line():
                 assert shlex.split(output) == ["curl", flag, f"{name}: ***", "https://example.com/path"]
     for benign in ("the cookie: is a browser feature", 'Cookie.set("name", value)'):
         assert redact_sensitive_text(benign, force=True) == benign
+
+
+def test_egress_bearer_sweep_folds_scheme_case():
+    # #108807 sibling: the bearer sweep's regex is IGNORECASE, so its fast-path gate must be too.
+    from agent.redact import redact_for_egress
+
+    token = "Opaque" + "Credential" + "9" * 20
+    for scheme in ("Bearer", "BEARER", "bEaReR"):
+        out = redact_for_egress(f"token: {scheme} {token}")
+        assert token not in out, out

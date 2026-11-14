@@ -77,6 +77,38 @@ def test_explanation_quiet_for_empty_reason():
     assert AIAgent._format_turn_completion_explanation("guardrail_halt") == ""
 
 
+def test_rebuilt_restart_limit_never_blames_the_providers():
+    """The reason names the per-turn restart-budget cap, not a provider outage.
+
+    ``rebuilt_restart_limit_exceeded`` is stamped when ``restart_count`` trips the cap in
+    turn_iteration_prep, which can fire from a single misbehaving rung — the providers may
+    never have errored at all. The old copy ("every provider in the fallback chain kept
+    failing over") asserted an outage that never happened and sent every triage down the
+    wrong path (triage #668: 39/39 turns dead, response_len=0, no provider error logged for
+    the local rung).
+    """
+    out = AIAgent._format_turn_completion_explanation("rebuilt_restart_limit_exceeded")
+    assert out.strip() != ""
+    lower = out.lower()
+    assert "restart budget" in lower
+    assert "every provider" not in lower
+    assert "failing over" not in lower
+    # Still actionable: the user can resume, and the log names the rung that was active.
+    assert "continue" in lower
+    assert "log" in lower
+
+
+def test_rebuilt_and_redirect_restart_limits_are_distinct_copies():
+    """Both reasons end ``restart_limit_exceeded`` but have different causes: one is a new
+    correction cancelling every attempt, the other is the fallback walk re-issuing itself.
+    A shared sentence would re-create the misattribution this pair was split to fix."""
+    rebuilt = AIAgent._format_turn_completion_explanation("rebuilt_restart_limit_exceeded")
+    redirected = AIAgent._format_turn_completion_explanation("redirect_restart_limit_exceeded")
+    assert rebuilt != redirected
+    assert "correction" not in rebuilt.lower()
+    assert "correction" in redirected.lower()
+
+
 
 
 

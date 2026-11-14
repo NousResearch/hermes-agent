@@ -108,6 +108,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._tool_args = {}
         # Session -> AssistantMessageIdAllocator: the ``messageId`` of the assistant message being streamed.
         self._message_ids = {}
+        # OpenBot drops message updates outside a prompt; retain late review notices until the next one.
+        self._review_summaries = {}
+        self._review_notice_extension = False
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
         self._aliases = {}
         self._form_elicitation = False
@@ -140,6 +143,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
         from acp_adapter.auth import build_auth_methods
+        capabilities = kwargs.get("client_capabilities")
+        meta = getattr(capabilities, "field_meta", None) or {}
+        self._review_notice_extension = meta.get("com.nousresearch/backgroundReview") is True
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
@@ -657,6 +663,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
+        await self._flush_review_summaries(session_id, held_id)
         if self._has_unknown(session_id) and await self._refresh_unknown_for_prompt(session_id):
             return PromptResponse(stop_reason='cancelled')
         if self._has_unknown(session_id):
@@ -702,6 +709,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return PromptResponse(stop_reason='end_turn')
         self._inflight[(session_id, admission_id)] = None
         try:
+            await self._flush_review_summaries(session_id, held_id)
             await self._after_ack(session_id, admission_id, link, resumes)
             if session_id in self._pending_cancels:
                 self._pending_cancels.discard(session_id)
@@ -977,6 +985,21 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload, event)
             return
+        if kind == "review.summary":
+            text = _text(payload)
+            if text.strip():
+                if self._review_notice_extension and self._conn:
+                    try:
+                        await self._conn.ext_notification(
+                            "com.nousresearch/backgroundReview", {"sessionId": editor_id, "text": text})
+                        return
+                    except Exception:
+                        logger.warning("Could not send background review extension for session %s", sid, exc_info=True)
+                self._review_summaries.setdefault(sid, []).append(text)
+                if any(held == sid and turn not in self._terminals and turn not in self._settling
+                       for held, turn in self._inflight):
+                    await self._flush_review_summaries(sid, editor_id)
+            return
         if await self._gap_guard(kind, sid, aid):
             return
         if kind in {"approval.request", "clarify.request"}:
@@ -1025,6 +1048,23 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     self._changed.notify_all()
             finally:
                 self._settling.discard(aid)
+
+    async def _flush_review_summaries(self, sid, editor_id):
+        pending = self._review_summaries.get(sid, [])
+        while pending and self._conn:
+            text = pending.pop(0)
+            update = acp.update_agent_message_text(text)
+            # A notice must not take over the ongoing response's message identity.
+            update.message_id = str(uuid.uuid4())
+            try:
+                await self._conn.session_update(session_id=editor_id, update=update)
+            except asyncio.CancelledError:
+                pending.insert(0, text)
+                raise
+            except Exception:
+                pending.insert(0, text)
+                logger.warning("Could not deliver background review summary for session %s", sid, exc_info=True)
+                break
 
     async def _gap_guard(self, kind, sid, aid):
         """What a replay gap changes in the projection; True when the frame is consumed here."""

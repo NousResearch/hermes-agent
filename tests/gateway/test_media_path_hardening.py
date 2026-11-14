@@ -137,7 +137,8 @@ def test_escaped_control_letter_needs_a_boundary_after_it():
         assert media == []
         assert cleaned == text  # the unvalidated tag stays whole, no stray tail
     for suffix, rest in (("n done", " done"), ("n", ""), ("r" + BS + "n done", " done"),
-                         ("t, next", ", next")):  # positive controls
+                         ("t, next", ", next"), ("n**Summary**: ok", "**Summary**: ok"),
+                         ('n"quoted" text', '"quoted" text')):  # positive controls
         text = "MEDIA:C:" + BS + "out" + BS + "a.png" + BS + suffix
         assert [m.group("path") for m in MEDIA_TAG_CLEANUP_RE.finditer(text)] == [
             "C:" + BS + "out" + BS + "a.png"]

@@ -1190,11 +1190,10 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?:(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)|'''
-    # Escaped ``\n``/``\r``/``\t`` ends the path only before a real boundary (else ``\`` is a
-    # separator); the run is consumed so it leaves the caption with the tag.
-    r'''(?:\\[nrt])+(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$))'''
-    r'''[`"'*_]{0,3}\.?''',
+    r'''(?:(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?|'''
+    # Escaped ``\n``/``\r``/``\t`` ends the path only before a real boundary (else ``\`` is a separator);
+    # the run leaves with the tag, but quotes/emphasis after it open the next text, so they stay.
+    r'''(?:\\[nrt])+(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$))''',
     re.IGNORECASE)
 
 # Extension-less (Caddyfile) / unknown-ext (.py, .log) tags deliver only after

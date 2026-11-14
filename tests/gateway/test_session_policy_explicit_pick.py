@@ -42,6 +42,11 @@ def test_no_pick_still_gets_the_profile_extensions(tmp_path, extensions):
     assert {'fake_coding_plugin', 'srv', 'other'} <= toolsets, toolsets
 
 
+@pytest.mark.parametrize('pick', ['all', '*'])
+def test_an_all_pick_keeps_every_plugin_toolset_and_mcp_server(tmp_path, extensions, pick):
+    assert {'fake_coding_plugin', 'srv', 'other'} <= _toolsets(tmp_path, extensions, [pick])
+
+
 @pytest.fixture
 def builtin_named_plugin_keys(monkeypatch):
     # The issue's leaked set: plugin keys that are also built-in toolset names.

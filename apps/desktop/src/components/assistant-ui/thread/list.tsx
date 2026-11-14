@@ -614,6 +614,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Where to land after a prepend, in distance-from-bottom (survives the
   // height change). Shared by "Show earlier" and the budget backfill below.
   const restoreFromBottomRef = useRef<number | null>(null)
+  // A reading position belongs to a visible outer group, not to the total
+  // document height: skipped groups below it can materialize during a prepend.
+  const prependGroupRef = useRef<{ element: HTMLElement; offset: number } | null>(null)
+  const applyPrependRef = useRef<((observe?: boolean) => boolean) | null>(null)
   // scrollHeight when the anchor was recorded. The restore effect below also
   // runs on commits that do not grow the content (the transcript arriving
   // under the first-paint budget; a "Show earlier" whose page comes from the
@@ -667,6 +671,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     restoreFromBottomRef.current =
       liveScrollStateRef.current.kind === 'bottom' ? el.clientHeight : el.scrollHeight - el.scrollTop
     anchorHeightRef.current = el.scrollHeight
+    prependGroupRef.current = null
+
+    if (loadSettledRef.current && liveScrollStateRef.current.kind !== 'bottom') {
+      const viewport = el.getBoundingClientRect()
+
+      for (const element of el.querySelectorAll<HTMLElement>('[data-slot="aui_message-group"]')) {
+        // Never measure skipped descendants; the normal-flow outer box is the
+        // same layout boundary used by the native timeline position reader.
+        const box = element.getBoundingClientRect()
+
+        if (box.bottom > viewport.top && box.top < viewport.bottom) {
+          prependGroupRef.current = { element, offset: box.top - viewport.top }
+
+          break
+        }
+      }
+    }
   }, [scrollRef])
 
   // Weights (part count + visible character cost) fold into the BUDGET only.
@@ -1110,6 +1131,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (sessionSwitched) {
       settleKeyRef.current = sessionKey
       restoreFromBottomRef.current = null
+      prependGroupRef.current = null
     }
 
     let frame = 0
@@ -1184,6 +1206,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       const previous = lastRestoreMetrics
       lastRestoreMetrics = next
 
+      // Prepending while reading has a visual target. Reuse this existing
+      // input-cancelled resize owner, rather than reapplying a global offset
+      // when deferred content-visibility layout changes unrelated heights.
+      if (applyPrependRef.current?.()) {
+        return
+      }
+
       // ResizeObserver runs before paint; waiting for the next settle rAF
       // exposes a frame at the old offset when deferred markdown grows.
       // Once settled, only a transcript-row height change may re-pin — for a
@@ -1195,11 +1224,37 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
     })
 
+    applyPrependRef.current = (observe = false) => {
+      const group = prependGroupRef.current
+
+      if (!group || !el.contains(group.element)) {
+        prependGroupRef.current = null
+
+        return false
+      }
+
+      const delta = group.element.getBoundingClientRect().top - el.getBoundingClientRect().top - group.offset
+
+      if (Math.abs(delta) > 0.5) {
+        el.scrollTop += delta
+      }
+
+      ownScrollTop = el.scrollTop
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+
+      if (observe && contentRef.current) {
+        resizeObserver.observe(contentRef.current)
+      }
+
+      return true
+    }
+
     if (contentRef.current) {
       resizeObserver.observe(contentRef.current)
     }
 
     const cancelRestore = () => {
+      prependGroupRef.current = null
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
@@ -1216,7 +1271,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
     }
 
-    cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
+    cancelRestoreRef.current =
+      target.kind === 'offset'
+        ? cancelRestore
+        : () => {
+            prependGroupRef.current = null
+            resizeObserver.disconnect()
+          }
 
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
@@ -1239,6 +1300,21 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restore like wheel input does — otherwise the next ResizeObserver tick
     // would rewrite scrollTop over a genuine scroll.
     const onScroll = () => {
+      const group = prependGroupRef.current
+
+      // Native materialization can adjust scrollTop while preserving the same
+      // visual point. An unexplained move away from it is still user intent,
+      // just as before this prepend-specific restoration was added.
+      if (
+        group &&
+        el.contains(group.element) &&
+        Math.abs(group.element.getBoundingClientRect().top - el.getBoundingClientRect().top - group.offset) <= 0.5
+      ) {
+        ownScrollTop = el.scrollTop
+
+        return
+      }
+
       if (el.scrollTop === ownScrollTop || el.scrollTop === threadScrollTargetTop(target, el)) {
         return
       }
@@ -1276,6 +1352,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     return () => {
       cancelRestoreRef.current = null
       applyRestoreRef.current = null
+      applyPrependRef.current = null
+      prependGroupRef.current = null
       resizeObserver.disconnect()
       jumpRestoreRef.current = null
       el.removeEventListener('wheel', onWheel)
@@ -1517,7 +1595,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.scrollHeight > (anchorHeightRef.current ?? 0) &&
       el.scrollHeight >= restoreFromBottom
     ) {
-      el.scrollTop = el.scrollHeight - restoreFromBottom
+      if (!applyPrependRef.current?.(true)) {
+        el.scrollTop = el.scrollHeight - restoreFromBottom
+      }
+
       restoreFromBottomRef.current = null
       // Consuming a parked offset (clamped-exit) means the view just landed at
       // its real reading position — the load is settled from here on.
@@ -1636,7 +1717,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           data-slot="aui_thread-content"
           ref={contentRef as React.RefCallback<HTMLDivElement>}
         >
-          {!renderEmpty && (hiddenCount > 0 || olderAvailable) && (
+          {!renderEmpty && (hiddenCount > 0 || olderAvailable || windowCommitRef.current === structuralSignature) && (
             <button
               className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
               onClick={showEarlier}

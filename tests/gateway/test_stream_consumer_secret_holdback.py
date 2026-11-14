@@ -292,3 +292,13 @@ async def test_a_google_refresh_token_streamed_char_by_char_is_never_shown_raw()
     await _stream(adapter, "Refresh: ", *("1//0" + body), " done", transport="auto", chat_type="dm")
     assert all(later.startswith(earlier) for earlier, later in pairwise(frames)), frames
     assert not _raw_runs([*frames, *(content for _op, _id, content in adapter.ops)], body, width=5)
+
+
+@pytest.mark.asyncio
+async def test_a_google_refresh_token_split_by_a_newline_is_never_shown_raw():
+    # The redactor joins ``1//0…<LF>…`` (#77484) like ``ghp_…<LF>…``; its ``/`` must not end the held run.
+    head, tail = "gLx7z_P2mX9v", "Lk4n-Rt8wYb1cDf6gHj3sA0qWeRtYuIoP"
+    frames = []
+    adapter = _draft_adapter(frames)
+    await _stream(adapter, "Refresh: ", "1//0" + head, "\n", tail, " done", transport="auto", chat_type="dm")
+    assert not _raw_runs([*frames, *(content for _op, _id, content in adapter.ops)], head + tail, width=5)

@@ -65,7 +65,7 @@ _PPK_OPEN_RE = re.compile(
     r"(?:(?:\r?\n|\\r\\n|\\n)[ \t]*(?:\d+[|:\t][ \t]*)?[A-Za-z0-9+/=]*[ \t]*)*")
 # A token run broken only by control/zero-width characters: the redactor joins it (#77484).
 _CONTROL_SPLIT_RUN_RE = re.compile(
-    r"[A-Za-z0-9_.\-\x00-\x1f\u200b-\u200f\u2028-\u202f\u2060\ufeff]*"
+    r"[A-Za-z0-9_./\-\x00-\x1f\u200b-\u200f\u2028-\u202f\u2060\ufeff]*"
     r"[\x00-\x1f\u200b-\u200f\u2028-\u202f\u2060\ufeff]\Z")
 
 

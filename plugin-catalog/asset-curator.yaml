@@ -2,9 +2,7 @@ name: asset-curator
 repo: https://github.com/dev-willbird1936/Asset-Curator
 sha: 7accc32f7f6913244f76e59582089593a24bad26
 subdir: hermes/asset-curator
-description: >-
-  Find assets or create them from code with user-controlled access,
-  host-confirmed asset review and preserved licensing/provenance.
+description: "Find assets or create them from code with user-controlled access, host-confirmed asset review and preserved licensing/provenance. Disclosure — Asset Curator downloads third-party assets and writes files on your machine. With no access mode set it saves only to Downloads and asks before each download. In \"project\" mode it writes only inside the workspace you set. \"review\" mode stages assets in Downloads and asks you before moving each one into your project. In \"hermes\" or \"full\" mode the plugin applies no path limits of its own, so the agent can write wherever your user account can, and Hermes' approval prompt is the only check."
 maintainer: dev-willbird1936
 tier: community
 category: tools

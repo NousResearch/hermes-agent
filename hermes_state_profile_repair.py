@@ -21,6 +21,7 @@ the target holds at least as many messages). The reverse order would lose the ro
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -31,6 +32,73 @@ from hermes_state_common import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Every profile's pre-multiplex standalone gateway minted keys in the default namespace, whatever
+# profile it served. A rekey moves exactly this prefix to the profile's current namespace.
+_LEGACY_MAIN_PREFIX = "agent:main:"
+
+
+def _rekey_origin_json(origin_json: Optional[str], profile: str) -> Optional[str]:
+    """Stamp *profile* onto a stored ``origin_json`` copy, leaving unreadable JSON untouched."""
+    if not origin_json:
+        return origin_json
+    try:
+        payload = json.loads(origin_json)
+    except (TypeError, ValueError):
+        return origin_json
+    if not isinstance(payload, dict) or payload.get("profile") == profile:
+        return origin_json
+    payload["profile"] = profile
+    return json.dumps(payload)
+
+
+def _rekey_routing_entry(entry_json: Optional[str], new_ns: str, profile: str) -> Optional[str]:
+    """Rewrite the route and origin profile inside one ``gateway_routing.entry_json`` copy."""
+    if not entry_json:
+        return entry_json
+    try:
+        payload = json.loads(entry_json)
+    except (TypeError, ValueError):
+        return entry_json
+    if not isinstance(payload, dict):
+        return entry_json
+    changed = False
+    session_key = payload.get("session_key")
+    if isinstance(session_key, str) and session_key.startswith(_LEGACY_MAIN_PREFIX):
+        payload["session_key"] = new_ns + session_key[len(_LEGACY_MAIN_PREFIX):]
+        changed = True
+    origin = payload.get("origin")
+    if isinstance(origin, dict) and origin.get("profile") != profile:
+        origin["profile"] = profile
+        changed = True
+    return json.dumps(payload) if changed else entry_json
+
+
+def _rekey_routing_rows(conn, legacy_routes: Iterable[str], new_ns: str, profile: str) -> int:
+    """Move every routing row for *legacy_routes* to the profile namespace, in every scope.
+
+    A row already present under the target key is authoritative: the legacy duplicate is dropped
+    instead of overwriting (matching ``RepairPlan``'s "existing row wins" rule for routing moves).
+    """
+    moved = 0
+    for legacy_route in sorted(legacy_routes):
+        if not legacy_route.startswith(_LEGACY_MAIN_PREFIX):
+            continue
+        new_route = new_ns + legacy_route[len(_LEGACY_MAIN_PREFIX):]
+        rows = conn.execute(
+            "SELECT rowid, scope, entry_json FROM gateway_routing WHERE session_key = ?",
+            (legacy_route,)).fetchall()
+        for rowid, scope, entry_json in rows:
+            if conn.execute(
+                    "SELECT 1 FROM gateway_routing WHERE scope = ? AND session_key = ? AND rowid <> ?",
+                    (scope, new_route, rowid)).fetchone():
+                conn.execute("DELETE FROM gateway_routing WHERE rowid = ?", (rowid,))
+            else:
+                conn.execute(
+                    "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
+                    (new_route, _rekey_routing_entry(entry_json, new_ns, profile), rowid))
+            moved += 1
+    return moved
 
 
 def session_key_profile(session_key: Any) -> Optional[str]:
@@ -296,10 +364,16 @@ class SessionProfileRepairMixin:
     # ── routing index ─────────────────────────────────────────────────────────
 
     def rekey_legacy_main_sessions(self, ids: Iterable[str], profile: str) -> int:
-        """``agent:main:…`` → ``agent:<profile>:…`` (+ ``profile_name``) for rows a standalone
-        gateway wrote before this store's profile was multiplexed (#113884). Only rows still under
-        the legacy namespace change; a ``main``-named profile is written in its marked form."""
+        """``agent:main:…`` → ``agent:<profile>:…`` for every row a standalone gateway wrote before
+        this store's profile was multiplexed (#113884, #143150).
+
+        The session row, its ``state_meta`` local-policy receipt and every ``gateway_routing`` row
+        are rewritten in ONE write transaction, so a crash or a lock retry can never publish a
+        session whose receipt or routing entry still names the old route. Only rows still under the
+        legacy namespace change; a ``main``-named profile gets the marked ``agent:main~:`` form.
+        """
         from gateway.session import _session_key_namespace
+        from hermes_state_local import POLICY_PREFIX
         wanted = list(ids)
         if not wanted:
             return 0
@@ -307,11 +381,53 @@ class SessionProfileRepairMixin:
 
         def _do(conn) -> int:
             changed = 0
+            legacy_routes: set[str] = {f"{_LEGACY_MAIN_PREFIX}local:dm:{sid}" for sid in wanted}
             for chunk in _id_chunks(wanted):
-                changed += conn.execute(
-                    "UPDATE sessions SET session_key = ? || substr(session_key, 12), profile_name = ? "
-                    f"WHERE id IN ({_session_ids_placeholders(chunk)}) AND substr(session_key, 1, 11) = 'agent:main:'",
-                    (new_ns, profile, *chunk)).rowcount
+                rows = conn.execute(
+                    "SELECT id, session_key, origin_json FROM sessions "
+                    f"WHERE id IN ({_session_ids_placeholders(chunk)}) "
+                    "AND substr(session_key, 1, 11) = 'agent:main:'", chunk).fetchall()
+                for session_id, session_key, origin_json in rows:
+                    legacy_routes.add(session_key)
+                    changed += conn.execute(
+                        "UPDATE sessions SET session_key = ?, profile_name = ?, origin_json = ? "
+                        "WHERE id = ? AND session_key = ?",
+                        (new_ns + session_key[len(_LEGACY_MAIN_PREFIX):], profile,
+                         _rekey_origin_json(origin_json, profile), session_id, session_key)).rowcount
+
+                meta_keys = [POLICY_PREFIX + sid for sid in chunk]
+                meta_rows = conn.execute(
+                    f"SELECT key, value FROM state_meta WHERE key IN ({_session_ids_placeholders(meta_keys)})",
+                    meta_keys).fetchall()
+                for key, value in meta_rows:
+                    try:
+                        receipt = json.loads(value)
+                    except (TypeError, ValueError) as exc:
+                        logger.warning("Failed to reconcile local policy receipt %s: %s", key, exc, exc_info=True)
+                        continue
+                    if not isinstance(receipt, dict):
+                        continue
+                    mutated = False
+                    route = receipt.get("route")
+                    if isinstance(route, str) and route.startswith(_LEGACY_MAIN_PREFIX):
+                        legacy_routes.add(route)
+                        receipt["route"] = new_ns + route[len(_LEGACY_MAIN_PREFIX):]
+                        mutated = True
+                    entry = receipt.get("entry")
+                    if isinstance(entry, dict):
+                        entry_key = entry.get("session_key")
+                        if isinstance(entry_key, str) and entry_key.startswith(_LEGACY_MAIN_PREFIX):
+                            legacy_routes.add(entry_key)
+                            entry["session_key"] = new_ns + entry_key[len(_LEGACY_MAIN_PREFIX):]
+                            mutated = True
+                        origin = entry.get("origin")
+                        if isinstance(origin, dict) and origin.get("profile") != profile:
+                            origin["profile"] = profile
+                            mutated = True
+                    if mutated:
+                        conn.execute("UPDATE state_meta SET value = ? WHERE key = ?",
+                                     (json.dumps(receipt), key))
+            _rekey_routing_rows(conn, legacy_routes, new_ns, profile)
             return changed
         return self._execute_write(_do)
 

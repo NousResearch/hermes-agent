@@ -48,6 +48,30 @@ def write_source_stamp(root: Path, *, adopted: bool = False) -> dict | None:
     if adopted:
         stamp["adoptedAt"] = stamp["builtAt"]
     stamp_path = root / "install-stamp.json"
+    runtime_dir = None
+    if stamp_path.is_file():
+        try:
+            previous_stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
+            if isinstance(previous_stamp, dict):
+                prev_val = previous_stamp.get("runtimeDir")
+                if prev_val and isinstance(prev_val, str) and Path(prev_val).resolve().is_dir():
+                    runtime_dir = str(Path(prev_val).resolve())
+        except (OSError, ValueError):
+            pass
+
+    if runtime_dir is None:
+        try:
+            from pm.environments import store_root
+            from hermes_constants import get_default_hermes_root
+            candidate = store_root(root, honor_runtime_override=True)
+            default_tools = (get_default_hermes_root() / "tools").resolve()
+            if candidate.resolve() != default_tools and candidate.is_dir():
+                runtime_dir = str(candidate.resolve())
+        except Exception:
+            pass
+
+    if runtime_dir:
+        stamp["runtimeDir"] = runtime_dir
     fd, tmp_name = tempfile.mkstemp(dir=root, prefix=".install-stamp.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

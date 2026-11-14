@@ -5,7 +5,24 @@ admission (``native_text_v1.moa_turn_v1``). The one-turn MoA route is armed only
 executes, so it never lands on another queued turn, and a queued or crash-recovered ``/moa`` row
 still runs on MoA. LOCAL sessions keep their own path (their frozen launch policy).
 """
+import asyncio
+import logging
+
 from gateway.config import Platform
+
+logger = logging.getLogger("gateway.run")
+
+
+async def default_preset():
+    """The configured default MoA preset (the built-in one when config is unreadable)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import normalize_moa_config
+    try:
+        cfg = await asyncio.to_thread(load_config)
+        return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})["default_preset"]
+    except Exception:  # an unreadable config still runs /moa on the built-in default preset
+        logger.warning("/moa: config unreadable, using the default MoA preset", exc_info=True)
+        return normalize_moa_config({})["default_preset"]
 
 
 def moa_override(preset):
@@ -42,3 +59,21 @@ def arm_admitted_moa(runner, session_key, event):
     runner._claim_one_turn_restore(session_key)
     runner._session_state(session_key).conversation.model_override = moa_override(preset)
     runner._evict_cached_agent(session_key)
+
+
+async def queue_busy_moa(runner, event, session_key, source):
+    """A ``/moa <prompt>`` while a turn runs: its own queued admission with the preset, behind the
+    running turn (whose model is untouched). Without an authority to admit it, the old refusal."""
+    from agent.i18n import t
+    from gateway.run_busy import _busy_accepted
+    from hermes_cli.moa_config import moa_usage
+    prompt = event.get_command_args().strip()
+    if not prompt:
+        return moa_usage()
+    adapter = runner._delivery_adapter_for(source)
+    queued = runner._queued_turn_event(event, prompt, False)
+    if adapter is None or not admit_moa_turn(runner, queued, source, session_key, await default_preset()):
+        return t("gateway.busy.reject_moa")
+    await _busy_accepted()
+    await runner._queue_command_turn(session_key, event, queued, adapter, t("gateway.queue.queued"))
+    return None  # its commit sends the ack

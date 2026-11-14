@@ -1650,6 +1650,14 @@ def _str_arg(args: dict, key: str, default: str = "") -> str:
     return val if isinstance(val, str) else default if val is None else str(val)
 
 
+# Marker appended to compressed terminal summaries. Its presence means "this
+# message has already been demoted; the full payload lives in the archived
+# (active=0, compacted=1) row and is retrievable via session_search". The
+# demotion pass checks for this string to stay idempotent — without it, a
+# summary long enough to exceed min_prune_chars would be summarised again on
+# the next pass, producing a summary of a summary.
+_ARCHIVED_MARKER = "[ARCHIVED - full output recoverable via session_search]"
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """1-line summary of a tool call + result. Never raises: a malformed historical call must not crash-loop compression."""
     try:
@@ -1664,7 +1672,18 @@ def _sum_terminal(name, args, content, content_len, line_count):
     cmd = _str_arg(args, "command")
     cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
     exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
-    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+    # A shell command can exit 0 while the operation it performed failed (curl printing a 422
+    # body is the canonical case), so the exit code alone is not a reliable outcome signal.
+    # Carry a short head of the real stdout into the summary at negligible token cost.
+    head = _terminal_output_head(content)
+    segments = [
+        f"[terminal] ran `{cmd}` -> exit {exit_code}, "
+        f"{line_count} lines, {content_len:,} chars"
+    ]
+    if head:
+        segments.append(f"output starts: {head}")
+    segments.append(_ARCHIVED_MARKER)
+    return " | ".join(segments)
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
@@ -2007,6 +2026,36 @@ def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> 
     target = f" `{target if len(target) <= 60 else target[:57] + '...'}`" if target else ""
     return f"[{tool_name}]{target} {outcome}"[:_PRUNE_MIN_CHARS - 1]
 
+def _terminal_output_head(content: str, limit: int = 160) -> str:
+    """Return a short single-line head of a terminal result's stdout.
+
+    The terminal tool serialises results as JSON shaped like
+    ``{"output": "...", "exit_code": 0, "error": null}``. A shell command can
+    exit 0 while the operation it performed failed (``curl`` printing a 422
+    body is the canonical case), so the exit code alone is not a reliable
+    outcome signal. Carrying a short head of the real output into the
+    compressed summary preserves that evidence at negligible token cost.
+
+    Falls back to the raw content when the payload is not the expected JSON
+    shape. Never raises: this runs inside compression, which retries on the
+    same history and would crash-loop.
+    """
+    raw: object = content
+    try:
+        payload = json.loads(content)
+        if isinstance(payload, dict) and isinstance(payload.get("output"), str):
+            raw = payload["output"]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    try:
+        collapsed = " ".join(str(raw).split())
+    except Exception:  # noqa: BLE001 - a summary must never crash compression
+        return ""
+    if not collapsed:
+        return ""
+    if len(collapsed) > limit:
+        return collapsed[: limit - 1] + "\u2026"
+    return collapsed
 
 def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
@@ -3191,6 +3240,11 @@ class ContextCompressor(
             or content.startswith(("[Duplicate tool output", "[screenshot removed"))
             or _is_summary_stub(content) or len(content) <= min_prune_chars
         ):
+            return False
+        # Terminal summaries carry an explicit archived marker and can exceed min_prune_chars once
+        # an output head is included. ``_is_summary_stub`` only recognises "... chars)", so it will
+        # not spare these; without this check demotion is not idempotent (a summary of a summary).
+        if _ARCHIVED_MARKER in content:
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
         if protected_skills and tool_name == "skill_view":

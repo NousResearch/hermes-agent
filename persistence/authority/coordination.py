@@ -5,7 +5,7 @@ What each group of verbs does:
 1. Compression lock (``compression_locks``, keyed by the session id): acquisition returns ``bool`` (there is no lease token); a row expired strictly before now, or held by a ``pid=<n>`` holder whose local process is provably dead, is reclaimed inside the same write; a live holder re-acquiring gets True without the expiry moving; refresh decides by holder alone, so a holder revives its own expired, unclaimed row; release is holder-qualified and idempotent. A store failure reads as False (acquire, refresh) or is logged (release); the holder read raises it.
 2. Turn lease (``session_turn_leases``, keyed by the conversation: the lineage root reached by walking compression parents while the row is a plain continuation): one write sweeps rows expired more than a day ago, resolves the key, reclaims an expired (``expires_at <= now``) or dead-holder row and inserts; the TTL is clamped to at least 0.1 s; an empty id or holder is False with no write. :func:`acquire_turn_lease_waiting` is a wait loop over the single attempt, polling only on :class:`persistence.StoreContention`.
 3. Hygiene streak: an atomic ``+1`` returning the new value; reset deletes the row; an empty key answers 1 (or does nothing) without a write.
-4. Handoffs (the ``handoff_*`` columns of the session row): request arms from no state, ``completed`` or ``failed``; claim moves ``pending`` to ``running`` once; fail stores the error cut to 500 characters, optionally only from ``only_states``; the stale-running reclaim fails every ``running`` row in one write and never raises.
+4. Handoffs (the ``handoff_*`` columns of the session row): request arms from no state, ``completed`` or ``failed``, and with ``require_settled`` refuses first, in the same write, while durable work owns the session (:class:`persistence.core.errors.HandoffUnsettled`); the watcher re-checks that condition before it repoints; claim moves ``pending`` to ``running`` once; fail stores the error cut to 500 characters, optionally only from ``only_states``; the stale-running reclaim fails every ``running`` row in one write and never raises.
 5. Delegation ledger (``async_delegations``): dispatch is an insert-or-replace of a ``running`` row with a ``pending`` delivery; the delivery claim admits one consumer, spends one attempt, and is settled by complete, release (dropped once the budget is spent), defer (refunds the attempt) or drop; a claim on an id with no row is True with no write. The sweeps take the caller's owner probe and the copies it lost as data (``dead_owners``, ``lost_ids``) and offer nothing themselves: the helpers in tools/async_delegation.py offer the returned rows after the commit.
 6. Delivery obligations (``delivery_obligations``): record is an insert-or-replace of a ``pending`` row followed by the retention prune in the same write; the sweeps take the owner probe as data and claim each row guarded on its previous owner stamp.
 """
@@ -490,8 +490,12 @@ class CoordinationRepository(Protocol):
 
     # ── handoffs ──
 
-    def request_handoff(self, *, session_id: SessionId, platform: str) -> bool:
-        """Arm ``pending`` for ``platform`` and clear the error while no handoff is in flight (state none, ``completed`` or ``failed``); False for an in-flight handoff or no such session."""
+    def request_handoff(self, *, session_id: SessionId, platform: str, require_settled: bool = False) -> bool:
+        """Arm ``pending`` for ``platform`` and clear the error while no handoff is in flight (state none, ``completed`` or ``failed``); False for an in-flight handoff or no such session. With ``require_settled`` the same write first runs :meth:`check_handoff_settled`'s condition and raises its :class:`persistence.core.errors.HandoffUnsettled` with nothing written, an in-flight handoff included."""
+        ...
+
+    def check_handoff_settled(self, *, session_id: SessionId) -> None:
+        """In a write transaction: raise :class:`persistence.core.errors.HandoffUnsettled` while durable work owns the session's runtime lineage (the session, its physical target, its local owner and their compression relatives): ``unknown_execution`` for an admission whose outcome is unknown, ``session_busy`` for a queued or started admission, a live worker, or a live turn lease or compression lock on a member compression has not closed. Ids are checked in sorted order, each admission and worker first, then its leases. Writes nothing; a missing session passes."""
         ...
 
     def claim_handoff(self, *, session_id: SessionId) -> bool:

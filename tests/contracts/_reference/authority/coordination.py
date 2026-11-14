@@ -25,7 +25,9 @@ from persistence.authority.coordination import (
     turn_lease_holder_pid,
 )
 from persistence.conversation.sessions import END_REASON_COMPRESSION, SessionLineageKind
+from persistence.core.errors import MUTATION_GUARD_REFUSALS, AuthorityRefusal, HandoffUnsettled
 
+from .._authority import authority_state
 from .._lineage_intent import direct_lineage_kind
 from ..backend import InMemoryBackend, register_repository
 from .coordination_delegations import DelegationLedger
@@ -264,7 +266,27 @@ class InMemoryCoordinationRepository(DelegationLedger, ObligationLedger):
         sessions = self._table("sessions")
         return [(sid, row) for sid, row in self._table("handoffs").items() if sid in sessions]
 
-    def request_handoff(self, *, session_id: SessionId, platform: str) -> bool:
+    def _require_settled(self, session_id: str) -> None:
+        """The settled check over the runtime reference's lineage and idle guard, mapped to :class:`HandoffUnsettled`."""
+        from . import admissions_rows as admission_rows
+        from . import mutation_guards as guards
+
+        authority, tables = authority_state(self._backend, self._backend.scope).snapshot, self._backend.scope_store(self._backend.scope)
+        try:
+            guards.require_idle(self._backend, authority, tables, sorted(admission_rows.runtime_lineage(self._backend, authority, tables, session_id)))
+        except MUTATION_GUARD_REFUSALS:
+            raise HandoffUnsettled("session_busy") from None
+        except AuthorityRefusal as exc:
+            if exc.reason not in ("session_busy", "unknown_execution"):
+                raise
+            raise HandoffUnsettled(exc.reason) from None
+
+    def check_handoff_settled(self, *, session_id: SessionId) -> None:
+        self._require_settled(str(session_id))
+
+    def request_handoff(self, *, session_id: SessionId, platform: str, require_settled: bool = False) -> bool:
+        if require_settled:
+            self._require_settled(str(session_id))
         row = self._handoff_row(str(session_id))
         if row is None or row["status"] not in (None, HandoffStatus.COMPLETED, HandoffStatus.FAILED):
             return False

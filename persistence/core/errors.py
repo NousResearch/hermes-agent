@@ -32,6 +32,7 @@ __all__ = [
     "DiskFull",
     "ExportTooLarge",
     "FenceStale",
+    "HandoffUnsettled",
     "HeldRowRewritten",
     "MalformedSchema",
     "NotFound",
@@ -368,6 +369,13 @@ class ProofRejected(AuthorityRefusal):
         self.entity = entity
         self.entity_id = entity_id
         super().__init__("permission_denied")
+
+
+class HandoffUnsettled(AuthorityRefusal):
+    """Durable work still owns the session's runtime lineage, so a settled handoff is refused and nothing is written. ``reason`` is ``unknown_execution`` for an admission whose outcome is unknown, else ``session_busy`` (queued or started work, a live worker, a live turn lease or compression lock)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
 
 
 class RetiredSessionError(AuthorityRefusal):

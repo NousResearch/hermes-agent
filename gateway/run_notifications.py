@@ -62,9 +62,10 @@ _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
 _WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-# Storage causes that clear on their own (one session's lease/compression, not the store): the
-# home-channel notice appends the operator restart tail for every OTHER cause.
-_SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
+# Storage causes that clear on their own (one session's lease/compression, or one receipt
+# window on a busy-but-healthy store — not the store itself): the home-channel notice appends
+# the operator restart tail for every OTHER cause.
+_SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "receipt_transport"})
 # Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
 _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60

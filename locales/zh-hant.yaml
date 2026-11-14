@@ -3574,6 +3574,7 @@ explainer:
     fts_index: "這一輪已停止，因為工作階段搜尋索引（FTS5）已損毀且無法卸離，因此這則訊息未儲存。訊息儲存區本身未受損：不要執行復原工具或還原備份。請執行 `hermes {profile_arg}doctor --fix`（或重新啟動 Hermes，開啟時會修復索引），然後再傳送一次訊息。"
     disk: "Hermes 無法將此對話儲存到磁碟，為避免遺失你的訊息而停止。磁碟可能已滿：請釋放一些空間（或修正 {home}/state.db 的權限），然後再傳送一次訊息。"
     default: "Hermes 無法儲存此對話，為避免遺失你的訊息而停止。可能原因：磁碟空間不足，或另一個 Hermes 程序正佔用資料庫。請關閉其他 Hermes 視窗，執行 `hermes {profile_arg}doctor` 檢查儲存狀態，然後再傳送一次訊息。"
+    receipt_transport: "Hermes 無法確認這條訊息已儲存（閘道正忙或無法連線），它可能沒有抵達儲存。請等對方那一輪結束後重新傳送；如果仍然失敗，請執行 `hermes {profile_arg}doctor` 檢查儲存。"
   file_mutation:
     header: "⚠️ 檔案變更驗證器：本輪有 {count} 個檔案編輯失敗，無論上方文字如何描述皆以此為準。請執行 `git status` 或 `read_file` 確認實際寫入的內容。"
     entry: "  • `{path}` — [{tool}] {preview}"

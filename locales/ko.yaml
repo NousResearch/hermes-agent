@@ -3574,6 +3574,7 @@ explainer:
     fts_index: "세션 검색 인덱스(FTS5)가 손상되었고 분리할 수 없어서 턴을 멈췄고 이 메시지는 저장되지 않았어요. 메시지 저장소 자체는 손상되지 않았으니 복구 도구를 실행하거나 백업을 복원하지 마세요. `hermes {profile_arg}doctor --fix`를 실행하거나(또는 Hermes를 재시작하면 열 때 인덱스를 수리해요) 메시지를 다시 보내 주세요."
     disk: "Hermes가 이 대화를 디스크에 저장할 수 없어서 메시지를 잃지 않도록 멈췄어요. 디스크가 가득 찼을 가능성이 커요. 공간을 확보하거나 {home}/state.db의 권한을 고친 뒤 메시지를 다시 보내 주세요."
     default: "Hermes가 이 대화를 저장할 수 없어서 메시지를 잃지 않도록 멈췄어요. 가능한 원인: 드라이브 공간 부족, 또는 다른 Hermes 프로세스가 데이터베이스를 잡고 있는 경우예요. 다른 Hermes 창을 닫고 `hermes {profile_arg}doctor`로 저장소를 확인한 뒤 메시지를 다시 보내 주세요."
+    receipt_transport: "Hermes가 이 메시지가 저장되었음을 확인하지 못했습니다(게이트웨이가 바쁘거나 연결할 수 없어 저장소에 도달하지 못했을 수 있습니다). 다른 턴이 끝난 후 메시지를 다시 전송하세요. 계속 실패하면 `hermes {profile_arg}doctor`를 실행해 저장소를 확인하세요."
   file_mutation:
     header: "⚠️ 파일 변경 검증기: 위의 문구가 어떻게 보이든, 이번 턴에 파일 편집 {count}건이 실패했어요. `git status`나 `read_file`로 실제 반영된 내용을 확인하세요."
     entry: "  • `{path}` — [{tool}] {preview}"

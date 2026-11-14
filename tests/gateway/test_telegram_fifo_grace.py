@@ -115,3 +115,20 @@ async def test_telegram_edited_followup_is_judged_by_its_edit_time(monkeypatch, 
         await runner._hm_busy_preempt(event, source, key)
     preempted = runner._busy_interrupt_and_ack.await_count + runner._resolve_busy_steer_or_redirect.await_count
     assert (preempted == 0) is waits
+
+
+@pytest.mark.asyncio
+async def test_telegram_voice_followup_within_grace_does_not_preempt(monkeypatch):
+    """A voice note sent seconds after the one being answered waits; interrupting dropped the
+    in-flight reply to the earlier voice (#31328)."""
+    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3")
+    runner, event, source, key = _busy_telegram_turn()
+    event.message_type = MessageType.VOICE
+    event.media_urls, event.media_types = ["/cache/audio/voice_3.ogg"], ["audio/ogg"]
+
+    with patch("gateway.run_inbound.time.time", return_value=102.0):
+        assert runner._hm_in_telegram_grace(event, source, key) is True
+        assert await runner._hm_busy_preempt(event, source, key) is False
+
+    runner._resolve_busy_steer_or_redirect.assert_not_awaited()
+    runner._busy_interrupt_and_ack.assert_not_awaited()

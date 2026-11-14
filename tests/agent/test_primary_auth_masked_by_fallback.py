@@ -120,18 +120,17 @@ def test_primary_serving_again_reports_only_its_own_failure(home, backup_url):
 
 def _anthropic_model_cooldown():
     """The real raise site: the pool benched the key for one model, other models still have it."""
-    import agent.anthropic_credentials as ac
+    from unittest.mock import patch
+
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import _anthropic_token_or_raise
 
-    real = ac.resolve_anthropic_token
-    ac.resolve_anthropic_token = lambda model=None: None if model else "sk-ant-ok"
-    try:
-        _anthropic_token_or_raise(model="claude-opus-4")
-    except AuthError as exc:
-        return exc
-    finally:
-        ac.resolve_anthropic_token = real
+    with patch("agent.anthropic_credentials.resolve_anthropic_token",
+               side_effect=lambda *, model=None: None if model else "sk-ant-ok"):
+        try:
+            _anthropic_token_or_raise(model="claude-opus-4")
+        except AuthError as exc:
+            return exc
     raise AssertionError("expected an AuthError")
 
 
@@ -182,13 +181,14 @@ def test_the_exported_primary_failure_never_carries_a_secret_from_the_primarys_e
     from agent.primary_auth_fallback import PrimaryAuthFailure, lead_failed_turn_with_primary_auth
 
     secret = "sk-ant-api03-" + "Z" * 40
-    agent = type("A", (), {"provider": "custom"})()
-    agent._primary_auth_failure = PrimaryAuthFailure(
+    from types import SimpleNamespace
+
+    agent = SimpleNamespace(provider="custom", _primary_auth_failure=PrimaryAuthFailure(
         provider="anthropic", error=f"401 from Anthropic for key {secret}", relogin="hermes auth add anthropic",
-        backup="custom")
-    result = {"failed": True, "final_response": "backup refused", "failure_reason": "auth"}
+        backup="custom"))
+    result: dict = {"failed": True, "final_response": "backup refused", "failure_reason": "auth"}
     lead_failed_turn_with_primary_auth(agent, result)
 
-    exported = result["primary_auth_failure"]
+    exported: dict = result["primary_auth_failure"]
     assert secret not in exported["error"] and secret not in result["final_response"]
     assert exported["provider"] == "anthropic" and exported["relogin"] == "hermes auth add anthropic"

@@ -421,6 +421,44 @@ class TestBatchedDescribe:
         assert result["not_found"] == ["mcp__linear__does_not_exist_zzz"]
         assert "errors" not in result
 
+    def test_prefixed_name_resolves_to_bare_tool(self):
+        """Regression for #147998: the deferred catalog groups tools under a
+        "<group> tools (N):" heading, so the model invents "<group>.<tool>".
+        That prefixed name must describe the bare tool, not land in
+        not_found. The schema is keyed by the canonical bare name, so a
+        later tool_call can use the name that actually exists."""
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        tool_def = _register(
+            "get_meal_suggestions", "meal_manager",
+            "Get meal suggestions.",
+            {"diet": {"type": "string"}}, ["diet"])
+        result = json.loads(dispatch_tool_describe(
+            {"names": ["meal_manager.get_meal_suggestions"]},
+            current_tool_defs=[tool_def],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert list(result["tools"]) == ["get_meal_suggestions"]
+        assert result["tools"]["get_meal_suggestions"]["description"] == (
+            "Get meal suggestions.")
+        assert "not_found" not in result
+
+    def test_bare_name_still_works_and_unknown_prefixed_name_still_not_found(self):
+        """The prefixed fallback must not swallow genuinely unknown names."""
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        tool_def = _register(
+            "get_meal_suggestions", "meal_manager",
+            "Get meal suggestions.")
+        result = json.loads(dispatch_tool_describe(
+            {"names": ["get_meal_suggestions",
+                       "meal_manager.does_not_exist_zzz"]},
+            current_tool_defs=[tool_def],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert list(result["tools"]) == ["get_meal_suggestions"]
+        assert result["not_found"] == ["meal_manager.does_not_exist_zzz"]
+
     def test_unregistered_core_name_is_not_found(self, issue_defs, monkeypatch):
         from tools import registry as registry_module
         from tools.tool_search import ToolSearchConfig, dispatch_tool_describe

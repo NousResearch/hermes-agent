@@ -1,6 +1,6 @@
 # Kanban tutorial
 
-A walkthrough of the four use-cases the Hermes Kanban system was designed for, with the dashboard open in a browser. If you haven't read the [Kanban overview](./kanban) yet, start there — this assumes you know what a task, run, assignee, and dispatcher are.
+A walkthrough of the four stories the Hermes Kanban system was designed for, with the dashboard open in a browser. Stories 1–3 are agent-composition patterns — how to arrange profiles and cards. Story 4 is a reliability walkthrough instead: it shows how the dispatcher handles workers that fail, a concern that applies to any of those arrangements. If you haven't read the [Kanban overview](./kanban) yet, start there — this assumes you know what a task, run, assignee, and dispatcher are.
 
 ## Setup
 
@@ -205,6 +205,8 @@ If you intentionally use the downstream-card model shown in the screenshot, the 
 The reviewer card's `worker_context` includes the completed implementation handoff. That is a separate card workflow; do not combine it with same-card `kanban_request_review` or you will duplicate the review lane.
 
 ## Story 4 — Circuit breaker and crash recovery
+
+This story is not a composition pattern: nothing in it changes how profiles or cards are arranged. It describes dispatcher behavior that applies to any roster, so it is worth reading whichever of the three arrangements above you picked.
 
 Real workers fail. Missing credentials, OOM kills, transient network errors. The dispatcher has two lines of defense: a **circuit breaker** that auto-blocks after N consecutive failures so the board doesn't thrash forever, and **crash detection** that reclaims a task whose worker PID went away before its TTL expired.
 

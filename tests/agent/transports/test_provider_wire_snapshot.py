@@ -83,6 +83,7 @@ BASE_URLS = {
 # and local endpoints. Keys are ``base-url:<label>``; they sit outside the registry coverage check.
 BASE_URL_ONLY = {
     "base-url:openrouter": ("anthropic/claude-opus-5.5", "https://openrouter.ai/api/v1"),
+    "base-url:ai-gateway": ("anthropic/claude-opus-5.5", "https://ai-gateway.vercel.sh/v1"),
     "base-url:nous": ("anthropic/claude-opus-5.5", "https://inference-api.nousresearch.com/v1"),
     "base-url:kimi": ("kimi-k3", "https://api.moonshot.ai/v1"),
     "base-url:kimi-coding": ("kimi-k3", "https://api.kimi.com/coding/v1"),

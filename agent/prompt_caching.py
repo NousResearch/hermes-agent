@@ -20,6 +20,20 @@ class PromptCachePlan:
     tools: list[dict[str, Any]]
 
 
+# Vercel AI Gateway provider aliases (canonical id in HERMES_OVERLAYS is "vercel";
+# runtime_provider resolves to "ai-gateway").
+AI_GATEWAY_PROVIDERS = frozenset({"vercel", "ai-gateway", "aigateway", "vercel-ai-gateway", "ai_gateway"})
+
+
+def is_vercel_ai_gateway_route(provider: str | None, base_url: str | None) -> bool:
+    """True when ``(provider, base_url)`` targets Vercel AI Gateway."""
+    from utils import base_url_host_matches
+
+    return (provider or "").strip().lower() in AI_GATEWAY_PROVIDERS or base_url_host_matches(
+        base_url or "", "ai-gateway.vercel.sh"
+    )
+
+
 def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: str | None) -> bool:
     """Whether the envelope-layout route honors part-level markers on role:tool.
 

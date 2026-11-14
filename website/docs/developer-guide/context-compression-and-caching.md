@@ -860,8 +860,8 @@ The marker is applied differently based on content type:
 ### Enabling Prompt Caching
 
 Prompt caching is automatically enabled when:
-- The model is an Anthropic Claude model (detected by model name)
-- The provider supports `cache_control` (native Anthropic API or OpenRouter)
+- The model is an Anthropic Claude model (or Kimi/Moonshot/Qwen on OpenRouter, Vercel AI Gateway, or Nous Portal)
+- The provider supports `cache_control` (native Anthropic API, OpenRouter, Vercel AI Gateway, or Nous Portal)
 
 ```yaml
 # config.yaml — TTL is configurable: "5m", "1h", or "auto"

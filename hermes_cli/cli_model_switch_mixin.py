@@ -189,9 +189,15 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         if mi.max_output:
             _cprint(f"    {t('gateway.model.max_output_label', tokens=f'{mi.max_output:,}')}")
         _cprint(f"    {t('gateway.model.capabilities_label', capabilities=mi.format_capabilities())}")
+    from agent.prompt_caching import is_vercel_ai_gateway_route
     cache_enabled = (
-        (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-        or result.api_mode == "anthropic_messages")
+        (
+            (base_url_host_matches(result.base_url or "", "openrouter.ai")
+             or is_vercel_ai_gateway_route(result.target_provider, result.base_url))
+            and "claude" in result.new_model.lower()
+        )
+        or result.api_mode == "anthropic_messages"
+    )
     if cache_enabled:
         _cprint(f"    {t('gateway.model.prompt_caching_enabled')}")
     if result.warning_message:

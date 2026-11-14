@@ -560,15 +560,9 @@ def _init_prompt_cache_config(agent):
         agent._anthropic_prompt_cache_policy()
     )
     agent._cache_disabled = False
-    # cache_ttl: "5m" (default), "1h" (2x write cost; pays off with >5-minute pauses) or "auto"
-    # (1h when a person paces the session, 5m when a machine does); unknown values keep "5m". A falsy/off value disables caching entirely (OAuth plans
-    # billing cache writes, proxies adding their own cache_control); the disable survives
-    # /model switches and fallback re-derivation.
-    # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from config.yaml under
-    # prompt_caching.cache_ttl; unknown values keep "5m". 1h tier costs 2x on write vs 1.25x for 5m, but
-    # amortizes across long sessions with >5-minute pauses between turns (#14971). This is useful for OAuth
-    # subscription users where cache writes bill against "extra usage" or for third-party proxies that
-    # inject their own cache_control markers (#13477).
+    # cache_ttl: "5m" (default), "1h" (2x write cost; pays off with >5-minute pauses, #14971) or
+    # "auto" (1h human-paced, 5m machine-paced); unknown values keep "5m". Falsy/off disables
+    # caching entirely (#13477) and survives /model switches and fallback re-derivation.
     agent._cache_ttl = "5m"
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
@@ -1047,10 +1041,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
         print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     if agent._use_prompt_caching:
+        from agent.prompt_caching import is_vercel_ai_gateway_route
         if agent._use_native_cache_layout and agent.provider == "anthropic":
             source = "native Anthropic"
         elif agent._use_native_cache_layout:
             source = "Anthropic-compatible endpoint"
+        elif is_vercel_ai_gateway_route(agent.provider, agent.base_url):
+            source = "Vercel AI Gateway"
         else:
             source = "Claude via OpenRouter"
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")

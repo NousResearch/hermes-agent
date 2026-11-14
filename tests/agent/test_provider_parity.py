@@ -342,6 +342,17 @@ class TestBuildApiKwargsAIGateway:
         assert "reasoning" in extra
         assert extra["reasoning"]["enabled"] is True
 
+    def test_includes_session_affinity_header(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "ai-gateway",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            model="anthropic/claude-fable-5.2",
+        )
+        agent.session_id = "local-affinity-test-123"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs.get("extra_headers", {}).get("x-session-affinity") == "local-affinity-test-123"
+
 
 
 class TestBuildApiKwargsNousPortal:

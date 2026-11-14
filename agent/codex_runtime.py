@@ -726,6 +726,9 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
                             and "skill_manage" in agent.valid_tool_names)
     if should_review_skills:
         agent._iters_since_skill = 0
+    from agent.background_review import with_owed_background_review
+    should_review_memory, should_review_skills = with_owed_background_review(
+        agent, should_review_memory, should_review_skills)
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(

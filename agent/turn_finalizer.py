@@ -892,6 +892,9 @@ def finalize_turn(
 
     if _should_review_skills:
         agent._iters_since_skill = 0
+    from agent.background_review import with_owed_background_review
+    _should_review_memory, _should_review_skills = with_owed_background_review(
+        agent, _should_review_memory, _should_review_skills)
 
     _mirror_turn_to_memory(
         agent, original_user_message=original_user_message, final_response=final_response,

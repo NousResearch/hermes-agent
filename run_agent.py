@@ -816,6 +816,8 @@ class AIAgent(
         review_run = prepare_background_review_run(self)
         if review_run is None:
             return
+        if focus is None and not explicit:
+            self._owed_background_review = (False, False)  # this automatic review pays any owed one
         try:
             target, _prompt = spawn_background_review_thread(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
@@ -852,6 +854,10 @@ class AIAgent(
                 logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
                 return
             if not _review_should_defer(self, kwargs.get("task_cfg")):
+                # The live turn that cancelled it is the conversation continuing: owe the review to
+                # that turn's end, which replays a superset of this snapshot (owe_background_review).
+                from agent.background_review import owe_background_review
+                owe_background_review(self, kwargs.get("review_memory", False), kwargs.get("review_skills", False))
                 return
             from agent.review_idle_queue import QUEUE
             # kwargs carries the incremented _requeue_attempts through the queue so the cap survives.

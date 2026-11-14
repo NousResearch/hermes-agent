@@ -18,16 +18,18 @@ import re
 # code) has a letter/digit as its left neighbor and would slip a ``(?<![A-Za-z0-9])`` guard.
 # Candidates are found overlapping (lookahead); the snowflake decode rejects every id-form
 # start that is not a real user id, and _mfa_left_ok does the same job for ``mfa.``.
+# ``mfa.`` tokens (discontinued 2022) carry an 84-char secret; a shorter run after ``mfa.`` is a
+# dotted name (``mfa.verify_totp_code_for_user``), and read_file would show it as a secret.
 # The right boundary admits a dot that ends the run (``<tok>.`` / ``<tok>...`` at a sentence
 # end) but not one that continues a dotted identifier (``<tok>.foo``).
 _TAIL = r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
 _DISCORD_TOKEN_RE = re.compile(
-    rf"(?=(mfa\.[A-Za-z0-9_-]{{20,}}){_TAIL})"
+    rf"(?=(mfa\.[A-Za-z0-9_-]{{84}}){_TAIL})"
     rf"|(?=([MNO][A-Za-z0-9_-]{{22,27}}\.[A-Za-z0-9_-]{{6,7}}\.[A-Za-z0-9_-]{{27,}}){_TAIL})"
 )
 # Escape spellings whose last character is a letter or digit glued to what follows.
 _ESCAPE_TAIL_RE = re.compile(
-    r"(?:\\[nrt]|%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|(?:\x1b|\\x1b|\\033|\\e)\[[0-9;]*m)\Z"
+    r"(?:\\[nrtbf]|\\x[0-9A-Fa-f]{2}|%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|(?:\x1b|\\x1b|\\033|\\e)\[[0-9;]*m)\Z"
 )
 _TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
 

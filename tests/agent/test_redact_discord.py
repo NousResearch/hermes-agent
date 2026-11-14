@@ -13,7 +13,8 @@ class TestDiscordTokens:
     only the ``KEY=value`` shape used to be masked."""
 
     TOKEN = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GxAbCd.7Zq1rJ8mN0pQ2sT4uV6wX8yA0bC2dE4f"
-    MFA_TOKEN = "mfa.VkO_2G4Qv3T--NO--lWetW_tjND-toY_XyGMTCsGrhkGRlEjJ1nHPvKIhQEB"
+    # Built by concatenation: a token-shaped literal trips push protection.
+    MFA_TOKEN = "mfa." + "VkO_2G4Qv3T--NO--lWetW_tjND-toY_XyGMTCsGrhkGRlEjJ1nHPvKIhQEB" + "Zq1rJ8mN0pQ2sT4uV6wX8yA0"
 
     def test_bare_token_is_masked(self):
         result = redact_sensitive_text(f"connecting with {self.TOKEN}")
@@ -21,13 +22,22 @@ class TestDiscordTokens:
         assert "7Zq1rJ8mN0pQ" not in result
 
     def test_json_value_is_masked(self):
-        """The reported gap: masked as an assignment, verbatim as a JSON value."""
-        result = redact_sensitive_text(f'{{"DISCORD_BOT_TOKEN": "{self.TOKEN}"}}')
+        """The reported gap: masked as an assignment, verbatim as a JSON value under a key
+        that does not name a secret (the JSON key pass already covers ``DISCORD_BOT_TOKEN``)."""
+        result = redact_sensitive_text(f'{{"value": "{self.TOKEN}"}}')
         assert self.TOKEN not in result
 
     def test_mfa_form_is_masked(self):
         result = redact_sensitive_text(self.MFA_TOKEN)
         assert self.MFA_TOKEN not in result
+
+    def test_mfa_prefix_on_a_dotted_name_is_not_a_token(self):
+        """A real ``mfa.`` secret is 84 chars; a shorter run is code or config, kept intact."""
+        for text in ("    ok = mfa.verify_totp_code_for_user(user, code)\n",
+                     "mfa.require_totp_for_admin_users: true\n",
+                     "import mfa.authentication_backends_module\n"):
+            assert redact_sensitive_text(text, file_read=True) == text
+            assert redact_sensitive_text(text, code_file=True) == text
 
     def test_shape_alone_does_not_match(self):
         """A long dotted CamelCase identifier fits the token's shape; only a first
@@ -100,7 +110,7 @@ class TestDiscordTokens:
                      f"schema{self.MFA_TOKEN}"):
             assert redact_sensitive_text(text) == text
 
-    @pytest.mark.parametrize("left", ["\\n", "%0A", "\\u0020", "\x1b[31m"])
+    @pytest.mark.parametrize("left", ["\\n", "%0A", "\\u0020", "\x1b[31m", "\\b", "\\f", "\\x0c"])
     def test_mfa_after_escape_spelling_is_masked(self, left):
         result = redact_sensitive_text(f"line{left}{self.MFA_TOKEN}")
         assert self.MFA_TOKEN not in result

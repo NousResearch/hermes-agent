@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
-import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import {
+  getApiRequestConnection,
+  listAllProfileSessions,
+  listSidebarSessions,
+  type SessionInfo,
+  StaleSidebarScopeError
+} from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -500,7 +506,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           )
         }
       } catch (error) {
-        if (owns() && showLoading) {
+        // A request the scope guard refused was never sent. Its scope is no longer the
+        // ambient one, so a newer refresh owns the list; there is nothing to report.
+        if (!owns() || error instanceof StaleSidebarScopeError) {
+          return
+        }
+
+        if (showLoading) {
           setSessionsLoadError(true)
         }
 

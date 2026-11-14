@@ -57,7 +57,8 @@ def _add_agent_import_parsers(migrate_subparsers) -> None:
                 "agent-importers plugin (installed from the plugin catalog when missing). Always "
                 "previews first and asks before changing anything.")
         sub.add_argument("--source", help="Where the agent's setup (or, for Grok Bot, its export file) is")
-        sub.add_argument("--dry-run", action="store_true", help="Preview only")
+        sub.add_argument("--dry-run", action="store_true",
+                         help="Preview only: installs, enables and updates nothing")
         sub.add_argument("--overwrite", action="store_true", help="Replace existing items on name conflicts")
         sub.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
         if source.name == "openclaw":

@@ -1,0 +1,12 @@
+name: idle-compact
+repo: https://github.com/npetroff24/hermes-plugin-idle-compact
+sha: 2c2204f42e893740d866142289f5a484876ec89f
+description: Background compaction for idle chats before prompt-cache expiry — zero waiting, cache-warm summaries, per-model TTLs.
+maintainer: npetroff24
+tier: community
+category: memory
+version: "0.9.31"
+capabilities:
+  provides_tools: []
+  provides_hooks: ["on_session_end", "post_api_request", "pre_api_request"]
+  provides_middleware: ["llm_execution"]

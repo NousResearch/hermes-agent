@@ -14,6 +14,7 @@ screenshots: []
 readme: true
 platforms: []
 known_issues:
+  - "For chats and live prompts, Full text expands only a whitespace-normalized tail capped at 480 characters rather than retrieving the complete original. See https://github.com/KyaniteLabs/unbl0ck/issues/32."
   - "Uses private Hermes Kanban and pairing imports; revalidate after Hermes upgrades."
   - "With no principal_name set, detection uses the configured role words plus principal and human."
   - "Windows has no cross-process state lock; concurrent processes can lose an update."

@@ -46,3 +46,39 @@ def _request_service_tier(model_options: Any) -> Any:
     if "fast" in model_options:
         return "priority" if _coerce_request_bool(model_options.get("fast"), default=False) else None
     return _REQUEST_OPTION_MISSING
+
+
+_TURN_OPT_OUT_KEYS = ("skip_background_review", "skip_title")
+
+
+def _extract_request_model_options(body: Any) -> Optional[dict[str, Any]]:
+    """Extract ``model_options`` from a request body, folding in top-level turn opt-out flags."""
+    if not isinstance(body, dict):
+        return None
+    raw_opts = body.get("model_options")
+    opts: dict[str, Any] = dict(raw_opts) if isinstance(raw_opts, dict) else {}
+    for key in _TURN_OPT_OUT_KEYS:
+        if key in body and key not in opts:
+            opts[key] = body[key]
+    return opts or None
+
+
+def _apply_request_turn_opt_outs(
+    agent_cls: Any, agent_kwargs: dict[str, Any], model_options: Any
+) -> Any:
+    """Apply per-request ``skip_background_review`` and ``skip_title`` opt-outs to ``AIAgent``."""
+    from gateway.platforms.api_server import _coerce_request_bool
+
+    opts = model_options if isinstance(model_options, dict) else {}
+    raw_skip_review = opts.get("skip_background_review", agent_kwargs.pop("skip_background_review", None))
+    raw_skip_title = opts.get("skip_title", agent_kwargs.pop("skip_title", None))
+    skip_review = _coerce_request_bool(raw_skip_review, default=False) if raw_skip_review is not None else False
+    skip_title = _coerce_request_bool(raw_skip_title, default=False) if raw_skip_title is not None else False
+    if skip_review:
+        agent_kwargs["skip_background_review"] = True
+    agent = agent_cls(**agent_kwargs)
+    if skip_review:
+        agent.skip_background_review = True
+    if skip_title:
+        agent.skip_title = True
+    return agent

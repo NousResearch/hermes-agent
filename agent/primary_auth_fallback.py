@@ -77,21 +77,26 @@ def _runs_the_backup(agent: Any, failure: PrimaryAuthFailure) -> bool:
     running = str(getattr(agent, "provider", "") or "").strip().lower()
     if failure.backup and running and running != failure.backup.strip().lower():
         return False
-    running_url = normalize_route_base_url(_agent_route_url(agent))
-    backup_url = normalize_route_base_url(failure.backup_base_url)
-    return not (running_url and backup_url and running_url != backup_url)
+    running_url, running_query = _route(getattr(agent, "base_url", ""),
+                                        (getattr(agent, "_client_kwargs", None) or {}).get("default_query"))
+    backup_url, backup_query = _route(failure.backup_base_url)
+    if not (running_url and backup_url):
+        return True
+    return normalize_route_base_url(running_url) == normalize_route_base_url(backup_url) \
+        and running_query == backup_query
 
 
-def _agent_route_url(agent: Any) -> str:
-    """The endpoint ``agent`` sends to, query included: AIAgent moves a base_url's query (Azure's
-    ``?api-version=``) into the client's ``default_query`` and keeps the query-free URL on ``base_url``."""
-    from urllib.parse import urlencode
+def _route(url: Any, default_query: Any = None) -> tuple[str, dict]:
+    """An endpoint as the client sends it: the query-free URL plus the decoded query. AIAgent moves a
+    base_url's query (Azure's ``?api-version=``) into the client's ``default_query`` the same way, so
+    both sides compare decoded, whatever escaping the configured URL used."""
+    from urllib.parse import parse_qs, urlparse, urlunparse
 
-    url = str(getattr(agent, "base_url", "") or "")
-    query = (getattr(agent, "_client_kwargs", None) or {}).get("default_query")
-    if url and isinstance(query, dict) and query and "?" not in url:
-        return f"{url}?{urlencode(query)}"
-    return url
+    raw = str(url or "")
+    parsed = urlparse(raw)
+    if not parsed.query:
+        return raw, dict(default_query) if isinstance(default_query, dict) else {}
+    return urlunparse(parsed._replace(query="")), {k: v[0] for k, v in parse_qs(parsed.query).items()}
 
 
 # The failure found while resolving this turn's route. A context variable, not a runner attribute: the

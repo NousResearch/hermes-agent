@@ -346,10 +346,18 @@ mcp_servers:
 Behavior:
 - Hermes uses the MCP SDK's OAuth 2.1 PKCE flow (metadata discovery, client identification, token exchange, and refresh)
 - On first connect, a browser window opens for authorization
-- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` (a named profile uses `~/.hermes/profiles/<name>/mcp-tokens/`) and reused across sessions
-- Token refresh is automatic; re-authorization only happens when refresh fails
+- OAuth state is persisted in the active profile's `$HERMES_HOME/mcp-tokens/` and reused across sessions (a named profile normally uses `~/.hermes/profiles/<name>/mcp-tokens/`)
+- Stored grants are reused and refreshed automatically when possible; a grant that can no longer be used requires re-authorization
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
 - Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical
+
+### Persisted OAuth state
+
+OAuth JSON state is stored in the active profile's `$HERMES_HOME/mcp-tokens/` directory (`~/.hermes/mcp-tokens/` for the default profile): `<server>.json` stores tokens, `<server>.client.json` stores client registration, and `<server>.meta.json` stores discovered authorization-server metadata, including the token endpoint. Here `<server>` is the sanitized server name used for filenames. Files are created as needed; internal lock, marker, or backup files may also be present.
+
+Hermes restores cached metadata on startup. If it is missing and stored tokens exist, Hermes attempts metadata discovery before refresh; keeping the metadata file avoids that extra discovery step and preserves the discovered token endpoint. Missing metadata does not by itself require a new login, but failed discovery or refresh can still require re-authorization.
+
+When pre-seeding another machine, stop Hermes processes using that server on the source first, then copy whichever of the three JSON files exist into the destination profile's `mcp-tokens/` directory. Keep the same server configuration, restrict file access to the Hermes service account, and use mode `0600` on Unix. Do not share refresh tokens between concurrently running machines.
 
 ### Device-code login (RFC 8628)
 

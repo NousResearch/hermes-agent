@@ -1074,8 +1074,12 @@ def _(rid, params: dict) -> dict:
     worker, err = _slash_worker_for(rid, sid, session)
     if err:
         return err
+    # A transcript-writing slash (/model X, /compress) claims the chat BEFORE the worker runs: the worker's CLI
+    # writes the session row first, and the live mirror's gate would refuse only after that.
+    writes = base in {"compress", "compact"} or (base == "model" and bool(arg.strip()))
     try:
-        output = worker.run(cmd)
+        with _transcript_claim(session) if writes and session else contextlib.nullcontext():
+            output = worker.run(cmd)
         if seed := (worker.pop_seed() if hasattr(worker, "pop_seed") else ""):
             # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
             # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
@@ -1153,11 +1157,16 @@ def _(rid, params: dict, session) -> dict:
                 if _tools_mod("tools.checkpoint_undo_hint").rollback_rewinds_newest_turn(history, user_indices, taken):
                     try:
                         removed = _rewind_active_session_history(session, len(user_indices) - 1)[2]
+                    except SessionNotOwned:
+                        raise
                     except Exception as exc:
                         raise RuntimeError(f"checkpoint restored, but session history rewind failed: {exc}") from exc
             result["history_removed"] = removed
         return result
-    return _ok(rid, _with_checkpoints(session, go))
+    # A whole-tree restore may rewind the transcript, so it claims the chat BEFORE touching the workspace: a chat
+    # another surface took answers 4090 with neither files nor history changed (its turns may have just edited them).
+    with contextlib.nullcontext() if file_path else _transcript_claim(session):
+        return _ok(rid, _with_checkpoints(session, go))
 
 
 @_rpc("rollback.diff", live_session=True, fail_code=5022)

@@ -69,10 +69,13 @@ class TestReasoningOffOneShotOverride:
         assert cfg == {"enabled": False, "effort": "none"}
 
     def test_rejected_disable_resends_users_config_verbatim(self):
-        """After a 'reasoning is mandatory' 400 the retry must land on the
-        SAME provider cache key as every prior request: the ephemeral
-        continuation override is discarded and the user's own config goes
-        out unchanged. A config that is itself a disable is omitted."""
+        """After a relay rejects the disable FIELD (no floor: it doesn't know
+        the parameter) the retry must land on the SAME provider cache key as
+        every prior request: the ephemeral continuation override is discarded
+        and the user's own config goes out unchanged. A config that is itself a
+        disable is omitted. (A route that takes a level steps the continuation
+        to the floor instead: see
+        ``test_floor_route_steps_the_one_shot_continuation_to_the_floor``.)"""
         from agent.chat_completion_helpers import _reasoning_config_for_wire
 
         agent = _AgentStandIn({"enabled": True, "effort": "high"})
@@ -97,6 +100,22 @@ class TestReasoningOffOneShotOverride:
         assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
 
         agent.reasoning_config = {"enabled": True, "effort": "high"}
+        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
+
+    def test_floor_route_steps_the_one_shot_continuation_to_the_floor(self):
+        """A route that refused the disable but takes a level (``_reasoning_floor_required``:
+        "reasoning is mandatory", Claude Sonnet 5.5's ``between_tools`` 400) gets the floor for the
+        one-shot "answer without thinking" continuation, for that call only, instead of re-spending
+        the session's full thinking budget; the next request is the session's own config again."""
+        from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+        from agent.chat_completion_helpers import _reasoning_config_for_wire
+
+        agent = _AgentStandIn({"enabled": True, "effort": "high"})
+        agent._reasoning_disable_rejected = True
+        agent._reasoning_floor_required = True
+        agent._ephemeral_reasoning_off = True
+        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
+        assert agent._ephemeral_reasoning_off is False
         assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
 
 

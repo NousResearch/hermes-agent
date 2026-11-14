@@ -28,11 +28,11 @@ def _fresh_memo():
     auxiliary_reasoning_floor._FLOORED_ROUTES.clear()
 
 
-def _call(client):
+def _call(client, model="openai/gpt-6-astra", base_url="http://127.0.0.1:8765/v1"):
     with (
         patch("agent.auxiliary_client._resolve_task_provider_model",
-              return_value=("custom", "openai/gpt-6-astra", "http://127.0.0.1:8765/v1", "sk-x", None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "openai/gpt-6-astra")),
+              return_value=("custom", model, base_url, "sk-x", None)),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, model)),
         patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
         patch("agent.auxiliary_client._try_payment_fallback", return_value=None),
     ):
@@ -112,5 +112,34 @@ def test_tokenplan_level_rejection_steps_up_to_the_floor_and_remembers_the_route
     assert retry["extra_body"]["response_format"] == {"type": "json_object"}
 
     assert _call(client) == {"ok": True}
+    upfront = client.chat.completions.create.call_args_list[2].kwargs
+    assert upfront["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+
+
+# Claude Sonnet 5.5 behind an OpenAI-compatible relay: the relay translates ``reasoning_effort: none``
+# into Anthropic's ``thinking: {"type": "disabled"}`` and the model refuses it, naming its own "off".
+_SONNET_55_400 = (
+    "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'To turn "
+    "thinking off on this model, send \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\": "
+    "\"disabled\"}. The model does not think before responding.'}}"
+)
+
+
+def test_sonnet_55_between_tools_400_steps_the_title_up_to_the_floor_and_remembers_the_route():
+    """Title generation on Claude Sonnet 5.5 through a relay: ``none`` → between_tools 400 → retry at the
+    floor with everything else intact → ok, and the next thinking-off aux call on that route starts at the
+    floor. Before, the 400 matched no rung and every title call failed."""
+    client = MagicMock()
+    client.base_url = "http://relay.example/v1"
+    client.chat.completions.create.side_effect = [RuntimeError(_SONNET_55_400), {"ok": True}, {"ok": True}]
+
+    assert _call(client, model="claude-sonnet-5-5", base_url=client.base_url) == {"ok": True}
+    first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list[:2])
+    assert first["reasoning_effort"] == "none"
+    assert retry["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
+
+    assert _call(client, model="claude-sonnet-5-5", base_url=client.base_url) == {"ok": True}
+    assert client.chat.completions.create.call_count == 3
     upfront = client.chat.completions.create.call_args_list[2].kwargs
     assert upfront["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT

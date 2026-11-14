@@ -478,10 +478,13 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
     return any(phrase in body for phrase in _IMAGE_CORRUPT_PHRASES)
 
 
-# Internal tool-call markup emitted in the agent's raw output stream.
-# Matches closed blocks and blocks left unclosed by truncation (stored
-# reply previews are capped, so a block can be cut mid-JSON).
-_TOOLCALL_BLOCK_RE = re.compile(r"<TOOLCALL>.*?(?:</TOOLCALL>|$)", re.DOTALL | re.IGNORECASE)
+# Internal tool-call markup emitted in the agent's raw output stream. A closed block is replaced
+# wherever it sits (never spanning another open tag, so an earlier inline mention keeps its prose);
+# a block left unclosed by truncation (stored reply previews are capped, so a block can be cut
+# mid-JSON) only at a block boundary, as the outbound filter does, so prose that merely mentions
+# ``<TOOLCALL>`` keeps everything after it.
+_TOOLCALL_CLOSED_RE = re.compile(r"<TOOLCALL>(?:(?!<TOOLCALL>).)*?</TOOLCALL>", re.DOTALL | re.IGNORECASE)
+_TOOLCALL_UNCLOSED_RE = re.compile(r"(?:\A|(?<=\n))([ \t]*)<TOOLCALL>(?:(?!</TOOLCALL>).)*\Z", re.DOTALL | re.IGNORECASE)
 
 _TOOLCALL_PLACEHOLDER = "[processing...]"
 
@@ -494,14 +497,16 @@ def strip_internal_markup(text: str | None) -> str | None:
     ``reply_to_text`` preview resolved from a replied-to bot message
     (#61217) — the markup must not be shown verbatim. Each block (closed,
     or unclosed through end-of-text) is replaced with a neutral
-    placeholder. Redaction is surgical: only the markup blocks change,
+    placeholder; an unclosed one only when it starts a line, so a quoted
+    inline mention of the tag keeps its trailing prose. Redaction is surgical: only the markup blocks change,
     so surrounding user content (including leading/trailing whitespace)
     is preserved byte-for-byte. Text without markup is returned
     unchanged, and ``None``/empty input passes through as-is.
     """
     if not text or "<toolcall>" not in text.lower():
         return text
-    return _TOOLCALL_BLOCK_RE.sub(_TOOLCALL_PLACEHOLDER, text)
+    text = _TOOLCALL_CLOSED_RE.sub(_TOOLCALL_PLACEHOLDER, text)
+    return _TOOLCALL_UNCLOSED_RE.sub(lambda m: m.group(1) + _TOOLCALL_PLACEHOLDER, text)
 
 
 __all__ = [

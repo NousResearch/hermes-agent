@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { DitherDot } from '@/components/ui/dither-dot'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -125,10 +126,7 @@ export function DecodedLabel({ leaving, text }: { leaving?: boolean; text: strin
       )}
     >
       <GlyphText text={decoded} />
-      <span
-        aria-hidden="true"
-        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary decode-cursor-blink"
-      />
+      <DitherDot className="ml-1.5 -mr-[0.875rem] -translate-y-px text-primary decode-cursor-blink" />
     </span>
   )
 }

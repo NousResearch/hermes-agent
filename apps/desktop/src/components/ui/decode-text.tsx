@@ -1,5 +1,6 @@
 import { type ComponentProps, useEffect, useState } from 'react'
 
+import { DitherDot } from '@/components/ui/dither-dot'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 
@@ -114,12 +115,7 @@ export function DecodeText({
     >
       {staticPrefix}
       {tail}
-      {cursor && (
-        <span
-          aria-hidden="true"
-          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px] decode-cursor-blink"
-        />
-      )}
+      {cursor && <DitherDot className="ml-0.5 -translate-y-px decode-cursor-blink" />}
     </span>
   )
 }

@@ -79,7 +79,7 @@ const subscribePulse = (subscriber: PulseSubscriber): (() => void) => {
   }
 }
 
-export interface StatusPulseProps extends Omit<ComponentProps<'span'>, 'children' | 'ref'> {
+export interface StatusPulseProps extends Omit<ComponentProps<'span'>, 'ref'> {
   kind: 'opacity' | 'ping'
   opacity?: number
 }

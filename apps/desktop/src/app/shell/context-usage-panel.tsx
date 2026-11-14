@@ -167,7 +167,10 @@ function ContextUsageBar({
     <div
       className={cn(
         'flex h-1.5 overflow-hidden rounded-full',
-        categories.length ? 'bg-(--ui-stroke-tertiary)' : 'dither bg-(--ui-bg-elevated)'
+        // An empty track is a plain tint now, not a dither: the pattern has to
+        // fill an arbitrary width, and a pixel pattern at fractional display
+        // scales can only stay crisp if every cell lands on a whole pixel.
+        categories.length === 0 ? 'bg-(--ui-bg-elevated)' : 'bg-(--ui-stroke-tertiary)'
       )}
       data-slot="context-usage-bar"
     >

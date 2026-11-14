@@ -9,6 +9,7 @@ import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
+import { DitherDot } from '@/components/ui/dither-dot'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
 import { getLocalModelsStatus } from '@/hermes'
@@ -258,11 +259,9 @@ export const ResponseLoadingIndicator: FC = () => {
 
   return (
     <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
-      <StatusPulse
-        aria-hidden="true"
-        className="dither inline-block size-3 rounded-[2px] text-midground/80"
-        kind="opacity"
-      />
+      <StatusPulse aria-hidden="true" className="inline-flex text-midground/80" kind="opacity">
+        <DitherDot className="size-3" />
+      </StatusPulse>
       {hint ? (
         <WaitHint hint={hint} />
       ) : localLoad ? (
@@ -334,11 +333,9 @@ const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, loca
     >
       {active && (
         <>
-          <StatusPulse
-            aria-hidden="true"
-            className="dither inline-block size-3 rounded-[2px] text-midground/80"
-            kind="opacity"
-          />
+          <StatusPulse aria-hidden="true" className="inline-flex text-midground/80" kind="opacity">
+            <DitherDot className="size-3" />
+          </StatusPulse>
           {hint ? (
             <WaitHint hint={hint} />
           ) : localLoad ? (

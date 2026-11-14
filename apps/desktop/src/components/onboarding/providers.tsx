@@ -1,3 +1,4 @@
+import { DitherDot } from '@/components/ui/dither-dot'
 import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
 import { Check, ChevronRight, Terminal } from '@/lib/icons'
@@ -55,7 +56,7 @@ export function FeaturedProviderRow({
             <ConnectedTag />
           ) : (
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
-              <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
+              <DitherDot />
               {t.onboarding.recommended}
             </span>
           )}

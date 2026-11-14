@@ -869,9 +869,12 @@
   }
 }
 
-.dither {
-  background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
-}
+/* The 4x4 "dither" marker is a component now: <DitherDot> draws real rects with
+   shape-rendering="crispEdges". The old `.dither` class here was a 2px
+   repeating-conic-gradient, which Chromium rasterizes on the device grid — at
+   fractional display scales (Windows 125/150/175%) every cell edge lands
+   mid-pixel, so an 8px marker rendered as antialiased mush instead of a grid.
+   Don't bring the gradient back for anything that has to read as pixels. */
 
 /* ─────────────────────────────────────────────────────────────────────────
    INLINE REFERENCES — the one system for anything that points at something

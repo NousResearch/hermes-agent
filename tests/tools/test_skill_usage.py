@@ -697,3 +697,13 @@ def test_is_locked_ignores_malformed_records_but_never_relaxes_a_truthy_flag(ski
     assert mod.is_locked("b") is True
     assert mod.is_locked("c") is False
     assert mod.is_locked("missing") is False
+
+
+def test_essential_force_injected_skill_is_protected() -> None:
+    """ESSENTIAL_SKILLS (hermes-agent) is injected into every system prompt, so it must never be archived."""
+    from tools.skill_usage import is_protected_builtin
+
+    assert is_protected_builtin("hermes-agent"), (
+        "hermes-agent is force-injected via agent/skill_utils.ESSENTIAL_SKILLS; "
+        "archiving it would remove the always-on self-help skill from every session"
+    )

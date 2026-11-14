@@ -42,6 +42,9 @@ PROTECTED_BUILTIN_SKILLS: set[str] = {
     # gateway/session_kanban.py); if it is missing from the assignee's skills root the claim dies before the
     # first model call, so a curator archive of it silently kills the review gate.
     "sdlc-review",
+    # Force-injected into every session's system prompt (agent/skill_utils.ESSENTIAL_SKILLS);
+    # archiving it would strip the always-on Hermes self-help skill from all profiles.
+    "hermes-agent",
 }
 
 

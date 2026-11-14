@@ -25,3 +25,4 @@ capabilities:
     - pre_tool_call
   provides_middleware: []
   requires_env: []
+image: https://raw.githubusercontent.com/krumjahn/vividsites-connectors/e988245c704aa0441f547fbcb08abb624bc00db6/hermes/docs/marketplace-banner.png

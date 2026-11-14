@@ -53,14 +53,36 @@ def test_permission_error_falls_back_to_home(monkeypatch):
     assert result == os.path.expanduser("~")
 
 
-def test_permission_error_prefers_terminal_cwd(monkeypatch):
-    """TERMINAL_CWD takes priority over $HOME when the live CWD is TCC-blocked."""
-    monkeypatch.setenv("TERMINAL_CWD", "/custom/from/env")
+def test_permission_error_prefers_existing_terminal_cwd(monkeypatch, tmp_path):
+    """TERMINAL_CWD takes priority over $HOME when the live CWD is TCC-blocked.
+
+    The fallback must itself exist: a TERMINAL_CWD pointing at a deleted
+    directory (the mid-session stale-cwd failure — the session's recorded cwd
+    died after resume pinned it) is NOT a valid fallback, because spawning a
+    subprocess into it fails exactly like the original getcwd error. Home is
+    the guaranteed-valid last resort.
+    """
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
 
     with _GetcwdPatcher(_raise(PermissionError(1, "Operation not permitted"))):
         result = terminal_tool._safe_getcwd()
 
-    assert result == "/custom/from/env"
+    assert result == str(tmp_path)
+
+
+def test_permission_error_skips_dead_terminal_cwd(monkeypatch, tmp_path):
+    """A TERMINAL_CWD whose directory is gone must fall through to $HOME.
+
+    Regression guard for the stale-cwd-on-resume fix: the fallback chain can
+    no longer return the dead path it is falling back from.
+    """
+    dead = tmp_path / "gone"
+    monkeypatch.setenv("TERMINAL_CWD", str(dead))
+
+    with _GetcwdPatcher(_raise(FileNotFoundError(2, "No such file or directory"))):
+        result = terminal_tool._safe_getcwd()
+
+    assert result == os.path.expanduser("~")
 
 
 def test_file_not_found_still_handled(monkeypatch):

@@ -252,6 +252,20 @@ const SOURCE_CONFIG: Record<
     border: "rgba(149, 191, 71, 0.2)",
     icon: "\u{25B2}",
   },
+  Google: {
+    label: "Google",
+    color: "#4285f4",
+    bg: "rgba(66, 133, 244, 0.08)",
+    border: "rgba(66, 133, 244, 0.2)",
+    icon: "\u{25C6}",
+  },
+  "Matt Pocock": {
+    label: "Matt Pocock",
+    color: "#a78bfa",
+    bg: "rgba(167, 139, 250, 0.08)",
+    border: "rgba(167, 139, 250, 0.2)",
+    icon: "\u{2756}",
+  },
 };
 
 const SOURCE_ORDER = [
@@ -277,6 +291,8 @@ const SOURCE_ORDER = [
   "Notion",
   "Airtable",
   "Shopify",
+  "Google",
+  "Matt Pocock",
 ];
 
 function highlightMatch(text: string, query: string): React.ReactNode {

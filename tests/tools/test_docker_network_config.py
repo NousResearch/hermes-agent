@@ -71,7 +71,16 @@ def _reuse_guard_harness(
 
     Returns the list of docker commands issued.
     """
+    from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     commands = []
+    candidate_labels = {}
+    refresh_fingerprint = docker_env.DockerEnvironment._refresh_runtime_fingerprint
+
+    def seed_candidate_labels(self):
+        refresh_fingerprint(self)
+        # Keep this candidate eligible so the real network-mode guard decides reuse.
+        candidate_labels.update(self._labels)
+        candidate_labels["hermes-egress"] = "off"
 
     def fake_run(cmd, *args, **kwargs):
         commands.append(cmd)
@@ -82,13 +91,20 @@ def _reuse_guard_harness(
             stdout = ""
 
         if len(cmd) > 1 and cmd[1] == "ps":
-            # Matches the egress-aware reuse probe: with egress off the
-            # format string is ID\tState\tEgressLabel and docker renders a
-            # missing label as "<no value>".
-            Result.stdout = "existing-container-id\trunning\t<no value>\n"
+            filters = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "--filter"]
+            for constraint in filters:
+                if not constraint.startswith("label="):
+                    continue
+                key, equals, value = constraint[6:].partition("=")
+                if key not in candidate_labels or (equals and candidate_labels[key] != value):
+                    break
+            else:
+                Result.stdout = "existing-container-id\trunning\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            # Two probes share `inspect`: image identity (must match for reuse) and network mode.
-            Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
+            if '.Config.Labels "hermes-reuse-owners"' in cmd[3]:
+                Result.stdout = candidate_labels.get(docker_env.OWNER_LABEL, "")
+            else:
+                Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
         elif len(cmd) > 2 and cmd[1:3] == ["image", "inspect"]:
             Result.returncode = 1  # never in the local store: the replacement must go through `pull`
         elif len(cmd) > 1 and cmd[1] == "pull":
@@ -99,8 +115,14 @@ def _reuse_guard_harness(
         return Result()
 
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_refresh_runtime_fingerprint", seed_candidate_labels)
     monkeypatch.setattr(docker_env.subprocess, "run", fake_run)
     monkeypatch.setattr(docker_env.DockerEnvironment, "_storage_opt_supported", lambda self: False)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_runtime_fingerprint",
+        registered_runtime_fingerprint,
+    )
 
     docker_env.DockerEnvironment(
         image="python:3.11",
@@ -110,6 +132,7 @@ def _reuse_guard_harness(
         network=network,
         extra_args=extra_args,
         persist_across_processes=True,
+        shared_container_key="legacy-network-guard",
         image_pinned=image_pinned,
     )
     return commands
@@ -118,8 +141,8 @@ def _reuse_guard_harness(
 def test_reuse_rejects_networked_container_when_lockdown_requested(monkeypatch):
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=False)
 
-    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), (
-        "bridge-networked container must be removed when docker_network=false"
+    assert any(cmd[1] == "rm" and "-f" not in cmd for cmd in commands), (
+        "removal must let the daemon preserve an active sibling when docker_network=false"
     )
     run_cmd = next(cmd for cmd in commands if len(cmd) > 2 and cmd[1:3] == ["run", "-d"])
     assert "--network=none" in run_cmd
@@ -148,7 +171,7 @@ def test_reuse_recreates_container_built_from_another_image_when_pinned(monkeypa
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
                                     existing_image="old/image:1", image_pinned=True)
 
-    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "container from another image must be removed"
+    assert any(cmd[1] == "rm" and "-f" not in cmd for cmd in commands), "never force-remove an active sandbox"
     assert any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands)
 
 
@@ -159,7 +182,7 @@ def test_reuse_pulls_the_replacement_before_removing_the_old_container(monkeypat
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
                                     existing_image="old/image:1", image_pinned=True)
     kinds = [tuple(c[1:3]) for c in commands]
-    assert kinds.index(("pull", "python:3.11")) < kinds.index(("rm", "-f"))
+    assert kinds.index(("pull", "python:3.11")) < kinds.index(("rm", "existing-container-id"))
 
 
 def test_reuse_keeps_the_old_container_when_the_replacement_cannot_be_pulled(monkeypatch, caplog):

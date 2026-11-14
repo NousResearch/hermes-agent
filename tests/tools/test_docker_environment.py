@@ -60,6 +60,7 @@ def _make_dummy_env(**kwargs):
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
         snap_compat=kwargs.get("snap_compat", False),
+        image_pinned=kwargs.get("image_pinned", False),
     )
 
 
@@ -446,8 +447,10 @@ def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
     assert "--init" in default and "no-new-privileges" in default
     assert "--init" not in compat and "no-new-privileges" not in compat
 
-    def strip(argv):  # everything except the two flags and the random container name
-        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges") and not a.startswith("hermes-")]
+    def strip(argv):  # ignore only the opt-out flags and per-run random name/path
+        label_path = argv[argv.index("--label-file") + 1]
+        ignored = ("--init", "--security-opt", "no-new-privileges", "--label-file", label_path)
+        return [a for a in argv if a not in ignored and not a.startswith("hermes-")]
 
     assert strip(default) == strip(compat)
 
@@ -764,6 +767,7 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     first = _make_dummy_env(**config)
     second = _make_dummy_env(**config)
     assert first._labels["hermes-environment"] == second._labels["hermes-environment"]
+    assert first._runtime_fp == second._runtime_fp
     # The safe copy really is per-construction volatile: proof the stability above
     # comes from canonicalization, not from the mount happening to be stable.
     mounts = []
@@ -776,6 +780,7 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     changed = dict(config, volumes=["volume-b:/workspace"])
     third = _make_dummy_env(**changed)
     assert third._labels["hermes-environment"] != first._labels["hermes-environment"]
+    assert third._runtime_fp != first._runtime_fp
 
 
 def test_labels_attribute_populated_after_init(monkeypatch):
@@ -790,6 +795,9 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     labels = dict(env._labels)
     environment_label = labels.pop("hermes-environment")
+    runtime_label = labels.pop("hermes-runtime-fingerprint")
+    assert env._reuse_owners is not None
+    assert labels.pop("hermes-reuse-owners") == env._reuse_owners.namespace
     assert labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
@@ -797,6 +805,8 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-egress": "off",
     }
     assert re.fullmatch(r"[0-9a-f]{24}", environment_label)
+    assert runtime_label == env._runtime_fp
+    assert re.fullmatch(r"[0-9a-f]{24}", runtime_label)
 
 
 @pytest.mark.parametrize("changed_setting", ["image", "volumes", "hermes_home"])
@@ -915,6 +925,7 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
     Returns the captured call list so the test can verify which docker
     commands actually ran.
     """
+    from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     calls = []
 
     def _run(cmd, **kwargs):
@@ -944,6 +955,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_runtime_fingerprint",
+        registered_runtime_fingerprint,
+    )
     return calls
 
 
@@ -1025,8 +1041,11 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
     default-config Podman host (#99213).  The probe must stick to fields both
     runtimes implement (``{{.ID}}``, ``{{.State}}``) and express the egress
     posture via label FILTERS instead."""
+    from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/podman")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(docker_env, "_runtime_reuse_fingerprint", lambda image, args, **kw: "podman-runtime-fp")
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_container_runtime_fingerprint", registered_runtime_fingerprint)
 
     calls = []
 
@@ -1054,6 +1073,8 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+            if sub == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout="podman-runtime-fp\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
@@ -1181,7 +1202,7 @@ def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     assert not run_invocations, "should not docker run when reusing an exited container"
 
 
-def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
+def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch, caplog):
     """When ``docker run`` fails (e.g. exit 125), the partially-created
     container must be removed by name.
 
@@ -1189,7 +1210,8 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
     leaving a stale ``Created`` container. The exited-only orphan reaper
     (``reap_orphan_containers``, ``status=exited``) never catches a
     ``Created`` orphan, so without this cleanup it leaks permanently.
-    Regression for #7439. Salvage of #7440 (@Tranquil-Flow).
+    Regression for #7439. Salvage of #7440 (Tranquil-Flow).
+    Also verifies the fixed-IP stderr report in #152972 (RunLittleTurtle).
     """
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
@@ -1206,7 +1228,8 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 raise subprocess.CalledProcessError(
-                    125, cmd, output="", stderr="docker: Error response from daemon"
+                    125, cmd, output="",
+                    stderr="docker: Error response from daemon: failed to set up container networking: Address already in use",
                 )
             if sub == "rm":
                 cleanup_calls.append(list(cmd))
@@ -1215,9 +1238,14 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
 
-    with pytest.raises(subprocess.CalledProcessError):
-        _make_dummy_env()
+    with pytest.raises(docker_env.EnvironmentConnectionError, match="Address already in use") as exc:
+        _make_dummy_env(
+            persistent_filesystem=True,
+            extra_args=["--network=mynet", "--ip=172.30.0.10"],
+        )
 
+    assert isinstance(exc.value.__cause__, subprocess.CalledProcessError)
+    assert "Address already in use" in caplog.text
     assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
     rm_cmd = cleanup_calls[0]
     assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
@@ -1257,8 +1285,6 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
     rm_cmd = cleanup_calls[0]
     assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
     assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
-
-
 
 
 # ── Cleanup correctness (issue #20561) ────────────────────────────
@@ -1473,7 +1499,8 @@ def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
                 cmd, 0, stdout="cid-a\ncid-b\ncid-c\n", stderr="",
             )
         if sub == "inspect":
-            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+            stdout = old + "\n" if "{{.State.FinishedAt}}" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         if sub == "rm":
             rm_calls.append(cmd[-1])
             # cid-b fails; cid-a and cid-c succeed.
@@ -1514,7 +1541,8 @@ def test_reap_orphan_uses_plain_rm_so_running_containers_fail_safe(monkeypatch):
                 cmd, 0, stdout="cid-a\ncid-b\n", stderr="",
             )
         if sub == "inspect":
-            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+            stdout = old + "\n" if "{{.State.FinishedAt}}" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         if sub == "rm":
             rm_calls.append(list(cmd))
             if cmd[-1] == "cid-b":

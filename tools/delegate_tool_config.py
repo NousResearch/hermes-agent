@@ -582,24 +582,41 @@ class ResolvedReasoning(NamedTuple):
     config: Optional[dict]
 
 
+def _explicit_child_effort(delegation_cfg: dict, route_effort: Any) -> Any:
+    """The child's raw explicit effort: the task route's, else ``delegation.reasoning_effort``; None when neither
+    is set. Keep the raw value — a YAML ``false`` must disable thinking, not coerce to "" and inherit."""
+    raw = route_effort if route_effort or route_effort is False else (delegation_cfg or {}).get("reasoning_effort")
+    return raw if raw or raw is False else None
+
+
+def _delegation_reasoning_pin(delegation_cfg: dict, route_effort: Any = None) -> Optional[dict[str, Any]]:
+    """The explicit child effort parsed (YAML false pins thinking off, not inheritance); None when the child
+    inherits the parent's level (nothing set, or an unparseable value)."""
+    raw = _explicit_child_effort(delegation_cfg, route_effort)
+    if raw is None:
+        return None
+    from hermes_constants import parse_reasoning_effort
+    return parse_reasoning_effort(raw)
+
+
+def _child_reasoning_pinned(delegation_cfg: dict, route_effort: Any) -> bool:
+    """Whether the child's level is a pin rather than the parent's inherited (possibly adapted) one: a
+    :class:`ResolvedReasoning` route value, or a parseable route / ``delegation.reasoning_effort``. A pinned
+    child does not adapt its own reasoning (``agent.adaptive_reasoning``)."""
+    return isinstance(route_effort, ResolvedReasoning) or _delegation_reasoning_pin(delegation_cfg, route_effort) is not None
+
+
 def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any) -> Any:
     """Child reasoning config: a :class:`ResolvedReasoning` route value as-is, else the route's raw effort >
-    ``delegation.reasoning_effort`` > the parent's level. Keep the raw value — a YAML ``false`` must disable
-    thinking, not coerce to "" and inherit."""
+    ``delegation.reasoning_effort`` > the parent's current effective level."""
     if isinstance(route_effort, ResolvedReasoning):
         return route_effort.config
-    child_reasoning = getattr(parent_agent, "reasoning_config", None)
-    delegation_effort = route_effort
-    if not (delegation_effort or delegation_effort is False):
-        delegation_effort = (delegation_cfg or {}).get("reasoning_effort")
-    if delegation_effort or delegation_effort is False:
-        from hermes_constants import parse_reasoning_effort
-        parsed = parse_reasoning_effort(delegation_effort)
-        if parsed is None:
-            logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
-        else:
-            child_reasoning = parsed
-    return child_reasoning
+    parsed = _delegation_reasoning_pin(delegation_cfg, route_effort)
+    if parsed is not None:
+        return parsed
+    if (raw := _explicit_child_effort(delegation_cfg, route_effort)) is not None:
+        logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", raw)
+    return getattr(parent_agent, "reasoning_config", None)
 
 
 def _resolve_child_runtime(
@@ -681,6 +698,9 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
+        # The adaptive policy rides separately from route/fallback ownership: an unpinned child reclassifies its
+        # own goal even when auxiliary.review owns its provider route (_child_reasoning_pinned marks the pins).
+        "adaptive_reasoning": getattr(parent_agent, "adaptive_reasoning", None),
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
         # model never borrows the parent's chain; an explicitly declared child chain still remains available.
         "fallback_model": _resolve_child_fallback_chain(

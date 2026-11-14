@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_init_credentials import _print_key_banner
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
@@ -623,18 +624,6 @@ def _setup_logging(agent):
         _ra().logger.info("Verbose logging enabled (third-party library logs suppressed)")
     # Quiet mode must NOT raise per-logger levels: isEnabledFor() runs before propagation and
     # would starve the root file handlers. Noise reduction belongs in hermes_logging.
-
-
-def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
-    """Masked credential line. A callable ``key`` (Entra ID, Vertex OAuth, key_cmd, ...) is labelled
-    by its tagged source and never invoked. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
-    from agent.credential_source import credential_label
-    if source_label := credential_label(key):
-        print(f"🔑 Using credentials: {source_label}")
-    elif isinstance(key, str) and len(key) > 12:
-        print(f"🔑 Using {label}: {key[:8]}...{key[-4:]}")
-    elif warn_missing:
-        print("⚠️  Warning: API key appears invalid or missing")
 
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
@@ -2077,8 +2066,8 @@ def init_agent(
     notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int | None = None,
-    reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
-    request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
+    reasoning_config: dict[str, Any] | None = None, adaptive_reasoning: dict[str, Any] | None = None,
+    service_tier: str | None = None, request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
     platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,
     chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
     gateway_session_key: str | None = None, skip_context_files: bool = False,
@@ -2152,6 +2141,8 @@ def init_agent(
 
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    from agent.adaptive_reasoning import init_adaptive_reasoning_state
+    init_adaptive_reasoning_state(agent, adaptive_reasoning)  # opt-in agent.adaptive_reasoning
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

@@ -358,6 +358,10 @@ class CLIInitMixin:
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
         self._explicit_reasoning = None
+        # Explicit user reasoning choices (--reasoning flag, session /reasoning <level>) take precedence
+        # over adaptive adjustment; /reasoning --global is a new baseline instead. Shell-side provenance:
+        # the gateway that runs the turn reads the session's own committed level (gateway/run_turn_runner).
+        self._session_reasoning_override = False
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
@@ -367,6 +371,7 @@ class CLIInitMixin:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
                 self._explicit_reasoning = str(reasoning).strip()
+                self._session_reasoning_override = True
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}

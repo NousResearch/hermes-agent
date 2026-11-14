@@ -2019,7 +2019,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(_dim_line(_t("shared.unknown_argument", arg=arg)),
                        _dim_line(_t("reasoning.valid_levels")), _dim_line(_t("reasoning.valid_display")),
                        _dim_line(_t("reasoning.valid_scope")))
-        self.reasoning_config = parsed
+        self.reasoning_config, self._session_reasoning_override = parsed, not explicit_global
         self._reasoning_user_set = True  # the rebuilt gateway agent commits it to the session
         _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)

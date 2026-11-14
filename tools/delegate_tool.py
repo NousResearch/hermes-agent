@@ -29,7 +29,8 @@ from tools.delegate_tool_child_run import (
     _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _child_reasoning_pinned,
+    _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
@@ -358,6 +359,12 @@ def _build_child_agent(
     child._inherited_cache_scope = sibling_cache_scope(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
+    # Explicit child (task route / delegation.reasoning_effort) or parent-session picks pin effort;
+    # inherited adaptive effort does not.
+    child.reasoning_user_override = bool(
+        _child_reasoning_pinned(delegation_cfg, override_reasoning_effort)
+        or getattr(parent_agent, "reasoning_user_override", False)
+    )
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:

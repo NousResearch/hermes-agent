@@ -456,6 +456,11 @@ class SignalAdapter(BasePlatformAdapter):
         quote_data = data_message.get("quote") or {}
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
         reply_to_author = self._extract_quote_author(quote_data)
+        source = self.build_source(
+            chat_id=chat_id, chat_name=group_info.get("groupName") if group_info else sender_name,
+            chat_type="group" if is_group else "dm", user_id=sender,
+            user_name=sender_name or sender, user_id_alt=sender_uuid if sender_uuid else None,
+            chat_id_alt=group_id if is_group else None)
         attachments_data = data_message.get("attachments", [])
         media_urls, media_types = [], []
         # The fetch copies a sender-chosen file into Hermes' cache (AAC is remuxed through ffmpeg): only the
@@ -463,8 +468,8 @@ class SignalAdapter(BasePlatformAdapter):
         # has already stored it unless its daemon runs with --ignore-attachments. The text still dispatches so
         # the runner applies denial/pairing.
         if attachments_data and not getattr(self, "ignore_attachments", False):
-            chat_type = "group" if is_group else "dm"
-            if self._is_sender_authorized(sender, chat_type, chat_id) is True:
+            # source.is_bot (bot_users) so a peer bot gets the gateway's bot verdict (loop-guard cooldown).
+            if self._is_sender_authorized(sender, source.chat_type, chat_id, is_bot=source.is_bot) is True:
                 media_urls, media_types = await self._collect_attachments(attachments_data)
             else:
                 logger.debug("Signal: skipping attachments for unauthorized sender %s", redact_phone(sender))
@@ -474,11 +479,6 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: skipping contentless envelope from %s (%d attachments)", redact_phone(sender),
                          len(media_urls) if media_urls else 0)
             return
-        source = self.build_source(
-            chat_id=chat_id, chat_name=group_info.get("groupName") if group_info else sender_name,
-            chat_type="group" if is_group else "dm", user_id=sender,
-            user_name=sender_name or sender, user_id_alt=sender_uuid if sender_uuid else None,
-            chat_id_alt=group_id if is_group else None)
         # First matching MIME prefix wins; everything else (application/*, text/*, unknown) is a DOCUMENT
         # so run.py's document-context injection surfaces the cached path.
         msg_type = MessageType.TEXT if not media_types else next(

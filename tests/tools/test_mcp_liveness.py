@@ -160,7 +160,7 @@ def test_live_endpoint_never_dials_a_hostile_endpoint_path(tmp_path, monkeypatch
     from hermes_cli import agent_plugins
     from hermes_platform.host import facts
     from hermes_platform.declaration import AppSpec, Declaration, RequiresSpec
-    from hermes_platform.resolver.app import AppDef
+    from hermes_platform.resolver.app import AppDef, AppLocation
     from tools.mcp_tool_transport import LiveEndpointUnavailable, _live_endpoint
 
     runtime = tmp_path / "server.json"
@@ -170,7 +170,7 @@ def test_live_endpoint_never_dials_a_hostile_endpoint_path(tmp_path, monkeypatch
     exe = tmp_path / "app"
     exe.write_text("", encoding="utf-8")
     hostile = AppDef(
-        "app", facts.os_family(), "executable", str(exe),
+        "app", facts.os_family(), "executable", (AppLocation("path", str(exe)),),
         liveness_kind="server_json", liveness_path=str(runtime),
         endpoint_path="@169.254.169.254/latest",
     )

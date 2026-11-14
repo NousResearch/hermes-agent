@@ -45,10 +45,11 @@ class WorkerDelegationDispatch:
 
 @dataclass(frozen=True, slots=True)
 class WorkerDelegationCompletion:
-    """A ``delegation.complete`` payload: the notification ``event`` (its ``delegation_id``, ``status``, ``completed_at`` and route keys are checked) and the ``result`` document."""
+    """A ``delegation.complete`` payload: the notification ``event`` (its ``delegation_id``, ``status``, ``completed_at`` and route keys are checked), the ``result`` document and the ``delivery`` the row takes: ``pending`` (offered to the parent), or ``delivered`` for a unit whose every child waits on a promised automatic resume, so nothing is published. The worker sends the ``delivery`` key only for ``delivered``, so a record with the default maps to the two-key payload."""
 
     event: Mapping[str, JsonValue]
     result: Mapping[str, JsonValue]
+    delivery: Literal["pending", "delivered"] = "pending"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +76,11 @@ class WorkerDelegationPayload:
 
 
 def delegation_payload(value: Any) -> Any:
-    """The operation payload a verb argument stands for: a :class:`WorkerDelegationPayload`'s payload as sent, a record's fields key for key, a bare ``delegation_id`` as ``{"delegation_id": value}``."""
+    """The operation payload a verb argument stands for: a :class:`WorkerDelegationPayload`'s payload as sent, a record's fields key for key (a completion's ``pending`` delivery left out, as the worker sends it), a bare ``delegation_id`` as ``{"delegation_id": value}``."""
     if isinstance(value, WorkerDelegationPayload):
         return value.payload
+    if isinstance(value, WorkerDelegationCompletion) and value.delivery == "pending":
+        return {"event": value.event, "result": value.result}
     if is_dataclass(value):
         return {field.name: getattr(value, field.name) for field in fields(value)}
     return {"delegation_id": value}
@@ -106,7 +109,7 @@ class WorkerDelegationLedger(Protocol):
         ...
 
     def complete_delegation(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, completion: WorkerDelegationCompletion | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:
-        """``delegation.complete`` (:89-105): event keys within ``DELEGATION_EVENT_KEYS``, ``type`` ``async_delegation``, a status in ``DELEGATION_COMPLETION_STATUSES``, a dict result; ownership; route keys repeating the dispatch (``permission_denied``); a finite non-negative ``completed_at``; a delegation no longer running is ``admission_conflict``. The row takes the status, completion time, event and result."""
+        """``delegation.complete``: the keys ``event`` and ``result``, plus ``delivery`` when sent; a delivery other than ``pending`` or ``delivered``, event keys outside ``DELEGATION_EVENT_KEYS``, a ``type`` other than ``async_delegation``, a status outside ``DELEGATION_COMPLETION_STATUSES`` or a result that is not a dict are ``invalid_params``; ownership; route keys repeating the dispatch (``permission_denied``); a finite non-negative ``completed_at``; a delegation no longer running is ``admission_conflict``. The row takes the status, completion time, event, result and delivery (``pending`` when the key is absent)."""
         ...
 
     def record_delegation_child(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, child: WorkerDelegationChild | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> None:

@@ -10,10 +10,11 @@ import json
 import logging
 import time
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from persistence import DelegationId, JsonValue, SessionId
+from persistence import AuthorityRefusal, DelegationId, JsonValue, SessionId
 from persistence.authority.coordination import (
+    COMPLETION_DELIVERIES,
     DELEGATION_CLAIM_STALE_SECONDS,
     DELEGATION_FAILURE_WINDOW_SECONDS,
     DELEGATION_MAX_DELIVERY_ATTEMPTS,
@@ -116,12 +117,14 @@ class DelegationLedger:
             for row in pending[:len(pending) - DELEGATION_MAX_DURABLE_PENDING]:
                 del ledger[row["delegation_id"]]
 
-    def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float, event: JsonValue, result: JsonValue) -> None:
+    def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float, event: JsonValue, result: JsonValue, delivery: Literal["pending", "delivered"] = "pending") -> None:
+        if delivery not in COMPLETION_DELIVERIES:
+            raise AuthorityRefusal("invalid_params", field="delivery")
         stored_event, stored_result = _json_value(event), _json_value(result)
         row = self._ledger().get(str(delegation_id))
         if row is not None:
             row.update(state=state, completed_at=completed_at, updated_at=time.time(), event=stored_event,
-                       result=stored_result, delivery_state=DeliveryState.PENDING.value)
+                       result=stored_result, delivery_state=delivery)
 
     def record_unit_child(self, *, delegation_id: DelegationId, entry: JsonValue) -> None:
         stored_entry = _json_value(entry)
@@ -142,7 +145,7 @@ class DelegationLedger:
             if row is None or row["state"] != recovery.expected_state or row["updated_at"] != recovery.expected_updated_at:
                 continue
             row.update(state="unknown", completed_at=recovery.completed_at, updated_at=now, event=event, result=result,
-                       delivery_state=DeliveryState.PENDING.value)
+                       delivery_state=recovery.delivery)
             written += 1
         return written
 

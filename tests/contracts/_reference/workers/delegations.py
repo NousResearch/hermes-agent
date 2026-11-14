@@ -11,6 +11,7 @@ import time
 from typing import Any, Literal, Mapping, Optional
 
 from persistence.authority.coordination import (
+    COMPLETION_DELIVERIES,
     DELEGATION_CLAIM_STALE_SECONDS,
     DELEGATION_COMPLETION_STATUSES,
     DELEGATION_EVENT_KEYS,
@@ -116,9 +117,9 @@ def _dispatch(*, worker_pid: int, owner_started_at: Optional[int], probe_refused
 
 
 def _complete(step: Step, payload: dict[str, Any]) -> dict[str, Any]:
-    _shape(payload, {"event", "result"})
-    event = payload["event"]
-    if (not isinstance(event, dict) or set(event) - DELEGATION_EVENT_KEYS or not isinstance(payload["result"], dict)
+    _shape(payload, {"event", "result"} | ({"delivery"} if isinstance(payload, dict) and "delivery" in payload else set()))
+    event, delivery = payload["event"], payload.get("delivery", "pending")
+    if (delivery not in COMPLETION_DELIVERIES or not isinstance(event, dict) or set(event) - DELEGATION_EVENT_KEYS or not isinstance(payload["result"], dict)
             or event.get("type") != "async_delegation" or event.get("status") not in DELEGATION_COMPLETION_STATUSES):
         refuse("invalid_params")
     row = _owned(_ledger(step), step.session_id, step.worker["execution_id"], event.get("delegation_id"))
@@ -127,7 +128,7 @@ def _complete(step: Step, payload: dict[str, Any]) -> dict[str, Any]:
     _number(event.get("completed_at"))
     if row["state"] != "running":
         refuse("admission_conflict")
-    row.update(state=event["status"], completed_at=event["completed_at"], updated_at=time.time(), event=event, result=payload["result"])
+    row.update(state=event["status"], completed_at=event["completed_at"], updated_at=time.time(), event=event, result=payload["result"], delivery_state=delivery)
     return {"value": None}
 
 

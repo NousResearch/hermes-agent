@@ -331,7 +331,18 @@ class MCPServerRunMixin:
         and transport errors charge a rapid-drop budget with jittered backoff; exhausting it (or
         a permanent error) parks via :meth:`_park` rather than exiting, so the server stays
         revivable. Branch helpers return True to keep looping, False to exit."""
-        if not await self._prepare_run(config):
+        try:
+            if not await self._prepare_run(config):
+                return
+        except Exception as exc:
+            # A construction-time failure — a TLS context that cannot be built, an unreadable
+            # client cert — must reach the caller as that error. run() is a detached task, so an
+            # escaping exception was only logged as "Task exception was never retrieved" while
+            # start() waited on _ready and the caller burned the whole connect_timeout, reporting
+            # an ambiguous timeout instead of the real cause (#146924).
+            logger.warning("MCP server '%s' failed before connecting: %s: %s",
+                           self.name, type(exc).__name__, exc, exc_info=True)
+            self._publish_error(exc)  # fires _ready; start() re-raises it
             return
         self._reconnect_retries = 0
         budget = _RetryBudget()

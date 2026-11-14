@@ -784,7 +784,8 @@ export function useComposerActions({
       } catch (err) {
         notifyError(err, copy.pasteAttachFailed)
 
-        // IPC rejections lose `code`; the main-process cap and the browser 413 both say "too large".
+        // IPC rejections lose `code`, so match the main-process cap's message. The browser bridge's
+        // 16 MiB refusal says "larger than" and still falls back to inline insertion, as on main.
         return /too large/i.test(err instanceof Error ? err.message : String(err))
       }
     },

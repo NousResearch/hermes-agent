@@ -414,7 +414,7 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     honors --yolo, fail-closed without an interactive/gateway channel. Each class is gated under
     its own key, so a batch spanning both classes must pass both gates."""
     try:
-        from agent.file_safety import write_approval_key
+        from agent.file_safety import get_write_denied_error, write_approval_key
     except Exception:
         return None
 
@@ -422,7 +422,10 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     # process whose cwd is not the session workspace, so a relative path would miss the gate.
     by_key: dict[str, list[str]] = {}
     for p in paths:
-        if key := write_approval_key(_resolved_or_raw(p, task_id)):
+        resolved = _resolved_or_raw(p, task_id)
+        if denied := get_write_denied_error(resolved):
+            return denied  # ~/.bashrc -> ~/.ssh/authorized_keys: refuse before prompting
+        if key := write_approval_key(resolved):
             by_key.setdefault(key, []).append(p)
 
     for pattern_key, targets in by_key.items():

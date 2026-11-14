@@ -69,6 +69,9 @@ class TestCreateAndLinkIntoSensitivePaths:
         "ln -s /tmp/e ~/.bashrc;",
         "touch -r ~/.bashrc ~/.zshrc",
         "touch -d now ~/.bashrc",
+        # After `--`, `-r` / `--reference` are file names, so the rc file is the operand created.
+        "touch -- -r ~/.bashrc",
+        "touch -- --reference ~/.bashrc",
         'touch "$HOME/.bashrc"',
         "touch ~/.hermes/.env",
         # A redirect glued to or following the target does not end the create/link.
@@ -148,6 +151,22 @@ class TestQuotedHomePrefixHardline:
         assert detect_hardline_command(command) == (True, rule), command
 
     @pytest.mark.parametrize("command", [
+        'rm -rf "/"etc', "rm -rf '/'root", 'rm -rf "/"usr/*', 'rm -rf "/"etc/', 'rm -rf "//"bin', 'rm -rf "/"\'var\'',
+        'sudo rm -rf "/"var', 'rm -rf "/"e"tc"', 'rm -rf "/""etc"', "rm -rf '/'b'in'/*",
+    ])
+    def test_quoted_root_glued_to_a_system_dir_stays_hardline(self, command):
+        from tools.approval import detect_hardline_command
+
+        assert detect_hardline_command(command) == (True, "recursive delete of system directory"), command
+
+    @pytest.mark.parametrize("command", ['rm -rf "/"tmp/build', 'rm -rf "/"etcetera', 'rm -rf "/"home/alice',
+                                         'rm -rf "/"e"tc"x', 'rm -rf "/"e"tc"/nginx'])
+    def test_quoted_root_glued_to_another_path_is_not_hardline(self, command):
+        from tools.approval import detect_hardline_command
+
+        assert detect_hardline_command(command) == (False, None), command
+
+    @pytest.mark.parametrize("command", [
         "rm -rf \"$HOME\"'/build'", "rm -rf '/root'\"/projects\"",
         # A quoted `*` is a literal file name, not a glob.
         'rm -rf "$HOME"/"*"', "rm -rf \"/\"'*'",
@@ -215,6 +234,15 @@ class TestFileToolShellRcGate:
         monkeypatch.setattr("agent.file_safety._guard_homes", lambda path="": {str(home), str(real)})
         (home / ".bashrc").symlink_to(real / ".aws" / "credentials")
         assert is_write_denied(str(real / ".aws" / "credentials")) is True
+
+    @pytest.mark.platforms("posix")
+    def test_credential_behind_an_rc_symlink_is_denied_before_any_prompt(self, home):
+        from tools.file_tools_write_guards import _check_approval_required_write
+
+        (home / ".ssh").mkdir()
+        (home / ".bashrc").symlink_to(home / ".ssh" / "authorized_keys")
+        error = _check_approval_required_write([str(home / ".ssh" / "authorized_keys")]) or ""
+        assert "protected system/credential" in error and "shell startup" not in error, error
 
     def test_unattended_write_file_to_rc_blocks_and_writes_nothing(self, home):
         from tools.file_tools import write_file_tool

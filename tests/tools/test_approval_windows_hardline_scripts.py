@@ -77,6 +77,43 @@ def test_quoted_drive_roots_stay_hardline(cmd):
     assert detect_hardline_command(cmd)[0], cmd
 
 
+@pytest.mark.parametrize("cmd", [
+    "Remove-Item C:" + B + "* -Recurse -Include *.tmp",
+    "Remove-Item -Recurse C:" + B + " -Include:*.log -Force",
+    "rm -r C:" + B + "* -Include *.tmp",
+    'pwsh -c "Remove-Item -Recurse C:' + B + ' -Include *.tmp -Force"',
+])
+def test_include_filtered_recursive_delete_stays_approvable(cmd):
+    # -Include deletes only the matching items, like `del /s /q C:\*.tmp`.
+    assert not detect_hardline_command(cmd)[0], cmd
+    assert detect_dangerous_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "Remove-Item C:" + B + "* -Recurse -Include *",
+    "Remove-Item C:" + B + "* -Recurse -Include *.*",
+    "Remove-Item C:" + B + "* -Recurse -Include *.tmp,*",
+    "rm -r C:" + B + "* -Include *",
+    # PowerShell expands these to `*`: only a literal pattern narrows the delete.
+    'Remove-Item C:' + B + '* -Recurse -Include "*$null"',
+    "Remove-Item C:" + B + "* -Recurse -Include *$x",
+    "Remove-Item C:" + B + "* -Recurse -Include (Get-Pattern)",
+    "Remove-Item -Recurse C:" + B + "; Get-ChildItem -Include *.tmp",
+    # Not a PowerShell -Include of this delete: cmd `/s` and GNU `--` take it as a name, `#` comments it
+    # out, a quote makes it another argument's data, and a spaced list still ends in `*`.
+    "del /s /q C:" + B + "* -Include *.tmp",
+    "cmd /c rd /s /q C:" + B + " -Include x",
+    "rm -rf -- C:/ -Include x",
+    "rm -r C:/* -- -Include x",
+    "Remove-Item -Recurse C:" + B + " # -Include *.tmp",
+    "Remove-Item -Recurse C:" + B + " -Exclude 'a -Include *.tmp'",
+    "Remove-Item -Recurse C:" + B + ' -Exclude "a -Include *.tmp"',
+    "Remove-Item -Recurse C:" + B + " -Include *.tmp , *",
+])
+def test_include_that_matches_everything_stays_hardline(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+
+
 def test_escaped_quote_in_prose_does_not_end_the_string():
     # One echo argument; the backslash-flattened text must not close the quote at `\"`.
     assert not detect_hardline_command('echo "x' + B + '"; rd /s /q C:' + B + ' later"')[0]

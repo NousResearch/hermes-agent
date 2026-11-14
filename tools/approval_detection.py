@@ -190,6 +190,7 @@ _HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
 _HARDLINE_DRIVE_QUOTED = r'["\'](?:' + _HARDLINE_DRIVE_ROOT + r')["\'](?:(?:\.\.?)?/)*(?:\.\.?)?(?:\*(?:\.\*)?)?(?=\s|$|[)`;|&<>])'
 # PowerShell -Recurse and its unambiguous prefixes (same set as _PS_RECURSE below).
 _PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
+_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\n;&|#"\'`]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
 # _CMDPOS, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
 # take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
 # `-File` is not skipped: its operand is a script path (`pwsh -File Stop-Computer.ps1`), not code.
@@ -250,12 +251,11 @@ HARDLINE_PATTERNS = [
     (_WIN_CMDPOS + r'format-volume' + _CMDLET_END, "format filesystem (Format-Volume)"),
     (_WIN_CMDPOS + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
     (_WIN_CMDPOS + r'clear-disk' + _CMDLET_END, "wipe disk (Clear-Disk)"),
-    # Recursive delete whose target is a drive ROOT (`C:\`, `C:\*`, `C:/*.*`); `C:\build` and
-    # `C:` (the drive's current directory) fall through to the DANGEROUS tier.
-    (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))'
+    # Recursive delete of a drive ROOT (`C:\`, `C:\*`, `C:/*.*`; a glued `>nul` ends it). `C:\build`, `C:` (the drive's cwd)
+    # and a literal PowerShell `-Include *.tmp` (only matching items; `*`, a list, `"*$x"`, cmd `/s`, after `--`/`#` still wipe) fall through.
+    (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))' + _PS_INCLUDE_NARROWS +
      r'[^\n;&|]*\s(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>]))', "recursive delete of drive root"),
-    # An attached redirect (`C:\>nul`) ends the operand too.
-    (_RM_FLAG_PREFIX + '(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
+    (_CMDPOS + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(?:-[^\s]*\s+)*(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out

@@ -222,6 +222,12 @@ export type ThreadScrollRestoreResizeMetrics = {
   clearanceHeight: number
   clientHeight: number
   scrollHeight: number
+  /**
+   * Document top of a row held in view (the reader's anchor), or null/absent when
+   * the caller cannot measure one. It is what distinguishes growth ABOVE the reader
+   * (re-apply keeps the same content on screen) from growth BELOW it (never move).
+   */
+  anchorTop?: number | null
 }
 
 /** `data-slot` of the spacer that reserves room under the last row for the composer. */
@@ -230,19 +236,30 @@ export const COMPOSER_CLEARANCE_SLOT = 'aui_composer-clearance'
 /** Viewport metrics with the composer clearance spacer measured separately. */
 export function readThreadScrollResizeMetrics(
   viewport: HTMLElement,
-  clearance: HTMLElement | null
+  clearance: HTMLElement | null,
+  anchor?: HTMLElement | null
 ): ThreadScrollRestoreResizeMetrics {
   return {
     clearanceHeight: clearance?.clientHeight ?? 0,
     clientHeight: viewport.clientHeight,
-    scrollHeight: viewport.scrollHeight
+    scrollHeight: viewport.scrollHeight,
+    anchorTop: readThreadScrollAnchorTop(viewport, anchor)
   }
 }
 
-export function threadScrollTranscriptHeight(
-  metrics: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
-): number {
-  return Math.max(0, metrics.scrollHeight - Math.max(0, metrics.clearanceHeight))
+function readThreadScrollAnchorTop(viewport: HTMLElement, anchor?: HTMLElement | null): number | null {
+  if (!anchor?.isConnected) {
+    return null
+  }
+
+  const viewportBox = viewport.getBoundingClientRect()
+  const anchorBox = anchor.getBoundingClientRect()
+
+  return Math.round(anchorBox.top - viewportBox.top + viewport.scrollTop)
+}
+
+function threadScrollAnchorTop(metrics: Pick<ThreadScrollRestoreResizeMetrics, 'anchorTop'>): number | null {
+  return typeof metrics.anchorTop === 'number' ? Math.round(metrics.anchorTop) : null
 }
 
 /**
@@ -250,12 +267,21 @@ export function threadScrollTranscriptHeight(
  * rows actually changed height. Composer clearance / viewport-box resizes and
  * no-op RO deliveries must not rewrite scrollTop — for a bottom target either,
  * or every keystroke yanks a view the user moved off the bottom back down.
+ *
+ * For a reader (an offset target) the direction matters: growth BELOW their
+ * anchor — a streaming answer, the final message of a turn — must never move the
+ * viewport, while growth ABOVE it (prepend, markdown relayout over the reader)
+ * still has to re-apply to keep the same content on screen. Without a measured
+ * anchor the previous height-only behaviour is kept, so callers that cannot
+ * measure a row are no worse off than before.
  */
 export function shouldReapplyFrozenThreadScrollOffset(
   target: ThreadScrollState,
   settled: boolean,
-  previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>,
-  next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+  previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'> &
+    Pick<ThreadScrollRestoreResizeMetrics, 'anchorTop'>,
+  next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'> &
+    Pick<ThreadScrollRestoreResizeMetrics, 'anchorTop'>
 ): boolean {
   if (!settled) {
     return false
@@ -265,7 +291,24 @@ export function shouldReapplyFrozenThreadScrollOffset(
   const after = Math.round(threadScrollTranscriptHeight(next))
 
   // A bottom target follows growth only — a shrink is clamped by the browser.
-  return target.kind === 'bottom' ? after > before : after !== before
+  if (target.kind === 'bottom') {
+    return after > before
+  }
+
+  const previousAnchor = threadScrollAnchorTop(previous)
+  const nextAnchor = threadScrollAnchorTop(next)
+
+  if (previousAnchor !== null && nextAnchor !== null) {
+    return previousAnchor !== nextAnchor
+  }
+
+  return after !== before
+}
+
+export function threadScrollTranscriptHeight(
+  metrics: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+): number {
+  return Math.max(0, metrics.scrollHeight - Math.max(0, metrics.clearanceHeight))
 }
 
 // Storage is scoped per profile with the same `.profile.<encoded>` suffix the

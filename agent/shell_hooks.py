@@ -701,6 +701,29 @@ def _lower_permission(verdict: Any, reason: Any, updated: Any) -> dict[str, Any]
     return {"decision": "modify", "tool_input": updated} if isinstance(updated, dict) else {}
 
 
+def _lowered_directives(event: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every directive the reply carries in either foreign shape, each read on its own."""
+    nested = data.get("hookSpecificOutput")
+    nested = nested if isinstance(nested, dict) else {}
+    reason = data.get("agent_message") or data.get("user_message") or data.get("stopReason")
+    found = [
+        _lower_permission(nested.get("permissionDecision"), nested.get("permissionDecisionReason"),
+                          nested.get("updatedInput")),
+        _lower_permission(data.get("permission"), reason, data.get("updated_input")),
+    ]
+    if nested.get("decision") == "block":  # Stop / SubagentStop nested form
+        found.append({"decision": "block", "reason": nested.get("reason")})
+    if event == "pre_llm_call" and data.get("continue") is False:
+        found.append({"decision": "block", "reason": reason})
+    if event == "pre_verify" and isinstance(data.get("followup_message"), str) and data["followup_message"].strip():
+        found.append({"action": "continue", "message": data["followup_message"]})
+    return [d for d in found if d]
+
+
+# Most severe first: a veto anywhere in the reply outranks an escalation, which outranks a rewrite.
+_DIRECTIVE_RANK = (("decision", "block"), ("action", "approve"), ("action", "continue"), ("decision", "modify"))
+
+
 def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
     """Lower the two other agent-hook reply shapes onto the flat dialect the parsers read.
 
@@ -708,29 +731,19 @@ def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
     "updatedInput", "additionalContext"}}`` (Stop: nested ``decision: block``). The flat permission shape
     uses its own keys: ``{"permission", "agent_message", "user_message", "updated_input"}``, ``additional_context``,
     ``continue: false`` to refuse a submitted prompt, and a stop hook's ``followup_message`` to keep going.
-    Hermes keys already in the reply keep precedence."""
+    Both shapes are read independently and the most severe directive wins; Hermes keys already in the
+    reply keep precedence, except that nothing masks a lowered veto."""
+    directives = _lowered_directives(event, data)
+    flat = min(directives, key=lambda d: next(i for i, (k, v) in enumerate(_DIRECTIVE_RANK) if d.get(k) == v),
+               default={})
     nested = data.get("hookSpecificOutput")
-    flat: dict[str, Any] = {}
-    if isinstance(nested, dict):
-        flat = _lower_permission(nested.get("permissionDecision"), nested.get("permissionDecisionReason"),
-                                 nested.get("updatedInput"))
-        if not flat and nested.get("decision") == "block":
-            flat = {"decision": "block", "reason": nested.get("reason")}
-        context = nested.get("additionalContext")
-    elif {"permission", "continue", "additional_context", "followup_message"} & data.keys():
-        # agent_message is the text the model reads on a deny, which is what a Hermes block message is.
-        reason = data.get("agent_message") or data.get("user_message")
-        flat = _lower_permission(data.get("permission"), reason, data.get("updated_input"))
-        if not flat and event == "pre_llm_call" and data.get("continue") is False:
-            flat = {"decision": "block", "reason": reason}
-        if not flat and event == "pre_verify" and data.get("followup_message"):
-            flat = {"action": "continue", "message": data["followup_message"]}
-        context = data.get("additional_context")
-    else:
-        return data
-    if isinstance(context, str) and context.strip():
-        flat["context"] = context
-    return {**flat, **{k: v for k, v in data.items() if k != "hookSpecificOutput"}}
+    contexts = [c for c in ((nested or {}).get("additionalContext") if isinstance(nested, dict) else None,
+                            data.get("additional_context")) if isinstance(c, str) and c.strip()]
+    if contexts:
+        flat = {**flat, "context": "\n\n".join(contexts)}
+    rest = {k: v for k, v in data.items() if k != "hookSpecificOutput"}
+    # A lowered veto is never masked by a non-veto key of the same name (e.g. a legacy ``decision: approve``).
+    return {**rest, **flat} if flat.get("decision") == "block" else {**flat, **rest}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

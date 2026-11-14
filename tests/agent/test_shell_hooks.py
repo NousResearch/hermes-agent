@@ -92,6 +92,16 @@ class TestParseResponse:
         # A Hermes key in the same reply keeps precedence over the lowered one.
         ("pre_tool_call", {"permission": "allow", "action": "block", "message": "Hermes wins"},
          {"action": "block", "message": "Hermes wins"}),
+        # Every veto in a mixed reply is read on its own; the most severe wins and context is kept.
+        ("pre_llm_call", {"continue": False, "user_message": "Do not send this",
+                          "hookSpecificOutput": {"additionalContext": "Branch: main"}},
+         {"action": "block", "message": "Do not send this"}),
+        ("pre_tool_call", {"permission": "allow", "updated_input": {"command": "ls"},
+                           "hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "nested veto"}},
+         {"action": "block", "message": "nested veto"}),
+        ("pre_tool_call", {"decision": "approve", "hookSpecificOutput": {"permissionDecision": "deny",
+                                                                         "permissionDecisionReason": "still denied"}},
+         {"action": "block", "message": "still denied"}),
     ])
     def test_other_agent_reply_shapes_lower_onto_the_flat_dialect(self, event, reply, expected):
         """Hook scripts written for other agents answer in a nested or a flat permission shape;

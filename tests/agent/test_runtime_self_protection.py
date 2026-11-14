@@ -230,3 +230,58 @@ def test_a_cd_that_may_not_move_the_shell_keeps_the_old_directory(fake_runtime, 
     # A cd that certainly moved the shell elsewhere does clear the relative target.
     assert rsp.command_deletes_runtime(f"cd {elsewhere}; rm -rf venv") is None
     assert rsp.command_deletes_runtime(f"cd {tmp_path / 'missing'} && rm -rf venv") is None
+
+
+def test_a_failed_and_chain_does_not_carry_its_cd_past_the_list(fake_runtime, tmp_path, monkeypatch):
+    # A failing `cd` skips the rest of its `&&` chain; a later `;`/`||` segment
+    # then runs in the directory the shell was in before the chain.
+    install = tmp_path / "hermes-agent"
+    monkeypatch.chdir(install)
+    missing = tmp_path / "missing"
+    assert rsp.command_deletes_runtime(f"cd {missing} && echo ok; rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {missing} && true || rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {missing} && true\nrm -rf venv") is not None
+    # After a `||` the cd itself may be skipped while the delete still runs.
+    (tmp_path / "elsewhere").mkdir()
+    assert rsp.command_deletes_runtime(f"true || cd {tmp_path / 'elsewhere'} && rm -rf venv") is not None
+
+
+def test_only_a_bare_cd_builtin_moves_the_shell(fake_runtime, tmp_path, monkeypatch):
+    install = tmp_path / "hermes-agent"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(install)
+    assert rsp.command_deletes_runtime(f"true | cd {elsewhere} && rm -rf venv") is not None
+    for prefix in ("sudo cd", "env cd", "/usr/bin/cd"):
+        assert rsp.command_deletes_runtime(f"{prefix} {elsewhere}; rm -rf venv") is not None, prefix
+    if os.name != "nt":
+        assert rsp.command_deletes_runtime(f"CD {elsewhere}; rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {elsewhere} {tmp_path}; rm -rf venv") is not None
+
+
+def test_a_cd_target_removed_earlier_in_the_command_does_not_count(fake_runtime, tmp_path, monkeypatch):
+    install = tmp_path / "hermes-agent"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(install)
+    assert rsp.command_deletes_runtime(f"rm -rf {elsewhere}; cd {elsewhere}; rm -rf venv") is not None
+
+
+def test_cdpath_makes_a_relative_cd_unknowable(fake_runtime, tmp_path, monkeypatch):
+    # With CDPATH set, `cd hermes-agent` from inside the install re-enters it
+    # instead of failing on the missing `./hermes-agent`.
+    monkeypatch.chdir(tmp_path / "hermes-agent")
+    assert rsp.command_deletes_runtime(f"export CDPATH={tmp_path}; cd hermes-agent && rm -rf venv") is not None
+    monkeypatch.setenv("CDPATH", str(tmp_path))
+    assert rsp.command_deletes_runtime("cd hermes-agent && rm -rf venv") is not None
+
+
+def test_many_cds_into_missing_dirs_stay_linear(fake_runtime, tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.chdir(tmp_path / "hermes-agent")
+    cds = "; ".join(f"cd d{i}" for i in range(40))
+    began = time.monotonic()
+    assert rsp.command_deletes_runtime(f"{cds}; rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(cds.replace("; ", "\n") + "\nrm -rf zz") is None
+    assert time.monotonic() - began < 2

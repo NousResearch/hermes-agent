@@ -318,45 +318,113 @@ def command_deletes_runtime(command: str) -> Optional[str]:
         start = _normalize_path(os.getcwd())
     except OSError:  # the process cwd was removed under us
         start = ""
-    cwds = (start,)  # every directory the shell may be in for the current segment
+    walk = _ShellWalk((start,), cdpath="CDPATH" in command or os.environ.get("CDPATH", "") != "")
     parts = _SEGMENT_SEP_SPLIT_RE.split(command)
     for index in range(0, len(parts), 2):
         segment = parts[index]
         joiner = parts[index + 1] if index + 1 < len(parts) else ""
-        words = _strip_prefixes(_split_words(segment))
+        raw = _split_words(segment)
+        words = _strip_prefixes(raw)
         if not words:
+            walk.prev_joiner = joiner
             continue
-        name = os.path.basename(words[0]).lower()
-
-        if name in _DIRECTORY_CHANGE_COMMANDS or name in _DIRECTORY_POP_COMMANDS:
-            cwds = _cwds_after_directory_change(words, name, cwds, joiner)
+        if _is_directory_change(raw) and "|" not in (walk.prev_joiner, joiner):
+            walk.step(walk.after_directory_change(raw), joiner, certain=walk.cd_certain)
             continue
-
-        hit = _segment_deletes_runtime(segment, words, name, cwds)
+        hit = _segment_deletes_runtime(segment, words, os.path.basename(words[0]).lower(), walk.cwds)
         if hit:
             return hit
+        walk.trusted = False  # this command may have created or removed directories
+        walk.step(walk.cwds, joiner, certain=False)
 
     return None
 
 
-def _cwds_after_directory_change(words: list[str], name: str, cwds: tuple[str, ...], joiner: str) -> tuple[str, ...]:
-    """Directories the segment after a ``cd``/``pushd``/``popd`` may run in.
+# Past this many candidate directories the walk collapses to the process cwd
+# plus the newest few: `;`-joined cds into missing relative dirs otherwise
+# double the set per cd, and this runs before every terminal command.
+_MAX_CANDIDATE_CWDS = 8
 
-    A pipeline member runs in a subshell (its ``cd`` moves nothing) and ``||``
-    runs the next command only when the ``cd`` failed, so both keep ``cwds``.
-    A ``cd`` into a directory that does not exist fails, and after ``;`` or a
-    newline the next command still runs where the shell was: keep both readings
-    so a typo'd or not-yet-created target cannot hide the real one. Unknowable
-    moves (``popd``, ``cd -``, ``cd "$X"``) fall back to the process cwd (``""``).
-    """
-    if joiner in ("|", "||"):
+
+def _cap(cwds: tuple[str, ...]) -> tuple[str, ...]:
+    cwds = tuple(dict.fromkeys(cwds))
+    if len(cwds) <= _MAX_CANDIDATE_CWDS:
         return cwds
-    if name in _DIRECTORY_POP_COMMANDS:
-        return ("",)
-    moved = tuple(dict.fromkeys(_directory_change_target(words, cwd) for cwd in cwds))
-    if joiner == "&&" or all(target and os.path.isdir(target) for target in moved):
-        return moved
-    return tuple(dict.fromkeys(cwds + moved))
+    return tuple(dict.fromkeys(("",) + cwds[-(_MAX_CANDIDATE_CWDS // 2):]))
+
+
+def _is_directory_change(raw: list[str]) -> bool:
+    """Whether the segment runs the shell's own ``cd``/``pushd``/``popd`` builtin.
+
+    ``sudo cd``, ``env cd``, ``FOO=1 cd``, ``/usr/bin/cd`` and ``CD`` (POSIX) run
+    something else, which never moves the shell, so they do not count.
+    """
+    if not raw:
+        return False
+    name = raw[0].lower() if os.name == "nt" else raw[0]
+    return name in _DIRECTORY_CHANGE_COMMANDS or name in _DIRECTORY_POP_COMMANDS
+
+
+class _ShellWalk:
+    """Directories the shell may be in as it walks a command's segments.
+
+    ``cwds`` is where the current segment may run; ``list_cwds`` is every
+    directory seen since the current and/or-list began, because a failure
+    anywhere in an ``&&`` chain skips the rest and a later ``||``, ``;`` or
+    newline segment then runs in whatever directory the shell had reached.
+    """
+
+    def __init__(self, cwds: tuple[str, ...], *, cdpath: bool):
+        self.cwds = cwds
+        self.list_cwds = cwds
+        self.list_certain = True  # every segment of the current list surely succeeded
+        self.list_has_or = False  # a `||` earlier in the list can skip a later cd
+        self.trusted = True  # nothing has run yet that could change the filesystem
+        self.cdpath = cdpath  # CDPATH makes a relative cd target unknowable
+        self.prev_joiner = ""
+        self.cd_certain = False
+
+    def after_directory_change(self, words: list[str]) -> tuple[str, ...]:
+        """Directories the shell is in after this cd/pushd/popd succeeded."""
+        self.cd_certain = False
+        name = words[0].lower()
+        if name in _DIRECTORY_POP_COMMANDS:
+            return ("",)  # popd returns to a directory only the shell knows
+        moved = tuple(_directory_change_target(words, cwd) for cwd in self.cwds)
+        if self.cdpath and any(t and not _is_absolute_cd_word(words) for t in moved):
+            return _cap(self.cwds + moved + ("",))
+        if self.list_has_or:  # `true || cd X && rm ...` skips the cd and still runs rm
+            return _cap(self.cwds + moved)
+        # Existence is only trusted before anything ran that could change it,
+        # and `cd a b` / `cd -x a` fail without moving the shell.
+        operands = [w for w in words[1:] if w not in ("-P", "-L", "--")]
+        self.cd_certain = (
+            self.trusted
+            and len(operands) <= 1
+            and not any(w.startswith("-") for w in operands)
+            and all(t and os.path.isdir(t) and os.access(t, os.X_OK) for t in moved)
+        )
+        return _cap(moved)
+
+    def step(self, after: tuple[str, ...], joiner: str, *, certain: bool) -> None:
+        self.list_certain = self.list_certain and certain
+        self.list_cwds = _cap(self.list_cwds + after)
+        if joiner in ("&&", "|"):
+            self.cwds = after
+        elif joiner == "||":
+            self.cwds = self.list_cwds
+            self.list_has_or = True
+        else:  # `;`, newline, end
+            self.cwds = after if self.list_certain else self.list_cwds
+            self.list_cwds = self.cwds
+            self.list_certain = True
+            self.list_has_or = False
+        self.prev_joiner = joiner
+
+
+def _is_absolute_cd_word(words: list[str]) -> bool:
+    target = next((w for w in words[1:] if not w.startswith("-")), "~").strip("\"'")
+    return os.path.isabs(os.path.expanduser(target))
 
 
 def _segment_deletes_runtime(segment: str, words: list[str], name: str, cwds: tuple[str, ...]) -> Optional[str]:

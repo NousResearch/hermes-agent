@@ -418,6 +418,10 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).")
+        # A sign-in whose refresh just hit a token-endpoint outage is intact: say so, retryably.
+        from agent.credential_pool_refresh_failure import refresh_unavailable_error
+        if (transient := refresh_unavailable_error("anthropic")) is not None:
+            raise transient
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 

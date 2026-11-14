@@ -110,7 +110,11 @@ def find_shell_configs() -> list:
         home / ".zprofile",
     ]
     
-    for config in candidates:
+    zdotdir = os.environ.get("ZDOTDIR")  # zsh reads its rc files there, and install.sh writes them there
+    if zdotdir:
+        candidates += [Path(zdotdir).expanduser() / ".zshrc", Path(zdotdir).expanduser() / ".zprofile"]
+
+    for config in dict.fromkeys(candidates):
         if config.exists():
             configs.append(config)
     

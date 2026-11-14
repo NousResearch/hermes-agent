@@ -171,6 +171,23 @@ def _auth_error_detail(exc: BaseException) -> str:
     return f" {_sanitize_error(text)}" if text else ""
 
 
+def _server_answered(exc: BaseException) -> bool:
+    """True when the server sent a JSON-RPC error. The transport is fine.
+
+    A parameter rejection must not open the breaker as \"unreachable\". SDK
+    exception types arrive wrapped, so this reads the error code and the
+    message, not the class.
+    """
+    root = _unwrap_exception_group(exc)
+    code = getattr(getattr(root, "error", None), "code", None)
+    if code is None:
+        code = getattr(root, "code", None)
+    if isinstance(code, int):
+        return True
+    text = str(root).lower()
+    return "invalid request parameters" in text or "invalid params" in text
+
+
 def _mcp_call_failed_message(exc: BaseException) -> str:
     """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
     "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""

@@ -610,3 +610,31 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)
+
+
+def test_parameter_rejection_does_not_say_unreachable(monkeypatch, tmp_path):
+    """A JSON-RPC rejection is the server answering. The breaker must not call it down."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    class _Rejected(Exception):
+        def __init__(self):
+            super().__init__("Invalid request parameters")
+            self.error = type("Err", (), {"code": -32602, "message": "Invalid request parameters"})()
+
+    async def _call_tool_rejects(*a, **kw):
+        raise _Rejected()
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_rejects)
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "revise", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            assert "Invalid request parameters" in json.loads(handler({}))["error"]
+        tripped = json.loads(handler({}))["error"].lower()
+        assert "rejected" in tripped and "unreachable" not in tripped, tripped
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._server_errors_all_application.pop("srv", None)

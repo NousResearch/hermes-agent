@@ -15,7 +15,7 @@ from typing import Any, cast
 import pytest
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("any")
 def test_list_leaves_live_reader_as_completion_owner():
     from tools.process_registry import ProcessRegistry, ProcessSession
 

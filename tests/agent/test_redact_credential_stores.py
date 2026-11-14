@@ -75,6 +75,20 @@ class TestCredentialStoreReads:
             assert self.WEAK not in out
             assert "machine b login v password" in out
 
+    @pytest.mark.parametrize("line", [
+        "machine h login password password {pw}",  # a login named ``password`` is the login's value
+        "machine h login password {pw}",  # ambiguous (login ``password`` or empty login): fail closed
+        "default login password {pw}",
+        "machine h login u password :{pw}",
+        "machine h login u password ={pw}",
+        "localhost:5432:app:build#bot:{pw}",  # ``#``/``=`` are legal in .pgpass database/user names
+        "localhost:5432:a=b:bob:{pw}",
+    ])
+    def test_netrc_and_pgpass_edge_values_are_masked(self, line):
+        text = line.format(pw=self.WEAK) + "\n"
+        assert self.WEAK not in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
+        assert self.WEAK not in redact_terminal_output(text, "cat ~/.netrc", force=True)
+
     @pytest.mark.parametrize("sep", [" = ", "="])
     def test_aws_credential_process_command_stays_readable(self, sep):
         # ``credential_process`` names the helper that fetches the credential; the secret beside it is masked.
@@ -89,6 +103,7 @@ class TestCredentialStoreReads:
         ("~/.zshrc", "credential_process={pw}"),
         ("~/.hermes/config.yaml", "credential_process: {pw}"),
         ("~/.aws/config", "credential_process = {pw}"),  # no ``[section]`` above it
+        ("~/.bashrc", "[ -f ~/.x ]\ncredential_process={pw}"),  # a shell test is not a section header
     ])
     def test_credential_process_exemption_is_scoped_to_aws_ini(self, path, line):
         # The exemption belongs to the AWS INI store: a ``.env`` / rc / config.yaml key of that name, or one

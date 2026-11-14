@@ -19,7 +19,8 @@ _LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
 # fetches the credential, not the secret. Only the key of such a line below an INI ``[section]`` header is
 # exempt, so a ``.env`` / shell rc / config.yaml key of that name keeps the assignment gate. The command
 # itself still goes through every pass: vendor prefixes, ``--flag`` secrets, ``sh -c 'SECRET=x'``.
-_INI_SECTION_RE = re.compile(rf"^[ \t]*{_LINE_NUMBER_GUTTER}\[[^\[\]\r\n]+\][ \t]*+$", re.MULTILINE)
+# A section name never starts with whitespace, while a shell test ``[ -f x ]`` always does.
+_INI_SECTION_RE = re.compile(rf"^[ \t]*{_LINE_NUMBER_GUTTER}\[[^\[\]\s][^\[\]\r\n]*\][ \t]*+$", re.MULTILINE)
 _AWS_CREDENTIAL_PROCESS_KEY_RE = re.compile(
     rf"^[ \t]*{_LINE_NUMBER_GUTTER}credential_process[ \t]*+=[ \t]*+", re.MULTILINE)
 
@@ -54,9 +55,11 @@ def outside_spans(text: str, spans: list[tuple[int, int]], fn) -> str:
 _NETRC_LINE_RE = re.compile(
     rf"^([ \t]*{_LINE_NUMBER_GUTTER})((?:machine|default|login|account|port|password)\b[^\r\n]*)", re.MULTILINE,
 )
+_NETRC_KEYWORDS = ("machine", "login", "password", "account", "port")
 _NETRC_TOKEN_RE = re.compile(r'"[^"\r\n]*"?|\S+')
 _CREDENTIAL_STORE_RES = (
-    re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{4}})(\S[^\r\n]*)", re.MULTILINE),
+    # Host and port never hold ``=``/``#``; a database or user name may (``app:build#bot``).
+    re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{2}}(?:[^:\s]*:){{2}})(\S[^\r\n]*)", re.MULTILINE),
     # npm expands ``${NAME}`` / ``${NAME?}`` here: a value that is only that reference names a variable,
     # not the secret. Any other value runs to end of line (npm keeps internal spaces): ``${X} lit``.
     re.compile(r'(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(?!"?\$\{\w+\??\}"?[ \t\r]*$)(\S(?:[^\r\n]*\S)?)', re.MULTILINE),
@@ -87,13 +90,18 @@ def redact_credential_store_lines(text: str, mask, should_redact) -> str:
         return m.group(1) + mask(value)
 
     def _netrc_sub(m):
-        line, out, pos, after_password = m.group(2), [], 0, False
+        line, out, pos, keyword, prev = m.group(2), [], 0, None, None
         for tok in _NETRC_TOKEN_RE.finditer(line):
             value = tok.group(0)
-            if after_password and value[0] not in "=:" and value != "***" and not value.startswith("«redacted"):
+            # The token after a keyword is its value, so ``login password password X`` masks X. A non-keyword
+            # after any ``password`` token is masked too: ``login password X`` is ambiguous, so fail closed.
+            secret = keyword == "password" or (prev == "password" and value not in _NETRC_KEYWORDS)
+            # A bare ``=``/``:`` is an INI ``password = x`` line, left to the INI pass; ``:x`` is a password.
+            if secret and value not in ("=", ":") and value != "***" and not value.startswith("«redacted"):
                 out.append(line[pos:tok.start()] + mask(value))
                 pos = tok.end()
-            after_password = not after_password and value == "password"
+            keyword = None if keyword else value if value in _NETRC_KEYWORDS else None
+            prev = value
         return m.group(1) + "".join(out) + line[pos:]
 
     def _ini_sub(m):

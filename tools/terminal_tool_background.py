@@ -68,12 +68,12 @@ _ONESHOT_LINGER_NOTE = (
     '(terminal.oneshot_completion_wait_seconds, one budget shared by every background process of '
     'this run) for notify_on_complete processes, then exits. A process still running after that '
     'never reaches you. If it may take longer, do not end your turn expecting a notification: '
-    "wait for it yourself with process(action='wait'), repeated as needed."
+    "wait for it yourself with process_manage(action='wait'), repeated as needed."
 )
 _ONESHOT_NO_LINGER_NOTE = (
     'This is a one-shot run with terminal.oneshot_completion_wait_seconds disabled: once your turn '
     'ends it exits without waiting for background processes, so their completion never reaches '
-    "you. Wait for it yourself with process(action='wait') before ending your turn."
+    "you. Wait for it yourself with process_manage(action='wait') before ending your turn."
 )
 
 

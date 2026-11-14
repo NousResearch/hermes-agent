@@ -56,7 +56,7 @@ def test_single_query_notify_states_the_real_linger_bound(monkeypatch, spawned):
     assert note, "a one-shot run must state its completion-linger bound"
     assert "600s" in note
     assert "terminal.oneshot_completion_wait_seconds" in note
-    assert "process(action='wait')" in note
+    assert "process_manage(action='wait')" in note
 
 
 def test_single_query_note_follows_the_configured_value(monkeypatch, spawned):
@@ -76,7 +76,7 @@ def test_single_query_with_linger_disabled_says_it_will_not_wait(monkeypatch, sp
     note = _run_bg(spawned, notify_on_complete=True).get("oneshot_note") or ""
 
     assert "without waiting" in note
-    assert "process(action='wait')" in note
+    assert "process_manage(action='wait')" in note
 
 
 def test_interactive_session_gets_no_oneshot_note(monkeypatch, spawned):

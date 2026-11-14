@@ -60,13 +60,14 @@ def process_units(runner, now: float) -> list[dict]:
     return units
 
 
-def queued_notice_units() -> list[dict]:
-    """Completion notices already queued for delivery (a finished delegation or process whose
-    notice the watcher has not injected yet): their turn has not started, but it will."""
+def queued_notice_units(runner) -> list[dict]:
+    """Completion notices queued for delivery, or dequeued by the watcher and not yet admitted
+    (``_async_notices_in_delivery``): their turn has not started, but it will."""
     from tools.process_registry import process_registry
     queue = process_registry.completion_queue
     with queue.mutex:
         events = list(queue.queue)
+    events += list(getattr(runner, "_async_notices_in_delivery", ()) or ())
     return [{"kind": "notice", "type": "async_delegation",
              "id": evt.get("delegation_id") or evt.get("session_id"),
              "session": evt.get("parent_session_id") or evt.get("session_key") or None}
@@ -77,7 +78,14 @@ def queued_notice_units() -> list[dict]:
 
 def background_units(runner) -> list[dict]:
     now = time.time()
-    return delegation_units(now) + process_units(runner, now) + queued_notice_units()
+    return delegation_units(now) + process_units(runner, now) + queued_notice_units(runner)
+
+
+def _log_view(units: list[dict]) -> str:
+    """Units for INFO/WARNING logs: kind, id and session only; goals and commands are user content."""
+    keys = ("session", "delegation_id", "process_id", "id", "job_id", "pid")
+    return "; ".join(f"{u.get('kind')}(" + ", ".join(f"{k}={u[k]}" for k in keys if u.get(k)) + ")"
+                     for u in units if isinstance(u, dict)) or "nothing"
 
 
 def _idle(runner) -> bool:
@@ -99,7 +107,7 @@ async def await_idle(runner) -> bool:
         return not force.is_set()
     warn_every = float(getattr(runner, "_restart_after_turn_timeout", 0.0) or 0.0)
     logger.info("Restart requested; waiting for idle while serving normally (warn after %.0fs): %s",
-                warn_every, runner._describe_active_work())
+                warn_every, _log_view(runner._describe_active_work()))
     loop = asyncio.get_running_loop()
     started = loop.time()
     next_warn = started + warn_every
@@ -109,7 +117,7 @@ async def await_idle(runner) -> bool:
         if now >= next_warn:
             logger.warning(
                 "Restart still waiting after %.0fs; live work is NOT interrupted (only a forced "
-                "restart stops it). Waiting on: %s", now - started, runner._describe_active_work())
+                "restart stops it). Waiting on: %s", now - started, _log_view(runner._describe_active_work()))
             next_warn = now + max(warn_every, _STATUS_EVERY_S)
         if now - last_status >= _STATUS_EVERY_S:
             runner._scale_to_zero_status("draining", "restart wait: status mark failed")
@@ -118,7 +126,7 @@ async def await_idle(runner) -> bool:
             await asyncio.wait_for(force.wait(), timeout=_POLL_S)
         except TimeoutError:
             continue
-        logger.warning("Forced restart: stopping now and interrupting: %s", runner._describe_active_work())
+        logger.warning("Forced restart: stopping now and interrupting: %s", _log_view(runner._describe_active_work()))
         return False
     logger.info("Restart wait complete after %.1fs: gateway idle; restarting", loop.time() - started)
     return True
@@ -137,8 +145,13 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
 
     async def _run_restart() -> None:
         idle = await await_idle(runner)
+        # Close admission in the same loop tick the wait saw idle: a turn admitted during the helper
+        # launch or the yield below would otherwise be interrupted by a drain-less stop().
+        runner._draining = True
         if not idle:
             force_stop_budgets(runner)
+        # Read the plan now, not at request time: a forced update pause replaces a /restart's relaunch.
+        detached, via_service = runner._restart_detached, runner._restart_via_service
         # Detached helper only AFTER the wait, or its drain_timeout+5 deadline fires mid-turn.
         if detached:
             try:
@@ -170,5 +183,8 @@ def force_restart(runner, *, detached: bool = False, via_service: bool = True) -
         runner._restart_force_event = asyncio.Event()
     runner._restart_force_event.set()
     force_stop_budgets(runner)
-    request_restart(runner, detached=detached, via_service=via_service)
+    if not request_restart(runner, detached=detached, via_service=via_service):
+        # A restart is already waiting: the force's relaunch plan replaces the one it captured
+        # (an update pause must not launch a /restart's detached helper mid-update).
+        runner._restart_detached, runner._restart_via_service = detached, via_service
     return True

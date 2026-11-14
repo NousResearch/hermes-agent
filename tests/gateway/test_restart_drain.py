@@ -214,7 +214,7 @@ async def test_request_restart_waits_for_async_delegation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_wait_never_interrupts_a_delegation_at_the_cap(monkeypatch, caplog):
+async def test_restart_wait_never_interrupts_a_delegation_at_the_cap(monkeypatch):
     """Ruling 2026-11-13: the cap only warns; a live delegation keeps the restart waiting."""
     runner, _adapter = make_restart_runner()
     runner._restart_after_turn_timeout = 0.05
@@ -222,9 +222,13 @@ async def test_restart_wait_never_interrupts_a_delegation_at_the_cap(monkeypatch
     monkeypatch.setattr("tools.async_delegation.active_count", lambda: 1)
     monkeypatch.setattr("gateway.restart_when_idle.background_units",
                         lambda _r: [{"kind": "delegation", "delegation_id": "d1", "session": "parent-s"}])
-    with caplog.at_level("WARNING"), pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(runner._await_active_work_before_restart(), timeout=0.5)
-    assert any("NOT interrupted" in r.getMessage() and "d1" in r.getMessage() for r in caplog.records)
+    warned = asyncio.Event()
+    monkeypatch.setattr("gateway.restart_when_idle.logger.warning",
+                        lambda msg, *args: warned.set() if "NOT interrupted" in msg and "d1" in str(args) else None)
+    waiting = asyncio.ensure_future(runner._await_active_work_before_restart())
+    await asyncio.wait_for(warned.wait(), timeout=5.0)  # the cap elapsed and only warned
+    assert not waiting.done()
+    waiting.cancel()
 
 
 @pytest.mark.asyncio
@@ -237,11 +241,17 @@ async def test_request_restart_after_turn_cap_elapsed_keeps_waiting_and_serving(
     runner._restart_after_turn_timeout = 0.05
     runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
 
-    assert runner.request_restart(detached=False, via_service=True) is True
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(asyncio.shield(runner._restart_task), timeout=0.3)
+    warned = asyncio.Event()
+    import gateway.restart_when_idle as idle_mod
+    real_warning = idle_mod.logger.warning
+    idle_mod.logger.warning = lambda msg, *args: (warned.set(), real_warning(msg, *args))
+    try:
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.wait_for(warned.wait(), timeout=5.0)  # the cap elapsed while the turn ran
+    finally:
+        idle_mod.logger.warning = real_warning
     runner.stop.assert_not_awaited()
-    assert runner._draining is False
+    assert runner._draining is False and not runner._restart_task.done()
 
     assert force_restart(runner) is True
     await asyncio.wait_for(runner._restart_task, timeout=2.0)
@@ -778,3 +788,36 @@ def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(mon
     finally:
         sched.release_running_job("daily-brief", home_a)
         sched.release_running_job("daily-brief", home_b)
+
+
+@pytest.mark.asyncio
+async def test_forced_update_pause_replaces_a_waiting_restarts_relaunch_and_closes_admission():
+    """A /restart waiting on a turn captured ``detached=True``; the update's forced pause must stop
+    for the service instead of launching the detached helper, and admission closes before stop()."""
+    from gateway.restart_when_idle import force_restart
+    runner, _adapter = make_restart_runner()
+    seen = {}
+
+    async def _stop(**kwargs):
+        seen.update(kwargs, draining=runner._draining)
+    runner.stop = _stop
+    runner._launch_detached_restart_command = AsyncMock()
+    runner._scale_to_zero_status = MagicMock()
+    runner._restart_after_turn_timeout = 60.0
+    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+
+    assert runner.request_restart(detached=True, via_service=False) is True
+    assert force_restart(runner) is True
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+    runner._launch_detached_restart_command.assert_not_awaited()
+    assert seen == {"restart": True, "detached_restart": False, "service_restart": True, "draining": True}
+
+
+def test_a_dequeued_completion_notice_still_holds_the_restart():
+    """The watcher has taken the notice off the queue but not yet admitted its turn: not idle."""
+    from gateway.restart_when_idle import background_units
+    runner, _adapter = make_restart_runner()
+    runner._async_notices_in_delivery = [{"type": "async_delegation", "delegation_id": "d9",
+                                          "parent_session_id": "parent-s"}]
+    assert {"kind": "notice", "id": "d9", "session": "parent-s"}.items() <= next(
+        u for u in background_units(runner) if u["kind"] == "notice").items()

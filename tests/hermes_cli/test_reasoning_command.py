@@ -100,7 +100,13 @@ class TestHandleReasoningCommand(unittest.TestCase):
             _notify_session_boundary=MagicMock(),
         )
 
-        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}):
+        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}), patch(
+            "cli.load_cli_config",
+            return_value={
+                "agent": {"reasoning_effort": "medium", "service_tier": ""},
+                "model": dict(CLI_CONFIG.get("model") or {}),
+            },
+        ):
             HermesCLI.new_session(stub, silent=True)
 
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})
@@ -151,6 +157,12 @@ class TestHandleReasoningCommand(unittest.TestCase):
         ), patch.dict(
             CLI_CONFIG,
             {"model": {"default": "config-default-model", "provider": "openrouter"}},
+        ), patch(
+            "cli.load_cli_config",
+            return_value={
+                "agent": {"reasoning_effort": "medium", "service_tier": "normal"},
+                "model": {"default": "config-default-model", "provider": "openrouter"},
+            },
         ), patch(
             "hermes_cli.model_switch.switch_model", return_value=fake_result
         ):

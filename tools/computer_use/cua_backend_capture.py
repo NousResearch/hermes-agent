@@ -38,6 +38,11 @@ _NO_DESKTOP_WINDOW_MSG = ("<no desktop/shell window found for app={app!r}; cua-d
 _NO_APP_MATCH_MSG = ("<no on-screen window matched app={app!r}; call list_apps to see available app names or bundle "
                      "IDs (macOS reports localized names, e.g. '計算機' instead of 'Calculator'; some Linux/Qt apps "
                      "only resolve via list_apps metadata)>")
+_NO_APP_MATCH_MSG_WINDOWS = ("<no on-screen window matched app={app!r}; call list_windows to see the open windows "
+                             "and capture one by window_id (list_apps reports packaged/UWP apps as not running, "
+                             "with no windows)>")
+_AMBIGUOUS_FRAME_HOST_MSG = ("<{count} windows match app={app!r} ({candidates}); app= alone cannot pick one, so "
+                             "capture with window_id=<id> (and pid=<pid> to pin both)>")
 _NO_DESKTOP_IMAGE_MSG = ("<get_desktop_state returned no image; the driver may predate the desktop capture lane — "
                          "try capture(app='<AppName>') for a specific window>")
 _FULL_SCREEN_NOTE = ("full-screen capture has no interactable elements; to act on what you see, call "
@@ -115,6 +120,25 @@ def _png_metrics(png_b64: str, width: int, height: int) -> tuple[int, int, int]:
 
 def _is_desktop_window(w: dict[str, Any], names: tuple[str, ...] = _DESKTOP_WINDOW_NAMES) -> bool:
     return any(name in f"{w.get('app_name', '')} {w.get('title', '')}".lower() for name in names)
+
+
+def _frame_host_windows_titled(windows: list[dict[str, Any]], app_lower: str) -> list[dict[str, Any]]:
+    """Windows UWP windows belong to ApplicationFrameHost while list_apps reports the packaged app as stopped
+    (pid=0): a frame-host window titled exactly like the requested app is that app. The app name is kept on the
+    window so the input guard accepts the same app on the following click."""
+    if sys.platform != "win32":
+        return []
+    return [dict(w, app_name=str(w.get("title", "")).strip()) for w in windows
+            if str(w.get("app_name", "")).strip().lower() in ("applicationframehost.exe", "applicationframehost")
+            and str(w.get("title", "")).strip().lower() == app_lower]
+
+def _no_app_match(windows: list[dict[str, Any]], app: str) -> str:
+    """Failed-capture text for an unmatched app=: name the candidates when several frame-host windows carry the
+    title (a second launch of a UWP app opens another one), else say where to look on this OS."""
+    if len(hosted := _frame_host_windows_titled(windows, app.strip().lower())) > 1:
+        candidates = ", ".join(f"window_id={w.get('window_id')} pid={w.get('pid')}" for w in hosted)
+        return _AMBIGUOUS_FRAME_HOST_MSG.format(count=len(hosted), app=app, candidates=candidates)
+    return (_NO_APP_MATCH_MSG_WINDOWS if sys.platform == "win32" else _NO_APP_MATCH_MSG).format(app=app)
 
 
 class _CaptureMixin:
@@ -202,9 +226,12 @@ class _CaptureMixin:
                     exact_pids.add(pid)
                 elif any(app_lower in alias for alias in aliases):
                     partial_pids.add(pid)
+        # Only a unique exact title on the frame host is an app identity; several are reported by _no_app_match.
+        hosted_exact = _frame_host_windows_titled(windows, app_lower)
         # Some X11 backends expose a title but no app name. Restrict the final fallback to nameless rows so
         # a localized app name is not overridden merely because its title happens to be in the caller's language.
         tiers = ([w for w in windows if w.get("pid") in exact_pids],
+                 hosted_exact if len(hosted_exact) == 1 else [],
                  [w for w in windows if app_lower in _name(w)],
                  [w for w in windows if w.get("pid") in partial_pids],
                  [w for w in windows if not _name(w).strip() and app_lower in str(w.get("title", "")).lower()])
@@ -213,6 +240,16 @@ class _CaptureMixin:
     def _resolve_capture_windows(self, mode: str, app: Optional[str], pid: Optional[int],
                                  window_id: Optional[int]) -> list[dict[str, Any]] | CaptureResult:
         """Candidate windows for capture(), or a failed CaptureResult."""
+        if window_id is not None and pid is None:
+            # Bind by Win32 HWND directly via window_id alone (without requiring pid)
+            if (target_window_id := _positive_int(window_id)) is None:
+                return self._failed_capture(mode, "<capture targeting requires positive integer window_id>")
+            with self._disarming():
+                windows = self.list_windows()
+            matched = [w for w in windows if w.get("window_id") == target_window_id]
+            if len(matched) == 1:
+                return matched
+            return self._failed_capture(mode, f"<window_id {target_window_id} not found in active windows>")
         if pid is not None or window_id is not None:
             # An exact pid/window pair is both the stable capture_after target and the escape hatch when
             # discovery is unavailable on X11.
@@ -239,7 +276,7 @@ class _CaptureMixin:
             return desktop or self._failed_capture(mode, _NO_DESKTOP_WINDOW_MSG.format(app=app))
         # When the filter matches nothing, say so instead of silently capturing the frontmost window — on
         # macOS list_windows returns the localized app name (e.g. "計算機"), so `app="Calculator"` legitimately misses.
-        return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
+        return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _no_app_match(windows, app))
 
     def _gws_args(self) -> dict[str, Any]:
         """``get_window_state`` args.
@@ -317,7 +354,12 @@ class _CaptureMixin:
         windows = self._resolve_capture_windows(mode, app, pid, window_id)
         if isinstance(windows, CaptureResult):
             return windows
-        self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
+        target = _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target)
+        if (sys.platform == "win32"
+                and str(target.get("app_name", "")).strip().lower() in ("applicationframehost.exe", "applicationframehost")
+                and target.get("title")):
+            target["app_name"] = str(target["title"]).strip()
+        self._set_active_target(target)
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.
@@ -368,7 +410,7 @@ class _CaptureMixin:
                              image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE)
 
     def list_apps(self) -> list[dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {"session": self._session_id})
+        out = self._call_capture_tool("list_apps", {"session": self._session_id})
         structured, data = out.get("structuredContent"), out.get("data")
         # structuredContent is canonical; empty lists fall through so a populated compatibility envelope
         # (older drivers, CLI fallback) can still recover, then apps derived from the windows payload.

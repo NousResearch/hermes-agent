@@ -885,7 +885,10 @@ class AuthorityConnection:
         from gateway.session_mutations import mutate_session
         from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
-            result = await mutate_session(self.authority, self.actor, ref, params)
+            result = await mutate_session(
+                self.authority, self.actor, ref, params,
+                _deletion_origin="user_rpc" if params.get("operation") == "delete" else "unknown",
+            )
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.

@@ -151,7 +151,7 @@ def _native_history_transport(request, authority, actor):
         unbind_native_transport(authority, actor)
 
 
-def _mutate_offline_store(profile, actor, params):
+def _mutate_offline_store(profile, actor, params, *, _deletion_origin="unknown"):
     """Standalone edit: the receipt transaction on this process's single shared writer.
 
     Runs under the exact owner lock (409 while any gateway owns the store, never a
@@ -178,6 +178,7 @@ def _mutate_offline_store(profile, actor, params):
             epoch = row[0] if row else begin_runtime_epoch(db, instance_id='dashboard-offline')
             return mutate_runtime_session(db, epoch=epoch, principal_id=actor.subject,
                 expected_generation=params.get('expected_generation'), _authorize_write=write_guard,
+                _deletion_origin=_deletion_origin,
                 **{key: params[key] for key in ('session_id', 'request_id', 'expected_revision',
                                                 'operation', 'payload')})
         finally:
@@ -185,7 +186,7 @@ def _mutate_offline_store(profile, actor, params):
     return _with_session_maintenance(profile, run)
 
 
-async def _mutate_via_gateway_owner(profile, actor, params):
+async def _mutate_via_gateway_owner(profile, actor, params, *, _deletion_origin="unknown"):
     """Forward a standalone dashboard mutation to the live gateway owner.
 
     While a gateway serves the same home, a separately launched ``hermes
@@ -225,7 +226,8 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     endpoint = discovery.endpoint
     if endpoint is None:
         try:
-            return await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+            return await asyncio.to_thread(_mutate_offline_store, profile, actor, params,
+                                           _deletion_origin=_deletion_origin)
         except HTTPException as exc:
             if discovery.state == 'absent' or not isinstance(exc.__cause__, OwnershipConflict):
                 raise
@@ -269,7 +271,8 @@ _MUTATION_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, '
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,
-                                  expected_revision, operation, payload, expected_generation=None):
+                                  expected_revision, operation, payload, expected_generation=None,
+                                  _deletion_origin="unknown"):
     """Resolve the authenticated principal and owner; never open a second writer."""
     import sqlite3
     from fastapi import HTTPException
@@ -299,10 +302,13 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         if authority is None:
             # A live gateway owner answers first; a home without an endpoint takes
             # the offline store (whose reservation loses to any owner holding the lock).
-            result = await _mutate_via_gateway_owner(profile, actor, params)
+            # Provenance stays a private keyword: the RPC call below does not carry it.
+            result = await _mutate_via_gateway_owner(profile, actor, params,
+                                                     _deletion_origin=_deletion_origin)
         else:
             with _native_history_transport(request, authority, actor):
-                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params,
+                                              _deletion_origin=_deletion_origin)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
         raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc

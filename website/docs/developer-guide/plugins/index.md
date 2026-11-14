@@ -1588,6 +1588,15 @@ def register(ctx):
     ctx.register_hook("on_session_end", on_session_end)
 ```
 
+### Session deletion preparation
+
+Plugins which need exact routing identities and explicit user intent across a
+backend/gateway process boundary can use the proposed
+[Session deletion receipts API](./session-deletion-receipts.md). It snapshots
+minimal identities in the guarded delete transaction and exposes committed
+receipts for a plugin-owned durable handoff; it does not run plugin callbacks
+under the write lock or grant external deletion authority.
+
 ### Rewrite the reply before the user sees it
 
 A `transform_llm_output` hook rewrites the finished reply, which the user has usually watched stream already. When your plugin must see the reply first (it redacts, filters or blocks content), pass `hold_stream=True`:

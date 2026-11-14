@@ -85,11 +85,11 @@ async def test_standalone_mutation_falls_back_to_offline_without_an_owner(tmp_pa
 
     request = _standalone_request(monkeypatch, tmp_path)
     _discover(monkeypatch, None)
-    offline = []
+    seen = []
 
-    def fake_offline(profile, actor, params):
-        offline.append(params)
-        return {'session_id': params['session_id'], 'operation': 'rename', 'revision': 2}
+    def fake_offline(profile, actor, params, *, _deletion_origin="unknown"):
+        seen.append((params, _deletion_origin))
+        return {'session_id': params['session_id'], 'operation': params['operation'], 'revision': 2}
 
     monkeypatch.setattr(web_server_sessions, '_mutate_offline_store', fake_offline)
 
@@ -98,8 +98,15 @@ async def test_standalone_mutation_falls_back_to_offline_without_an_owner(tmp_pa
         operation='rename', payload={'title': 'renamed'})
 
     assert result == {'ok': True, 'session_id': 'session-2', 'operation': 'rename', 'revision': 2}
-    assert len(offline) == 1
-    assert offline[0]['operation'] == 'rename'
+    assert seen == [({'session_id': 'session-2', 'request_id': 'req-2', 'expected_revision': 1,
+                      'operation': 'rename', 'payload': {'title': 'renamed'}}, 'unknown')]
+
+    deleted = await web_server_sessions._mutate_session_request(
+        request, None, 'session-2', request_id='req-2b', expected_revision=2,
+        operation='delete', payload={}, expected_generation=1, _deletion_origin='user_rest')
+    assert deleted['ok'] is True
+    assert seen[-1][1] == 'user_rest'
+    assert '_deletion_origin' not in seen[-1][0]
 
 
 @pytest.mark.asyncio
@@ -144,7 +151,8 @@ async def test_a_verdict_without_a_live_owner_still_edits_offline(tmp_path, monk
     request = _standalone_request(monkeypatch, tmp_path)
     monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', lambda home, timeout=2.0:
                         GatewayDiscovery('inaccessible', reason_code='unsafe_control_permissions'))
-    monkeypatch.setattr(web_server_sessions, '_mutate_offline_store', lambda profile, actor, params:
+    monkeypatch.setattr(web_server_sessions, '_mutate_offline_store',
+                        lambda profile, actor, params, *, _deletion_origin='unknown':
                         {'session_id': params['session_id'], 'operation': 'sidebar', 'revision': 1})
     result = await web_server_sessions._mutate_session_request(
         request, None, 'session-8', request_id='req-8', expected_revision=0,

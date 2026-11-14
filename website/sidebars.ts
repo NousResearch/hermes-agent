@@ -813,6 +813,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/terminal-environment-plugin',
                 'developer-guide/delegation-provider-plugin',
                 'developer-guide/plugins/application-declarations',
+                'developer-guide/plugins/session-deletion-receipts',
                 'developer-guide/plugins/catalog-submission',
                 'developer-guide/plugins/public-api',
               ],

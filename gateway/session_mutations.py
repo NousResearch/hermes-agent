@@ -103,23 +103,24 @@ def _owner_ref(authority, ref, params):
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
 
-async def mutate_session(authority, actor, ref, params):
+async def mutate_session(authority, actor, ref, params, *, _deletion_origin="unknown"):
     from gateway.session_runtime_workers import track_mutation
     authority._require_admission_open()
     # A request socket can disappear while its writer is inside to_thread. The owner task keeps
     # the session gate until commit AND publication finish, and retirement joins that same task.
-    task = track_mutation(authority, _owned_mutation(authority, actor, ref, params))
+    task = track_mutation(authority, _owned_mutation(authority, actor, ref, params, _deletion_origin=_deletion_origin))
     return await asyncio.shield(task)
 
 
-async def _owned_mutation(authority, actor, ref, params):
+async def _owned_mutation(authority, actor, ref, params, *, _deletion_origin="unknown"):
     if (params.get('operation') in {*_POLICY, 'compress', 'reset', 'rewind'}
             and ref.session_id not in authority.sessions and 'request_id' in params):
         _authorize_control(authority, actor, ref, params)
     owner = _owner_ref(authority, ref, params)
     live = authority.sessions.get(owner.session_id)
     if live is None:
-        return await _mutate_session(authority, actor, ref, params, owner=owner)
+        return await _mutate_session(authority, actor, ref, params, owner=owner,
+                                     _deletion_origin=_deletion_origin)
     # Prepared policy/route publication is inseparable from its durable commit
     # for admission and claim: neither may observe a half-published policy.
     if params.get('operation') == 'compress':
@@ -127,11 +128,13 @@ async def _owned_mutation(authority, actor, ref, params):
         # edit is not parked behind it; the commit is revision/generation-fenced against anything
         # that lands meanwhile. Claims wait on ``claim_gate``, so no turn runs under it.
         async with live.claim_gate:
-            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock, owner=owner)
+            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock,
+                                           owner=owner, _deletion_origin=_deletion_origin)
     else:
         async with live.mutation_lock:
             try:
-                result = await _mutate_session(authority, actor, ref, params, owner=owner)
+                result = await _mutate_session(authority, actor, ref, params, owner=owner,
+                                               _deletion_origin=_deletion_origin)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
                 if (params.get('operation') not in {'model', 'reasoning'}
@@ -145,7 +148,8 @@ async def _owned_mutation(authority, actor, ref, params):
     return result
 
 
-async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, owner=None):
+async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, owner=None,
+                          _deletion_origin="unknown"):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
@@ -181,7 +185,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
 
     return await write_mutation(authority, ref, params, editor_servers, principal_id=actor.subject,
                                 authorize_write=authorize_write if cold_history or operation == 'import' else None,
-                                commit_lock=commit_lock)
+                                commit_lock=commit_lock, _deletion_origin=_deletion_origin)
 
 
 def _runtime_owns_authority(authority) -> bool:
@@ -199,7 +203,7 @@ def _runtime_owns_authority(authority) -> bool:
 
 
 async def write_mutation(authority, ref, params, editor_servers, *, principal_id, authorize_write=None,
-                         commit_lock=None):
+                         commit_lock=None, _deletion_origin="unknown"):
     """The writer phase of ``session.mutate``, and of the admission-start editor MCP re-freeze
     (``refreeze_editor_mcp``): fenced prepare, the receipt commit, then its runtime projections.
     The caller authorized the change and holds the session's locks; this takes neither."""
@@ -226,7 +230,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
     fields = dict(epoch=authority.epoch, principal_id=principal_id, session_id=ref.session_id,
                   request_id=params['request_id'], expected_revision=params['expected_revision'],
                   expected_generation=params.get('expected_generation'), operation=operation,
-                  payload=params['payload'], _live_guard=live_guard)
+                  payload=params['payload'], _live_guard=live_guard, _deletion_origin=_deletion_origin)
 
     async def prepare_only():
         # Its own BEGIN IMMEDIATE, so off the loop like the commit below.

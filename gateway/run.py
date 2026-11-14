@@ -5060,7 +5060,7 @@ def main():
     def _arm_watchdog() -> None:
         # Armed before config load / DB opens so a pre-loop deadlock is respawned by the supervisor instead
         # of wedging as a live-PID zombie. GatewayRunner disarms it.
-        from hermes_startup_watchdog import arm_startup_watchdog
+        from hermes_agent.hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()
 
     def _utf8_stdio() -> None:

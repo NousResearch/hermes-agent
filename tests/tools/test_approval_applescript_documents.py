@@ -118,6 +118,12 @@ def test_risky_program_is_flagged(command):
     # A redirect target that runs a command is still unreviewable.
     "osascript -e 'get name of me' >\"$(cat /tmp/target)\"",
     "osascript -e 'get name of me' > `cat /tmp/target`",
+    "osascript -e 'get name of me' >$(cat /tmp/target)",
+    "osascript -e 'get name of me' > $(cat /tmp/target)",
+    "osascript -e 'get name of me' >/tmp/$(cat /tmp/target)",
+    "osascript -e 'get name of me' >${X:-$(cat /tmp/target)}",
+    # A `>` inside a quoted program is not a redirect: masking it would hide the next argument.
+    "osascript -e 'if 1 >0' -e \"$SCRIPT\"",
     "X=osascript; $X -e 'quit'",
     "$(which osascript) -e 'quit'",
     # Interpreters the detector already knows (bun/deno) carry osascript like python/node do.

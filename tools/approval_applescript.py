@@ -199,7 +199,8 @@ def _mask_redirect_targets(args: str) -> str:
         if first == k:
             continue
         start, end = steps[first][0], steps[k - 1][1]
-        if "$(" not in args[start:end] and "`" not in args[start:end]:
+        word = args[start:end + 1]  # the target ends at an unquoted `(`, so `>$(cmd)` keeps its `$(` only here
+        if "$(" not in word and "`" not in word:
             out[start:end] = " " * (end - start)
     return "".join(out)
 

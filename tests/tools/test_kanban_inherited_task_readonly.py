@@ -75,15 +75,23 @@ def test_cron_run_cannot_mutate_inherited_worker_card(worker_board, tool, extra)
     assert _comments(worker_tid) == []
 
 
-def test_cron_run_does_not_borrow_worker_identity(worker_board):
+def test_cron_run_does_not_borrow_worker_identity(worker_board, monkeypatch):
     from agent.delegation_context import non_dispatcher_owned_context
+    from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
     worker_tid, _ = worker_board
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", 0.0)
     assert kt._worker_run_id(worker_tid) is not None
     with non_dispatcher_owned_context():
         assert kt._worker_run_id(worker_tid) is None
         assert kt.heartbeat_current_worker_from_env() is False
+    conn = kbc.connect()
+    try:
+        row = conn.execute("SELECT last_heartbeat_at FROM tasks WHERE id = ?", (worker_tid,)).fetchone()
+    finally:
+        conn.close()
+    assert row[0] is None
 
 
 def test_cron_run_may_still_touch_other_cards(worker_board):
@@ -95,6 +103,10 @@ def test_cron_run_may_still_touch_other_cards(worker_board):
         out = json.loads(kt._handle_comment({"task_id": other_tid, "body": "finding"}))
     assert out.get("ok") is True, out
     assert len(_comments(other_tid)) == 1
+    with non_dispatcher_owned_context():
+        out = json.loads(kt._handle_block({"task_id": other_tid, "reason": "cron found a blocker"}))
+    assert out.get("ok") is True, out
+    assert _status(other_tid) == "blocked"
 
 
 def test_dispatcher_worker_still_completes_own_card(worker_board):

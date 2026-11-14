@@ -32,24 +32,26 @@ def session_action_allowed(session, task_id: str, session_key: str) -> bool:
     owner = session.owner_task_id or session.task_id
     if task_id and task_id in (owner, session.task_id):
         return True
-    if session_key and session.session_key:
-        if session_key == session.session_key:
-            return True
-        from tools.process_registry_results import _owns_result
-        if _owns_result(session_key, session.session_key):
-            return True
+    if session_key and session_key == session.session_key:
+        return True
+    from tools.process_registry_results import _owns_result
+    # Compression continuations: the CLI and TUI rotate the session key, /v1/runs the task id
+    # (its session key is a fresh run id per run), so either lineage ties the caller to its process.
+    if (task_id and _owns_result(task_id, owner)) or (session_key and _owns_result(session_key, session.session_key)):
+        return True
     return not (task_id or session_key) or not (owner or session.session_key)
 
 
 def resolve_actionable(session_id: str, task_id) -> tuple[bool, str]:
     """``(allowed, id_to_act_on)``. A session that exists but belongs to someone else is refused (the
     caller then answers with the same ``not_found`` shape as a miss, so foreign ids are not
-    enumerable). An allowed session is acted on by its FULL id, so a short prefix that becomes
-    unique to another conversation's process between check and action cannot retarget it."""
+    enumerable). An id that resolves to no session (missing, or an ambiguous prefix) is refused
+    the same way, and an allowed session is acted on by its FULL id, so no prefix the check did
+    not resolve can reach another conversation's process."""
     from tools.process_registry import process_registry
     session = process_registry.get(session_id)
     if session is None:
-        return True, session_id
+        return False, session_id
     if not session_action_allowed(session, str(task_id or ""), caller_session_key()):
         return False, session_id
     return True, session.id

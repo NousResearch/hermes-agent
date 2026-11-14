@@ -75,6 +75,26 @@ def test_compression_continuation_keeps_access(reg, monkeypatch):
     assert _call(monkeypatch, "poll", "task-b", "key-a-child")["status"] != "not_found"
 
 
+
+def test_resumed_api_run_keeps_access_after_compression(monkeypatch):
+    """/v1/runs binds task_id to the conversation's live compression tip and the session key to a
+    fresh run id, so after a rotation only the task's own lineage ties the caller to its process."""
+    from hermes_state import SessionDB
+    monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(pr, "process_registry", registry)
+    db = SessionDB()
+    try:
+        db.create_session("api-conv", "api_server")
+        db.end_session("api-conv", end_reason="compression")
+        db.create_session("api-conv-tip", "api_server", parent_session_id="api-conv")
+    finally:
+        db.close()
+    registry._finished["proc_owned1"] = _session(owner_task_id="api-conv", session_key="run-1", task_id="api-conv")
+    assert _call(monkeypatch, "poll", "api-conv-tip", "run-2")["status"] != "not_found"
+    assert _call(monkeypatch, "poll", "other-conv", "run-3") == pr._not_found("proc_owned1")
+
+
 def test_container_task_id_may_poll(reg, monkeypatch):
     _finished(reg)
     assert _call(monkeypatch, "poll", "container-a", "")["status"] != "not_found"
@@ -123,3 +143,18 @@ def test_allowed_short_id_acts_on_the_session_that_was_checked(reg, monkeypatch)
     monkeypatch.setattr(ac, "get_current_session_key", lambda default="": "key-a")
     pr._handle_process({"action": "poll", "session_id": "abcd1111"}, task_id="task-a")
     assert seen == ["proc_abcd1111aaaa"]
+
+
+def test_unresolved_prefix_is_never_dispatched(reg, monkeypatch):
+    """An ambiguous prefix passed no ownership check: refuse it rather than let the action
+    resolve it again after a prune has made it unique to another conversation's process."""
+    for sid, owner in (("proc_abcd1111aaaa", "task-a"), ("proc_abcd1111bbbb", "task-b")):
+        sess = _session(owner_task_id=owner, session_key="")
+        sess.id = sid
+        reg._finished[sid] = sess
+    seen = []
+    monkeypatch.setitem(pr._SESSION_ACTIONS, "kill", (lambda sid, args: seen.append(sid) or {"status": "killed"}, False))
+    monkeypatch.setattr(ac, "get_current_session_key", lambda default="": "")
+    out = json.loads(pr._handle_process({"action": "kill", "session_id": "abcd1111"}, task_id="task-a"))
+    assert out == pr._not_found("abcd1111")
+    assert seen == []

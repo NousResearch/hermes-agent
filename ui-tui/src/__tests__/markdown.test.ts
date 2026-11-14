@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, Link, renderSync, Text } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import chalk from 'chalk'
 import React from 'react'
@@ -295,6 +295,23 @@ describe('Md link labels', () => {
 
     expect(ansi).not.toContain(`${ESC}]2;`)
     expect(ansi).toContain(`;https://example.com/x]2;TITLE${BEL}`)
+  })
+
+  it('strips control bytes from an authored link label', () => {
+    const C1_CSI = String.fromCharCode(0x9b)
+    const text = renderAnsi(md(`[Trip${BEL}${C1_CSI}2J details](https://example.com/x)`)).replace(OSC_RE, '')
+
+    expect(text).not.toContain(BEL)
+    expect(text).not.toContain(C1_CSI)
+    expect(text).toContain('Trip2J details')
+  })
+
+  it('strips control bytes from a <Link> target at the ink sink, not only in Md', () => {
+    const url = `https://example.com/x${BEL}${ESC}]2;TITLE${BEL}`
+    const ansi = renderAnsi(React.createElement(Link, { url }, React.createElement(Text, null, 'x')))
+
+    expect(ansi).not.toContain(`${ESC}]2;`)
+    expect(ansi).toContain(';https://example.com/x]2;TITLE')
   })
 
   it('keeps the SGR styling of a link label intact', () => {

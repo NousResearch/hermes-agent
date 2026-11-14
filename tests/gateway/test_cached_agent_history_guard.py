@@ -67,6 +67,43 @@ def test_select_cached_history_ignores_unmarked_ephemeral_scaffolding():
     assert _select_cached_agent_history(persisted, live) is persisted
 
 
+def test_select_cached_history_ignores_empty_restore_handoff_row():
+    """An empty row left by a restore handoff is not evidence of DB lag.
+
+    ``_build_gateway_agent_history`` drops the empty user row a gateway restore
+    handoff leaves in ``_session_messages``, so counting it makes the live list
+    permanently one longer than the persisted copy: a false disk=N/memory=N+1 lag
+    on every tick, and the cleaned history replaced by the dirty live copy.
+    """
+    persisted = [
+        {"role": "user", "content": "hello", "_db_persisted": True},
+        {"role": "assistant", "content": "hi", "_db_persisted": True},
+    ]
+    live = [*persisted, {"role": "user", "content": ""}]
+
+    assert _select_cached_agent_history(persisted, live) is persisted
+
+
+def test_select_cached_history_keeps_empty_rows_that_carry_tool_payloads():
+    """Emptiness alone must not drop a row: tool rows are real replay content."""
+    persisted = [{"role": "user", "content": "run it", "_db_persisted": True}]
+    live = [
+        *persisted,
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ],
+        },
+    ]
+
+    selected = _select_cached_agent_history(persisted, live)
+
+    assert selected is not persisted
+    assert [m.get("role") for m in selected] == ["user", "assistant"]
+
+
 def test_persistent_transcript_lag_escalates_to_error(caplog):
     """The 'Persisted transcript lagged live cached history' line repeated at WARNING for 11 days in
     #114266. A per-session streak of lagging turns escalates it to ERROR; a turn whose disk copy

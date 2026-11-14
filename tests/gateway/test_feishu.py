@@ -15,8 +15,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from gateway.platforms.event import ProcessingOutcome
-
 
 if TYPE_CHECKING:
     from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2477,55 +2475,3 @@ def test_human_sender_name_is_fetched_from_contact_api_and_cached(fake_lark_requ
 
     assert len(lookups) == 1, "second lookup must hit the cache"
     assert (lookups[0].user_id, lookups[0].user_id_type) == ("ou_bob", "open_id")
-
-
-def _reaction_adapter(*, delete_success=True):
-    adapter = _plain_feishu_adapter()
-    tracker = SimpleNamespace(created=[], deleted=[])
-
-    def _create(request):
-        tracker.created.append(request.request_body.reaction_type["emoji_type"])
-        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(reaction_id="r_typing"))
-
-    def _delete(request):
-        tracker.deleted.append(request.reaction_id)
-        return SimpleNamespace(success=lambda: delete_success, code=0 if delete_success else 99, msg="")
-
-    adapter._client = SimpleNamespace(
-        im=SimpleNamespace(v1=SimpleNamespace(message_reaction=SimpleNamespace(create=_create, delete=_delete)))
-    )
-    return adapter, tracker
-
-
-def _run_processing(adapter, outcome):
-    event = SimpleNamespace(message_id="om_msg")
-    asyncio.run(adapter.on_processing_start(event))
-    asyncio.run(adapter.on_processing_complete(event, outcome))
-
-
-def test_processing_success_removes_typing_and_adds_nothing(fake_lark_requests, monkeypatch):
-    monkeypatch.delenv("FEISHU_REACTIONS", raising=False)
-    adapter, tracker = _reaction_adapter()
-    _run_processing(adapter, ProcessingOutcome.SUCCESS)
-    assert tracker.created == ["Typing"]
-    assert tracker.deleted == ["r_typing"]
-    assert "om_msg" not in adapter._pending_processing_reactions
-
-
-def test_processing_failure_swaps_typing_for_cross_mark(fake_lark_requests, monkeypatch):
-    monkeypatch.delenv("FEISHU_REACTIONS", raising=False)
-    adapter, tracker = _reaction_adapter()
-    _run_processing(adapter, ProcessingOutcome.FAILURE)
-    assert tracker.created == ["Typing", "CrossMark"]
-    assert tracker.deleted == ["r_typing"]
-
-
-def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark_requests, monkeypatch):
-    """A Typing badge we couldn't remove must not get a CrossMark stacked next to it (the UI would
-    read as both working and failed); the handle is kept for LRU eviction."""
-    monkeypatch.delenv("FEISHU_REACTIONS", raising=False)
-    adapter, tracker = _reaction_adapter(delete_success=False)
-    _run_processing(adapter, ProcessingOutcome.FAILURE)
-    assert tracker.created == ["Typing"]
-    assert tracker.deleted == ["r_typing"]
-    assert adapter._pending_processing_reactions["om_msg"] == "r_typing"

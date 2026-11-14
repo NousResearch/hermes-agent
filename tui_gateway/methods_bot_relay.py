@@ -13,12 +13,17 @@ from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
+
+
+def _relay_home() -> Path:
+    """Mailbox owned by the requested profile, as used by message_agent."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home()
 
 
 def _relay_root() -> Path:
-    """Install root shared by every profile (relay state is install-wide). Same formula as the
-    writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
-    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
+    """Install root used only to resolve a delivery's target profile."""
     from tools.bot_mode_probe import _default_home, _hermes_root
     return _hermes_root(Path(_default_home()))
 
@@ -29,7 +34,8 @@ TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure ret
 
 
 @method("bot_relay.roster.sync")
-def _(rid, params: dict, _root=_relay_root) -> dict:
+@_profile_scoped
+def _(rid, params: dict, _root=_relay_home) -> dict:
     """Replace this gateway's view of agents on OTHER connections → ``{count}`` accepted rows
     (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped).
     A roster that changes is logged with its rows: a peer connection listed with this machine's
@@ -54,7 +60,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
 
 @method("bot_relay.outbox.drain")
-def _(rid, params: dict, _root=_relay_root) -> dict:
+@_profile_scoped
+def _(rid, params: dict, _root=_relay_home) -> dict:
     """Claim every pending cross-connection envelope queued here → ``{envelopes}``; claimed
     envelopes move to ``claimed/`` atomically so concurrent drains can't double-deliver."""
     try:
@@ -123,7 +130,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
 
 @method("bot_relay.reply")
-def _(rid, params: dict, _root=_relay_root) -> dict:
+@_profile_scoped
+def _(rid, params: dict, _root=_relay_home) -> dict:
     """Write a relayed ``reply`` and/or ``error`` (+ optional typed ``reason``, see
     ``tools.bot_failure_reasons``) for envelope ``id`` so the sender-side waiter picks it up."""
     envelope_id = str(params.get("id") or "").strip()

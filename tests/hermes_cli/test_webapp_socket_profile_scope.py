@@ -123,9 +123,10 @@ def gateway(tmp_path, monkeypatch):
 class _Socket:
     """An accepted ``/api/ws`` connection carrying what the upgrade gate stamps on a Webapp ticket."""
 
-    def __init__(self, authority, frames, ticket_home=None):
+    def __init__(self, authority, frames, ticket_home=None, profile=None):
         self.app = SimpleNamespace(state=SimpleNamespace(session_authority=authority))
         self.scope, self.client, self.closed, self.sent = {}, None, None, []
+        self.query_params = {} if profile is None else {'profile': profile}
         self._hermes_auth_identity = {"user_id": "owner", "provider": "session-token"}
         self._hermes_ticket_profile_home = None if ticket_home is None else str(ticket_home)
         self._frames = [json.dumps(frame) for frame in frames]
@@ -181,3 +182,22 @@ def test_a_profile_ticket_with_no_authority_bound_is_refused_not_served_as_the_l
 
     assert ws.closed == 1013
     assert ws.sent == [] and gateway.portal_hits == []
+
+
+def test_native_oauth_socket_query_selects_the_named_profile_authority(gateway):
+    from hermes_cli.web_routers import chat_ws
+    ws = _Socket(gateway.authority, [{'jsonrpc': '2.0', 'id': 'owner',
+                                    'method': 'runtime.describe', 'params': {}}], profile='b')
+    asyncio.run(chat_ws.gateway_ws(ws))
+    assert Path(ws.reply('owner')['result']['profile_id']) == gateway.b
+
+
+@pytest.mark.parametrize('ticket_home,profile', [(None, 'missing'), ('b', 'default')])
+def test_invalid_or_ticket_conflicting_query_never_falls_back_to_default(gateway, ticket_home, profile):
+    from hermes_cli.web_routers import chat_ws
+    ws = _Socket(gateway.authority, [{'jsonrpc': '2.0', 'id': 'owner',
+                                    'method': 'runtime.describe', 'params': {}}],
+                 gateway.b if ticket_home else None, profile=profile)
+    asyncio.run(chat_ws.gateway_ws(ws))
+    assert ws.closed == 4403
+    assert ws.sent == []

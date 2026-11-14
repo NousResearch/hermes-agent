@@ -333,7 +333,7 @@ _PAIRING_ROOTS_TTL_S = 30.0
 _pairing_roots_cache: tuple[Path, int | None, float, list] | None = None
 
 
-def _pairing_roots(home: Path) -> list:
+def _profile_watch_homes(home: Path) -> list:
     global _pairing_roots_cache
     profiles_dir = home / "profiles"
     dir_mtime, now = _watcher_mtime_ns(profiles_dir), time.monotonic()
@@ -341,36 +341,45 @@ def _pairing_roots(home: Path) -> list:
     if cached is not None and cached[0] == home and cached[1] == dir_mtime and now - cached[2] < _PAIRING_ROOTS_TTL_S:
         return cached[3]
     from hermes_constants import named_profile_is_live
-    roots = [home / "pairing", home / "platforms" / "pairing"]
+    roots = [home]
     with contextlib.suppress(OSError):
         for profile_dir in profiles_dir.iterdir():
             if named_profile_is_live(profile_dir):
-                roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
+                roots.append(profile_dir)
     _pairing_roots_cache = (home, dir_mtime, now, roots)
     return roots
 
 
-# Newest outbox-envelope mtime EVER seen (monotone): a drain empties the outbox,
-# and falling back to None would fire a spurious pending event after every drain.
-_bot_relay_outbox_seen = 0
+def _pairing_roots(home: Path) -> list:
+    return [path for profile in _profile_watch_homes(home)
+            for path in (profile / "pairing", profile / "platforms" / "pairing")]
 
 
 def _bot_relay_outbox_sig():
-    """Newest mtime across pending bot-relay outbox envelopes (monotone). Written by the AGENT
-    process, so the files are the only shared signal; the Desktop reacts with a debounced drain.
+    """Outstanding envelopes across live profile homes, including unacknowledged claims.
 
-    Envelopes are written by the AGENT process (``message_agent`` → ``tools.bot_relay.enqueue_envelope``) —
-    a different process that never touches this gateway's transports — so the files are the only shared
-    signal, exactly like the pairing store. See #92760, #93091.
+    A claim is not a delivery receipt. Keep waking the Desktop until its terminal
+    reply lands so lost notifications, reconnects and admission-only responses recover.
+    Empty mailboxes never wake it. No message contents are read or broadcast.
     """
-    global _bot_relay_outbox_seen
     home = _watcher_home()
     root = home.parent.parent if home.parent.name == "profiles" else home
-    with contextlib.suppress(OSError):
-        for entry in (root / "bot_relay" / "outbox").iterdir():
-            if entry.name.endswith(".json"):
-                _bot_relay_outbox_seen = max(_bot_relay_outbox_seen, _watcher_mtime_ns(entry) or 0)
-    return _bot_relay_outbox_seen or None
+    pending = []
+    for profile in _profile_watch_homes(root):
+        base = profile / "bot_relay"
+        for mailbox in ("outbox", "claimed"):
+            with contextlib.suppress(OSError):
+                for entry in (base / mailbox).glob("*.json"):
+                    if not (base / "replies" / entry.name).exists():
+                        pending.append((str(entry), _watcher_mtime_ns(entry)))
+    return tuple(sorted(pending))
+
+
+def _watched_signal_due(event, signature, now):
+    if event == "bot_relay.outbox.pending":
+        return bool(signature) and (signature != _change_sigs.get(event)
+            or now - _change_broadcast_at.get(event, -30.0) >= 30.0)
+    return event in _change_sigs and signature != _change_sigs[event]
 
 
 def _room_rows_sig(conn, _mtime) -> dict:
@@ -492,7 +501,7 @@ _change_broadcast_at: dict[str, float] = {}
 
 def _broadcast_watched_changes(now: float | None = None) -> None:
     """One pass: recompute due signatures, broadcast events whose signature moved.
-    First sighting seeds silently so a gateway boot never fires a refresh storm."""
+    Presentation signatures seed silently; outstanding relay mail also signals on boot."""
     now = time.monotonic() if now is None else now
     for event, (interval, sig_fn, payload_fn, *diff_fn) in _CHANGE_WATCHES.items():
         if now - _change_checked_at.get(event, -interval) < interval:
@@ -502,12 +511,10 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
             sig = sig_fn()
         except Exception:
             continue
-        if event not in _change_sigs:
-            _change_sigs[event] = sig
+        if not _watched_signal_due(event, sig, now):
+            _change_sigs.setdefault(event, sig)
             continue
         floor = _CHANGE_BROADCAST_FLOOR_S.get(event, 0.0)
-        if sig == _change_sigs[event]:
-            continue
         if floor and now - _change_broadcast_at.get(event, -floor) < floor:
             continue  # floored: old signature stays so it re-fires when the window opens
         before, _change_sigs[event] = _change_sigs[event], sig

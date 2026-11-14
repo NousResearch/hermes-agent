@@ -99,7 +99,8 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
-                               'approval.respond', 'clarify.respond'})
+                               'approval.respond', 'clarify.respond',
+                               'bot_relay.roster.sync', 'bot_relay.outbox.drain', 'bot_relay.reply'})
 
 
 def display_projection(history, profile_home, image_urls=True):

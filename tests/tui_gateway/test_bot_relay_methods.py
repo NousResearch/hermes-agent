@@ -281,10 +281,8 @@ def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypa
 
 @pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])
 def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, subdir):
-    """Both ends of the relay mailbox derive the install root from HERMES_HOME with ONE formula.
-    The writer side (``message_agent``'s ``_hermes_root``) and the drain side
-    (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
-    arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
+    """message_agent queues in its sender home, including named profiles and dev homes.
+    The legacy drain must read that mailbox; install-root resolution is only for target lookup."""
     from tools.bot_mode_probe import _default_home, _hermes_root
     from tui_gateway import methods_bot_relay
 
@@ -293,12 +291,13 @@ def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, su
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    writer_root = _hermes_root(Path(_default_home()))
+    writer_root = Path(_default_home())
     target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
               "connection_label": "", "title": "", "description": ""}
     env = bot_relay.enqueue_envelope(
         writer_root, target=target, message="m", sender_profile="default", sender_handle="hermes")
 
-    assert methods_bot_relay._relay_root() == writer_root
+    assert methods_bot_relay._relay_home() == writer_root
+    assert methods_bot_relay._relay_root() == _hermes_root(writer_root)
     drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in drained["envelopes"]] == [env["id"]]

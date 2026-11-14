@@ -320,7 +320,9 @@ _ACTION_LOG_STARTS: dict[str, tuple[int, int]] = {}
 
 
 def _terminate_desktop_managed_gateway() -> None:
-    """Stop a live gateway restart child when its Desktop backend shuts down."""
+    """Stop a live gateway restart child when its Desktop backend shuts down. The child is spawned
+    with ``--detach``, so it exits once the replacement is handed off and the replacement outlives
+    this backend; only a child still mid-restart is stopped here."""
     proc = _ACTION_PROCS.get("gateway-restart")
     if proc is None:
         return
@@ -725,6 +727,11 @@ def _restart_log_last_line(pid: int) -> str:
     return last[:_RESTART_REASON_MAX]
 
 
+# Flags ``_spawn_gateway_restart`` appends to the restart argv; they change how the restart runs,
+# not which gateway it targets.
+_RESTART_MODE_FLAGS = ("--detach", "--interrupt")
+
+
 def gateway_restart_failure(profile: Optional[str]) -> Optional[dict[str, Any]]:
     """Why the newest restart of the *profile* gateway failed, or ``None`` while it runs, after it
     succeeded, or when this process started none. A child that exits nonzero leaves the old
@@ -735,7 +742,8 @@ def gateway_restart_failure(profile: Optional[str]) -> Optional[dict[str, Any]]:
     if recent is None:
         return None
     _spawned_at, proc, command = recent
-    if tuple(arg for arg in command if arg != "--interrupt") != tuple(_gateway_subcommand(profile, "restart")):
+    target = tuple(arg for arg in command if arg not in _RESTART_MODE_FLAGS)
+    if target != tuple(_gateway_subcommand(profile, "restart")):
         return None
     exit_code = proc.poll()
     if not exit_code:

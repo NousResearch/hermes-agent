@@ -1,0 +1,43 @@
+manifest_version: 1
+
+name: popnow
+description: Create images, video, music and voiceovers with your PopNow account.
+source: https://github.com/popnow-ai/popnow-mcp
+
+# Hosted Streamable HTTP; no local executable or API key is required.
+transport:
+  type: http
+  url: https://api.popnow.ai/mcp
+
+# Native MCP OAuth with dynamic client registration, PKCE S256 and refresh.
+auth:
+  type: oauth
+  scopes:
+    - generate
+    - read
+
+suggest:
+  keywords:
+    - popnow
+  hosts:
+    - popnow.ai
+
+post_install: |
+  Sign in to PopNow in the OAuth flow and review the generate and read scopes.
+  If needed, run `hermes mcp login popnow`, then start a new session or use
+  /reload-mcp. Use `hermes mcp configure popnow` to review the discovered tools.
+
+  The connection and skill discovery are free. Media generation requires a
+  prepaid PopNow balance; the service returns a quote and larger jobs require
+  confirmation. Generation creates media in your account and spends credits.
+  Check balance first with check_balance. Long jobs return a job ID for get_job.
+
+  Tool arguments and referenced media are sent to api.popnow.ai. No local
+  executable is installed by this entry. Do not put credentials in this manifest.
+  To require a Hermes approval for every write-capable call, set this server's
+  trust to untrusted in your active profile's MCP configuration.
+
+  Documentation: https://popnow.ai/docs/mcp
+  Privacy: https://popnow.ai/privacy
+  Terms: https://popnow.ai/terms
+  Support: support@popnow.ai

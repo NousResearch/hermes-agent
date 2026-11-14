@@ -9,7 +9,6 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 import asyncio
 import errno
 import hashlib
-import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
@@ -129,6 +128,7 @@ from gateway.readiness import collect_runtime_readiness
 
 from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
 
@@ -1427,9 +1427,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the
-            # token is raw client input — a stray byte must 401, not 500.
-            if hmac.compare_digest(token.encode(), expected_key.encode()):
+            if secrets_match(token, expected_key):
                 return None
         logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
         return self._auth_failed_response()

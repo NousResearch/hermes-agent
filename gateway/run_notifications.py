@@ -190,18 +190,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         proven_session_id: str = ""  # session the pre-flight proved delivery reaches (a compression tip included)
         defer: bool = False  # unadmitted retry: settle without spending a delivery attempt
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
+    async def _deliver_platform_notice(self, source, content: str) -> bool:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.bot_peer_notices import automatic_notices_allowed
         from gateway.run import _is_slack_ignored_channel
         adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if not adapter:
-            return
+            return False
         config = getattr(self, "config", None)
         chat_id = getattr(source, "chat_id", None)
         if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id, adapter):
             logger.info("Skipping Slack platform notice for configured ignored channel %s", chat_id)
-            return
+            return False
         # The routed adapter carries ITS profile's ``platforms.<p>`` block; ``self.config`` is the
         # launch profile's, so a served secondary's ``notice_delivery: private`` would be ignored.
         adapter_config = getattr(adapter, "config", None)
@@ -222,8 +222,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             ):
                 result = await adapter.send_private_notice(source.chat_id, source.user_id, content, metadata=metadata)
                 if getattr(result, "success", False):
-                    return
-        await adapter.send(source.chat_id, content, metadata=metadata)
+                    return True
+        return bool(getattr(await adapter.send(source.chat_id, content, metadata=metadata), "success", False))
 
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None,

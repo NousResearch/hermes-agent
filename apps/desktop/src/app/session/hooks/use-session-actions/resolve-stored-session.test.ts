@@ -4,11 +4,18 @@ import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
-import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  $unlistedSessionOwnerRows,
+  _resetSessionOwnerHintsForTests,
+  setSessionOwnerHint
+} from '@/store/session'
 import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
-import { cachedSessionRow, resolveStoredSession } from './utils'
+import { cachedSessionRow, probeStoredSession, resolveStoredSession } from './utils'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
@@ -340,5 +347,76 @@ describe('cachedSessionRow owner preference', () => {
 
     expect(cachedSessionRow('s1')).toMatchObject({ cwd: '/only' })
     expect(cachedSessionRow('missing')).toBeUndefined()
+  })
+})
+
+describe('resolveStoredSession with an exact owner the store already knows', () => {
+  // This device's Bot Chat on a Desktop whose primary is a remote Bots host:
+  // $profiles is the REMOTE's list, the chat lives on 'local'/'default'.
+  beforeEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $sessions.set([])
+    $projectTree.set([])
+    $removedSessionIds.set(new Set())
+    $unlistedSessionOwnerRows.set([])
+    $profiles.set(profiles('bramble', 'magpie', 'rift', 'sprocket', 'wisp'))
+    $activeGatewayProfile.set('bramble')
+    _resetSessionOwnerHintsForTests()
+    setSessionOwnerHint('local-4e2938', { connectionId: 'local', profile: 'default' })
+    mockGetSession.mockReset()
+  })
+
+  afterEach(() => {
+    _resetSessionOwnerHintsForTests()
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+    $sessions.set([])
+  })
+
+  it('reads the chat once on its owner and never walks the remote profile names', async () => {
+    mockGetSession.mockImplementation(async (id, scope) => {
+      if (scope && typeof scope === 'object' && scope.connectionId === 'local' && scope.profile === 'default') {
+        return session({ id })
+      }
+
+      throw new Error(`Profile "${String(scope)}" no longer exists.`)
+    })
+
+    const resolved = await resolveStoredSession('local-4e2938')
+
+    expect(resolved?.connection_id).toBe('local')
+    expect(resolved?.profile).toBe('default')
+    expect(mockGetSession).toHaveBeenCalledTimes(1)
+    expect(mockGetSession).toHaveBeenCalledWith('local-4e2938', { connectionId: 'local', profile: 'default' })
+  })
+
+  it('fails closed on that owner instead of trying each remote profile', async () => {
+    mockGetSession.mockRejectedValue(new Error('404: Session not found'))
+
+    const result = await probeStoredSession('local-4e2938')
+
+    expect(result.status).toBe('gone')
+    expect(mockGetSession).toHaveBeenCalledTimes(1)
+
+    for (const name of ['bramble', 'magpie', 'rift', 'sprocket', 'wisp']) {
+      expect(mockGetSession).not.toHaveBeenCalledWith('local-4e2938', name)
+    }
+  })
+
+  it('still walks the profiles when the store knows no exact owner', async () => {
+    _resetSessionOwnerHintsForTests()
+    mockGetSession.mockImplementation(async (id, profile) => {
+      if (profile === 'rift') {
+        return session({ id })
+      }
+
+      throw new Error('404: Session not found')
+    })
+
+    const resolved = await resolveStoredSession('s9')
+
+    expect(resolved?.profile).toBe('rift')
+    expect(mockGetSession).toHaveBeenNthCalledWith(1, 's9', 'bramble')
   })
 })

@@ -109,8 +109,18 @@ function relayBotModeOn(): boolean {
   return ID in decisions ? Boolean(decisions[ID]) : true
 }
 
+// Connections whose own backend has signaled `bot_relay.outbox.pending` over a socket this window
+// holds, since the relay started. The signal is proof that connection's runtime runs and is in use:
+// relayEligibleRoutes keeps a remote-primary Desktop's local source out of the peer set only while
+// it has never spoken, so an unused local runtime is still never dialed.
+const signaledConnections = new Set<string>()
+
 function noteRelayOutboxWork(event?: { connectionId?: string }) {
   const id = String(event?.connectionId || '').trim()
+
+  if (id) {
+    signaledConnections.add(id)
+  }
 
   routesWithOutboxWork.add(id || RELAY_OUTBOX_ANY)
 }
@@ -146,8 +156,11 @@ interface RelayAgentRow {
 }
 
 /** Remove the mandatory local registry source only when Electron identifies
- * one unambiguous REMOTE primary. Older or inconsistent route inventories
- * fail open to the prior peer set. Distinct remote peers always remain. */
+ * one unambiguous REMOTE primary and that local source has never signaled
+ * outbox mail. Once its backend signals, a Hermes runs on this device and its
+ * agents send cross-connection: leaving it out then strands every envelope it
+ * queues. Older or inconsistent route inventories fail open to the prior peer
+ * set. Distinct remote peers always remain. */
 function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
   const routesByConnection = new Map<string, ProfileRoute[]>()
 
@@ -195,6 +208,10 @@ function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
   }
 
   const localId = localGroups[0][0]
+
+  if (signaledConnections.has(localId)) {
+    return routes
+  }
 
   return routes.filter(route => route.connectionId !== localId)
 }
@@ -840,6 +857,8 @@ export function stopBotRelay() {
   // it would fire one stale drain after restart.
   relay.drainRerun = false
   routesWithOutboxWork.clear()
+  // signaledConnections stays: a runtime that has spoken still runs, and the gateway never
+  // re-broadcasts a signal it already sent.
   // Queued deliveries check `disposed` before they run; forget the lane tails
   // so a restart starts every target fresh instead of behind stale chains.
   relayLanes.clear()

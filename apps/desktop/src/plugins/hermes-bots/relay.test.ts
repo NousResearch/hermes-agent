@@ -397,6 +397,73 @@ describe('relay-route socket retention (#93594)', () => {
     stopBotRelay()
   })
 
+  it('relays the local source of a remote-primary Desktop once its runtime signals outbox mail', async () => {
+    // This device runs a Hermes of its own beside two remote connections (the primary among them). Its
+    // agent queues a message for the primary; the local backend's watcher signals over the socket this
+    // window holds. Leaving it out of the peer set left the envelope in outbox/ until it expired.
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-peer'),
+      route('local', { mode: 'local' })
+    ])
+    const pins = trackRetention()
+    const envelope = { id: 'env-1', message: 'hello', from_profile: 'default', target_connection: 'remote-primary', target_profile: 'default' }
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'local' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { status: 'settled', delivery_id: 'env-1', admission_id: 'adm-1', reply: 'hi back' }
+      }
+
+      return {}
+    })
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls.filter(call => call.connectionId === 'local')).toHaveLength(0)
+
+    await pushAndSettle(1, { connectionId: 'local' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain').map(call => call.connectionId)).toEqual(['local'])
+    const deliver = calls.find(call => call.method === 'bot_relay.deliver')
+    expect(deliver?.connectionId).toBe('remote-primary')
+    expect(deliver?.params.from_connection).toBe('local')
+    const reply = calls.find(call => call.method === 'bot_relay.reply')
+    expect(reply).toMatchObject({ connectionId: 'local', params: { id: 'env-1', reply: 'hi back' } })
+    expect(pins.map(pin => pin.route.connectionId)).toContain('local')
+
+    // From then on it is a peer like any other: the roster loop tells it the other machines' agents.
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.some(call => call.connectionId === 'local' && call.method === 'bot_relay.roster.sync')).toBe(true)
+
+    stopBotRelay()
+  })
+
+  it('a signal from the primary or an untagged one does not make the local source a peer', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-peer'),
+      route('local', { mode: 'local' })
+    ])
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle(1, { connectionId: 'remote-primary' })
+    await pushAndSettle(1)
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.connectionId === 'local')).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
   it('preserves local-primary, multi-remote, and fail-open peer sets', async () => {
     for (const routes of [
       [route('local', { mode: 'local', primary: true }), route('remote-peer')],

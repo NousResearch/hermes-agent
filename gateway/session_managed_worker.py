@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import asdict, replace
 from functools import partial
 import json
+import logging
 import os
 import queue
 import threading
@@ -31,6 +32,8 @@ LOSS_RECORD_WAIT_S = 10
 # _die_with_owner); on Windows it exits itself.
 # detached-spawn: ok — covered: the worker kills its own group when its owner dies (_die_with_owner)
 WORKER_POPEN = {'start_new_session': True, 'close_fds': True}
+
+logger = logging.getLogger(__name__)
 
 
 class ManagedExecutionUnknown(RuntimeError):
@@ -281,8 +284,26 @@ class ManagedWorker:
             stopper.cancel()
             arrived.cancel()
 
-    def interrupt(self):
-        self.control({'type': 'stop'})
+    def interrupt(self, message=None, *, tool_reason=None):
+        """The legacy ``interrupt(message)`` ABI ``request_hard_interrupt`` falls back to, which every
+        drain reaches a worker through: a turn stays adopted after ``execute_managed`` has dropped it
+        from ``_managed_workers``, so profile stop and ``session.interrupt`` resolve it as an agent.
+        A worker has no in-process turn to cancel — the reason it was stopped is recorded as the
+        stop cause (never overwriting one already latched, whose cause won) and the same Stop control
+        ``interrupt_managed`` sends goes out.
+
+        A control that cannot be queued is not a failure of the stop: ``managed_worker_lost`` means
+        the turn already ended, and ``worker_control_backpressure`` latched Stop first, so the owner's
+        read loop escalates on that latch. Raising either would abort a graceful profile restart —
+        the drain has no handler for it.
+        """
+        if message is not None and self.stop_cause is None and not self.stop.is_set():
+            self.stop_cause = message
+        try:
+            self.control({'type': 'stop'})
+        except RuntimeStoreError as exc:
+            logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
+        return True
 
     def respond(self, kind, prompt_id, value):
         self.control({'type': kind, 'prompt_id': prompt_id, 'value': value})

@@ -1,7 +1,7 @@
 name: detonator
 title: "Plugin Detonator"
 repo: https://github.com/shreyasudupi/hermes-plugin-detonator
-sha: "a783207de499ae6f1e932c68f2b680f3c3d27938"
+sha: "ae2221bbfea303db1879dd355ae0f98009b1e7b6"
 description: >-
   Security testing sandbox for Hermes plugins: detonate a plugin you did not write before
   you install it, and see whether it steals keys, phones home, runs shell commands or plants
@@ -9,30 +9,37 @@ description: >-
   loads it inside a disposable Docker container (no network, read-only, non-root, all
   capabilities dropped) with a throwaway Hermes home full of decoy keys, drives its hooks and
   tools, jumps the clock to wake time bombs, and reports what it actually did: credential
-  theft, network attempts, shell commands, persistence, prompt injection, tool poisoning,
-  monkeypatching. A malware and supply-chain safety check you can run in seconds, with
+  theft (even disguised or split up), network attempts, shell commands, persistence, prompt
+  injection, tool poisoning, monkeypatching. A full test also watches from outside the
+  plugin's container (a system-call tracer and a fake internet), so a plugin that hides from
+  the inside monitor or fakes a clean result is still caught; a quicker inside-only test is
+  offered, and every report says which test ran. A malware and supply-chain safety check you can run in seconds, with
   deterministic rules, a plain-language reason and MITRE ATT&CK / ATLAS IDs per finding;
   advisory only, a clean run is evidence, not proof.
   Disclosure — requires Docker; runs git (fetches the target repo over the network) and
-  docker (one-time image build pulls a digest-pinned python:3.11-slim) on your machine,
-  only after you approve each run; refuses to run unattended; writes reports under its
+  docker on your machine, only after you approve each run. One-time image builds pull a
+  digest-pinned python:3.11-slim and install strace from Debian's signed package archive.
+  A full test starts two extra short-lived monitor containers next to the sandbox: the
+  tracer gets the SYS_PTRACE capability, the fake internet NET_ADMIN and NET_BIND_SERVICE;
+  the plugin's own container keeps all capabilities dropped and reaches only the fake internet, never the real one. It refuses to run unattended; writes reports under its
   own plugin-data folder; never reads your real keys or Hermes credentials.
 maintainer: shreyasudupi
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/shreyasudupi/hermes-plugin-detonator#readme
-version: "0.2.3"
-image: "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/cover.png"
+version: "0.3.0"
+image: "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/ae2221bbfea303db1879dd355ae0f98009b1e7b6/docs/store/cover.png"
 screenshots:
-  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/1-key-stealer.png"
-  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/2-persistence-planter.png"
-  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/3-tool-poisoner.png"
-  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/4-clean-notes.png"
-  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/5-approve.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/ae2221bbfea303db1879dd355ae0f98009b1e7b6/docs/store/1-key-stealer.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/ae2221bbfea303db1879dd355ae0f98009b1e7b6/docs/store/2-persistence-planter.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/ae2221bbfea303db1879dd355ae0f98009b1e7b6/docs/store/3-tool-poisoner.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/ae2221bbfea303db1879dd355ae0f98009b1e7b6/docs/store/4-clean-notes.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/ae2221bbfea303db1879dd355ae0f98009b1e7b6/docs/store/5-approve.png"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [detonate_plugin, detonator_report]
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+ 

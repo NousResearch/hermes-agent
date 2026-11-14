@@ -6417,17 +6417,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 # didn't quote (#22619). Fall back to the full replied-to message text / caption when no
                 # native quote is present.
                 reply_to_text = None
-        if reply_to_text:
-            # A replied-to bot message resolved above (echoed text or the
-            # send-time index) can still carry raw internal <TOOLCALL>
-            # markup from the agent's output stream; redact it so protocol
-            # markup never surfaces in the reply preview or the injected
-            # reply context (#61217).
-            try:
-                from agent.message_sanitization import strip_internal_markup
-                reply_to_text = strip_internal_markup(reply_to_text)
-            except Exception:
-                pass
         return reply_to_id, reply_to_text
 
     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:

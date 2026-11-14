@@ -195,6 +195,26 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    # The rest of the worker-shell family. A dispatched worker exports these into
+    # the environment it runs in, and a suite started from that shell inherits
+    # them: an ambient GOAL_MODE sends the quiet/single-query path down the goal
+    # branch, an ambient CRASH_GRACE/RATE_LIMIT/CLAIM_TTL value silently retimes
+    # the dispatcher, and SPECIFY_MAX_TOKENS is read once at import into a module
+    # constant. Tests that need one of them set do so per test (there are ~15 such
+    # call sites today, each deleting the ambient value by hand); these entries
+    # move that defence to the fixture. tests/test_kanban_env_isolation.py pins
+    # the family against the code that reads it, so a new member cannot be missed.
+    "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_GOAL_MODE",
+    "HERMES_KANBAN_GOAL_MAX_TURNS",
+    "HERMES_KANBAN_CLAIM_TTL_SECONDS",
+    "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS",
+    "HERMES_KANBAN_CRASH_GRACE_SECONDS",
+    "HERMES_KANBAN_BUSY_TIMEOUT_MS",
+    "HERMES_KANBAN_ATTACHMENTS_ROOT",
+    "HERMES_KANBAN_SPECIFY_MAX_TOKENS",
+    "HERMES_KANBAN_STOP_NUDGE",
+    "HERMES_KANBAN_TURN_RECOVERY",
     # Pytest is routinely launched from a delegated worker.  The worker
     # lineage marker must not make parent-state tests run as delegated
     # children; tests that exercise child behavior set it explicitly.

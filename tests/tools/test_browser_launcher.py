@@ -523,3 +523,59 @@ def test_packaged_only_flags_never_reach_an_explicit_binary(monkeypatch):
     assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(real)  # the user's own browser keeps its sandbox
     for argv in (packaged, dock, real):
         assert "--lang=de" in argv and argv[-1] == "about:blank"
+
+
+_FARGATE_CGROUP = "0::/ecs/0123456789abcdef/0123456789abcdef-1234567890\n"
+_FARGATE_MOUNTINFO = (
+    "1 0 0:50 / / rw,relatime - overlay overlay "
+    "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
+    "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
+)
+_HOST_MOUNTINFO = "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+
+
+def _fake_host(monkeypatch, *, files: dict[str, str], euid: int = 1000):
+    """Pin every host fact the sandbox decision reads; nothing falls through to the real machine."""
+    import builtins
+    import io
+
+    from hermes_platform.host import runtime as host_runtime
+
+    real_open = builtins.open
+
+    def _open(path, *args, **kwargs):
+        path = str(path)
+        if path.startswith("/proc/") or path == "/.dockerenv":
+            if path not in files:
+                raise FileNotFoundError(path)
+            return io.StringIO(files[path])
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    monkeypatch.setattr(os.path, "exists", lambda p: str(p) in files)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: euid, raising=False)
+    monkeypatch.setattr(host_runtime, "_container_detected", None)
+
+
+def test_sandbox_bypass_in_containerd_fargate_task(monkeypatch):
+    """#151657: ECS Fargate (containerd, non-root) has no /.dockerenv and no 'docker' in the cgroup."""
+    _fake_host(monkeypatch, files={"/proc/1/cgroup": _FARGATE_CGROUP, "/proc/self/mountinfo": _FARGATE_MOUNTINFO})
+    assert launcher.running_in_docker() is False  # the legacy Docker signal alone misses Fargate
+    assert launcher.needs_chromium_sandbox_bypass() is True
+
+
+def test_no_sandbox_bypass_on_plain_non_root_host(monkeypatch):
+    """#148457: a bare host (no container markers, non-root, no AppArmor userns restriction) keeps the sandbox."""
+    _fake_host(monkeypatch, files={
+        "/proc/1/cgroup": "0::/init.scope\n",
+        "/proc/self/mountinfo": _HOST_MOUNTINFO,
+        "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "0\n",
+    })
+    assert launcher.needs_chromium_sandbox_bypass() is False
+
+
+def test_sandbox_bypass_in_docker_unchanged(monkeypatch):
+    _fake_host(monkeypatch, files={"/.dockerenv": "", "/proc/1/cgroup": "0::/\n", "/proc/self/mountinfo": _HOST_MOUNTINFO})
+    assert launcher.running_in_docker() is True
+    assert launcher.needs_chromium_sandbox_bypass() is True

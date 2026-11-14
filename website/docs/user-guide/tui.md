@@ -126,6 +126,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 |---------|--------------|
 | `/help` | Overlay with categorized commands, arrow-key navigable |
 | `/rewind` | Transcript browsing (no prime step): **←/→** pick an earlier prompt, **Enter** puts it in the composer to edit and resend (everything from it on is removed when you send), **f** forks a new session from just before it, **Esc** goes back. Also `Esc`, `Esc` on an empty composer |
+| `/find [text]` | Search this session's transcript. Type to narrow the search (case and line breaks are ignored). The newest match is scrolled into view and drawn like a rewind selection, with a one-line excerpt above the find bar and a `3/5` count. **↑/↓** step to older/newer matches, **Enter** closes and keeps the scroll there, **Esc** goes back to where you were. PgUp/PgDn and the wheel still scroll. Banner rows and typed slash commands are not searched |
 | `/sessions` (alias `/switch`) | Live session switcher — list open TUI sessions, switch between them, close them, or start another one |
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |

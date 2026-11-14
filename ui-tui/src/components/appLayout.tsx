@@ -46,6 +46,7 @@ import { QueuedMessages } from './queuedMessages.js'
 import { RewindFocusScroller, useBacktrackHint, useRewindFocusIndex } from './rewindFocus.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
+import { TranscriptFindScroller, useFindFocusIndex } from './transcriptFind.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -196,6 +197,7 @@ const TranscriptPane = memo(function TranscriptPane({
   )
 
   const rewindFocusIdx = useRewindFocusIndex(transcript.historyItems)
+  const findFocusIdx = useFindFocusIndex()
 
   const clearBlankSelection = (e: { cellIsBlank?: boolean }) => {
     cancelBacktrackPrime()
@@ -247,7 +249,7 @@ const TranscriptPane = memo(function TranscriptPane({
                 sections: ui.sections
               })}
               sections={ui.sections}
-              selected={!nativeMode && row.index === rewindFocusIdx}
+              selected={!nativeMode && (row.index === rewindFocusIdx || row.index === findFocusIdx)}
               t={ui.theme}
               timestamps={ui.timestamps}
             />
@@ -314,6 +316,10 @@ const TranscriptPane = memo(function TranscriptPane({
           offsets={transcript.virtualHistory.offsets}
           scrollRef={transcript.scrollRef}
         />
+      )}
+
+      {!nativeMode && (
+        <TranscriptFindScroller offsets={transcript.virtualHistory.offsets} scrollRef={transcript.scrollRef} />
       )}
     </>
   )

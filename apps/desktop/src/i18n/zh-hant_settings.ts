@@ -603,6 +603,10 @@ export const zhHantSettings = {
         protectLastN: '保護最近訊息'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: '自動聊天標題',
+          modelUpgradeEnabled: 'AI 標題優化'
+        },
         compression: {
           timeout: '壓縮模型逾時（秒）'
         }
@@ -672,6 +676,10 @@ export const zhHantSettings = {
         codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: '根據第一則訊息為新聊天命名。關閉後聊天維持無標題，直到你重新命名；不會呼叫標題模型。',
+          modelUpgradeEnabled: '產生即時標題後，再請標題模型給出更好的標題。關閉後保留即時標題，省去這次額外的模型呼叫。'
+        },
         compression: {
           timeout: '每次呼叫輔助壓縮模型的等待秒數（預設 120）。本機模型較慢時請調高。'
         }

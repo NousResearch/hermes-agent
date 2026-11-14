@@ -812,6 +812,10 @@ export const jaOverrides = {
         protectLastN: '保護する直近メッセージ'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: 'チャットタイトルの自動生成',
+          modelUpgradeEnabled: 'AI によるタイトル改善'
+        },
         compression: {
           timeout: '圧縮モデルのタイムアウト（秒）'
         }
@@ -878,6 +882,10 @@ export const jaOverrides = {
         codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: '新しいチャットに最初のメッセージから名前を付けます。オフにすると名前を変更するまで無題のままで、タイトルモデルは呼び出されません。',
+          modelUpgradeEnabled: '即時タイトルの後、タイトルモデルにより良いタイトルを依頼します。オフにすると即時タイトルのままで、追加のモデル呼び出しを省きます。'
+        },
         compression: {
           timeout: '補助圧縮モデルの呼び出しごとに待機する秒数（既定 120）。遅いローカルモデルでは値を上げてください。'
         }

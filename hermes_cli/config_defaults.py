@@ -5,6 +5,7 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.config_defaults_loops import goals_defaults, loops_defaults
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -1379,23 +1380,10 @@ DEFAULT_CONFIG = {
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
     "prefill_messages_file": "",
-    # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
-    # goal is satisfied, else a continuation prompt re-enters the session until done, budget
-    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
-    "goals": {
-        # Max continuation turns before auto-pause (/goal resume) — guards against judge false
-        # negatives and unbounded spend.
-        "max_turns": 20,
-    },
-    # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
-    # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
-    # while replies stop changing.
-    "loops": {
-        "min_interval_seconds": 30,  # smallest fixed interval; tighter cadences raised to it
-        "max_ticks": 100,  # auto-pause after this many wakeups unless --times set; 0 = unlimited
-        "self_paced_floor_seconds": 60,  # Self-paced cadence bounds (seconds).
-        "self_paced_ceiling_seconds": 900,
-    },
+    # Goals — persistent cross-turn /goal loop (see config_defaults_loops.goals_defaults).
+    "goals": goals_defaults(),
+    # Loops — /loop re-runs a prompt or slash command on a cadence in-session.
+    "loops": loops_defaults(),
     # Mixture of Agents — named presets used by /moa. A preset is an execution mode around the main
     # model, not a model itself: references + aggregator synthesize private guidance before each
     # main-model iteration.

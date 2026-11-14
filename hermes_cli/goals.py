@@ -772,6 +772,78 @@ def _goal_judge_timeout() -> float:
     return _goal_judge_setting("timeout", DEFAULT_JUDGE_TIMEOUT, float)
 
 
+# ── Configurable continuation prompts (goals.continuation_prompt*) ────
+# Operators can replace the user-role message the loop feeds back each turn (e.g. a standing
+# charter telling the agent to use best judgement, push blocked items down the road and not stop
+# while work remains). Three variants exist because the loop selects one by state: a bare goal,
+# one with /subgoal criteria, one with a completion contract. `goals.directives` is appended to
+# whichever variant is used, so a charter that must ALWAYS apply needs only one key.
+#
+# A template must keep `{goal}` (and `{contract_block}` / `{subgoals_block}` in its variant), or the
+# goal would silently vanish from the continuation: those overrides are ignored with a warning and
+# the built-in wording is used. The loop must never crash or lose the goal over bad config.
+
+_GOAL_CONTINUATION_VARIANTS: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    # variant -> (config key under `goals`, built-in template, required placeholders)
+    "base": ("continuation_prompt", CONTINUATION_PROMPT_TEMPLATE, ("goal",)),
+    "subgoals": ("continuation_prompt_with_subgoals", CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+                 ("goal", "subgoals_block")),
+    "contract": ("continuation_prompt_with_contract", CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+                 ("goal", "contract_block")),
+}
+
+
+def _goals_config() -> dict[str, Any]:
+    """The top-level ``goals`` block; ``{}`` when unreadable (never raises into the loop)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = (load_config() or {}).get("goals") or {}
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:  # health: allow BLE001 -- an unreadable config is the built-in prompt
+        return {}
+
+
+def goal_directives() -> str:
+    """``goals.directives`` — standing instructions appended to every continuation prompt."""
+    raw = _goals_config().get("directives")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def render_continuation_prompt(variant: str, prompt_fields: dict[str, Any]) -> str:
+    """Render the continuation prompt for *variant* ("base" | "subgoals" | "contract").
+
+    A configured template wins over the built-in one; ``goals.directives`` is appended either way.
+    Anything unrenderable (missing placeholder, stray brace, non-string) falls back to the
+    built-in wording rather than raising mid-goal.
+    """
+    key, template, required = _GOAL_CONTINUATION_VARIANTS.get(
+        variant, _GOAL_CONTINUATION_VARIANTS["base"])
+    configured = _goals_config().get(key)
+    if isinstance(configured, str) and configured.strip():
+        missing = [p for p in required if f"{{{p}}}" not in configured]
+        if missing:
+            logger.warning(
+                "goals.%s is missing required placeholder(s) %s; using the built-in prompt",
+                key, ", ".join(f"{{{m}}}" for m in missing))
+        else:
+            try:
+                prompt = configured.format(**prompt_fields)
+            except (KeyError, IndexError, ValueError) as exc:
+                logger.warning("goals.%s is not a valid template (%s); using the built-in prompt",
+                               key, exc)
+            else:
+                return _with_directives(prompt)
+    return _with_directives(template.format(**prompt_fields))
+
+
+def _with_directives(prompt: str) -> str:
+    directives = goal_directives()
+    if not directives or directives in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{directives}"
+
+
 def _extract_json_object(raw: str) -> Optional[dict[str, Any]]:
     """Best-effort: strip code fences, parse the blob, else pull the first ``{...}`` out."""
     if not raw:
@@ -982,7 +1054,8 @@ _GOAL_REPASTE_MIN_SHARE = 0.8
 
 
 def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
-    """The goal text, or ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
+    """The first-turn kick: the goal text plus any configured ``goals.directives``, or
+    ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
     content = last_user_message
     if isinstance(content, list):
         content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
@@ -993,7 +1066,8 @@ def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
         and len(goal_norm) >= _GOAL_REPASTE_MIN_SHARE * len(last_norm)
     ):
         return GOAL_ALREADY_SEEN_KICK
-    return goal
+    # The standing charter belongs on turn 1 too, not only on continuations.
+    return _with_directives(str(goal or ""))
 
 
 def last_user_message_content(history: Any) -> Any:
@@ -1572,14 +1646,17 @@ class GoalManager:
         if not s or s.status != "active":
             return None
         # Contract first (it carries the verification surface); subgoals fold in as extra criteria.
+        # Wording comes from goals.continuation_prompt* when configured (see render_continuation_prompt).
         if s.has_contract():
             contract_block = s.contract.render_block()
             if s.subgoals:
                 contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+            return render_continuation_prompt(
+                "contract", {"goal": s.goal, "contract_block": contract_block})
         if s.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+            return render_continuation_prompt(
+                "subgoals", {"goal": s.goal, "subgoals_block": s.render_subgoals_block()})
+        return render_continuation_prompt("base", {"goal": s.goal})
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""
@@ -1770,10 +1847,12 @@ __all__ = [
     "GoalState",
     "clear_goal",
     "draft_contract",
+    "goal_directives",
     "judge_goal",
     "load_goal",
     "migrate_goal_to_session",
     "parse_contract",
+    "render_continuation_prompt",
     "run_gate",
     "run_kanban_goal_loop",
     "save_goal",

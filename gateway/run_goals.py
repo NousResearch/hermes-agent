@@ -101,8 +101,13 @@ class GatewayGoalsMixin:
         return await self._manager_for_event(event, "heartbeat", _load)
 
     @staticmethod
-    def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
+    def _synthetic_prompt_event(
+        source: Any, text: str, *, internal: bool = False, goal_continuation: bool = False,
+    ) -> MessageEvent:
         """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session.
+
+        ``goal_continuation`` marks /goal loop machinery so pause/clear cleanup and the
+        stale-goal check can recognise it whatever its (configurable) wording.
 
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
@@ -113,7 +118,7 @@ class GatewayGoalsMixin:
         source = replace_source(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, internal=internal,
-            inherit_channel_pin=True,
+            inherit_channel_pin=True, goal_continuation=goal_continuation,
         )
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
@@ -354,7 +359,11 @@ class GatewayGoalsMixin:
             adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                self._enqueue_fifo(
+                    _quick_key,
+                    self._synthetic_prompt_event(source, prompt, goal_continuation=True),
+                    adapter,
+                )
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

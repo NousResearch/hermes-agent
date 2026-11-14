@@ -80,3 +80,39 @@ def test_snippet_never_leaks_secret(snippet_db, monkeypatch, detail, query):
     assert SECRET_BODY not in blob and SK_TAIL not in blob
     if query == "cropneedle":
         assert ">>>cropneedle<<<" in out["results"][0]["snippet"]
+
+
+IMAGE_URL = "data:image/png;base64," + "iVBORw0KGgo" + "A" * 64
+
+
+@pytest.fixture
+def multipart_db(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s_mm", source="cli")
+    db.append_message("s_mm", role="user", content=[
+        {"type": "text", "text": f"multimodal {SECRET} mmneedle"},
+        {"type": "image_url", "image_url": {"url": IMAGE_URL}}])
+    db.append_message("s_mm", role="assistant", content="ok")
+    db.set_session_title("s_mm", "vision runbook")
+    return db
+
+
+@pytest.mark.parametrize("detail", ["compact", "full"])
+def test_multipart_hit_is_redacted_field_wise(multipart_db, monkeypatch, detail):
+    from agent import redact
+    monkeypatch.setattr(redact, "_redact_enabled", lambda: False)
+    hit = json.loads(session_search(query="mmneedle", detail=detail, db=multipart_db))["results"][0]
+    assert SECRET_BODY not in _dump(hit) and IMAGE_URL not in _dump(hit)
+    anchor = next(m for m in hit["messages"] if m.get("anchor"))
+    assert [p["type"] for p in anchor["content"]] == ["text", "image_url"]
+    assert "mmneedle" in anchor["content"][0]["text"]
+    assert hit["snippet"].startswith("multimodal ") and ">>>mmneedle<<<" in hit["snippet"]
+
+
+def test_multipart_title_match_bookends_are_redacted(multipart_db, monkeypatch):
+    from agent import redact
+    monkeypatch.setattr(redact, "_redact_enabled", lambda: False)
+    hit = json.loads(session_search(query="vision runbook", db=multipart_db))["results"][0]
+    assert hit["matched_role"] == "session_title"
+    assert hit["bookend_start"] and hit["bookend_end"]
+    assert SECRET_BODY not in _dump(hit) and IMAGE_URL not in _dump(hit)

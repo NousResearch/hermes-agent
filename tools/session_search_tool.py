@@ -238,14 +238,37 @@ def _is_compacted_message(db, message_id) -> bool:
 def _redact_tool_calls(tool_calls: Any) -> Any:
     """Strictly redact each call's ``function.arguments`` (field-wise, so the JSON shape survives)."""
     if not isinstance(tool_calls, list):
-        return redact_derived_text(tool_calls) if isinstance(tool_calls, str) else tool_calls
+        return _redact_derived_value(tool_calls)
     out = []
     for call in tool_calls:
         fn = call.get("function") if isinstance(call, dict) else None
-        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
-            call = {**call, "function": {**fn, "arguments": redact_derived_text(fn["arguments"])}}
+        if isinstance(fn, dict) and fn.get("arguments") is not None:
+            call = {**call, "function": {**fn, "arguments": _redact_derived_value(fn["arguments"])}}
         out.append(call)
     return out
+
+
+_DATA_URL_PLACEHOLDER = "[inline data omitted]"
+
+
+def _redact_derived_value(value: Any) -> Any:
+    """Strictly redact every string leaf of stored message structure (str content, multimodal
+    part lists, tool_calls), keeping the shape. Inline ``data:`` URLs (base64 images) are
+    replaced outright: they are opaque to the redactor and never useful in recall output."""
+    if isinstance(value, str):
+        return _DATA_URL_PLACEHOLDER if value.startswith("data:") else redact_derived_text(value)
+    if isinstance(value, list):
+        return [_redact_derived_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _redact_derived_value(v) for k, v in value.items()}
+    return value
+
+
+def _content_text(content: Any) -> str:
+    """Searchable text of a message body: str as-is, a multimodal part list's text parts joined."""
+    if isinstance(content, list):
+        return " ".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return "" if content is None else str(content)
 
 
 def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
@@ -259,8 +282,8 @@ def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
         from tools.ansi_strip import strip_ansi
         content = strip_ansi(content)
-    if derived and isinstance(content, str):
-        content = redact_derived_text(content)
+    if derived:
+        content = _redact_derived_value(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
     entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
     if derived and entry.get("tool_calls"):
@@ -364,10 +387,11 @@ def _derived_snippet(fts_snippet: Any, anchor: Optional[dict[str, Any]]) -> str:
     if not anchor:
         return ""
     terms = [t for t in dict.fromkeys(_SNIPPET_MARK_RE.findall(str(fts_snippet or ""))) if t.strip()]
-    sources = [redact_derived_text(anchor.get("content"))]
+    sources = [_content_text(_redact_derived_value(anchor.get("content")))]
     calls = anchor.get("tool_calls")
     if calls:
-        sources.append(redact_derived_text(calls if isinstance(calls, str) else json.dumps(calls, ensure_ascii=False)))
+        calls = _redact_tool_calls(calls)
+        sources.append(calls if isinstance(calls, str) else json.dumps(calls, ensure_ascii=False))
     # LIKE-fallback snippets carry no markers: locate by their leading text instead.
     probes = terms or [str(fts_snippet or "").strip(". ")[:20]]
     text, pos = sources[0], -1

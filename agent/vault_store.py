@@ -286,6 +286,9 @@ class VaultStore:
             try:
                 ref = self._adopt(ref)
                 key = kc.load_key(ref)
+            except kc.KeychainNoAnswer as exc:
+                # Not a lost key: never mint a new one or print the "start over" recovery advice.
+                raise VaultError(f"The vault could not be opened: {exc}.") from exc
             except kc.KeychainUnavailable as exc:
                 key, why = None, f"the OS keychain is not reachable here: {exc}"
             else:

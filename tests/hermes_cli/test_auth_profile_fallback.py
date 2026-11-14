@@ -324,6 +324,45 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
     assert getattr(holder_a, "depth", 0) == 0
 
 
+@pytest.mark.platforms("posix")  # creating the symlink needs privileges on Windows
+def test_auth_lock_is_shared_by_homes_whose_auth_json_symlinks_one_store(tmp_path, monkeypatch):
+    """Homes whose auth.json symlinks one store (a supported way to share one grant; atomic_replace
+    writes through the link) must serialize: separate locks let a load-modify-save from one home
+    erase what the other just wrote."""
+    import threading
+
+    import hermes_cli.auth as auth
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    shared = tmp_path / "shared" / "auth.json"
+    shared.parent.mkdir()
+    _write(shared, _make_auth_store(providers={}))
+    home_a, home_b = tmp_path / "agent-a", tmp_path / "agent-b"
+    for home in (home_a, home_b):
+        home.mkdir()
+        (home / "auth.json").symlink_to(shared)
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+
+    outcome: list = []
+
+    def home_b_takes_the_lock():
+        token = set_hermes_home_override(home_b)
+        try:
+            with auth._auth_store_lock(timeout_seconds=1.0):
+                outcome.append("acquired")
+        except TimeoutError:
+            outcome.append("waited")
+        finally:
+            reset_hermes_home_override(token)
+
+    with auth._auth_store_lock():  # home A holds the shared store
+        peer = threading.Thread(target=home_b_takes_the_lock)
+        peer.start()
+        peer.join(timeout=10)
+
+    assert outcome == ["waited"]
+
+
 # ---------------------------------------------------------------------------
 # write_credential_pool — stale-snapshot cooldown merge
 # ---------------------------------------------------------------------------

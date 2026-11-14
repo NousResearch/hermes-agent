@@ -104,10 +104,10 @@ _PATTERNS: list[tuple[str, str, str]] = [
      r'[A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
 ]
 
-# Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py
-# INVISIBLE_CHARS): zero-width space/non-joiner/joiner, word joiner, invisible times/separator/
-# plus, BOM, LTR/RTL embedding + pop + overrides, LTR/RTL/first-strong isolates + pop.
-# Plus the Unicode TAG block U+E0000–U+E007F: invisible, maps 1:1 onto ASCII ("ASCII smuggling").
+# Invisible / bidirectional unicode used in injection attacks: zero-width space/non-joiner/joiner,
+# word joiner, invisible times/separator/plus, BOM, LTR/RTL embedding + pop + overrides, LTR/RTL/
+# first-strong isolates + pop (the same set as skills_guard.py INVISIBLE_CHARS), plus the Unicode TAG
+# block U+E0000–U+E007F: invisible, maps 1:1 onto ASCII ("ASCII smuggling"); skills_guard lacks it (#78952).
 INVISIBLE_CHARS = frozenset(
     "\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff"
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"

@@ -23,6 +23,15 @@ class _SessionScoped(Params):
     session_id: str | None = None
 
 
+class ToolsShowParams(_SessionScoped):
+    """``tools.show`` is ALSO served by the session owner (``gateway/session_ancillary.show_tools``),
+    which routes on ``profile`` and refuses nothing else; the sidecar handler ignores it. Kept off
+    ``_SessionScoped`` so ``tools.list`` / ``toolsets.list`` stay as narrow as their handlers, which
+    resolve no profile."""
+
+    profile: str | None = None
+
+
 # ── tools / toolsets ──────────────────────────────────────────────────────────────────────────
 
 
@@ -63,7 +72,7 @@ class ToolsShowResult(Result):
     total: int
 
 
-method("tools.show", params=_SessionScoped, result=ToolsShowResult,
+method("tools.show", params=ToolsShowParams, result=ToolsShowResult,
        doc="The /tools listing grouped by toolset, including tools deferred behind the tool_search bridge.")
 
 
@@ -115,12 +124,16 @@ method("reload.env", params=ReloadEnvParams, result=ReloadEnvResult,
 
 class ReloadMcpParams(Params):
     """Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``);
-    ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing)."""
+    ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing).
+    ``profile`` is the owner's routing key: the sidecar handler ignores it, the authority routes on it.
+    ``always`` is the SIDECAR's opt-out only — the authority has none and refuses the key
+    (``CANONICAL_METHODS['reload.mcp']``)."""
 
     session_id: str | None = None
     confirm: bool = False
     always: bool = False
     rev: str | None = None
+    profile: str | None = None
 
 
 class ReloadMcpStatus(WireEnum):

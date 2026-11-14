@@ -428,10 +428,13 @@ def _get_config_home_channel(platform_name: str):
 
 
 def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> str:
-    """Value of ``<env_var><suffix>``, falling back to the legacy name (same suffix) when unset.
-    Reads via ``get_secret``, not ``os.getenv``: in a multiplex gateway the tick runs with the
-    job-owning profile's secret scope (run_one_job sets it), so this resolves the OWNING profile's
-    value, not the host environ. ``os.getenv`` only if the scope module is missing."""
+    """Home target from this profile's secret scope, with legacy-name fallback.
+
+    An unscoped read on a multiplexed gateway MUST raise rather than resolve to
+    "" or the process environment. Receipt recovery binds the owning profile's
+    scope before looking up a home channel; otherwise empty delivery targets
+    can make it book a receipt without sending the recovered result.
+    """
     try:
         from agent.secret_scope import get_secret
     except Exception:

@@ -24,6 +24,19 @@ def test_probe_config_health_flags_null_sections():
     assert "model" not in msg
 
 
+def test_probe_config_health_spares_null_scalars():
+    """Top-level null scalars (max_concurrent_sessions, context_file_max_chars) are documented
+    defaults, not empty sections; the `set them to {}` advice would be wrong for them (#134822)."""
+    from tui_gateway.server import _probe_config_health
+
+    assert _probe_config_health({"max_concurrent_sessions": None}) == ""
+    assert _probe_config_health({"context_file_max_chars": None}) == ""
+
+    msg = _probe_config_health({"max_concurrent_sessions": None, "agent": None})
+    assert "agent" in msg
+    assert "max_concurrent_sessions" not in msg
+
+
 def test_apply_model_switch_does_not_leak_process_env():
     """Core fix for cross-session contamination: an in-session /model switch
     must mutate only the target session (record a per-session override + switch

@@ -24,9 +24,10 @@ _CSI_SEQ_RE = re.compile(
     r"|\x1b(?:[\x20-\x2f]+[\x30-\x7e]|[NO][^\x00-\x1f\x7f]|[78=>M])"
 )
 
-# Union of every _PREFIX_PATTERNS body class: a shadow match may only span token-body chars or
-# stripped noise. ``=`` is excluded so a KEY=value separator never lets a match span unrelated text.
-_TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.")
+# Union of every _PREFIX_PATTERNS body class (incl. the ``/`` of Google's ``1//0``): a shadow match
+# may only span token-body chars or stripped noise. ``=`` is excluded so a KEY=value separator never
+# lets a match span unrelated text.
+_TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-./")
 
 
 def _strip_shadow(text: str) -> tuple:
@@ -50,11 +51,14 @@ def _strip_shadow(text: str) -> tuple:
     return "".join(shadow), noise, orig_idx
 
 
-def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern) -> str:
+def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
+                              sub_re: re.Pattern | None = None, skip=None) -> str:
     """Mask ``prefix_re`` tokens split by control chars or CSI sequences.
 
     The original span is replaced only when its live chars are all token-body chars and it does
-    not run into a ``KEY=`` name, so a match never swallows prose.
+    not run into a ``KEY=`` name, so a match never swallows prose. ``sub_re`` (default
+    ``prefix_re``) finds the candidates, so a key glued to an identifier (``log-1//0…``) is found
+    too; ``skip(m)`` drops the candidates the contiguous pass would keep (``scikit-learn``).
     """
     if _CONTROL_CHARS_RE.search(text) is None and "\x9b" not in text:
         return text
@@ -62,7 +66,9 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern) -> str:
     if len(shadow) == len(text):
         return text
     matches = []
-    for m in prefix_re.finditer(shadow):
+    for m in (sub_re or prefix_re).finditer(shadow):
+        if skip is not None and skip(m):
+            continue
         body, body_start = m.group(1), m.start(1)
         start = orig_idx[body_start]
         end = orig_idx[m.end(1) - 1] + 1

@@ -194,6 +194,7 @@ _PREFIX_PATTERNS = [
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
     r"GOCSPX-[A-Za-z0-9_-]{8,}",        # Google OAuth client secret (pasted client_secret.json, #64351)
     r"ya29\.(?:[a-z]\.)?[A-Za-z0-9_-]{20,}",  # Google OAuth access token: user a0…, service-account c., STS d. (#64351)
+    r"1//0[A-Za-z0-9_-]{20,}",          # Google OAuth refresh token (#39654)
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl
@@ -857,13 +858,16 @@ def _is_opaque_prefixed_token(token: str) -> bool:
     return False
 
 
-def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
-    glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
+def _is_glued_identifier(m: "re.Match[str]") -> bool:
+    """A _PREFIX_SUB_RE match glued to an identifier by ``-``/``_`` whose body is not opaque."""
     token = m.group(1)
     # Google OAuth prefixes are distinctive even when base64url separators break every long run.
-    if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
-        return m.group(0)
-    return mask(token)
+    return (m.start() > 0 and m.string[m.start() - 1] in "-_"
+            and not token.startswith(("GOCSPX-", "ya29.", "1//0")) and not _is_opaque_prefixed_token(token))
+
+
+def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
+    return m.group(0) if _is_glued_identifier(m) else mask(m.group(1))
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
@@ -1505,7 +1509,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # across them — a secret smuggled as ``sk-abc\\x1bdef…`` leaks verbatim (issue #77484). Mask such
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
-        text = mask_control_split_tokens(text, _prefix_sub, _PREFIX_RE)
+        text = mask_control_split_tokens(text, _prefix_sub, _PREFIX_RE, _PREFIX_SUB_RE, _is_glued_identifier)
         text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:

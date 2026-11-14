@@ -191,7 +191,7 @@ def test_webhook_subscriptions_blocked(fake_home):
 
 
 
-@pytest.mark.parametrize("name", ["google_token.json", "google_oauth_pending.json"])
+@pytest.mark.parametrize("name", ["google_token.json", "google_client_secret.json", "google_oauth_pending.json"])
 def test_google_workspace_live_stores_blocked(fake_home, name):
     """The LIVE Google Workspace stores at the HERMES_HOME root are blocked:
     ``google_token.json`` (OAuth refresh/access token, consumed by the
@@ -207,7 +207,7 @@ def test_google_workspace_live_stores_blocked(fake_home, name):
     assert "credential store" in err
 
 
-@pytest.mark.parametrize("name", ["google_token.json", "google_oauth_pending.json"])
+@pytest.mark.parametrize("name", ["google_token.json", "google_client_secret.json", "google_oauth_pending.json"])
 def test_profile_mode_blocks_root_google_workspace_stores(tmp_path, monkeypatch, name):
     """Root-level live Google Workspace stores stay blocked while a profile
     is active (root credentials are inherited by every profile), and the

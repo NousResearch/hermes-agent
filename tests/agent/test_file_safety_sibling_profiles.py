@@ -15,7 +15,7 @@ import agent.file_safety as fs
 
 READ_DENIED = (
     "auth.json", ".anthropic_oauth.json", "auth/google_oauth.json", "mcp-tokens/github.json",
-    "webhook_subscriptions.json", ".env", "vault/vault.key",
+    "webhook_subscriptions.json", ".env", "vault/vault.key", "google_token.json", "google_client_secret.json",
 )
 WRITE_DENIED = (
     ".env", ".anthropic_oauth.json", "auth/google_oauth.json", "bws_cache.enc.json",

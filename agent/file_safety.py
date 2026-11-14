@@ -20,6 +20,13 @@ from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from hermes_platform.host.facts import os_family
 
 
+# The bundled google-workspace skill's OAuth stores at the HERMES_HOME root: the live refresh token,
+# the OAuth client secret and the in-flight PKCE exchange state. Only the skill's own scripts touch
+# them (direct file I/O, never through these guards); tools.credential_files still mounts the two
+# the skill declares in required_credential_files.
+GOOGLE_WORKSPACE_CREDENTIAL_FILES = ("google_token.json", "google_client_secret.json", "google_oauth_pending.json")
+
+
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
     try:
@@ -278,7 +285,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
     hermes_files = (
         ".env", ".anthropic_oauth.json",
-        os.path.join("auth", "google_oauth.json"),
+        os.path.join("auth", "google_oauth.json"), *GOOGLE_WORKSPACE_CREDENTIAL_FILES,
         *SECRET_CACHE_STORES,
     )
     paths = [
@@ -438,10 +445,7 @@ _DID_SUFFIX = (
 _CREDENTIAL_FILE_NAMES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
-    # Live Google Workspace OAuth stores at the HERMES_HOME root: the skill's token and its
-    # in-flight PKCE exchange state. Only the skill's own scripts read them (direct file I/O);
-    # tools.credential_files keeps the token mountable via _MOUNTABLE_SERVICE_TOKENS.
-    "google_token.json", "google_oauth_pending.json",
+    *GOOGLE_WORKSPACE_CREDENTIAL_FILES,
 )
 
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for

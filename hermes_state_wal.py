@@ -314,7 +314,8 @@ def _verify_configured_delete(actual: str) -> str:
     return actual
 
 
-def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.db", require_wal: bool = False) -> str:
+def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.db", require_wal: bool = False,
+                            has_content: Optional[bool] = None) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
     Returns the mode actually set — or, when the read-only mode probe is blocked by a concurrent opener, ``"wal"``
@@ -336,6 +337,9 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     and DELETE are both clean (0/3 each) — i.e. there is no evidence that WAL is safer here, and upstream
     still documents the WAL-reset bug as real through 3.51.2 with serious consequences. Until a fixed
     runtime is delivered, keep new databases out of WAL.
+
+    ``has_content`` is whether the file held pages before the caller's own pre-WAL setup (``SessionDB``
+    sets ``auto_vacuum`` on a new store, which writes page 1). ``None`` reads it from the file here.
     """
     config_module = sys.modules.get("hermes_cli.config")
     if getattr(getattr(config_module, "__spec__", None), "_initializing", False):
@@ -352,7 +356,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
                     return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
                 _apply_wal_companions(conn)
                 return "wal"
-            if current_mode == "delete" and not require_wal and _database_has_content(conn):
+            if current_mode == "delete" and not require_wal and _has_content(conn, has_content):
                 if is_sqlite_wal_reset_vulnerable():
                     _log_wal_reset_bug_once(db_label, kept_wal=False)
                 return "delete"
@@ -406,14 +410,21 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     # keeps its mode; an on-disk WAL file returned above. require_wal callers still get WAL.
     if not require_wal and _network_fs_new_store_mode(conn):
         return current_mode or "delete"
-    return _enable_wal(conn, db_label, require_wal, current_mode)
+    return _enable_wal(conn, db_label, require_wal, current_mode, has_content)
 
 
-def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, current_mode: Optional[str]) -> str:
+def _has_content(conn: sqlite3.Connection, known: Optional[bool]) -> bool:
+    """The caller's pre-setup answer when it has one, else the file's own page count."""
+    return _database_has_content(conn) if known is None else known
+
+
+def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, current_mode: Optional[str],
+                has_content: Optional[bool]) -> str:
     """Flip a non-WAL, non-vulnerable connection to WAL, or fall back to DELETE."""
     # Decide BEFORE the flip whether it overwrites a mode somebody chose (probe and page_count are only readable
     # while the file is untouched). A 0-page DB has no prior choice, and every caller reaches this before schema.
-    upgrading_existing_db = current_mode is not None and current_mode != "wal" and _database_has_content(conn)
+    upgrading_existing_db = (current_mode is not None and current_mode != "wal"
+                             and _has_content(conn, has_content))
 
     def _wal_activated() -> str:
         if upgrading_existing_db:

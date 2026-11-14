@@ -809,12 +809,16 @@ class SessionDB(
             # before WAL is enabled; an existing store needs one full VACUUM to switch, so it is
             # left to SessionDB.vacuum(). A sibling's lock blocking the header read means the file
             # is not new: the open goes on and the mode is left as it is.
+            # The pragma writes page 1, so the file's freshness is read first and handed to the WAL
+            # helper: a new store must stay silent about the journal-mode switch (#89293).
+            has_content = None
             try:
-                if conn.execute("PRAGMA page_count").fetchone()[0] == 0:
+                has_content = conn.execute("PRAGMA page_count").fetchone()[0] > 0
+                if not has_content:
                     conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             except sqlite3.OperationalError:
                 pass
-            mode = apply_wal_with_fallback(conn, db_label="state.db")
+            mode = apply_wal_with_fallback(conn, db_label="state.db", has_content=has_content)
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.
             # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY

@@ -42,6 +42,23 @@ def test_a_new_store_is_created_incremental(tmp_path):
         db.close()
 
 
+def test_a_new_store_is_silent_about_the_journal_mode_switch(tmp_path, monkeypatch, caplog):
+    """The auto_vacuum pragma writes page 1 before WAL is enabled. A store that was empty a moment
+    earlier made no journal-mode choice, so the #89293 "was delete, switched to WAL" WARNING must
+    not fire on it, and the pragma must still take."""
+    import hermes_state_wal
+    monkeypatch.setattr(hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: False)
+    monkeypatch.setattr(hermes_state_wal, "_journal_upgrade_warned_paths", set())
+    with caplog.at_level("WARNING", logger="hermes_state"):
+        db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        assert _pragma(db, "auto_vacuum") == 2
+        assert db._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert [r.getMessage() for r in caplog.records if r.levelno >= 30] == []
+    finally:
+        db.close()
+
+
 def test_reclaim_returns_free_pages_and_keeps_the_store_intact(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

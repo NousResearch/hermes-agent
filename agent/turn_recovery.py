@@ -1059,6 +1059,9 @@ def nonretryable_client_error_result(
     # collapsed here or they leak verbatim via the ``error`` field.
     from gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
     _nonretryable_summary = agent._summarize_api_error(api_error)
+    if classified.reason == FailoverReason.guardrail_blocked and (_matched := _guardrail_matched_patterns(api_error)):
+        # The summary keeps only error.message; the pattern names are what the user allowlists.
+        _nonretryable_summary = f"{_nonretryable_summary} (matched patterns: {_matched})"
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
     agent._emit_diagnostic_status(TerminalFailureText(f"❌ {_label}: {_nonretryable_summary}"))
@@ -1110,12 +1113,10 @@ def nonretryable_client_error_result(
     # judged the payload before any model ran, so the fix is a dashboard setting — never
     # key/retry/User-Agent advice.
     if classified.reason == FailoverReason.guardrail_blocked:
-        _matched = _guardrail_matched_patterns(api_error)
-        _matched_note = f" Matched patterns: {_matched}." if _matched else ""
         _vlines(
             agent,
             f"   💡 {_plabel}'s prompt-injection guardrail rejected the request before it reached any",
-            f"      model — the key is fine.{_matched_note}",
+            "      model — the key is fine.",
             "      On OpenRouter: Workspaces → Guardrails → set Prompt injection detection to Redact",
             "      or Flag, or allowlist the phrase under Settings → Privacy. Retrying won't help.",
         )

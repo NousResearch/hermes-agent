@@ -6422,10 +6422,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             try:
                 from gateway import rich_sent_store
                 reply_to_text = rich_sent_store.lookup(str(message.chat.id), reply_to_id)
-                if reply_to_text:
-                    # A message that gets quoted is worth keeping: refresh its timestamp so the
-                    # FIFO trim does not evict it while the conversation still refers to it.
-                    rich_sent_store.touch(str(message.chat.id), reply_to_id)
             except Exception:
                 # Extract reply context if this message is a reply. Prefer Telegram's native partial quote
                 # (message.quote, TextQuote) so a user replying to a single selected substring of a prior

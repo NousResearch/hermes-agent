@@ -714,6 +714,13 @@ def _dispatch_authorized_once(
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
     block_body = None if block_message is None else {"error": block_message}
+    if block_body is None:
+        # The user's approvals.tools rule, on the FINAL args (after plugin modify hooks), under the
+        # same serialization as plugin prompts so concurrent asks never interleave on screen.
+        from tools.tool_policy import tool_policy_block
+        check = lambda: tool_policy_block(ref.name, ref.args)
+        if policy_block := (check() if authorization_gate is None else authorization_gate.run(check)):
+            block_body, block_error_type = {"error": policy_block}, "tool_policy_block"
 
     # Checked once, after plugin modify hooks (which may replace arguments) and
     # before guardrails or real dispatch: a copied compression marker in an

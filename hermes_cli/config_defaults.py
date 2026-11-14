@@ -1662,12 +1662,12 @@ DEFAULT_CONFIG = {
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",
-        # After this many consecutive guardian DENYs in a session, the deny message escalates to a
-        # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
+        # After this many consecutive guardian DENYs, the deny message escalates to a hard-stop. Approval resets; 0 off.
         "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo / mode=off.
-        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
-        "deny": [],
+        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo / mode=off. Quote in
+        # YAML when starting with * or containing {}/!/: e.g. "git push --force*". `tools`: per-tool policy
+        # {name-or-glob: allow|ask|deny}; an ask grant covers only the exact arguments shown (security.md).
+        "deny": [], "tools": {},
         # Who may answer a chat approval/slash confirm/clarify: ["*"] any admitted member; [] requester + admins (+ ids).
         "approvers": ["*"],
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache). "Always Approve" → false.

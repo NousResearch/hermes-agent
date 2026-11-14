@@ -814,6 +814,10 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
             logger.debug("pre_tool_call hook error: %s", _hook_err)
         if block_message is not None:
             return function_args, (tool_error(block_message), "plugin_block", block_message)
+        # approvals.tools on the final args; skip=True means the agent loop already enforced it.
+        from tools.tool_policy import tool_policy_block
+        if (policy_block := tool_policy_block(function_name, function_args)) is not None:
+            return function_args, (tool_error(policy_block), "tool_policy_block", policy_block)
 
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.

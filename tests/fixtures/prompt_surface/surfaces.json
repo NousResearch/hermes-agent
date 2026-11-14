@@ -248,6 +248,39 @@
       "write_file"
     ]
   },
+  "telegram-interim.claude": {
+    "prompt_tokens": {
+      "context": 0,
+      "stable": 1369,
+      "volatile": 1269
+    },
+    "tool_tokens": 11242,
+    "tools": [
+      "browser_cdp",
+      "browser_dialog",
+      "browser_exec",
+      "clarify",
+      "delegate_task",
+      "execute_code",
+      "manage_connections",
+      "memory",
+      "patch",
+      "read_file",
+      "search_files",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "text_to_speech",
+      "tool_call",
+      "tool_describe",
+      "tool_search",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ]
+  },
   "telegram.claude": {
     "prompt_tokens": {
       "context": 0,

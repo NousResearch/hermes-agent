@@ -79,11 +79,14 @@ def quote_command_placeholder(value: str, quote_context: Optional[str], os_name:
 def render_command_template(command_template: str, placeholders: dict[str, str], os_name: Optional[str] = None) -> str:
     """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``.
 
-    A placeholder directly preceded by a backslash (``\\{name}``) stays literal: substituting it
+    On POSIX a placeholder directly preceded by a backslash (``\\{name}``) stays literal: substituting it
     would splice the template's backslash into the emitted escape sequence (e.g. ``\\`` +
-    ``\\$(...)`` → ``\\\\$(...)``), un-escaping the value and resurrecting command substitution."""
+    ``\\$(...)`` → ``\\\\$(...)``), un-escaping the value and resurrecting command substitution.
+    On Windows the backslash is the path separator (``C:\\voices\\{voice}.onnx``) and a ``"`` in the
+    value is already refused, so the placeholder is substituted there."""
     names = "|".join(re.escape(name) for name in placeholders)
-    pattern = re.compile(rf"(?<!\\)(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
+    no_backslash = "" if (os_name or os.name) == "nt" else r"(?<!\\)"
+    pattern = re.compile(rf"{no_backslash}(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
     replacements: list[tuple[str, str]] = []
 
     def replace_match(match: re.Match[str]) -> str:

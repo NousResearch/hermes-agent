@@ -365,6 +365,17 @@ class TestRenderCommandTtsTemplate:
         with pytest.raises(ValueError, match="cmd.exe"):
             _render_command_tts_template(template, {"output_path": value}, os_name="nt")
 
+    def test_windows_substitutes_a_placeholder_after_a_path_backslash(self):
+        rendered = _render_command_tts_template(
+            r"piper -m C:\voices\{voice}.onnx --out {output_path}",
+            {"voice": "en_US-amy", "output_path": r"C:\out.wav"}, os_name="nt")
+        assert r"C:\voices\en_US-amy.onnx" in rendered
+        assert "{voice}" not in rendered
+
+    def test_posix_keeps_a_placeholder_after_a_backslash_literal(self):
+        rendered = _render_command_tts_template(r"echo \{voice}", {"voice": "x"}, os_name="posix")
+        assert rendered == r"echo \{voice}"
+
     def test_windows_still_quotes_plain_paths(self):
         rendered = _render_command_tts_template(
             "tts --out {output_path}", {"output_path": r"C:\Users\Me\My Audio\out.mp3"}, os_name="nt")

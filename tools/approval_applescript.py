@@ -11,7 +11,10 @@ The check fails closed instead of parsing AppleScript. An ``osascript`` run is f
   ``_RISKY_RE`` (close, quit, save, revert, delete, move, keystroke, click, ``do shell script``,
   raw ``«event»`` codes...). The scan is word-based and also reads string literals and comments, so a
   dialog that only *asks* "Quit without saving?" prompts as well. That costs one prompt; missing a
-  real close costs the operator's document;
+  real close costs the operator's document. The text is also read with AppleScript's own layout
+  removed (``¬`` continuations, ``(* *)`` / ``--`` / ``#`` comments), so ``do ¬<newline>shell
+  script`` or ``do (* x *) shell script`` reads as the phrase it is; ``osacompile`` programs are
+  read the same way;
 * the program is JXA (``-l JavaScript``), which can build any method name at run time;
 * the program is not visible on the command line: a script file, stdin from a pipe or redirect,
   ``$VAR`` / ``$(...)`` / backtick expansion, or an unquoted heredoc that expands;
@@ -41,7 +44,7 @@ _RISKY_RE = re.compile(
     r"\b(?:close|quit|delete|erase|trash|move|write|save|revert|empty|keystroke|click|restart|eject|kill)\b"
     r"|\bset\s+(?:the\s+)?(?:contents|text|value|data)\b"
     r"|\bshut\s*down\b|\blog\s*out\b|\bkey\s*code\b|\bperform\s+action\b|\bdon.?t\s+save\b"
-    r"|\bdo\s+shell\s+script\b|\b(?:run|load|store)\s+script\b|\bdo\s+javascript\b|\bexecute\b"
+    r"|\bdo\s+(?:shell\s+)?script\b|\b(?:run|load|store)\s+script\b|\bdo\s+javascript\b|\bexecute\b"
     r"|\bopen\s+for\s+access\b|\bset\s+eof\b|\breplacing\b|\bsaving\s+no\b|\bwithout\s+saving\b"
     r"|«",
     re.IGNORECASE,
@@ -52,8 +55,11 @@ _CARRIERS = frozenset({
     "sh", "bash", "zsh", "ksh", "dash", "fish", "csh", "tcsh", "ash", "eval", "source", ".",
     "xargs", "parallel", "ssh", "doas", "su", "watch", "script", "launchctl",
     "caffeinate", "arch", "sandbox-exec", "unbuffer", "perl", "ruby", "php", "node", "nodejs",
-    "osacompile", "automator",
+    "automator",
 })
+# osascript runs the program; osacompile builds an applet from the same `-e` / `-l` options.
+# Value-taking options per program, so an option value is not read as a script-file operand.
+_PROGRAMS = {"osascript": ("-l", "-s"), "osacompile": ("-l", "-o", "-r", "-t", "-c")}
 _HEREDOC_RE = re.compile(r"<<(?P<dash>-?)[ \t]*(?P<q>['\"]?)(?P<delim>[^\s'\"<>;&|()]+)(?P=q)(?=[\s;&|<>)]|$)")
 
 
@@ -65,7 +71,7 @@ def _program_name(word: str) -> str:
     from tools.approval_detection import _deobfuscate_shell_word_for_detection as deobfuscate
     names = {deobfuscate(re.split(r"[\\/]", word)[-1]), deobfuscate(word).rsplit("/", 1)[-1]}
     names = {n.strip("\"'").lower().removesuffix(".exe") for n in names}
-    return "osascript" if "osascript" in names else min(names)
+    return next((n for n in sorted(names) if n in _PROGRAMS), min(names))
 
 
 def classify_osascript(text: str) -> set[str]:
@@ -92,13 +98,13 @@ def _classify(text: str) -> set[str]:
         name = _program_name(word)
         segment = _shell_command_segment(text, start)
         args = segment[end - start:]
-        if name != "osascript":
+        if name not in _PROGRAMS:
             if _expands(word) and (_mentions_osascript(segment) or word[:1] in ("$", "`")):
                 found.add(OSASCRIPT_OPAQUE_DESCRIPTION)  # executable chosen at run time (`X=osascript; $X`)
             elif _mentions_osascript(args) and _runs_its_arguments(name, args):
                 found.add(OSASCRIPT_OPAQUE_DESCRIPTION)  # `sh -c "osascript ..."`, `xargs osascript`
             continue
-        program, opaque, jxa, heredoc = _osascript_program(args)
+        program, opaque, jxa, heredoc = _osascript_program(args, _PROGRAMS[name])
         if heredoc is not None:
             delim, quoted, strip_tabs = heredoc
             body, body_span = _heredoc_body(text, start + len(segment), delim, strip_tabs)
@@ -106,14 +112,46 @@ def _classify(text: str) -> set[str]:
             program += "\n" + body
         if opaque or _expands(args):
             found.add(OSASCRIPT_OPAQUE_DESCRIPTION)
-        if jxa or _RISKY_RE.search(program):
+        if jxa or _RISKY_RE.search(program) or _RISKY_RE.search(_strip_layout(program)):
             found.add(OSASCRIPT_RISKY_DESCRIPTION)
     return found
 
 
 def _mentions_osascript(text: str) -> bool:
-    """Whether ``osascript`` appears once quote and escape characters are dropped (``osa''script``)."""
-    return "osascript" in re.sub(r"[\"'\\\\]", "", text).lower()
+    """Whether ``osascript`` / ``osacompile`` appears as a word once quote and escape characters are dropped
+    (``osa''script``). Part of a longer name (``test_osascript_bridge.py``, ``osascript-notes``)
+    does not count: it names a file, not the executable."""
+    return _OSASCRIPT_WORD_RE.search(re.sub(r"[\"'\\\\]", "", text)) is not None
+
+
+_OSASCRIPT_WORD_RE = re.compile(r"(?<![\w.-])osa(?:script|compile)(?![\w-]|\.(?!exe\b)\w)", re.IGNORECASE)
+# Outside a block comment: a string literal, a |identifier|, a comment opener, a line comment or `¬`.
+_LAYOUT_RE = re.compile(r'"(?:\\.|[^"\\])*"?|\|[^|]*\|?|\(\*|--[^\n]*|#[^\n]*|¬', re.DOTALL)
+_BLOCK_RE = re.compile(r"\(\*|\*\)")  # inside a block comment only nesting counts
+
+
+def _strip_layout(program: str) -> str:
+    """*program* with AppleScript layout replaced by spaces: ``¬`` continuations, nested ``(* *)``
+    comments and ``--`` / ``#`` line comments. String literals and ``|identifiers|`` are kept and
+    skipped, so a ``--`` or ``(*`` inside them cannot swallow the code after them. An unterminated
+    comment runs to the end, as AppleScript reads it."""
+    pieces: list[str] = []
+    i = 0
+    while (match := _LAYOUT_RE.search(program, i)) is not None:
+        pieces.append(program[i:match.start()])
+        token, i = match.group(), match.end()
+        if token[0] in "\"|":
+            pieces.append(token)
+            continue
+        pieces.append(" ")
+        depth = 1 if token == "(*" else 0
+        while depth and (inner := _BLOCK_RE.search(program, i)) is not None:
+            depth += 1 if inner.group() == "(*" else -1
+            i = inner.end()
+        if depth:
+            return "".join(pieces)
+    pieces.append(program[i:])
+    return "".join(pieces)
 
 
 def _runs_its_arguments(name: str, args: str) -> bool:
@@ -133,8 +171,9 @@ def _expands(raw: str) -> bool:
     return any(kind != "quote" and quote != "'" and raw[i] in "$`" for kind, i, _, quote in _scan_shell(raw))
 
 
-def _osascript_program(args: str) -> tuple[str, bool, bool, tuple[str, bool, bool] | None]:
-    """``(program_text, opaque, jxa, heredoc)`` for one osascript argv tail, read from the
+def _osascript_program(args: str, value_options: tuple[str, ...]) -> tuple[str, bool, bool, tuple[str, bool, bool] | None]:
+    """``(program_text, opaque, jxa, heredoc)`` for one osascript / osacompile argv tail (whose
+    options in *value_options* take a value), read from the
     shell-decoded words (so ``'-l' JavaScript`` and ``-e'...'`` count like their plain spellings).
 
     ``program_text`` joins every ``-e`` argument and here-string. ``opaque`` is True when part of the
@@ -177,7 +216,7 @@ def _osascript_program(args: str) -> tuple[str, bool, bool, tuple[str, bool, boo
             continue
         if token in ("<", "<>"):
             return " ".join(pieces), True, jxa, heredoc
-        if token in ("-e", "-l", "-s") or (token.startswith("-l") and len(token) > 2):
+        if token == "-e" or token in value_options or (token.startswith("-l") and len(token) > 2):
             if token == "-e":
                 pieces.append(nxt)
             language = nxt if token == "-l" else token[2:] if token.startswith("-l") else ""

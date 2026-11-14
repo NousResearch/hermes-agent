@@ -68,6 +68,21 @@ FRONTMOST = ("osascript -e 'tell application \"System Events\" to get name of fi
     # A whitespace-only `-e` value is a real argument; it must not shift the next `-e`.
     'osascript -e \' \' -e \'tell application "Keynote" to quit\'',
     'osascript \\\n  -e \'tell application "Keynote" to quit\'',
+    # AppleScript layout between the words of a phrase: `\u00ac` continuation (also across two `-e`
+    # arguments, which osascript joins with newlines), nested `(* *)`, `--` and `#` comments.
+    'osascript -e \'do \u00ac\nshell script "touch /tmp/x"\'',
+    'osascript -e \'do \u00ac\' -e \'shell script "touch /tmp/x"\'',
+    'osascript -e \'do (* c *) shell script "touch /tmp/x"\'',
+    'osascript -e \'do (* a (* b *) c *) shell script "touch /tmp/x"\'',
+    'osascript -e \'do \u00ac -- c\nshell script "touch /tmp/x"\'',
+    'osascript -e \'do \u00ac # c\nshell script "touch /tmp/x"\'',
+    'osascript -e \'set |(*| to 1\ndo \u00ac\nshell script "touch /tmp/x"\'',
+    'osascript -e \'tell application "System Events" to key \u00ac\ncode 13 using command down\'',
+    # Terminal runs the string as a shell command in a new window.
+    'osascript -e \'tell application "Terminal" to do script "touch /tmp/x"\'',
+    # osacompile builds an applet from the same `-e` / `-l` program.
+    'osacompile -o /tmp/C.app -e \'tell app "Keynote" to close front document saving no\'',
+    'osacompile -l JavaScript -o /tmp/C.scpt -e \'Application("Keynote").documents.length\'',
 ])
 def test_risky_program_is_flagged(command):
     assert detect_dangerous_command(command)[1] == RISKY, command
@@ -124,6 +139,12 @@ def test_unreviewable_program_is_flagged(command):
     "osascript -l AppleScript -e 'get name of me'",
     # An ordinary line continuation between arguments is not a script operand.
     "osascript \\\n  -e 'get name of me'",
+    "osascript -e 'get name of me (* who *)' -e 'get \u00ac\nname of me'",
+    "osacompile -o /tmp/me.scpt -e 'get name of me'",
+    # A carrier whose arguments name osascript only inside another word is not running it.
+    "python3 -m pytest tests/test_osascript_bridge.py",
+    "node scripts/osascript-helper.js",
+    "ssh mac 'ls ~/osascript-notes'",
 ])
 def test_read_only_and_unrelated_commands_are_unchanged(command):
     assert detect_dangerous_command(command) == (False, None, None), command

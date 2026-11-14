@@ -10,6 +10,21 @@ import pm.packages as pkgs
 
 
 
+def test_default_venv_uses_install_root_for_its_lock(monkeypatch, tmp_path):
+    from pm import paths
+
+    source = tmp_path / "site-packages"
+    source.mkdir()
+    installed = tmp_path / "sealed-install"
+    installed.mkdir()
+    (installed / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: source)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(installed))
+
+    assert pkgs.Venv().project_root() == installed
+    assert len(pkgs.Venv().expected_stamp([])) == 64
+
+
 def test_uv_cache_dir_seeds_from_payload(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()

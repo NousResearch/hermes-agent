@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Não foi possível anexar `{filename}` — {size_mb} MB excede o limite de envio de {limit_mb} MB do Discord para este canal. Comprima o arquivo ou compartilhe um link."
       image_skipped_too_large: "⚠️ `{filename}` ignorado — {size_mb} MB excede o limite de envio de {limit_mb} MB do Discord."
   telegram:
+    vault_code:
+      body: "Responda a esta mensagem com o código. O Hermes apaga sua resposta na hora e insere o código na página; o modelo nunca o vê."
+      delete_failed: "Não foi possível apagar sua resposta aqui. Apague-a você mesmo."
     approval:
       action_once: "✅ Permitir uma vez"
       action_session: "✅ Sessão"

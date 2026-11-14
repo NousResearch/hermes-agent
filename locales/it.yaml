@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Impossibile allegare `{filename}` — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB per questo canale. Comprimi il file o condividi un link."
       image_skipped_too_large: "⚠️ `{filename}` ignorato — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Rispondi a questo messaggio con il codice. Hermes elimina subito la tua risposta e inserisce il codice nella pagina; il modello non lo vede mai."
+      delete_failed: "Impossibile eliminare la tua risposta qui. Eliminala tu."
     approval:
       action_once: "✅ Consenti una volta"
       action_session: "✅ Sessione"

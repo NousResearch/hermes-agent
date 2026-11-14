@@ -1224,6 +1224,9 @@ platform:
       upload_too_large: "⚠️ Nem sikerült csatolni: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét ebben a csatornában. Tömörítsd a fájlt, vagy ossz meg egy linket helyette."
       image_skipped_too_large: "⚠️ Kihagyva: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét."
   telegram:
+    vault_code:
+      body: "Válaszolj erre az üzenetre a kóddal. A Hermes azonnal törli a válaszodat, és beírja a kódot az oldalba; a modell soha nem látja."
+      delete_failed: "Nem sikerült törölni a válaszodat. Kérlek, töröld te."
     approval:
       action_once: "✅ Egyszer"
       action_session: "✅ Munkamenet"

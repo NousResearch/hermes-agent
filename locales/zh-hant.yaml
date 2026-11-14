@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ 無法附加 `{filename}` — {size_mb} MB 超過 Discord 在此頻道的 {limit_mb} MB 上傳上限。請壓縮檔案或改為分享連結。"
       image_skipped_too_large: "⚠️ 已略過 `{filename}` — {size_mb} MB 超過 Discord 的 {limit_mb} MB 上傳上限。"
   telegram:
+    vault_code:
+      body: "請用驗證碼回覆此訊息。Hermes 會立即刪除你的回覆並把驗證碼填入頁面；模型不會看到它。"
+      delete_failed: "無法在此刪除你的回覆，請手動刪除。"
     approval:
       action_once: "✅ 允許一次"
       action_session: "✅ 本次工作階段"

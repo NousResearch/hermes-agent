@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Не удалось прикрепить `{filename}` — {size_mb} МБ превышает лимит загрузки Discord {limit_mb} МБ для этого канала. Сжмите файл или поделитесь ссылкой."
       image_skipped_too_large: "⚠️ Пропущен `{filename}` — {size_mb} МБ превышает лимит загрузки Discord {limit_mb} МБ."
   telegram:
+    vault_code:
+      body: "Ответьте на это сообщение кодом. Hermes сразу удалит ваш ответ и введёт код на странице; модель его не увидит."
+      delete_failed: "Не удалось удалить ваш ответ. Удалите его, пожалуйста, сами."
     approval:
       action_once: "✅ Разрешить один раз"
       action_session: "✅ На сеанс"

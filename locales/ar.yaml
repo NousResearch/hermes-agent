@@ -1207,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ تعذّر إرفاق `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord لهذه القناة وهو {limit_mb} MB. اضغط الملف أو شارك رابطًا بدلًا من ذلك."
       image_skipped_too_large: "⚠️ تم تخطّي `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord وهو {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "رُدّ على هذه الرسالة بالرمز. يحذف Hermes ردّك فورًا ويُدخل الرمز في الصفحة؛ لا يرى النموذج الرمز أبدًا."
+      delete_failed: "تعذّر حذف ردّك هنا. يُرجى حذفه بنفسك."
     approval:
       action_once: "✅ السماح مرة"
       action_session: "✅ للجلسة"

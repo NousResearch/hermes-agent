@@ -35,6 +35,16 @@ describe('multi-category discovery', () => {
   })
 })
 
+describe('shelf ranking', () => {
+  it('gives a category too large for one argument list its shelf', () => {
+    // Two categories, so the shelves have to be ranked against each other.
+    const crowded = Array.from({ length: 200_000 }, (_, index) => entry(`t${index}`, 'tools'))
+    const entries = crowded.concat([entry('m1', 'memory'), entry('m2', 'memory'), entry('m3', 'memory')])
+
+    expect(sections(renderDiscovery(entries, false))).toContain('tools')
+  })
+})
+
 describe('featured slider', () => {
   const curated = (name: string, featured: number) => ({ ...entry(name, 'tools', 'official'), featured, imageUrl: 'x.png' }) as CatalogEntry
 

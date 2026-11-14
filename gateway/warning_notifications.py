@@ -10,6 +10,13 @@ class DiagnosticText(str):
     Durable carriers must serialize their own category, not this in-memory marker.
     """
 
+    def __new__(cls, value=""):
+        text = super().__new__(cls, value)
+        # Keep a LocalizedText's catalog key so the presentation sink can still localize it.
+        if getattr(value, "i18n_key", None):
+            text.i18n_key, text.i18n_kwargs = value.i18n_key, value.i18n_kwargs
+        return text
+
 
 class TerminalFailureText(DiagnosticText):
     """The turn-ending provider failure status: the failed turn's final reply repeats it, so chat

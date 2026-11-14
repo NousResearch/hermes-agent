@@ -38,6 +38,12 @@ class CompactionProgressText(str):
     lives on the object, so classify before ``str()``/``strip()``/formatting drop it.
     """
 
+    def __new__(cls, value=""):
+        text = super().__new__(cls, value)
+        if getattr(value, "i18n_key", None):
+            text.i18n_key, text.i18n_kwargs = value.i18n_key, value.i18n_kwargs
+        return text
+
 
 def automatic_compaction_status_message(
     engine: Any, *, phase: str, default_message: str, **context: Any
@@ -53,7 +59,7 @@ def automatic_compaction_status_message(
     message = formatter(phase=phase, default_message=default_message, **context) if callable(formatter) else default_message
     if message is None:
         return None
-    text = str(message).strip()
+    text = message if getattr(message, "i18n_key", None) else str(message).strip()
     return CompactionProgressText(text) if text else None
 
 

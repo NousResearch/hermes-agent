@@ -379,10 +379,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if force_provider:
             resolved = dataclasses.replace(resolved, provider=force_provider)
         context_length = resolved.context_length
-        ctx_source = {
-            "config": "config",
-            "default": "fallback, not a detected limit — set model.context_length in config to override",
-        }.get(resolved.context_source, "detected")
+        ctx_source = t({
+            "config": "gateway.session.context_source_config",
+            "default": "gateway.session.context_source_default",
+        }.get(resolved.context_source, "gateway.session.context_source_detected"))
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
             else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)

@@ -245,13 +245,14 @@ class _NonStreamRequest:
         circuit breaker (#58962, see ``_stale_streak``)."""
         agent, wd = self.agent, self.wd
         silent_hint = h._codex_silent_hang_hint(agent, self.api_kwargs)
-        h._report_stale_nonstream_kill(agent, self.api_kwargs, elapsed, wd.stale_timeout, hint=silent_hint)
         self._abort_request("stale_call_kill")
         h._bump_stale_streak(agent)
         h._touch_stale_kill_activity(agent, elapsed)
         self._await_worker_after_kill(
             f"Non-streaming API call timed out after {int(elapsed)}s with no response (threshold: {int(wd.stale_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
+        # Last: rendering the status may load the catalog, which must not eat into the worker's join window.
+        h._report_stale_nonstream_kill(agent, self.api_kwargs, elapsed, wd.stale_timeout, hint=silent_hint)
 
     def _interrupt(self, elapsed: float) -> None:
         agent = self.agent

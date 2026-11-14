@@ -38,6 +38,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
@@ -1505,8 +1506,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Yes/No update-confirmation prompt; button clicks (``update_prompt:y|n``)
         are written to ``~/.hermes/.update_response`` by the interaction callback."""
         del session_key, metadata  # present for contract parity only.
-        default_hint = f" (default: {default})" if default else ""
-        content = f"☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        default_hint = t("gateway.update.prompt_default", default=default) if default else ""
+        content = t("platform.qqbot.update_prompt", prompt=prompt, default_hint=default_hint)
         return await self.send_with_keyboard(
             chat_id, content, build_update_prompt_keyboard(), reply_to=self._last_msg_id.get(chat_id)
         )

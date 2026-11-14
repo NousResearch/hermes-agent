@@ -83,15 +83,13 @@ class TestElicitationHandlerFormMode:
 
 
 class TestElicitationHandlerFailureModes:
-    def test_url_mode_is_declined_without_prompting(self):
+    def test_url_mode_with_non_http_url_is_declined_without_prompting(self):
         handler = ElicitationHandler("pay", {"timeout": 5})
-        params = _url_params()
+        params = _url_params(url="file:///etc/passwd")
 
-        # If the handler tried to prompt, this would raise AssertionError
-        # because the side_effect treats the call as a test failure.
         with patch(
             "tools.approval_prompt.request_elicitation_consent",
-            side_effect=AssertionError("URL mode must not prompt"),
+            side_effect=AssertionError("a non-http(s) URL must not prompt"),
         ):
             result = asyncio.run(handler(context=None, params=params))
 

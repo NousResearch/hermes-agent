@@ -640,5 +640,260 @@ def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
         restoring._build_system_prompt.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# SOUL.md at restore and compaction boundaries (#68563)
+# ---------------------------------------------------------------------------
+
+
+def _stored_with_identity(identity: str, tail: str = "per-session context") -> str:
+    from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+
+    return identity.strip() + "\n\n" + HERMES_AGENT_HELP_GUIDANCE.strip() + "\n\n" + tail
+
+
+def _patch_soul(monkeypatch, text_or_none):
+    """Patch the reader used by the upstream prompt builder."""
+    reader = MagicMock(return_value=text_or_none)
+    monkeypatch.setattr("agent.prompt_builder.load_soul_md", reader)
+    return reader
+
+
+class TestPromptStabilityInvariant:
+    def test_restored_prompt_is_byte_identical_to_stored(self):
+        """Restore keeps the stored prompt bytes, including its final newline."""
+        stored = (
+            "You are Hermes Agent.\n"
+            "\n"
+            "Conversation started: Sunday, May 17, 2026\n"
+            "Session ID: test-session-id\n"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
+
+class TestV6RedesignFailBeforePins:
+    def test_soul_drift_does_not_rewrite_stored_prompt(self, monkeypatch, caplog):
+        """SOUL drift alone does not rewrite the stored prompt."""
+        stored = _stored_with_identity("OLD SOUL IDENTITY")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.load_soul_identity = True
+        agent.skip_context_files = True
+        soul_reader = _patch_soul(monkeypatch, "NEW SOUL IDENTITY")
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+        soul_reader.assert_not_called()
+
+    def test_restore_without_prompt_caching_does_not_read_soul_md(
+        self, monkeypatch
+    ):
+        """With prompt caching disabled, restore does not re-read SOUL.md."""
+        identity = "CURRENT SOUL IDENTITY"
+        stored = _stored_with_identity(identity)
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.load_soul_identity = True
+        agent.skip_context_files = True
+        soul_reader = _patch_soul(monkeypatch, identity)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        soul_reader.assert_not_called()
+
+    def test_restore_with_prompt_caching_reads_soul_md_via_static_prefix(
+        self, monkeypatch
+    ):
+        """Static-prefix reconstruction reads SOUL.md when caching is enabled."""
+        identity = "CURRENT SOUL IDENTITY"
+        stored = _stored_with_identity(identity)
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.load_soul_identity = True
+        agent.skip_context_files = True
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+        agent._static_rebuild_failed_for = None
+        soul_reader = _patch_soul(monkeypatch, identity)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        soul_reader.assert_called_once()
+        assert soul_reader.call_args.args == (None,)
+        assert "home_override" in soul_reader.call_args.kwargs
+        db.update_system_prompt.assert_not_called()
+
+
+class TestCompactionIdentityDriftGate:
+    """Exercise the real builder and compression persistence path."""
+
+    def _make_agent(self, session_db, session_id, cached_prompt):
+        import os
+        from unittest.mock import patch as _patch
+
+        with _patch.dict(os.environ, {"OPENROUTER_API_KEY": "tk"}):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="tk",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id=session_id,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.load_soul_identity = True
+        agent.compression_in_place = True
+        agent._cached_system_prompt = cached_prompt
+
+        def _fake_compress(messages, current_tokens=None, focus_topic=None, force=False):
+            return [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary of prior turns"},
+                {"role": "assistant", "content": "recent reply"},
+            ]
+
+        agent.context_compressor.compress = _fake_compress
+        agent.context_compressor._last_compress_aborted = False
+        agent.context_compressor._last_summary_error = None
+        agent.context_compressor.compression_count = 1
+        return agent
+
+    def _seed(self, db, sid, n=8):
+        db.create_session(sid, "cli", model="test/model")
+        for i in range(n):
+            db.append_message(
+                session_id=sid,
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg {i}",
+            )
+
+    def test_compaction_keeps_prompt_when_identity_unchanged(self, monkeypatch, tmp_path):
+        """A byte-equal boundary rebuild preserves the cached prompt object."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        identity = "CURRENT SOUL IDENTITY"
+        soul_reader = _patch_soul(monkeypatch, identity)
+
+        with SessionDB(db_path=tmp_path / "t.db") as db:
+            sid = "20260804_120000_keep01"
+            self._seed(db, sid)
+            agent = self._make_agent(db, sid, None)
+            agent.context_compressor.context_length = 8192
+            stored = agent._build_system_prompt("sys")
+            assert identity in stored
+            agent._cached_system_prompt = stored
+            db.update_system_prompt(sid, stored)
+            soul_reader.reset_mock()
+
+            _compressed, new_sp = compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+
+            assert new_sp == stored
+            assert new_sp is stored
+            soul_reader.assert_called_once()
+            assert soul_reader.call_args.args == (8192,)
+            assert "home_override" in soul_reader.call_args.kwargs
+            assert db.get_session(sid)["system_prompt"] == stored
+
+    def test_compaction_rebuilds_prompt_when_soul_changed(self, monkeypatch, tmp_path):
+        """A changed SOUL reaches the persisted prompt at compaction."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        old_identity = "OLD SOUL IDENTITY"
+        new_identity = "NEW SOUL IDENTITY"
+        soul_reader = _patch_soul(monkeypatch, old_identity)
+
+        with SessionDB(db_path=tmp_path / "t.db") as db:
+            sid = "20260804_120100_drift01"
+            self._seed(db, sid)
+            agent = self._make_agent(db, sid, None)
+            agent.context_compressor.context_length = 8192
+            stored = agent._build_system_prompt("sys")
+            assert old_identity in stored
+            agent._cached_system_prompt = stored
+            db.update_system_prompt(sid, stored)
+            soul_reader.return_value = new_identity
+            soul_reader.reset_mock()
+
+            _compressed, new_sp = compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+
+            assert new_identity in new_sp
+            assert old_identity not in new_sp
+            assert new_sp != stored
+            soul_reader.assert_called_once()
+            assert soul_reader.call_args.args == (8192,)
+            assert "home_override" in soul_reader.call_args.kwargs
+            assert db.get_session(sid)["system_prompt"] == new_sp
+
+    def test_adopted_child_path_passes_through_on_drift(self, monkeypatch, tmp_path):
+        """Adoption returns the child's persisted prompt without rebuilding."""
+        from hermes_state import SessionDB
+        import agent.conversation_compression as cc_module
+
+        child_prompt = _stored_with_identity("CHILD PERSISTED IDENTITY")
+        soul_reader = _patch_soul(monkeypatch, "SOME OTHER NEW IDENTITY")
+        rebuild = MagicMock(return_value="SHOULD_NOT_BE_USED")
+
+        def _fake_rotated(db, sid):
+            return True
+
+        def _fake_adopt(agent, db, sid):
+            agent._cached_system_prompt = child_prompt
+            return [{"role": "user", "content": "recovered from child"}]
+
+        monkeypatch.setattr(
+            cc_module, "_session_was_rotated_by_compression", _fake_rotated
+        )
+        monkeypatch.setattr(
+            cc_module, "_adopt_live_compression_child", _fake_adopt
+        )
+
+        with SessionDB(db_path=tmp_path / "t.db") as db:
+            sid = "20260804_120200_adopt01"
+            self._seed(db, sid)
+            agent = self._make_agent(db, sid, "PARENT STALE PROMPT")
+            agent._build_system_prompt = rebuild
+
+            _compressed, new_sp = cc_module.compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+
+            assert new_sp == child_prompt
+            rebuild.assert_not_called()
+            soul_reader.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

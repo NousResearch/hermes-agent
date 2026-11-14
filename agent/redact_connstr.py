@@ -75,7 +75,7 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
                 j += 1
             return n
         j = i
-        while j < n and line[j] not in ";\"'\r\n":
+        while j < n and line[j] not in ";\r\n":
             j += 1
         while j > i and line[j - 1] in " \t":  # trailing padding stays visible
             j -= 1
@@ -96,7 +96,7 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
         if line[j] == "\\":
             j += 2
             continue
-        if line[j] in " \t\r\n\"'":  # quotes: the shell quoting that wraps the conninfo
+        if line[j] in " \t\r\n":  # quotes: the shell quoting that wraps the conninfo
             break
         j += 1
     return min(j, n)

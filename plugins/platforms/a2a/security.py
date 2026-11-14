@@ -127,6 +127,15 @@ class A2ASecurityContext:
             return False  # the misconfiguration is logged once in A2AAdapter.connect()
         return self.allow_all_users or self.localhost_only() or not self.trusted_peers or identity in self.trusted_peers
 
+    def verify_push_payload(self, payload: dict, signature: str) -> bool:
+        """HMAC-SHA256 constant-time verify of an inbound signed push body. Never fails open:
+        a missing or malformed signature is treated as forged (False)."""
+        if not self.push_secret or not signature:
+            return False
+        body = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        expected = hmac.new(self.push_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
     def sign_push_payload(self, payload: dict) -> str:
         """HMAC-SHA256 hex over the sorted-key JSON body; "" when no secret."""
         if not self.push_secret:

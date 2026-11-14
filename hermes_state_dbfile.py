@@ -754,6 +754,17 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
             logger.info("quarantine_invalid_state_db: %s is no longer invalid (another "
                         "process quarantined it and a fresh DB was created)", path)
             return None
+        # A live lock on a healthy DB reads as "no SQLite header" (SQLITE_BUSY mid-write).
+        # Retry under the quarantine lock so a live lock is never mistaken for corruption
+        # and quarantined over the live file (see #147938).
+        for _attempt in range(5):
+            try:
+                head = _preopen_header(path, probe_bytes=100, force=False)
+            except Exception:
+                head = None
+            if head is None or head.startswith(b"SQLite format 3"):
+                return None  # live DB under lock: valid, don't quarantine
+            time.sleep(0.050)
         kind = "zeroed" if is_zeroed_state_db(path) else "notadb"
         try:
             ts = time.strftime("%Y%m%d-%H%M%S")

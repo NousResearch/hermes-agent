@@ -79,6 +79,17 @@ def _env_write_errors(log_msg: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _sanitize_surrogates(obj):
+    """Recursively replace lone UTF-16 surrogates with U+FFFD so the value is UTF-8 encodable."""
+    if isinstance(obj, str):
+        return obj.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_surrogates(v) for v in obj)
+    return obj
 @config_router.get("/api/config")
 async def get_config(profile: Optional[str] = None, include_defaults: bool = True):
     # _profile_scope blocks on the process-wide _SKILLS_PROFILE_LOCK and
@@ -90,7 +101,10 @@ async def get_config(profile: Optional[str] = None, include_defaults: bool = Tru
         profile, lambda: _normalize_config_for_web(load_config() if include_defaults else read_raw_config())
     )
     # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+    config = {k: v for k, v in config.items() if not k.startswith("_")}
+    # Lone UTF-16 surrogates (e.g. a YAML \\uD83E escape) cannot be encoded as
+    # UTF-8 and would make the endpoint 500. Replace them with the replacement char.
+    return _sanitize_surrogates(config)
 
 
 @config_router.get("/api/config/defaults")

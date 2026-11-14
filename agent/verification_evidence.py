@@ -550,6 +550,49 @@ def _load_changed_paths(raw: Any) -> list[Any]:
         return []
 
 
+import re as _re2
+import re as _re
+
+def _tests_rc_from_output(output: str) -> Optional[int]:
+    m = _re.search(r"TESTS_RC=(\d+)", output or "")
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _strip_tests_rc_echo(command: str) -> str:
+    return _re.sub(r'\s*;\s*echo\s+"?TESTS_RC=\$?\?"?\s*$', "", command or "")
+
+
+def _candidate_project_dirs(command: str):
+    out = []
+    for m in _re2.finditer(r'(?:^|&&|;|\|)\s*cd\s+("?)([^"&|;]+)\1', command or ""):
+        out.append(m.group(2).strip().strip('"').strip("'"))
+    for m in _re2.finditer(r'-C\s+("?)([^"&|;]+)\1', command or ""):
+        out.append(m.group(2).strip().strip('"').strip("'"))
+    # also a leading absolute path token that is a directory
+    return out
+
+
+def _facts_for_command_cwd(cwd, command):
+    facts = _project_facts(cwd)
+    if facts:
+        return facts, cwd
+    for cand in _candidate_project_dirs(command):
+        try:
+            p = Path(cand).expanduser()
+            if p.is_dir():
+                f = _project_facts(p)
+                if f:
+                    return f, p
+        except Exception:
+            continue
+    return None, cwd
+
+
 def classify_verification_command(
     command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0,
     output: str = "", pipeline_status: Optional[list[int]] = None,
@@ -565,11 +608,14 @@ def classify_verification_command(
     """
     if not command or not isinstance(command, str):
         return None
-    facts = _project_facts(cwd)
+    rc = _tests_rc_from_output(output)
+    effective_exit_code = rc if rc is not None else exit_code
+    cmd = _strip_tests_rc_echo(command) if rc is not None else command
+    facts, effective_cwd = _facts_for_command_cwd(cwd, cmd)
     if not facts:
         return None
     return _classify_in_workspace(
-        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+        cmd, facts, cwd=effective_cwd, session_id=session_id, exit_code=effective_exit_code, output=output,
         pipeline_status=pipeline_status,
     )
 
@@ -609,18 +655,21 @@ def record_terminal_result(
     """
     if not _ledger_enabled() or not command or not isinstance(command, str):
         return None
-    facts = _project_facts(cwd)
+    rc = _tests_rc_from_output(output)
+    effective_exit_code = rc if rc is not None else exit_code
+    cmd = _strip_tests_rc_echo(command) if rc is not None else command
+    facts, effective_cwd = _facts_for_command_cwd(cwd, cmd)
     if not facts:
         return None
-    key = (str(session_id or "default"), _root_for(facts, cwd))
+    key = (str(session_id or "default"), _root_for(facts, effective_cwd))
     evidence = _classify_in_workspace(
-        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+        cmd, facts, cwd=effective_cwd, session_id=session_id, exit_code=effective_exit_code, output=output,
         pipeline_status=pipeline_status,
     )
     if evidence is not None:
         return _insert_evidence(evidence)
     verify_commands = list(facts.get("verifyCommands") or [])
-    if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False):
+    if _find_canonical_match(cmd, verify_commands, int(effective_exit_code), attributed=False):
         _UNATTRIBUTED_RUNS.pop(key, None)
         _UNATTRIBUTED_RUNS[key] = (command, _utc_now())
         while len(_UNATTRIBUTED_RUNS) > _MAX_UNATTRIBUTED_RUNS:

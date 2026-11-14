@@ -713,6 +713,43 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
     return db._execute_write(write)
 
 
+def amend_terminal_result(db, *, epoch: int, admission_id: str, generation: int,
+                          result: dict, outcome: str | None = None) -> dict:
+    """Attach the result a retry produced to an admission already closed terminal without one.
+
+    An unattended turn lost across an owner restart settles through
+    ``resolve_unknown_session_input`` as interrupted, which stores no result. A late settlement of
+    that same claim can still carry the answer, and it must not be dropped: this write attaches
+    the result to the existing terminal row without reopening it or replacing a result another
+    writer committed first. ``result`` is ``prepare_result``'s compacted, redacted output (not a
+    raw agent result). *outcome* is ``'completed'`` when the late attempt itself completed; it
+    replaces a resultless outcome, so readers see the attempt that produced the answer.
+    """
+    if outcome not in (None, 'completed'):
+        raise RuntimeStoreError('invalid_params')
+    from hermes_state_terminal import RESULT_PREFIX, RESULTLESS_OUTCOMES, encode_result
+
+    def write(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        if (row['status'] != 'terminal' or row['owner_epoch'] != epoch
+                or type(generation) is not int or row['generation'] != generation):
+            raise RuntimeStoreError('stale_generation')
+        if conn.execute('SELECT 1 FROM session_admissions WHERE admission_id=?',
+                        (admission_id,)).fetchone() is None:
+            return _row(row)  # retired tombstone: no live admission to amend
+        key = RESULT_PREFIX + admission_id
+        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone() is None:
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _json(encode_result(result))))
+            if outcome is not None and row['outcome'] in RESULTLESS_OUTCOMES:
+                conn.execute("UPDATE session_admissions SET outcome=? "
+                             "WHERE admission_id=? AND status='terminal'", (outcome, admission_id))
+            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
+                         (row['target_session_id'],))
+        return _row(_admission(conn, admission_id))
+    return db._execute_write(write)
+
+
 def _worker_public(row):
     result = dict(row)
     result.pop('adoption_digest')

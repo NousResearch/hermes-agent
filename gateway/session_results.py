@@ -1,10 +1,17 @@
 """Exact execution results commit with settlement, before delivery/publication."""
+import logging
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
+from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, amend_terminal_result, settle_session_input
 
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
-from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
+from hermes_state_terminal import (
+    RESULT_PREFIX as _RESULT_PREFIX,
+    RESULTLESS_OUTCOMES as _RESULTLESS_OUTCOMES,
+    load_result,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def record_unexecuted_failure(reply, reason=None, error=None):
@@ -77,18 +84,46 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
     `transfers` are the queued steers handed to this claim; they settle in the same write.
     """
+    terminal = None
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
         current = _admission(conn, row['admission_id'])
+        # The owner fence is deliberate: a new epoch owns new work, never a terminal row another
+        # owner closed. The late settlement this branch serves comes from the row's own claim
+        # (same epoch and generation), which is the state #153356's traceback shows.
         if current['owner_epoch'] != epoch or current['generation'] != row['generation']:
             raise RuntimeStoreError('stale_generation')
         if current['status'] == 'terminal':
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                  (_RESULT_PREFIX + row['admission_id'],)).fetchone()
-            if saved is None:
-                raise RuntimeStoreError('storage_unavailable')
-            result = load_result(saved[0])
-            return dict(current), result['result'].get('final_response') or ''
+            if saved is not None:
+                result = load_result(saved[0])
+                return dict(current), result['result'].get('final_response') or ''
+            terminal = dict(current)
+    if terminal is not None:
+        # A resolution (an unattended turn lost to a restart, an operator's discard) settles
+        # `interrupted` without a result: there was no answer to store. A late settlement of
+        # that same claim can still carry one, and dropping it as `storage_unavailable` leaves
+        # the chat empty and the scheduler booking a finished run interrupted (#153356). Attach
+        # the retry's result to the terminal row; only a retry that completed replaces the
+        # resultless outcome. A person's Discard stays discarded: their answer is not replayed.
+        from gateway.session_unattended_unknown import is_unattended
+        if (terminal['outcome'] == 'interrupted' and (result is not None or response)
+                and is_unattended(row)):
+            outcome, stored = prepared or prepare_result(row, response, outcome, result)
+            current = amend_terminal_result(
+                db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
+                result=stored, outcome=outcome if outcome == 'completed' else None)
+            # A concurrent writer may have stored its result first; publish the row's result, as
+            # the terminal read-back above does, never this attempt's losing copy.
+            committed = admission_result(db, row['admission_id']) or stored
+            return dict(current), committed['result'].get('final_response') or response or ''
+        if terminal['outcome'] in _RESULTLESS_OUTCOMES:
+            if response or result is not None:
+                logger.warning('Dropping a retry result for admission %s: terminal outcome %s',
+                               row['admission_id'], terminal['outcome'])
+            return terminal, ''
+        raise RuntimeStoreError('result_missing', detail='the terminal admission carries no stored result')
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
     # A turn the owner's restart/stop interrupted: its reason commits as a Hermes transcript notice
     # in this same write, so a viewer that reconnects after the restart reads why (#134889 GW-21);

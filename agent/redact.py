@@ -17,6 +17,7 @@ from urllib.parse import unquote_plus
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.redact_command_segments import _command_segments
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
 from agent.redact_headers import (
@@ -1773,36 +1774,6 @@ _HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
 # ``$HOME/.hermes/config.yaml`` keeps the ``.hermes`` segment, so stripping the prefix is
 # enough to gate it; ``~/`` already survives the ``$``-bearing-path bail-out.
 _HOME_PREFIXES = ("$HOME/", "${HOME}/")
-
-
-def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
-    ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
-    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
-    segments: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    for ch in command:
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = None
-            continue
-        if ch in "'\"":
-            quote = ch
-            buf.append(ch)
-            continue
-        if ch in "|;&":
-            seg = "".join(buf).strip()
-            if seg:
-                segments.append(seg)
-            buf = []
-            continue
-        buf.append(ch)
-    seg = "".join(buf).strip()
-    if seg:
-        segments.append(seg)
-    return segments
 
 
 def _is_under_hermes_home(path: str) -> bool:

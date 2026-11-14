@@ -271,11 +271,15 @@ function creationWarningTitle(profile: string, connectionId: string, connections
 }
 
 /** The bot's live roster row on the connection it was created on (what Edit
- *  Profile gets from the roster), else `fallback` until the roster lists it. */
+ *  Profile gets from the roster). Until the roster lists it: `fallback` while
+ *  that connection is still the active one, else a row pinned to it, so a
+ *  same-named bot on the gateway switched to is never the one edited. */
 function liveRosterRow(name: string, connectionId: string, fallback: RosterRow): RosterRow {
   const key = botRosterKey({ connectionId: connectionId || undefined, name })
+  const live = $lastRoster.get().find(row => botRosterKey(row) === key)
+  const active = String(host.state?.connectionId?.get?.() || '').trim()
 
-  return $lastRoster.get().find(row => botRosterKey(row) === key) ?? fallback
+  return live ?? (connectionId && connectionId !== active ? { ...fallback, connectionId, sourceScoped: true } : fallback)
 }
 
 function useDraftProfile(
@@ -708,7 +712,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         ...(remoteTarget ? { connectionId: targetConnection, remoteSource: true } : {})
       }
 
-      if (warning) {
+      // Not for a draft a target change discarded while readiness ran.
+      if (warning && createdRef.current === slugCreated) {
         host.notify({ kind: 'warning', title: warning.title, message: warning.message, persistent: true })
       }
 

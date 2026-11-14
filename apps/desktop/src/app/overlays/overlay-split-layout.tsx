@@ -126,7 +126,7 @@ export const OverlayNavItem = memo(function OverlayNavItem({
       aria-current={current ? 'page' : undefined}
       aria-pressed={pressed}
       className={cn(
-        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-start text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
           ? active
             ? current

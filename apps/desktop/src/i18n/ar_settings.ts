@@ -17,6 +17,27 @@ export const arSettings = {
     memoryLayers: arMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
+      title: 'الفوترة',
+      usageLabel: label => `استخدام ${label}`,
+      summary: {
+        balance: 'الرصيد',
+        plan: 'الخطة',
+        autoRefill: 'التعبئة التلقائية'
+      },
+      sections: {
+        plan: 'الخطة',
+        paymentAndCredits: 'الدفع والرصيد',
+        usage: 'الاستخدام'
+      },
+      buyCredits: {
+        customAmount: 'مبلغ رصيد مخصص',
+        title: 'اشترِ رصيدًا الآن',
+        buyButton: 'شراء',
+        processing: 'جارٍ المعالجة… يجري التحقق من التسوية',
+        added: amount => `أُضيف ${amount}. يجري تحديث الرصيد.`,
+        retry: 'إعادة المحاولة',
+        openPortal: 'افتح البوابة'
+      },
       keepGoingOnCredits: {
         title: 'الاستمرار بالرصيد',
         description: 'استخدم رصيدك عند نفاد الاستخدام المضمّن. عند الإيقاف: ينتظر Hermes إعادة التعيين.',
@@ -27,6 +48,14 @@ export const arSettings = {
         tryAgain: 'إعادة المحاولة'
       },
       state: {
+        notice: {
+          loggedOut: {
+            title: 'اربط حساب Nous',
+            message: 'سجّل الدخول بحساب Nous لترى رصيدك وخطتك واستخدامك هنا.',
+            action: 'تسجيل الدخول'
+          },
+          openPortal: 'افتح البوابة ↗'
+        },
         usage: {
           window: {
             today: 'اليوم',
@@ -111,7 +140,40 @@ export const arSettings = {
       pageCount: (n: number) => `${n} صفحات`,
       missing: 'هذه الإضافة ليس لها صفحة إعدادات. ربما عُطّلت أو أُزيلت.'
     },
+    optionLabels: {
+      'approvals.mode': { manual: 'يدوي', smart: 'ذكي', off: 'معطل' },
+      'agent.imageInputMode': { auto: 'تلقائي', native: 'أصلي', text: 'نصي' },
+      'codeExecution.mode': { project: 'مشروع', strict: 'صارم' },
+      'context.engine': { compressor: 'ضاغط', default: 'افتراضي', custom: 'مخصص' },
+      'delegation.reasoningEffort': {
+        minimal: 'أدنى',
+        low: 'منخفض',
+        medium: 'متوسط',
+        high: 'عالٍ',
+        xhigh: 'فائق',
+        max: 'أقصى',
+        ultra: 'خارق'
+      },
+      'display.personality': {
+        helpful: 'متعاون',
+        concise: 'مقتضب',
+        technical: 'تقني',
+        creative: 'مبدع',
+        teacher: 'معلم',
+        kawaii: 'كاواي',
+        catgirl: 'فتاة القطط',
+        pirate: 'قرصان',
+        shakespeare: 'شكسبير',
+        surfer: 'راكب أمواج',
+        noir: 'نوار',
+        uwu: 'يو وو',
+        philosopher: 'فيلسوف',
+        hype: 'حماسي'
+      },
+      'terminal.backend': { local: 'محلي' }
+    },
     nav: {
+      billing: 'الفوترة',
       providers: 'المزودون',
       providerAccounts: 'الحسابات',
       providerApiKeys: 'مفاتيح API',

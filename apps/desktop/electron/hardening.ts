@@ -315,11 +315,18 @@ function normalizeSensitivePath(filePath) {
 }
 
 let hermesHomes: string[] = []
+// Store targets only move when a home, profile or store is re-linked, so the
+// realpath sweep runs at most once per window instead of on every preview,
+// media-stream and image read (~17 realpaths per home and profile).
+const RELOCATED_STORES_TTL_MS = 1000
+let relocatedStoresCache: null | { at: number; stores: string[] } = null
 
 /** Register the Hermes home whose credential stores (and every profile's under
  *  `profiles/<name>/`) preview reads must refuse. Both the given spelling and
  *  its realpath are kept, since callers check the requested and the real path. */
 function setSensitiveHermesHome(hermesHome: null | string | undefined) {
+  relocatedStoresCache = null
+
   if (!hermesHome) {
     hermesHomes = []
 
@@ -363,6 +370,12 @@ function isCredentialStoreRel(rel: string): boolean {
 // lexical match alone would let its real path through (Python's read guard
 // resolves the same targets).
 function relocatedCredentialStores(): string[] {
+  const now = Date.now()
+
+  if (relocatedStoresCache && now - relocatedStoresCache.at < RELOCATED_STORES_TTL_MS) {
+    return relocatedStoresCache.stores
+  }
+
   const stores: string[] = []
 
   for (const home of hermesHomes) {
@@ -384,6 +397,8 @@ function relocatedCredentialStores(): string[] {
       }
     }
   }
+
+  relocatedStoresCache = { at: now, stores }
 
   return stores
 }

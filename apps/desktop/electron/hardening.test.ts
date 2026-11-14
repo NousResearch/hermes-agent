@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -1039,6 +1039,45 @@ test('resolveReadableFileForIpc blocks relocated Hermes stores read through thei
     const notes = path.join(workHome, 'notes.md')
     assert.equal((await resolveReadableFileForIpc(notes, { purpose: 'File preview' })).resolvedPath, notes)
   } finally {
+    setSensitiveHermesHome(null)
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('sensitiveFileBlockReason re-resolves relocated Hermes stores at most once per window', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-ttl-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+  const vaultDir = path.join(tempDir, 'data', 'vault')
+  const notes = path.join(tempDir, 'project', 'notes.md')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const realpath = vi.spyOn(fs.realpathSync, 'native')
+
+  try {
+    fs.mkdirSync(path.join(hermesHome, 'profiles', 'work'), { recursive: true })
+    fs.mkdirSync(vaultDir, { recursive: true })
+    fs.mkdirSync(path.dirname(notes), { recursive: true })
+    fs.writeFileSync(path.join(vaultDir, 'vault.key'), 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(notes, 'ok', 'utf8')
+    setSensitiveHermesHome(hermesHome)
+    assert.equal(sensitiveFileBlockReason(notes), null)
+
+    const sweep = realpath.mock.calls.length
+
+    for (let i = 0; i < 20; i++) {
+      assert.equal(sensitiveFileBlockReason(notes), null)
+    }
+
+    assert.equal(realpath.mock.calls.length, sweep)
+
+    if (!trySymlink(vaultDir, path.join(hermesHome, 'vault'), 'junction')) {
+      return
+    }
+
+    vi.setSystemTime(Date.now() + 1_001)
+    assert.ok(sensitiveFileBlockReason(path.join(vaultDir, 'vault.key')))
+  } finally {
+    realpath.mockRestore()
+    vi.useRealTimers()
     setSensitiveHermesHome(null)
     fs.rmSync(tempDir, { recursive: true, force: true })
   }

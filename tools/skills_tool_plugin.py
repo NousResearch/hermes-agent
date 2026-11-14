@@ -162,6 +162,51 @@ def _serve_plugin_skill(
         "skill_dir": str(skill_md.parent)})
 
 
+def find_plugin_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+    """Listing rows (name, description, category) for registered plugin skills, gated like local
+    ones: platform, environment and apps. Disabled rows are dropped unless ``skip_disabled=True``
+    (``find_all_skills`` semantics: config UIs annotate them instead)."""
+    from tools import skills_tool as _st
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+        rows = []
+        for skill in get_plugin_manager().list_plugin_skill_metadata():
+            frontmatter = skill.pop("frontmatter", {})
+            if not (_st.skill_matches_platform(frontmatter) and _st.skill_matches_environment(frontmatter)
+                    and _st.skill_matches_apps(frontmatter)):
+                continue
+            if skip_disabled or not _st._is_skill_disabled(skill["name"]):
+                rows.append(skill)
+        return rows
+    except Exception:
+        logger.debug("Plugin skill listing failed", exc_info=True)
+        return []
+
+
+def plugin_skills_by_bare_name(rows: list[dict[str, Any]] | None = None) -> dict[str, list[str]]:
+    """``bare -> sorted [plugin:skill, ...]`` over *rows* (default: the enabled, platform-matching
+    plugin skills). A bare name reaches a plugin skill only when no on-disk skill holds it and
+    exactly one plugin registers it; several plugins under one bare name must be qualified."""
+    index: dict[str, list[str]] = {}
+    for row in find_plugin_skills() if rows is None else rows:
+        index.setdefault(row["name"].partition(":")[2], []).append(row["name"])
+    return {bare: sorted(names) for bare, names in index.items()}
+
+
+def plugin_bare_name_notes(rows: list[dict[str, Any]], local_names: set[str]) -> dict[str, str]:
+    """``plugin:skill -> note`` for plugin skills whose bare name does not load them: an on-disk
+    skill holds that name (on-disk wins), or several plugins register it (qualify to choose)."""
+    notes = {}
+    for bare, names in plugin_skills_by_bare_name(rows).items():
+        for qualified in names:
+            if bare in local_names:
+                notes[qualified] = f"'{bare}' loads the on-disk skill; use {qualified}"
+            elif len(names) > 1:
+                notes[qualified] = f"'{bare}' is shared by {len(names)} plugins; use {qualified}"
+    return notes
+
+
 def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:
     from tools.path_security import validate_within_dir
     linked: dict[str, list[str]] = {}

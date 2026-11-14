@@ -506,7 +506,7 @@ Every surface resolves a skill name the same way:
 - **Across directories**, the higher-precedence directory wins (`project → local → skills.create_dir → external_dirs`), including for the same relative path (`productivity/xdup` local and external loads the local copy). The shadowed copy is hidden and a warning is logged.
 - **Inside one directory**, two *different* skills that share a name are never guessed between. Both are listed under their exact relative path (for example `a/one` and `b/two`), and loading the bare name fails with `Ambiguous skill name dup-demo: use one of a/one, b/two`. That message is also what `hermes -s dup-demo` and cron jobs report. Identical copies of one skill (a symlink view or byte-identical copy) resolve to the shallowest path.
 
-Plugin skills use their own `plugin:skill` names and never collide with these.
+Plugin skills have their own `plugin:skill` names. A bare name reaches a plugin skill only when no on-disk skill holds it and exactly one enabled plugin registers it, so an on-disk skill always wins. When several plugins share a bare name, the bare name is refused and the reply lists the qualified names. `hermes skills list` marks a plugin skill whose bare name doesn't reach it.
 
 ### Scan-time quarantine
 

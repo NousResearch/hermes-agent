@@ -207,6 +207,36 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "agent-plugin-blender-5a80e4ba:blender"
         assert "blender body." in result["content"]
 
+    def test_resolves_plugin_skill_by_bare_name(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(skill_view("writing-plans"))
+
+        assert result["success"] is True
+        assert result["name"] == "superpowers:writing-plans"
+        assert "writing-plans body." in result["content"]
+
+    def test_bare_plugin_skill_name_collision_requires_qualification(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path, plugin="first", name="shared")
+        self._register_skill(tmp_path, plugin="second", name="shared")
+        result = json.loads(skill_view("shared"))
+
+        assert result["success"] is False
+        assert "ambiguous" in result["error"].lower()
+        assert result["available_skills"] == ["first:shared", "second:shared"]
+
+    def test_missing_bare_name_lists_installed_plugin_skills(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(skill_view("missing"))
+
+        assert result["success"] is False
+        assert "superpowers:writing-plans" in result["available_skills"]
+
     def test_reads_supporting_file_with_containment(self, tmp_path):
         from tools.skills_tool import skill_view
 
@@ -491,3 +521,41 @@ class TestBundleContextBanner:
         assert "bar" in sibling_line
         assert "baz" in sibling_line
         assert "foo" not in sibling_line
+
+
+class TestSkillsListPluginGates:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        self.pm = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", self.pm)
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", empty)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    def test_listing_hides_plugin_skills_this_host_does_not_offer(self, tmp_path, monkeypatch):
+        from agent import skill_utils
+        from tools.skills_tool import skills_list
+
+        monkeypatch.setitem(skill_utils._ENV_DETECTORS, "kanban", lambda: False)
+        other_platform = "linux" if sys.platform.startswith("darwin") else "macos"
+        frontmatters = {
+            "plain": {},
+            "wrong-platform": {"platforms": [other_platform]},
+            "needs-kanban": {"environments": ["kanban"]},
+            "needs-app": {"requires_apps": ["no-such-app"]},
+        }
+        for name, frontmatter in frontmatters.items():
+            self.pm._plugin_skills[f"myplugin:{name}"] = {
+                "path": tmp_path / name / "SKILL.md", "plugin": "myplugin", "bare_name": name,
+                "description": "", "frontmatter": frontmatter,
+            }
+
+        listed = {row["name"] for row in json.loads(skills_list())["skills"]}
+
+        assert "myplugin:plain" in listed
+        assert listed.isdisjoint(
+            {"myplugin:wrong-platform", "myplugin:needs-kanban", "myplugin:needs-app"})

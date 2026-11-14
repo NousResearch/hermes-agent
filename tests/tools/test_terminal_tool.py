@@ -122,3 +122,37 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_sudo_1_9_counted_wrong_password_clears_cached_password(monkeypatch):
+    """sudo >= 1.9 counts the attempts ("sudo: 1 incorrect password attempt"); the bare-form
+    substring only matched after three tries, so a rejected password stayed cached and the
+    user was never re-prompted (with `sudo -S` the retry reads EOF, so the count is 1)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    output = "Sorry, try again.\n\nsudo: no password was provided\nsudo: 1 incorrect password attempt\n"
+    assert terminal_tool_sudo._sudo_wrong_password_failure(output)
+    terminal_tool_sudo._set_cached_sudo_password("stale")
+    assert terminal_tool_sudo._invalidate_cached_sudo_on_auth_failure("sudo true", output)
+    assert terminal_tool_sudo._get_cached_sudo_password() == ""
+
+
+def test_sudo_wrong_password_failure_matches_all_rejection_forms():
+    for output in (
+        "sudo: authentication failed",
+        "sudo: incorrect password attempt",
+        "sudo: 1 incorrect password attempt",
+        "sudo: 3 incorrect password attempts",
+        "sudo: maximum 3 incorrect authentication attempts",
+        "Sorry, try again.",
+        "sudo-rs: Authentication failed, try again.",
+        "sudo-rs: Incorrect authentication attempt",
+        "sudo-rs: Maximum 3 incorrect authentication attempts",
+    ):
+        assert terminal_tool_sudo._sudo_wrong_password_failure(output), output
+    for output in (
+        "sudo: no password was provided",
+        "sudo: a password is required",
+        "sudo: no tty present",
+        "apt-get install -y ripgrep",
+    ):
+        assert not terminal_tool_sudo._sudo_wrong_password_failure(output), output

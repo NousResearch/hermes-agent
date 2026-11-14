@@ -1,6 +1,6 @@
 name: livetalk
 repo: https://github.com/cruzlxyz/livetalk
-sha: 9c648638574c67fd4ebdad334cdb6a234fc80073
+sha: 34f4ebb5978597ecd736bbd205ad9058edeeeb48
 description: >-
   Realtime duplex voice chat with the Hermes agent — a composer mini-bar for the Hermes
   desktop app. The voice model answers small talk itself and delegates real work through a
@@ -22,7 +22,7 @@ version: "2.0.0"
 requires_hermes: ">=0.22.0"
 category: voice
 docs_url: https://github.com/cruzlxyz/livetalk#readme
-image: https://raw.githubusercontent.com/cruzlxyz/livetalk/9c648638574c67fd4ebdad334cdb6a234fc80073/assets/cover.jpg
+image: https://raw.githubusercontent.com/cruzlxyz/livetalk/34f4ebb5978597ecd736bbd205ad9058edeeeb48/assets/cover.jpg
 platforms: []
 capabilities:
   provides_tools: []

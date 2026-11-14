@@ -10,6 +10,7 @@ quarantined, never served as ``{}``. ``models_dev.url`` in config.yaml = mirror.
 import contextlib
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -644,6 +645,64 @@ def _extract_limit(entry: Any, key: str) -> Optional[int]:
 def _extract_context(entry: dict[str, Any]) -> Optional[int]:
     """Context length from a models.dev model entry, or None if invalid/zero."""
     return _extract_limit(entry, "context")
+
+
+def _extract_cost_tier(cost: dict[str, Any], base: dict[str, float]) -> Optional[dict[str, float]]:
+    """Flatten the single context tier PricingEntry can represent; never discard other rules."""
+    tiers = cost.get("tiers", [])
+    if not isinstance(tiers, list):
+        return None
+    if not tiers:
+        # This legacy field alone does not reliably identify the threshold (Luna uses 272K).
+        return None if cost.get("context_over_200k") else {}
+    if len(tiers) != 1 or not isinstance(tiers[0], dict):
+        return None
+    tier = tiers[0]
+    descriptor = _dict_or_empty(tier.get("tier"))
+    size = descriptor.get("size")
+    if descriptor.get("type") != "context" or type(size) is not int or size <= 0:
+        return None
+    above = _extract_cost({"cost": {key: tier[key] for key in
+                                   ("input", "output", "cache_read", "cache_write") if key in tier}})
+    # PricingEntry falls back to base rates for absent *_above fields. A missing catalog
+    # rate must remain unknown, not silently inherit the cheaper tier.
+    if above is None or not base.keys() <= above.keys():
+        return None
+    return {"tier_threshold_tokens": size, **{f"{key}_above": value for key, value in above.items()}}
+
+
+def _extract_cost(entry: dict[str, Any]) -> Optional[dict[str, float]]:
+    """USD/1M rates and a supported context tier, unscaled; incomplete rules remain unknown."""
+    cost = entry.get("cost") if isinstance(entry, dict) else None
+    if not isinstance(cost, dict):
+        return None
+
+    def _rate(key: str) -> Optional[float]:
+        value = cost.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(value) and value >= 0 else None
+
+    if _rate("input") is None and _rate("output") is None:
+        return None
+    rates = {key: _rate(key) for key in ("input", "output", "cache_read", "cache_write")}
+    base = {key: value for key, value in rates.items() if value is not None}
+    tier = _extract_cost_tier(cost, base)
+    return {**base, **tier} if tier is not None else None
+
+
+def lookup_models_dev_pricing(
+    provider: str, model: str, *, allow_network: bool = False
+) -> Optional[dict[str, float]]:
+    """Provider-scoped per-million pricing from models.dev. Providers absent from
+    :data:`PROVIDER_TO_MODELS_DEV` return ``None``; model ids are never scanned across vendors.
+    ``allow_network`` defaults to False: usage accounting is a hot path."""
+    models = _get_provider_models(provider, allow_network=allow_network)
+    if models is None:
+        return None
+    # Exact/case-insensitive only: a suffix match would bill one model at another's rate.
+    entry = next((e for _mid, e in _iter_model_entries(models, model, suffix_fallback=False, provider=provider)), None)
+    return _extract_cost(entry) if entry is not None else None
 
 
 def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False) -> Optional[int]:

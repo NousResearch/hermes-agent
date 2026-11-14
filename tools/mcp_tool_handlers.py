@@ -236,6 +236,11 @@ async def _refuse_unconsented_write(server_name: str, tool_name: str) -> str:
         f"reconnect, so it was NOT run without approval. Re-invoke it to ask the user."))
 
 
+def _never_reached_server(exc: BaseException) -> bool:
+    """A failed attempt that ran nothing: the stdio child was dead before dispatch, or a 401 (always pre-dispatch)."""
+    return (isinstance(exc, _StdioChildExited) and not exc.in_flight) or _is_auth_error(exc)
+
+
 def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
                   gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
     """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
@@ -857,9 +862,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                     for charge in booked:
                         charge.refund()
                     return error
-        # Still cleared only as read-only: a recoverer's reconnect can rediscover the tool as write-capable
-        # before its retry, so every attempt re-checks (on this thread: the hint and grant are scope-bound).
+        # Still cleared only as read-only: a reconnect (a recoverer's, or one whose tools/list is still running
+        # when this call arrives) can rediscover the tool as write-capable before it runs. The grant is read on
+        # this thread (scope-bound); the hint is re-read under _rpc_lock, which every tools/list holds.
         cleared_as_read_only = read_only and _untrusted(server_name)
+        from tools.mcp_tool_scope import _resolve_server_key
+        hint_key = _resolve_server_key(server_name)
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
         from agent.tool_progress_relay import current_tool_progress
@@ -874,8 +882,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         # per-thread prompt callbacks travel next to the contextvars snapshot.
         turn_callbacks = capture_thread_callbacks()
 
-        async def _call():
+        async def _call(still_cleared: bool):
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
+                if still_cleared and _core._tool_read_only_hints.get(hint_key, {}).get(tool_name) is not True:
+                    return await _refuse_unconsented_write(server_name, tool_name)
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 server._pending_call_callbacks = turn_callbacks
                 try:
@@ -895,27 +905,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
 
         failures: list = []  # each attempt's exception; the first tells whether the call ever reached the server
 
-        async def _tracked_call():
+        async def _tracked_call(still_cleared: bool):
             try:
-                return await _call()
+                return await _call(still_cleared)
             except Exception as exc:
                 failures.append(exc)
                 raise
 
         def _attempt():
-            if (cleared_as_read_only and not _tool_is_read_only(server_name, tool_name)
-                    and not _trust_granted(server_name, tool_name)):
-                return _refuse_unconsented_write(server_name, tool_name)
-            return _tracked_call()
+            return _tracked_call(cleared_as_read_only and not _trust_granted(server_name, tool_name))
 
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         text = _dispatch(
             server_name, server, op, _attempt, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
-        if (isinstance(text, _RefusedRetry) and failures and isinstance(failures[0], _StdioChildExited)
-                and not failures[0].in_flight):
-            for charge in booked:  # the only attempt died before dispatch: nothing ran
+        if isinstance(text, _RefusedRetry) and all(_never_reached_server(exc) for exc in failures):
+            for charge in booked:  # refused, and no earlier attempt reached the server: nothing ran
                 charge.refund()
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text

@@ -814,14 +814,9 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
         loaded.append(project_env_path)
 
-    # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
-    # token) back over a value an external source resolved on an earlier call, and the source pass below is a
-    # once-per-home no-op — so the clobber stuck for the life of the process (#74265). Re-assert only what the
-    # source is authoritative for; managed scope, applied last with override=True, still wins on purpose.
-    if _SECRET_SOURCE_RESTORE_BY_HOME:
-        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(str(home_path.resolve()), {}).items():
-            if os.environ.get(name) != value:
-                os.environ[name] = value
+    # The override=True loads above may have written a .env placeholder back over a source-resolved value
+    # (#74265); managed scope, applied last with override=True, still wins on purpose.
+    _restore_secret_source_values(home_path)
 
     # The config backend is selected here — after the .env files, before the first config.yaml read
     # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
@@ -880,6 +875,20 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
         apply_terminal_config_to_env(env=None)
     except Exception:
         pass
+
+
+def _restore_secret_source_values(home_path: Path) -> None:
+    """Re-assert the values an external source is authoritative for in *home_path*.
+
+    An override=True load of the raw ``.env`` writes its line (``__BITWARDEN_MANAGED__`` placeholder,
+    stale token) back over a value a source resolved on an earlier call, and the source pass is a
+    once-per-home no-op, so without this the clobber sticks for the life of the process (#74265). Only
+    names the source is authoritative for are restored."""
+    if not _SECRET_SOURCE_RESTORE_BY_HOME:
+        return
+    for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(str(home_path.resolve()), {}).items():
+        if os.environ.get(name) != value:
+            os.environ[name] = value
 
 
 def _apply_managed_env(*, load_pass: int | None = None) -> None:

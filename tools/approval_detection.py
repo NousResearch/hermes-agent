@@ -425,19 +425,21 @@ _PS_EXE_AT_COMMAND_POSITION = (
 # A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as
 # one argument. Each option is an atomic group with the value-taking form tried first: the two
 # alternatives overlap (`-c x` is also two dash-or-word tokens), so a non-atomic run of option-like
-# tokens (`git -c -c -c ... x`) is re-split exponentially on a failed match.
+# tokens (`git -c -c -c ... x`) is re-split exponentially on a failed match. The run is capped:
+# every later `git` word starts a new search, and an uncapped run made `git -c git -c ... x` quadratic.
 _GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
 _GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env'
-        rf'|--attr-source)\s+{_GIT_WORD}|-{_GIT_WORD}))*\s+')
+        rf'|--attr-source)\s+{_GIT_WORD}|-{_GIT_WORD})){{0,64}}\s+')
 _GIT_PUSH = rf'{_GIT}push\b'
 # The push's own arguments, bounded to ONE command segment: a later command's flag is never the
 # push's (`git push -q origin main && grep -f patterns.txt log` is not a force push). A quoted
 # string is one atom, so a quoted `;`/`&`/`|` (`-o 'ci;skip'`) does not end the segment, and a
 # flag inside quotes is not seen; a redirection's `&`/`|` (`2>&1`, `&>`, `>|`) stays inside too.
 # Every alternative starts on a different character (or lookaround), so a failed match scans a
-# run once instead of re-splitting it exponentially (`>&>&>&...`, `'a' 'a' 'a' ...`).
+# run once instead of re-splitting it exponentially (`>&>&>&...`, `'a' 'a' 'a' ...`). The scan
+# stops at a nested push, whose own search covers the rest, so `git push git push ...` is linear.
 _GIT_PUSH_ARGS = (r'''(?:(?>'[^']*'|"(?:[^"\\]|\\[\s\S])*")|'(?![^']*')|"(?![^"]*")'''
-                  r'''|\\[\s\S]|[^;&|\n'"\\]|(?<=[<>])&|(?<![<>])&(?=>)|(?<=>)\|)*''')
+                  r'''|\\[\s\S]|(?!''' + _GIT_PUSH + r''')[^;&|\n'"\\]|(?<=[<>])&|(?<![<>])&(?=>)|(?<=>)\|)*''')
 # An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
 _GIT_PUSH_ARG_START = r'''\s["']?'''
 

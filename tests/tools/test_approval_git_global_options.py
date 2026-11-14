@@ -77,3 +77,13 @@ def test_a_run_of_global_options_is_scanned_linearly(option):
     assert not detect_dangerous_command("git " + (option + " ") * 60 + "x")[0]
     assert detect_dangerous_command("git " + (option + " ") * 60 + "reset --hard")[0]
     assert time.monotonic() - start < 2
+
+
+@pytest.mark.parametrize("prefix, unit", [("", "git -c "), ("", "git push "), ("git push ", "-c git ")])
+def test_a_repeated_git_word_does_not_rescan_the_rest(prefix, unit):
+    """Each `git` word starts a new search; an uncapped option run or push scan made this quadratic."""
+    import time
+
+    start = time.monotonic()
+    assert not detect_dangerous_command(prefix + unit * 3000 + "x;")[0]
+    assert time.monotonic() - start < 2

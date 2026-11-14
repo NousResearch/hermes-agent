@@ -168,3 +168,47 @@ def test_a_stop_that_races_the_submit_enters_nothing(loop, monkeypatch):
         adapter._vault_code_cards()[token].submit(CODE)
         worker.join(5)
     assert out["code"] == ""
+
+
+def test_a_code_submitted_but_unconsumed_when_the_turn_ends_is_dropped(monkeypatch):
+    """Submit lands while the card's send is still unacknowledged, then the turn ends: nothing is entered."""
+    import concurrent.futures
+    from gateway.session_vault_code_card import code_card_scope
+    from gateway.platforms.base import SendResult
+    monkeypatch.setattr("gateway.session_vault_prompt.CODE_TIMEOUT_S", 2)
+    submitted, send_ack = threading.Event(), concurrent.futures.Future()
+
+    class _Adapter:
+        def send_vault_code_prompt(self, *_a, submit, **_kw):
+            submit(CODE)
+            submitted.set()
+
+    ctx = SimpleNamespace(_status_adapter=_Adapter(), source=SimpleNamespace(user_id=AUTHOR), _status_chat_id="C1",
+                          _status_thread_metadata={}, session_key="agent:main:slack:dm:C1")
+    turn = SimpleNamespace(_ctx=ctx, _schedule=lambda coro, _msg: send_ack)
+    out = {}
+    with code_card_scope(turn, SimpleNamespace(_interrupt_requested=False)):
+        prompt = unlock.get_code_prompt_callback()
+        worker = threading.Thread(target=lambda: out.update(code=prompt("login.example.com", "")), daemon=True)
+        worker.start()
+        assert submitted.wait(5)
+    send_ack.set_result(SendResult(success=True))
+    worker.join(5)
+    assert out["code"] == ""
+
+
+@pytest.mark.parametrize("logger_name, marker", [
+    ("discord.gateway", "hermes_vault_code_value"),
+    ("slack_bolt.AsyncApp", "hermes_vault_code_submit"),
+])
+def test_sdk_raw_frame_debug_logs_drop_a_modal_submit(logger_name, marker, caplog):
+    """Both SDKs log every received frame at DEBUG before any handler runs (discord.py
+    ``received_message``, slack_sdk Socket Mode ``Received message``): the code must not reach agent.log."""
+    import plugins.platforms.discord.adapter_vault_code  # installs the SDK log filter
+    import plugins.platforms.slack.adapter_vault_code  # installs the SDK log filter
+    sdk_logger = logging.getLogger(logger_name)
+    sdk_logger.setLevel(logging.DEBUG)
+    caplog.set_level(logging.DEBUG)
+    sdk_logger.debug("Received message (data: %s)", json.dumps({"id": marker, "value": CODE}))
+    sdk_logger.debug("Received message (data: %s)", json.dumps({"type": "hello"}))
+    assert CODE not in caplog.text and "hello" in caplog.text

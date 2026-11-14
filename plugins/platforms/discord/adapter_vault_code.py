@@ -8,6 +8,7 @@ module is imported.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import SendResult
@@ -15,6 +16,22 @@ from gateway.platforms.base import SendResult
 # Discord caps a modal title and a modal label at 45 characters.
 _MODAL_TEXT_LIMIT = 45
 _HINT_LIMIT = 300
+_INPUT_ID = "hermes_vault_code_value"
+
+
+class _DropVaultCodeFrames(logging.Filter):
+    """discord.py logs every raw gateway frame at DEBUG before any handler runs, so a modal submit would
+    put the code in agent.log with ``logging.level: DEBUG``. Drop frames that carry the code input."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _INPUT_ID not in record.getMessage()
+
+
+# The SDK's raw-frame loggers (``DiscordWebSocket.received_message``, the poll loop's "Received").
+for _name in ("discord.gateway",):
+    _logger = logging.getLogger(_name)
+    if not any(isinstance(f, _DropVaultCodeFrames) for f in _logger.filters):
+        _logger.addFilter(_DropVaultCodeFrames())
 
 
 def build_vault_code_view(discord, base):
@@ -45,7 +62,7 @@ def build_vault_code_view(discord, base):
                 def __init__(self):
                     super().__init__(title=_t_discord("platform.shared.vault_code.modal_title", _MODAL_TEXT_LIMIT,
                                                       site=view.site), timeout=view.timeout)
-                    self.code = discord.ui.TextInput(min_length=1, max_length=32)
+                    self.code = discord.ui.TextInput(min_length=1, max_length=32, custom_id=_INPUT_ID)
                     self.add_item(discord.ui.Label(
                         text=_t_discord("platform.shared.vault_code.input_label", _MODAL_TEXT_LIMIT),
                         component=self.code))

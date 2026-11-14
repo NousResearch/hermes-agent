@@ -1396,11 +1396,16 @@ async def _ticketed_remote_target(authority: file_tickets.FileAuthority, inspect
     return target, size
 
 
+# A download link asks for the bytes at that path now: the gateway re-checks the file before
+# every delivery, so no cache may answer a later click from its copy of an earlier one.
+_DOWNLOAD_CACHE_HEADERS = {"Cache-Control": "no-store"}
+
+
 def _remote_download_response(request: Optional[Request], backend, target: str, size: int) -> Response:
     """*target* streamed from the SSH workspace as an attachment; a HEAD reads none of it."""
     target_path = Path(target)
     filename = urllib.parse.quote(target_path.name)
-    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{filename}", **_DOWNLOAD_CACHE_HEADERS}
     media_type = _fs_mime_type(target_path)
     if request is not None and request.method == "HEAD":
         return Response(media_type=media_type, headers={**headers, "Content-Length": str(size)})
@@ -1455,6 +1460,7 @@ async def _ticketed_fs_download(
         media_type=_fs_mime_type(authority.target),
         filename=authority.target.name,
         content_disposition_type="attachment",
+        headers=_DOWNLOAD_CACHE_HEADERS,
     )
 
 
@@ -1482,6 +1488,7 @@ async def fs_download(
         media_type=_fs_mime_type(target),
         filename=target.name,
         content_disposition_type="attachment",
+        headers=_DOWNLOAD_CACHE_HEADERS,
     )
 
 

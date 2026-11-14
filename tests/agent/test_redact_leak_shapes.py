@@ -287,7 +287,9 @@ class TestKnownPrefixUnderscoreDashTail:
 
 
 @pytest.mark.parametrize("name", ["accessToken", "refreshToken", "apiToken", "x-api-key", "auth_token",
-                                  "private_token", "access_key", "secret_key", "credential", "passwd"])
+                                  "private_token", "access_key", "secret_key", "credential", "passwd",
+                                  "mysql_pwd", "sshpass", "client-key-data", "my_api_key_value",
+                                  "passwordValue", "api_key_value"])
 def test_egress_url_query_mask_covers_the_json_field_secret_names(name):
     # #119852: the archival URL pass masks the same credential names the JSON-field rule does.
     value = "Zo4" + "q8vN3kPw2xR7tL"

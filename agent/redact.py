@@ -1292,11 +1292,16 @@ def _canonical_url_param_name(name: str) -> str:
 def _is_sensitive_url_param(name: str) -> bool:
     """A query-param name that holds a credential: the URL-only names above, plus the names the JSON-field
     rule masks (its closed list and the affixed-key policy: ``accessToken``, ``x-api-key``,
-    ``private_token``, ``secret_key``, ``passwd``), so both passes agree on what a secret is (#119852)."""
+    ``private_token``, ``secret_key``, ``passwd``, ``api_key_value``), so both passes agree on what a
+    secret is (#119852). Every ``redact_url_credentials=True`` caller shares this list, compaction
+    summaries included, so a ``pageToken`` or ``X-Amz-Credential`` value is masked there too, as the
+    JSON rule masks those fields."""
     if _canonical_url_param_name(name) in _SENSITIVE_QUERY_PARAMS:
         return True
     decoded = _decode_url_param_name(name).replace("-", "_")  # camelCase kept: _key_name_words splits on it
-    return bool(_JSON_KEY_NAMES_FULL_RE.fullmatch(decoded)) or _is_python_repr_secret_key(decoded)
+    # Same suffix drop as _json_affixed_key_secret: ``api_key_value`` / ``passwordValue`` hold the credential.
+    return (bool(_JSON_KEY_NAMES_FULL_RE.fullmatch(decoded))
+            or _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", decoded)))
 
 
 def _redact_strict_url_credentials(text: str) -> str:

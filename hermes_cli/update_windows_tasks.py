@@ -17,6 +17,7 @@ import tempfile
 from xml.etree import ElementTree
 
 from hermes_cli.gateway_windows_task_control import process_is_system
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 # Task queries exceeded 20 seconds under parallel ARM64 CI load.
@@ -178,7 +179,6 @@ def definition_matches_home(xml: str, home: Path, task_name: str) -> bool:
 
 def discover_profile_tasks(profile_processes: dict, service_pids: set[int]) -> dict:
     """Map only strict, live SYSTEM gateway identities to inspected profile tasks."""
-    from agent.runtime_scope import bind_profile_scope
     from hermes_cli import gateway_windows
     import psutil
     from hermes_platform.host.facts import os_family
@@ -198,8 +198,11 @@ def discover_profile_tasks(profile_processes: dict, service_pids: set[int]) -> d
             continue
         if born != profile.create_time:
             raise RuntimeError("Gateway identity changed before task discovery")
-        with bind_profile_scope(profile.path, hydrate_secrets=False):
+        scope = set_hermes_home_override(profile.path)  # health: allow HX016 -- update path: runs after the checkout moves, so it stays off agent.runtime_scope
+        try:
             names = dict.fromkeys((gateway_windows.get_task_name(), "Hermes_Gateway"))
+        finally:
+            reset_hermes_home_override(scope)
         for name in names:
             xml = task_operation(name, "query")
             if xml is not None and definition_matches_home(
@@ -270,12 +273,14 @@ def relaunch_profile(profile: str, old_pid: int, tasks: dict) -> bool:
 def refresh_task_launcher(task: dict) -> None:
     """Retarget the exact legacy launcher to current Python without changing its task principal."""
     from hermes_cli import gateway_windows as windows
-    from agent.runtime_scope import bind_profile_scope
 
     home = Path(task["home"])
-    with bind_profile_scope(home, hydrate_secrets=False):
+    scope = set_hermes_home_override(home)  # health: allow HX016 -- update path: runs after the checkout moves, so it stays off agent.runtime_scope
+    try:
         settings = windows._launcher_settings(home)
         script = home / "gateway-service" / f"{task['name']}.cmd"
         # The shared renderer owns each file's encoding: the .vbs is UTF-16 with a BOM, and the
         # update's drift check compares against those exact bytes.
         windows._write_launcher_scripts(windows._render_launchers(settings, script))
+    finally:
+        reset_hermes_home_override(scope)

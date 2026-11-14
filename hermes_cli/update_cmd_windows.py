@@ -16,6 +16,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 from agent.deadline import poll_until
+from hermes_cli import update_windows_tasks
 from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
@@ -948,7 +949,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         return _cold_start_pause_token(adopted, claims)
-    from hermes_cli.update_windows_tasks import discover_profile_tasks
+    discover_profile_tasks = update_windows_tasks.discover_profile_tasks
     profile_tasks = discover_profile_tasks(
         {pid: proc for pid, proc in profile_processes.items() if pid in running_pids}, service_gateway_pids)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
@@ -1046,7 +1047,7 @@ def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids
     drain_timeout = _gateway_drain_timeout(socket_acks)
     survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
     if profile_tasks:
-        from hermes_cli.update_windows_tasks import stop_profile_tasks
+        stop_profile_tasks = update_windows_tasks.stop_profile_tasks
         stop_profile_tasks(profile_tasks, survivors, on_request=on_request)
         survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=5.0)
         task_pids = {int(t["pid"]) for t in profile_tasks.values()}
@@ -1367,7 +1368,7 @@ def _relaunch_paused_gateways(profiles: dict, unmapped: list, profile_tasks: dic
     relaunch was scheduled, so every entry stays owed until ITS gateway is verified ready."""
     with _abort_on_error("Could not load Windows gateway restart helper"):
         from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline
-        from hermes_cli.update_windows_tasks import relaunch_profile
+        relaunch_profile = update_windows_tasks.relaunch_profile
 
     # An exception from a launch (incl. bad pid/argv coercion) logs at debug and reads as a failed relaunch.
     launched = {}

@@ -117,6 +117,21 @@ describe('VersionDetails', () => {
     }
   })
 
+  it('shows the build age next to the exact commit', () => {
+    const builtAt = new Date(Date.now() - 3 * 86_400_000).toISOString()
+
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <VersionDetails
+          version={{ ...baseVersion, commit: 'd233b6d7a9c5b79288e48dfb3b29e2ead106ac73', builtAt }}
+        />
+      </I18nProvider>
+    )
+
+    expect(screen.getByText(/· built/)).toBeTruthy()
+    expect(screen.getByTitle(builtAt)).toBeTruthy()
+  })
+
   it('opens the commit URL via the system-browser bridge without opening a preview tab', async () => {
     const openExternal: Mock<Window['hermesDesktop']['openExternal']> = vi
       .fn<Window['hermesDesktop']['openExternal']>()

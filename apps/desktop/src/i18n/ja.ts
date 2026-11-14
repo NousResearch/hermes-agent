@@ -1635,6 +1635,18 @@ export const jaOverrides = {
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
     restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    discordCheck: {
+      checkBot: 'Bot を確認',
+      checking: '確認中…',
+      checkAgain: '再確認',
+      saveFirst: '先に Discord Bot のトークンを保存してください。',
+      intentOn: 'Message Content Intent はオンです。',
+      intentOff: 'Message Content Intent がオフです。Bot 設定でオンにするまで、Discord は接続を拒否します。',
+      openSettings: 'Bot 設定を開く',
+      membersOptional: '任意：ユーザー名やロールでユーザーを許可するには、Server Members Intent をオンにしてください。',
+      noServers: 'この Bot はまだどのサーバーにも参加していません。',
+      addToServer: 'サーバーに追加'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'ボットトークン不要',

@@ -2352,6 +2352,18 @@ export interface Translations extends NoticeTranslations {
     restartFailedManualDetail: string
     restartAgain: string
     openLogs: string
+    discordCheck: {
+      checkBot: string
+      checking: string
+      checkAgain: string
+      saveFirst: string
+      intentOn: string
+      intentOff: string
+      openSettings: string
+      membersOptional: string
+      noServers: string
+      addToServer: string
+    }
     relayLink: {
       title: string
       badge: string

@@ -2135,8 +2135,8 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 | Option | Description |
 |--------|-------------|
 | `--install-id` | Print this installation's identity and path, then exit. |
-| `--set-channel CHANNEL` | Persist the update channel for this source installation without applying an update: `stable` (published releases) or `main` (every commit). Bundled applications have a fixed build channel and refuse channel changes. |
-| `--channel CHANNEL` | Select a source channel for this invocation only (`stable` or `main`); nothing is saved. |
+| `--set-channel CHANNEL` | Save the update channel for this source installation, then exit without updating; run `hermes update` afterward to update on it. Channels: `stable` (published releases), `canary` (published prereleases), or `main` (every commit). `hermes update --check` shows the current channel. Bundled applications have a fixed build channel and refuse channel changes. |
+| `--channel CHANNEL` | Use a source channel (`stable`, `canary`, or `main`) for this update only; the saved channel does not change. Cannot be combined with `--set-channel`. |
 | `--branch NAME` | Select a source branch for this invocation; takes precedence over source channel selection. |
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |

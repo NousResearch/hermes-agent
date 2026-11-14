@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
+
+_CHANNEL_EPILOG = """\
+update channels (source installs only):
+  stable   the latest published release (default for official checkouts)
+  canary   the latest published prerelease
+  main     every commit on the main branch (default for forks and mirrors)
+
+examples:
+  hermes update --check                 show the current channel and whether an update is available
+  hermes update                         update on the current channel
+  hermes update --set-channel main      save 'main' as the channel (no update yet)
+  hermes update                         ...then update on 'main'
+  hermes update --set-channel stable    return to published releases, then run 'hermes update'
+  hermes update --channel main          update from 'main' once; the saved channel is unchanged
+
+--set-channel and --channel cannot be used together. Desktop, Docker, Nix, and
+package installs have a fixed channel; update them through their own installer.
+"""
 
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
@@ -10,7 +29,9 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     from hermes_cli.release_channels import validate_name
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies")
+        description="Pull the latest changes from git and reinstall dependencies",
+        epilog=_CHANNEL_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
@@ -78,18 +99,19 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--force-venv", action="store_true", default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
-    update_parser.add_argument(
+    channel_options = update_parser.add_mutually_exclusive_group()
+    channel_options.add_argument(
         "--set-channel",
         default=None,
         type=validate_name,
         metavar="CHANNEL",
         help=(
-            "Persist the update channel for THIS install (recorded per "
-            "install in config.yaml under update.installs). Names are resolved "
-            "from the release archive, not a built-in list. Official source "
-            "checkouts default to 'stable' (the latest published vX.Y.Z "
-            "release, exact commit); 'main' follows the source branch. "
-            "Package channels are baked into their identities."
+            "Save CHANNEL as the default for future source updates. The "
+            "command then exits without installing an update. Run 'hermes update' "
+            "afterward to update on the saved channel. Use 'hermes update "
+            "--check' to show the channel currently selected. This setting "
+            "is stored per install; package channels are baked into their "
+            "identities."
         ),
     )
     update_parser.add_argument(
@@ -101,15 +123,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "channel record in config.yaml) and exit."
         ),
     )
-    update_parser.add_argument(
+    channel_options.add_argument(
         "--channel",
         default=None,
         type=validate_name,
         metavar="CHANNEL",
         help=(
-            "Track CHANNEL for this run only (transient override; "
-            "--set-channel persists). 'stable' and 'canary' select published "
-            "releases, 'main' the branch tip. Source installs only."
+            "Use CHANNEL for this update only; it does not change the saved "
+            "channel. Cannot be combined with --set-channel. Common "
+            "channels are 'stable' (published release), 'canary' (published "
+            "prerelease), and 'main' (the branch tip). Source installs only."
         ),
     )
     update_parser.add_argument(

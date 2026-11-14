@@ -33,6 +33,80 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
     expect(text).toContain('MoA refs 2/3 — model-b')
   })
 
+  it('replaces a waiting heartbeat instead of appending transcript noise', () => {
+    mountStream()
+
+    emit('message.start')
+    emit('moa.progress', {
+      elapsed_seconds: 5,
+      label: 'waiting on model-c · 5s',
+      refs_done: 2,
+      refs_total: 3,
+      state: 'waiting'
+    })
+    emit('moa.progress', {
+      elapsed_seconds: 10,
+      label: 'waiting on model-c · 10s',
+      refs_done: 2,
+      refs_total: 3,
+      state: 'waiting'
+    })
+
+    const text = stream.reasoningText()
+    expect(text).toContain('MoA refs 2/3 — waiting on model-c · 10s')
+    expect(text).not.toContain('waiting on model-c · 5s')
+  })
+
+  it('keeps completed references while replacing and settling the waiting line', () => {
+    mountStream()
+
+    emit('message.start')
+    emit('moa.progress', {
+      elapsed_seconds: 5,
+      label: 'waiting on model-c · 5s',
+      refs_done: 0,
+      refs_total: 3,
+      state: 'waiting'
+    })
+    emit('moa.progress', { label: 'moa:nested', refs_done: 1, refs_total: 3, state: 'completed' })
+    emit('moa.progress', {
+      elapsed_seconds: 10,
+      label: 'waiting on model-c · 10s',
+      refs_done: 1,
+      refs_total: 3,
+      state: 'waiting'
+    })
+    emit('moa.progress', { label: 'model-a', refs_done: 2, refs_total: 3, state: 'completed' })
+    emit('moa.progress', {
+      elapsed_seconds: 15,
+      label: 'waiting on model-b · 15s',
+      refs_done: 2,
+      refs_total: 3,
+      state: 'waiting'
+    })
+    emit('moa.progress', {
+      elapsed_seconds: 20,
+      label: 'waiting on model-b · 20s',
+      refs_done: 2,
+      refs_total: 3,
+      state: 'waiting'
+    })
+
+    let text = stream.reasoningText()
+    expect(text).toContain('MoA refs 1/3 — moa:nested')
+    expect(text).toContain('MoA refs 2/3 — model-a')
+    expect(text).toContain('waiting on model-b · 20s')
+    expect(text).not.toContain('waiting on model-b · 15s')
+    expect(text).not.toContain('waiting on model-c')
+
+    emit('moa.progress', { label: 'model-b', refs_done: 3, refs_total: 3, state: 'completed' })
+    text = stream.reasoningText()
+    expect(text).toContain('MoA refs 1/3 — moa:nested')
+    expect(text).toContain('MoA refs 2/3 — model-a')
+    expect(text).toContain('MoA refs 3/3 — model-b')
+    expect(text).not.toContain('waiting on')
+  })
+
   it('restarts the progress block on the first ref of a new fan-out', () => {
     mountStream()
 

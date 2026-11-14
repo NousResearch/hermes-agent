@@ -1513,12 +1513,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'moa.progress':
-        // Live fan-out progress — one activity line, replaced in place as each
-        // reference completes ("MoA: refs 2/3"), so the user sees movement
-        // during the (potentially long) reference phase without transcript spam.
+        // Live fan-out progress — one activity line, replaced in place as slots
+        // settle and while advisors remain pending, without transcript spam.
         if (typeof ev.payload?.refs_done === 'number' && typeof ev.payload?.refs_total === 'number') {
+          const waitingLabel = ev.payload.state === 'waiting' ? String(ev.payload.label ?? '').trim() : ''
+          const suffix = waitingLabel ? ` — ${waitingLabel}` : ''
+
           turnController.pushActivity(
-            t('gatewayMsg.moa.refs', String(ev.payload.refs_done), String(ev.payload.refs_total)),
+            `${t('gatewayMsg.moa.refs', String(ev.payload.refs_done), String(ev.payload.refs_total))}${suffix}`,
             'info',
             'MoA'
           )

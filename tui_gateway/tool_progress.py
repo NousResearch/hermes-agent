@@ -421,11 +421,20 @@ def _progress_moa_reference(sid, name, preview, kw):
 
 
 def _progress_moa_progress(sid, name, preview, kw):
-    # Drives the status-bar `MOA: 2/3 refs done`; both counters required for deterministic rendering.
+    # Completion progress and waiting heartbeats share one event; both counters are required.
     refs_done, refs_total = kw.get("moa_refs_done"), kw.get("moa_refs_total")
     if not _session_show_reasoning(sid) or refs_done is None or refs_total is None:
         return
-    _emit("moa.progress", sid, {"label": str(name or ""), "refs_done": int(refs_done), "refs_total": int(refs_total)})
+    payload: dict[str, object] = {
+        "label": str(name or ""),
+        "refs_done": int(refs_done),
+        "refs_total": int(refs_total),
+    }
+    if kw.get("moa_progress_state") is not None:
+        payload["state"] = str(kw["moa_progress_state"])
+    if kw.get("moa_elapsed_seconds") is not None:
+        payload["elapsed_seconds"] = int(kw["moa_elapsed_seconds"])
+    _emit("moa.progress", sid, payload)
 
 
 def _progress_moa_phase(sid, name, preview, kw):

@@ -16,6 +16,12 @@ export interface GatewayEventDeps {
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean, occurredAt?: number) => void
+  updateMoaProgress: (
+    sessionId: string,
+    delta: string,
+    state: 'completed' | 'waiting',
+    occurredAt?: number
+  ) => void
   completeAssistantMessage: (
     sessionId: string,
     text: string,

@@ -77,6 +77,38 @@ describe('moa.progress / moa.phase activity surface', () => {
     expect(activityTexts().length).toBe(count)
   })
 
+  it('shows the pending advisor and elapsed time on waiting heartbeats', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: {
+        elapsed_seconds: 5,
+        label: 'waiting on kimi-coding:kimi-k3 · 5s',
+        refs_done: 0,
+        refs_total: 1,
+        state: 'waiting'
+      },
+      type: 'moa.progress'
+    } as any)
+    const count = activityTexts().length
+
+    onEvent({
+      payload: {
+        elapsed_seconds: 45,
+        label: 'waiting on kimi-coding:kimi-k3 · 45s',
+        refs_done: 0,
+        refs_total: 1,
+        state: 'waiting'
+      },
+      type: 'moa.progress'
+    } as any)
+
+    expect(hasText('waiting on kimi-coding:kimi-k3 · 45s')).toBe(true)
+    expect(hasText('waiting on kimi-coding:kimi-k3 · 5s')).toBe(false)
+    expect(activityTexts().length).toBe(count)
+  })
+
   it('swaps the progress line for the aggregator phase on moa.phase', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 

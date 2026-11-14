@@ -6207,6 +6207,8 @@ export interface MoaProgressPayload {
   label: string
   refs_done: number
   refs_total: number
+  state?: 'completed' | 'waiting' | null
+  elapsed_seconds?: number | null
 }
 export interface MoaPhasePayload {
   phase: string
@@ -7360,7 +7362,7 @@ export interface BackendGatewayEventMap {
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */
   'moa.phase': MoaPhasePayload
-  /** MoA reference fan-out progress (n/total). */
+  /** MoA reference fan-out completion progress and waiting heartbeats (n/total). */
   'moa.progress': MoaProgressPayload
   /** One MoA reference model's output. */
   'moa.reference': MoaReferencePayload

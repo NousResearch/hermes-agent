@@ -24983,6 +24983,34 @@
           "refs_total": {
             "title": "Refs Total",
             "type": "integer"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "waiting"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Elapsed Seconds"
           }
         },
         "required": [
@@ -51513,7 +51541,7 @@
     },
     {
       "name": "moa.progress",
-      "summary": "MoA reference fan-out progress (n/total).",
+      "summary": "MoA reference fan-out completion progress and waiting heartbeats (n/total).",
       "params": [
         {
           "name": "payload",

@@ -575,6 +575,54 @@ export function useMessageStream({
     [flushQueuedDeltas, mutateStream, queueDelta]
   )
 
+  const updateMoaProgress = useCallback(
+    (sessionId: string, delta: string, state: 'completed' | 'waiting', occurredAt = Date.now() / 1000) => {
+      if (!delta) {
+        return
+      }
+
+      flushQueuedDeltas(sessionId)
+      mutateStream(
+        sessionId,
+        parts => {
+          const next = [...parts]
+
+          for (let partIndex = next.length - 1; partIndex >= 0; partIndex -= 1) {
+            const part = next[partIndex]
+
+            if (part.type !== 'reasoning') {
+              continue
+            }
+
+            const lines = part.text.split('\n')
+
+            for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
+              if (!lines[lineIndex].includes(' — waiting on ')) {
+                continue
+              }
+
+              if (state === 'waiting') {
+                lines[lineIndex] = delta.endsWith('\n') ? delta.slice(0, -1) : delta
+              } else {
+                lines.splice(lineIndex, 1)
+              }
+
+              next[partIndex] = { ...part, text: lines.join('\n') }
+
+              return state === 'waiting' ? next : appendReasoningPart(next, delta, occurredAt)
+            }
+          }
+
+          return appendReasoningPart(parts, delta, occurredAt)
+        },
+        () => [reasoningPart(delta, occurredAt)],
+        {},
+        occurredAt
+      )
+    },
+    [flushQueuedDeltas, mutateStream]
+  )
+
   const upsertToolCall = useCallback(
     (
       sessionId: string,
@@ -1269,6 +1317,7 @@ export function useMessageStream({
     activeGatewayProfile,
     appendAssistantDelta,
     appendReasoningDelta,
+    updateMoaProgress,
     activeSessionIdRef,
     compactedTurnRef,
     lastCwdInfoSessionRef,

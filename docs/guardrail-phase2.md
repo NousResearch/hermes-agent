@@ -65,9 +65,34 @@ attributed under caller `hermes-gateway`).
   tier mapping above at its own intake, tagging its own caller id;
   never reuse `hermes-gateway`.
 
+## Review history
+
+- r1 (ac7d00cc84): independent adversarial review verdict FAIL - 4
+  blockers (gate inert on real traffic via allow_gateway_control
+  default; unknown-command-text veto bypass; no-raise violations on
+  malformed responses/env/state; synchronous outcome POST stalling
+  the event loop) + 7 informational. VERDICT.json archived at
+  Hermes-Bot-Fleet/docs/guardrail-phase2-review-20261114/.
+- r2 (this revision): all four blockers fixed -
+  B1 the control flag is no longer consulted (defaults True on real
+  traffic; screening covers every non-command message);
+  B2 only KNOWN gateway commands skip (is_gateway_known_command);
+  unknown '/zzz payload' text is screened;
+  B3 outer never-raise wrapper + type-defensive response parsing +
+  safe numeric env + tolerant debounce state (a type-confused
+  BLOCK-tier response still HOLDS, with empty reasons);
+  B4 outcome reports are fire-and-forget off-loop tasks with a 4s
+  deadline (drain_outcome_tasks provided for tests/clean shutdown);
+  screen has an overall deadline (timeout+1s). Tests 19/19 incl.
+  real-MessageEvent regression, command matrix, malformed-response
+  matrix, slow-outcome latency bound. I2/I3/I5/I6 also addressed
+  (effective-endpoint resolution, platform:sender debounce key,
+  stub defaults aligned, overall deadline); I4 documented as a known
+  limitation; I7 debris removed.
+
 ## Test coverage
 
-`tests/gateway/test_guardrail.py` - 9 cases against a loopback engine
-stub: allow/review/block/chain_down/unreachable, hold reply, owner
-alert + debounce, command/control bypass, empty text, default-off
-inertness.
+`tests/gateway/test_guardrail.py` - 19 cases against a loopback engine
+stub (all tiers, hold reply, debounce, known/unknown-command matrix,
+real-MessageEvent regression, malformed-response matrix, bad env,
+corrupted state, slow-outcome latency bound, fail-open, default-off).

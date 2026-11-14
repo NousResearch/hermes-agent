@@ -1,8 +1,9 @@
 """Gateway intake guardrail: automatic hold for block-tier messages
-(Phase 2, owner decision 14 Nov 2026).
+(Phase 2, owner decision 14 Nov 2026; review-fix revision r2).
 
-Every inbound non-command message is screened through the local RNR
-Judgement Engine (``/v1/screen``) BEFORE a session turn starts:
+Every inbound message that is NOT a known gateway command is screened
+through the local RNR Judgement Engine (``/v1/screen``) BEFORE a
+session turn starts:
 
 - ``allow``      -> proceeds (outcome ``accepted`` reported)
 - ``review``     -> proceeds, logged for the owner dashboard
@@ -12,12 +13,31 @@ Judgement Engine (``/v1/screen``) BEFORE a session turn starts:
                     debounce window (outcome ``escalated``)
 - ``chain_down`` -> proceeds (the engine already applied its
                     fail_mode rule; hard-three held inside the
-                    engine), alert informs the owner (outcome
-                    ``escalated``)
-- unreachable    -> proceeds + alert. We cannot hold what we cannot
-                    judge, and the bridge allowlist still gates WHO
-                    may talk at all; a dead engine must not mute the
-                    household (documented, deliberate fail-open).
+                    engine), alert informs the owner
+- unreachable / malformed response -> proceeds + alert. We cannot
+  hold what we cannot judge, and the bridge allowlist still gates
+  WHO may talk at all; a dead or lying engine must not mute the
+  household (documented, deliberate fail-open).
+
+Command handling (review B2): ONLY known gateway commands skip the
+gate (remote admin must never be wedged by a judge). Unknown
+command-shaped text ('/zzz payload') is admitted downstream as plain
+text, so it IS screened like any other message. The
+``allow_gateway_control`` field is intentionally NOT consulted: it
+defaults True on real traffic (it means "may resolve commands", not
+"this is a control event"), so gating on it would skip every real
+message (review B1).
+
+No-raise guarantee (review B3): the public entry point wraps every
+step; any error degrades to "proceed" with a log line. All engine
+response parsing is type-defensive; all numeric env values fall back
+to defaults; corrupted debounce state is tolerated.
+
+Event-loop safety (review B4): ALL HTTP work - screen and outcome -
+runs off the event loop; the screen call additionally has an overall
+deadline (per-socket timeout + 1s) so a drip-feeding peer cannot
+stretch it, and outcome reports are fire-and-forget tasks that can
+never block or delay an intake decision.
 
 The judge advises, it never replaces owner gates: holds are audited
 (alerts + logs + outcomes), and only review-tier, chain-down holds
@@ -35,10 +55,10 @@ core change is inert until the operator opts in:
 - HERMES_GATEWAY_GUARDRAIL_OWNER_CHAT default "" (no alert)
 - HERMES_GATEWAY_GUARDRAIL_DEBOUNCE_S default 600
 
-All HTTP work is off-loop (asyncio.to_thread) with a short timeout
-so a slow engine never delays intake. The screen text is truncated
-to 4000 chars. Errors never raise into the caller: worst case the
-message proceeds and the miss is logged + alerted.
+Known limitation (review I4, informational): self-initiated traffic
+(routing wake ticks, synthetic self-messages) is not universally
+identifiable at this layer; a declined synthetic tick could be held.
+Observed as a rare self-notice nuisance, not a security issue.
 """
 
 from __future__ import annotations
@@ -60,6 +80,11 @@ _STATE_PATH = Path(os.path.expanduser(
     "~/.hermes/logs/gateway-guardrail-alerts.json"))
 MAX_TEXT_CHARS = 4000
 _ALERT_TEXT_CAP = 160
+_DEFAULT_ENDPOINT = "http://127.0.0.1:8201/v1/screen"
+
+# Fire-and-forget outcome tasks (kept referenced so CPython cannot GC
+# them mid-run; discarded on completion).
+_OUTCOME_TASKS: set = set()
 
 
 def _flag(name: str) -> str:
@@ -68,6 +93,25 @@ def _flag(name: str) -> str:
 
 def guardrail_enabled() -> bool:
     return _flag("HERMES_GATEWAY_GUARDRAIL").lower() in ("1", "true", "yes", "on")
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        value = float(_flag(name))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _effective_endpoint() -> str:
+    return _flag("HERMES_GATEWAY_GUARDRAIL_ENDPOINT") or _DEFAULT_ENDPOINT
+
+
+def _outcome_endpoint() -> str:
+    endpoint = _effective_endpoint()
+    if "/v1/screen" in endpoint:
+        return endpoint.replace("/v1/screen", "/v1/outcome")
+    return endpoint.rsplit("/", 1)[0] + "/outcome"
 
 
 def _post(url: str, payload: dict, headers: dict, timeout: float) -> dict:
@@ -88,18 +132,25 @@ def _log(record: dict) -> None:
         logger.warning("guardrail: log write failed", exc_info=True)
 
 
-def _debounced(sender: str, window_s: float) -> bool:
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _debounced(alert_key: str, window_s: float) -> bool:
     now = time.time()
     state: dict = {}
     try:
-        state = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
-        if not isinstance(state, dict):
-            state = {}
+        loaded = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            state = loaded
     except (OSError, ValueError):
         pass
-    if now - float(state.get(sender, 0)) < window_s:
+    if now - _safe_float(state.get(alert_key), 0.0) < window_s:
         return False
-    state[sender] = now
+    state[alert_key] = now
     state = dict(sorted(state.items())[-200:])
     try:
         _STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
@@ -115,32 +166,92 @@ async def _send(adapter, chat_id: str, text: str) -> None:
         logger.warning("guardrail: send failed", exc_info=True)
 
 
-def _report_outcome(result: dict, outcome: str, note: str,
-                    question_id: str | None) -> None:
+def _report_outcome_sync(result: dict, outcome: str, note: str,
+                         question_id) -> None:
     request_id = result.get("request_id")
     if not request_id:
         return
-    endpoint = _flag("HERMES_GATEWAY_GUARDRAIL_ENDPOINT")
-    outcome_url = endpoint.rsplit("/", 1)[0] + "/outcome"
+    _post(_outcome_endpoint(), {
+        "request_id": request_id,
+        "question_id": question_id,
+        "outcome": outcome,
+        "note": note[:200],
+    }, {}, 3.0)
+
+
+def _spawn_outcome_report(result: dict, outcome: str, note: str,
+                          question_id) -> None:
+    """Fire-and-forget, off-loop, deadline-capped outcome report.
+
+    Never awaited by the intake path (review B4): a slow or dead
+    outcome endpoint cannot delay or block a gate decision.
+    """
     try:
-        _post(outcome_url, {
-            "request_id": request_id,
-            "question_id": question_id,
-            "outcome": outcome,
-            "note": note[:200],
-        }, {}, 3.0)
+        task = asyncio.get_running_loop().create_task(asyncio.wait_for(
+            asyncio.to_thread(_report_outcome_sync, result, outcome,
+                              note, question_id),
+            timeout=4.0))
+    except RuntimeError:
+        return
+    _OUTCOME_TASKS.add(task)
+
+    def _done(finished):
+        _OUTCOME_TASKS.discard(finished)
+        if not finished.cancelled() and finished.exception() is not None:
+            logger.debug("guardrail: outcome report failed",
+                         exc_info=finished.exception())
+
+    task.add_done_callback(_done)
+
+
+async def drain_outcome_tasks(timeout: float = 5.0) -> None:
+    """Best-effort wait for pending outcome reports (tests, clean
+    shutdown). Never raises: a stuck report is logged by the task
+    callback and forgotten."""
+    if _OUTCOME_TASKS:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*list(_OUTCOME_TASKS),
+                               return_exceptions=True),
+                timeout=timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            for stuck in list(_OUTCOME_TASKS):
+                stuck.cancel()
+
+
+def _known_gateway_command(event) -> bool:
+    try:
+        command = event.get_command()
     except Exception:
-        logger.debug("guardrail: outcome report failed", exc_info=True)
+        return False
+    if not command:
+        return False
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+        return bool(is_gateway_known_command(command))
+    except Exception:
+        logger.warning("guardrail: command classification failed; "
+                       "screening as plain text", exc_info=True)
+        return False
 
 
 async def screen(adapter, event) -> bool:
     """Screen one inbound event; True = HELD (caller must not run a
-    turn for it). Never raises."""
+    turn for it). NEVER raises (review B3): every failure degrades to
+    'proceed', logged."""
+    try:
+        return await _screen_inner(adapter, event)
+    except Exception:
+        logger.exception("guardrail: unexpected error; proceeding")
+        return False
+
+
+async def _screen_inner(adapter, event) -> bool:
     if not guardrail_enabled():
         return False
-    # Gateway control traffic and slash commands are trusted syntax;
-    # screening them could wedge remote admin of a misbehaving bot.
-    if getattr(event, "allow_gateway_control", False) or event.get_command():
+    # Only KNOWN gateway commands skip the gate (remote admin safety).
+    # Unknown '/zzz payload' text is plain text downstream - screened.
+    if _known_gateway_command(event):
         return False
     text = (getattr(event, "text", "") or "").strip()
     if not text:
@@ -149,9 +260,8 @@ async def screen(adapter, event) -> bool:
                  or getattr(event.source, "user_id", None) or "unknown")
     platform = str(getattr(event.source, "platform", "?"))
     chat_id = str(getattr(event.source, "chat_id", "") or "")
-    endpoint = _flag("HERMES_GATEWAY_GUARDRAIL_ENDPOINT") or \
-        "http://127.0.0.1:8201/v1/screen"
-    timeout = float(_flag("HERMES_GATEWAY_GUARDRAIL_TIMEOUT_S") or 4.0)
+    endpoint = _effective_endpoint()
+    timeout = _float_env("HERMES_GATEWAY_GUARDRAIL_TIMEOUT_S", 4.0)
     caller = _flag("HERMES_GATEWAY_GUARDRAIL_CALLER") or "hermes-gateway"
     base = {"sender": sender, "platform": platform, "preview": text[:120]}
 
@@ -160,19 +270,31 @@ async def screen(adapter, event) -> bool:
                      {"X-Judge-Caller": caller}, timeout)
 
     try:
-        result = await asyncio.to_thread(call)
+        # Overall deadline: socket timeout + 1s guards drip-fed bodies.
+        result = await asyncio.wait_for(asyncio.to_thread(call),
+                                        timeout=timeout + 1.0)
+        if not isinstance(result, dict):
+            raise ValueError("non-dict engine response: %r" % type(result))
     except Exception as err:
-        _log(dict(base, tier="engine_unreachable", error=str(err)[:160]))
+        _log(dict(base, tier="engine_unreachable_or_malformed",
+                  error=str(err)[:160]))
         await _maybe_alert(adapter, sender, platform,
-                           "screen unavailable (engine unreachable) - "
-                           "message allowed")
+                           "screen unavailable (engine unreachable or "
+                           "malformed response) - message allowed")
         return False
 
     tier = result.get("tier")
-    reasons = result.get("reasons") or []
+    tier = tier if isinstance(tier, str) else None
+    raw_reasons = result.get("reasons")
+    if not isinstance(raw_reasons, list):
+        raw_reasons = []
+    reasons = [str(r) for r in raw_reasons
+               if isinstance(r, str) and r.strip()][:8]
+    served_by = result.get("served_by")
+    served_by = served_by.get("provider") if isinstance(served_by, dict) else None
+    scores = result.get("scores") if isinstance(result.get("scores"), dict) else {}
     _log(dict(base, tier=tier, reasons=reasons,
-              served_by=(result.get("served_by") or {}).get("provider"),
-              scores=result.get("scores")))
+              served_by=served_by, scores=scores))
     question_id = ("q_" + reasons[0]) if reasons else None
     if tier == "block":
         await _maybe_alert(adapter, sender, platform,
@@ -181,18 +303,21 @@ async def screen(adapter, event) -> bool:
         reply = _flag("HERMES_GATEWAY_GUARDRAIL_HOLD_REPLY")
         if reply and chat_id:
             await _send(adapter, chat_id, reply)
-        _report_outcome(result, "escalated",
-                        "block-tier held automatically (Phase 2)", question_id)
+        _spawn_outcome_report(result, "escalated",
+                              "block-tier held automatically (Phase 2)",
+                              question_id)
         return True
     if tier in ("review", "chain_down"):
         if tier == "chain_down":
             await _maybe_alert(adapter, sender, platform,
                                "chain-down - engine held or failed per its "
                                "own rule; message allowed through Phase 2")
-        _report_outcome(result, "escalated",
-                        "%s-tier (Phase 2 advisory pass)" % tier, question_id)
+        _spawn_outcome_report(result, "escalated",
+                              "%s-tier (Phase 2 advisory pass)" % tier,
+                              question_id)
         return False
-    _report_outcome(result, "accepted", "allow-tier (Phase 2)", question_id)
+    _spawn_outcome_report(result, "accepted", "allow-tier (Phase 2)",
+                          question_id)
     return False
 
 
@@ -201,8 +326,8 @@ async def _maybe_alert(adapter, sender: str, platform: str,
     owner_chat = _flag("HERMES_GATEWAY_GUARDRAIL_OWNER_CHAT")
     if not owner_chat:
         return
-    window = float(_flag("HERMES_GATEWAY_GUARDRAIL_DEBOUNCE_S") or 600)
-    if not _debounced(sender, window):
+    window = _float_env("HERMES_GATEWAY_GUARDRAIL_DEBOUNCE_S", 600.0)
+    if not _debounced("%s:%s" % (platform, sender), window):
         return
     await _send(adapter, owner_chat,
                 "[guardrail] %s on %s: %s." % (sender, platform, detail))

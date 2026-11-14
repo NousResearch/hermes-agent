@@ -195,3 +195,22 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
     assert held == [True, True, True, False]
     # But a rung whose limit was edited down to the count does retire the job: send its notice.
     assert not ur.will_retry(dict(runs[1], repeat={"times": 1, "completed": 1}))
+
+
+@pytest.mark.parametrize("reason,calls,expected", [
+    ("server_error", 0, True), ("overloaded", 0, True), ("timeout", 0, True),
+    ("rate_limit", 0, False), ("auth", 0, False), ("billing", 0, False),
+    ("server_error", 1, False),  # a reply already came back: the run may have acted
+])
+def test_failed_turn_with_transient_provider_verdict_enters_ladder(reason, calls, expected):
+    """Cowork v5.1231.0: a provider 500/529 before any reply re-runs like a DNS failure. The
+    scheduler turns the agent's failed-turn result into the exception the classifier sees."""
+    from types import SimpleNamespace
+
+    with pytest.raises(RuntimeError) as raised:
+        sched._final_response_from_result(
+            {"failed": True, "completed": False, "error": "HTTP 500: boom", "failure_reason": reason},
+            "jid", "job", object)
+    assert str(raised.value) == "HTTP 500: boom"  # user-visible error text unchanged
+    agent = SimpleNamespace(session_api_calls=calls)
+    assert ur.is_model_unreachable_failure(raised.value, agent) is expected

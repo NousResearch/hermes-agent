@@ -12,6 +12,13 @@ which has to answer for one-shot dispatch accounting and mid-run side effects. R
 jobs only: finite one-shots are pre-claimed by ``claim_dispatch`` (at-most-times, #38758)
 and must not regain a consumed dispatch here.
 
+Cowork v5.1231.0 (2026-11-10) widened the same idea to provider-side outages: "retry a run
+that fails on a server error from your provider or gateway, such as 500 or 529, before Claude
+responds." Hermes matches that: a turn the agent itself ends with a transient provider verdict
+(``agent.error_classifier.TRANSIENT_REASONS``: server_error / overloaded / timeout) after its own
+retries, still with zero completed model calls, rides the same ladder. Rate limits and quota
+walls stay with ``cron/quota_hold.py``; auth, billing and policy refusals never retry.
+
 While a retry is pending the failure notice is suppressed (Cowork re-runs silently); a
 run that reaches the model — success or not — resets the ladder. Disable with
 ``cron.retry_unreachable: false`` in config.yaml.
@@ -56,12 +63,16 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
 
 
 def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
-    """True when *exc* is a transient network/DNS failure and *agent* (may be ``None``)
-    never completed a model call — the run consumed nothing and executed nothing."""
+    """True when *agent* (may be ``None``) never completed a model call — the run consumed
+    nothing and executed nothing — and *exc* is a transient network/DNS failure or a failed
+    turn whose verdict is a transient provider outage (5xx / overloaded / timeout)."""
     if int(getattr(agent, "session_api_calls", 0) or 0) > 0:
         return False
+    from agent.error_classifier import TRANSIENT_REASONS
     from cron.scheduler_preflight import _is_transient_provider_resolve_error
 
+    if getattr(exc, "failure_reason", None) in {r.value for r in TRANSIENT_REASONS}:
+        return True
     return _is_transient_provider_resolve_error(exc)
 
 

@@ -2063,7 +2063,10 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        turn_error = RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        # The turn's classified verdict rides along for cron/unreachable_retry.py (provider 5xx).
+        turn_error.failure_reason = result.get("failure_reason")
+        raise turn_error
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

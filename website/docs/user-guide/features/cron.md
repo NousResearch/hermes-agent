@@ -554,6 +554,13 @@ back to the normal schedule. Because zero API calls were made, the re-run is
 spend-neutral and cannot duplicate any side effect. Re-runs also do not count
 toward a job's `repeat` limit: the occurrence they repeat already counted once.
 
+The same ladder covers a provider outage before the first reply: when the
+model's server answers every attempt with a 5xx error, an overload (529/503) or a
+timeout, and the agent's own retries run out without a single completed model
+call, the run is re-run on the same schedule. Rate limits and usage walls are
+handled by the quota hold below; authentication, billing and policy refusals are
+never re-run.
+
 While a re-run is pending, the interim failure notice is suppressed — you get
 the real result when a re-run succeeds, or a normal failure alert once the
 ladder is exhausted. Any run that reaches the model (success or failure)

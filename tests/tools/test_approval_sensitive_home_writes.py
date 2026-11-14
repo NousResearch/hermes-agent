@@ -101,6 +101,35 @@ class TestFileToolShellRcGate:
         assert write_approval_key(path) == "shell_rc_write"
         assert write_approval_key(str(home / ".ssh" / "config")) == "ssh_config_write"
 
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize(("link", "target", "denied"), [
+        (".bashrc", ".ssh/authorized_keys", True),
+        (".zshrc", ".aws/credentials", True),
+        (".profile", ".netrc", True),
+        (".bashrc", "dotfiles/bashrc", False),
+        (".ssh/config", ".ssh/conf.d/main", False),
+    ])
+    def test_gated_name_symlinked_onto_a_credential_keeps_the_deny(self, home, link, target, denied):
+        from agent.file_safety import is_write_approval_required, is_write_denied
+
+        for p in (home / link, home / target):
+            p.parent.mkdir(parents=True, exist_ok=True)
+        (home / link).symlink_to(home / target)
+        assert is_write_denied(str(home / target)) is denied
+        assert is_write_denied(str(home / link)) is denied
+        if not denied:
+            assert is_write_approval_required(str(home / target)) is True
+
+    @pytest.mark.platforms("posix")
+    def test_rc_in_one_home_linked_onto_another_homes_credential_keeps_the_deny(self, home, tmp_path, monkeypatch):
+        from agent.file_safety import is_write_denied
+
+        real = tmp_path / "real"
+        (real / ".aws").mkdir(parents=True)
+        monkeypatch.setattr("agent.file_safety._guard_homes", lambda path="": {str(home), str(real)})
+        (home / ".bashrc").symlink_to(real / ".aws" / "credentials")
+        assert is_write_denied(str(real / ".aws" / "credentials")) is True
+
     def test_unattended_write_file_to_rc_blocks_and_writes_nothing(self, home):
         from tools.file_tools import write_file_tool
 

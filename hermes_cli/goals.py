@@ -110,6 +110,34 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
+# The judge prompt defines BLOCKED as two distinct situations: the goal is genuinely
+# unachievable, OR progress is merely blocked and the next step needs user input. The
+# handler used to collapse both into "judged unachievable", which made a goal that was
+# simply waiting on a human read as impossible. Classify from the reason (#154967).
+_UNACHIEVABLE_MARKERS = (
+    "impossible", "no valid path", "no path to", "out of scope", "cannot exist",
+    "can't exist", "does not exist", "not possible", "unachievable",
+    "cannot be created", "cannot be produced", "refuses to fabricate",
+)
+_USER_INPUT_MARKERS = (
+    "user input", "user must", "user to", "needs the user", "waiting on the user",
+    "user action", "manual", "physical access", "user performing", "user to run",
+    "user to perform", "user to provide", "user approval", "on the user",
+    "user to confirm", "user to approve", "sign-in", "credentials",
+)
+
+
+def classify_blocked(reason: str) -> str:
+    """``"unachievable"`` or ``"blocked"`` for a BLOCKED verdict's reason."""
+    r = (reason or "").lower()
+    if any(m in r for m in _USER_INPUT_MARKERS):
+        return "blocked"
+    if any(m in r for m in _UNACHIEVABLE_MARKERS):
+        return "unachievable"
+    # Default to the less final verdict: a blocker is actionable, an unachievable
+    # ruling is not, and the cost of a wrong "blocked" is one more turn.
+    return "blocked"
+
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
@@ -1530,9 +1558,15 @@ class GoalManager:
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
+            kind = classify_blocked(reason)
+            if kind == "unachievable":
+                return self._pause_decision(
+                    f"judged unachievable: {reason}", "blocked", reason,
+                    f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                )
             return self._pause_decision(
-                f"judged unachievable: {reason}", "blocked", reason,
-                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                f"blocked on user input: {reason}", "blocked", reason,
+                f"⏸ Goal blocked — waiting on you: {reason} Once that is done, /goal resume continues; /goal set re-scopes.",
             )
 
         if verdict == "done":

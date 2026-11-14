@@ -344,6 +344,18 @@ function asyncResultBody(content: string): string | undefined {
   )
 }
 
+// The expanded body of a background-result row. A compaction carrier ships the notice alone in
+// display_content (hermes_cli/web_routers/sessions.py) while its content stays the whole carrier.
+function asyncResultField(message: SessionMessage, content: unknown): { asyncResult?: string } {
+  if (message.display_kind !== 'async_delegation_complete' && message.display_kind !== 'process_complete') {
+    return {}
+  }
+
+  const source = message.display_content !== undefined ? content : message.content || content
+
+  return { asyncResult: asyncResultBody(displayContentForMessage(message.role, source)) }
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
@@ -700,9 +712,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
-      ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
-        ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
-        : {}),
+      ...asyncResultField(message, content),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from typing import Any, Dict, Optional
@@ -58,11 +59,123 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     # A safety-refused ask embedded in a composite carrier keeps its ``content_refused`` tag through
     # the unwrap, or a reopened chat would redraw it as an ordinary user bubble with no refused notice
     # (#149708 review): the model-facing handoff is gone, the user's live ask survives as a greyed
-    # refused block. Every other carrier drops its internal ``display_kind`` as before.
+    # refused block. A carrier that already names its producer notice kind keeps it too.
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
-    if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
-        projected.pop("display_kind", None)
+    from gateway.response_filters import PRODUCER_NOTICE_DISPLAY_KINDS
+    kind = projected.get("display_kind")
+    if kind == CONTENT_REFUSED_DISPLAY_KIND or kind in PRODUCER_NOTICE_DISPLAY_KINDS:
+        return projected
+    projected.pop("display_kind", None)
+    # The compressor merges the summary into the tail row when no standalone summary row can
+    # alternate. When that tail was a producer notice, its ``display_kind`` sidecar never reached the
+    # carrier, and the unwrapped envelope would paint as a user message: name its kind again. A
+    # carrier stored ``hidden`` (a suppressed delivery) stays hidden rather than becoming a card.
+    notice = (producer_notice_display(flatten_message_text(projected.get("content")))
+              if projected.get("role") == "user" else None)
+    if notice is not None:
+        if kind == "hidden":
+            projected["display_kind"] = kind
+            return projected
+        projected["display_kind"], label = notice
+        projected["display_metadata"] = {**_metadata_dict(projected.get("display_metadata")), **label}
     return projected
+
+
+# The envelopes ``tools.process_registry_notifications`` writes, matched on their whole title line and
+# fixed intro so a user's own text that merely starts with a producer tag stays a user row.
+_DELEGATION_TITLE = re.compile(
+    r"\[ASYNC DELEGATION (BATCH COMPLETE|COMPLETE|TASK FAILED) — ([^\]\n]*)\]\n"
+    r"(?:A background fan-out unit you dispatched earlier — (?:group '(.*)' \((\d+)|(\d+)) subagent\(s\)\)? — "
+    r"|A background subagent you dispatched earlier has finished\."
+    r"|One subagent in a background fan-out you dispatched has failed )")
+_DELEGATION_TASK_HEADER = re.compile(
+    r"^--- [✓✗⚠] TASK (\d+)/\d+(?:: ([\s\S]*?))?  \(status=([^,)\n]*)([^\n]*)\) ---$", re.MULTILINE)
+# Goal and context are caller text and come first; the batch's role line and a single task's status line
+# are the producer's own, with a shape free text does not take, so parsing starts there.
+_DELEGATION_GOAL = re.compile(r"^(?:Original goal|Task): ([\s\S]*?)\n(?=Context you provided: |Toolsets: |Role: |Status: )",
+                              re.MULTILINE)
+_BATCH_ROLE_LINE = re.compile(r"^Role: [^\n]*   Total duration: \S+s$", re.MULTILINE)
+_DELEGATION_STATUS = re.compile(
+    r"^Status: (\S+)(?:   API calls: \S+)?   Duration: \S+s( \[TRUNCATED: hit max_iterations[^\n]*)?$", re.MULTILINE)
+_PROCESS_COMPLETION = re.compile(
+    r"\[IMPORTANT: Background process \S+ (.+?) \(exit code ([^,)\n]+)(?:, SIGTERM)?\)\.\n"
+    r"(?:[\s\S]*?\n)?Command: ([\s\S]*?)\nOutput:\n[\s\S]*\]\s*\Z")
+_PROCESS_BATCH = re.compile(
+    r"\[IMPORTANT: (\d+) background processes completed\. Treat these results as one batch and give one consolidated "
+    r"response; preserve failures and actionable results\.\]\n\n\[IMPORTANT: Background process [\s\S]*\]\s*\Z")
+
+
+def _metadata_dict(metadata: Any) -> dict[str, Any]:
+    """A row's display metadata as a dict; stored rows may still carry it as JSON text."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def producer_notice_display(text: str) -> Optional[tuple[str, dict[str, Any]]]:
+    """``(display_kind, display_metadata)`` for a producer notice envelope, else ``None``.
+
+    The labels come from the producers' own helpers, rebuilt from the envelope's headers, so a
+    recovered row reads as the original notice did. Anything else, a user's ask included, is ``None``.
+    """
+    from tools.process_registry_notifications import (
+        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
+    if title := _DELEGATION_TITLE.match(text):
+        event = _delegation_event(text, title)
+        results = event.get("results") or [event]
+        failed = sum(1 for r in results if r.get("status") in {"failed", "error"})
+        metadata = {"display_text": async_delegation_display_text(event), "delegation_id": title.group(2).split(",")[0],
+                    "task_count": len(results), "completed_count": len(results) - failed, "failed_count": failed}
+        if title.group(1) == "TASK FAILED":  # an early warning, as ``gateway.wake`` files it
+            metadata["notification_category"] = "diagnostic"
+        return "async_delegation_complete", metadata
+    if batch := _PROCESS_BATCH.match(text):
+        # Several completions are labelled by their count alone (``process_completion_display_text``).
+        return PROCESS_COMPLETE_DISPLAY_KIND, {"display_text": process_completion_display_text([{}] * int(batch.group(1)))}
+    if completion := _PROCESS_COMPLETION.match(text):
+        return PROCESS_COMPLETE_DISPLAY_KIND, {"display_text": process_completion_display_text([_process_event(completion)])}
+    return None
+
+
+def _delegation_event(text: str, title: re.Match) -> dict[str, Any]:
+    group, group_size, size = title.group(3), title.group(4), title.group(5)
+    if title.group(1) == "BATCH COMPLETE":
+        # A child's summary can quote a task header: take only as many as the intro names.
+        unit, role_line = int(group_size or size or 0), _BATCH_ROLE_LINE.search(text, title.end())
+        tasks = _DELEGATION_TASK_HEADER.findall(text, role_line.end())[:unit] if unit and role_line else []
+        results = [{"task_index": int(index) - 1, "goal": goal, "status": status, "truncated": "TRUNCATED" in rest}
+                   for index, goal, status, rest in tasks]
+        if results:
+            return {"results": results, **({"group": group} if group is not None else {})}
+        # A batch that failed before any child reported writes only an ERROR section.
+        return {"status": "failed" if "\n--- ERROR ---\n" in text else "completed",
+                **({"group": group} if group is not None else {})}
+    goal = _DELEGATION_GOAL.search(text, title.end())
+    if title.group(1) == "COMPLETE":
+        # Caller-supplied context may contain a full Status/Duration line. Only the producer's
+        # own status, immediately followed by its result separator, determines the card label.
+        status = next(
+            (match for match in _DELEGATION_STATUS.finditer(text, title.end())
+             if text.startswith("\n--- RESULT ---", match.end())),
+            None,
+        )
+    else:
+        status = _DELEGATION_STATUS.search(text, title.end())
+    return {"goal": goal.group(1) if goal else "",
+            "status": status.group(1) if status else ("failed" if title.group(1) == "TASK FAILED" else "completed"),
+            "truncated": bool(status and status.group(2))}
+
+
+def _process_event(completion: re.Match) -> dict[str, Any]:
+    from tools.process_registry_notifications import _REASON_STATUS
+    status, exit_code, command = completion.groups()
+    reason = "killed" if status.startswith("terminated by ") else next(
+        (key for key, value in _REASON_STATUS.items() if value == status), "exited")
+    return {"completion_reason": reason, "exit_code": int(exit_code) if exit_code.lstrip("-").isdigit() else exit_code,
+            "command": command}
 
 
 

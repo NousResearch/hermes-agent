@@ -27,7 +27,10 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
+from agent.file_safety import (
+    HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, get_nt_namespace_error, get_write_denied_error,
+    is_write_approval_required,
+)
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
@@ -89,7 +92,7 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_token.json", "google_client_secret.json", "google_oauth_pending.json", "google_oauth.json",
     "webhook_subscriptions.json", *HOME_ENV_FILES, "vault.key", "vault.json.enc",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
-    ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
+    *HOME_CREDENTIAL_FILES,  # ~/.netrc, ~/.npmrc, ~/.git-credentials, ... (file_safety's write guard)
 })
 
 # Directory names whose whole subtree is credential material (the canonical
@@ -102,6 +105,11 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # common (an Obsidian vault) to hide wherever it appears.
 _SENSITIVE_MANAGED_DIR_PARTS = tuple(
     tuple(PurePosixPath(store).parts) for store in CREDENTIAL_STORE_DIRS if store != "vault")
+
+# OS/CLI credential trees (~/.ssh, ~/.aws, ~/.config/gh, ...) as lowercase component
+# sequences, matched as consecutive path components for the same reason: the default
+# managed root is $HOME, and a home-anchored check would miss them under any other root.
+_SENSITIVE_MANAGED_DIR_SEQUENCES = tuple(tuple(d.lower().split("/")) for d in HOME_CREDENTIAL_DIRS)
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -123,8 +131,11 @@ def _is_sensitive_path(path: Path) -> bool:
     if _is_sensitive_filename(path.name):
         return True
     parts = tuple(part.lower() for part in path.parts)
-    return any(parts[i:i + len(store)] == store
-               for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts) - len(store) + 1))
+    return any(
+        parts[i:i + len(seq)] == seq
+        for seq in (*_SENSITIVE_MANAGED_DIR_PARTS, *_SENSITIVE_MANAGED_DIR_SEQUENCES)
+        for i in range(len(parts) - len(seq) + 1)
+    )
 
 
 _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit

@@ -32,15 +32,18 @@ def _run_two(monkeypatch, first: str, second: str):
             SESSION_KEY, notified.append, dict(DISPLAYED), identity=identity))
 
     threads = [threading.Thread(target=run, args=(identity,), daemon=True) for identity in (first, second)]
-    threads[0].start()
-    wait_until(lambda: len(notified) == 1, what="the first prompt")
-    threads[1].start()
-    wait_until(lambda: len(notified) == 2 or len(follows) == 1, what="the second request to settle")
-    prompts = len(notified)
-    mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True)
-    for thread in threads:
-        thread.join(10)
-    mod._gateway_queues.clear()
+    try:
+        threads[0].start()
+        wait_until(lambda: len(notified) == 1, what="the first prompt")
+        threads[1].start()
+        wait_until(lambda: len(notified) == 2 or len(follows) == 1, what="the second request to settle")
+        prompts = len(notified)
+    finally:
+        mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True)
+        for thread in threads:
+            if thread.ident is not None:  # a failed first wait leaves the second unstarted
+                thread.join(10)
+        mod._gateway_queues.clear()
     return prompts, results
 
 
@@ -100,7 +103,8 @@ def test_the_command_guard_keys_prompts_on_what_runs(monkeypatch):
     finally:
         mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True)
         for thread in threads:
-            thread.join(10)
+            if thread.ident is not None:  # a failed first wait leaves the second unstarted
+                thread.join(10)
         mod.unregister_gateway_notify(SESSION_KEY)
         mod._gateway_queues.clear()
     assert prompts == 2 and not follows

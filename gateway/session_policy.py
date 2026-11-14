@@ -702,6 +702,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
     if explicit is not None:
         from toolsets import resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
+        enabled -= _unnamed_extension_toolsets(explicit, requested, config)
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")
@@ -720,6 +721,23 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         from hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
     return enabled
+
+
+def _unnamed_extension_toolsets(explicit, requested, config):
+    """Plugin toolsets and MCP servers an explicit pick did not name. ``_get_platform_tools`` adds every plugin
+    toolset not in ``known_plugin_toolsets`` and every enabled MCP server, so without this ``-t session_search``
+    also got a plugin's terminal/file tools (#147832). ``all``/``*`` names everything."""
+    if {'all', '*'} & set(explicit):
+        return set()
+    from hermes_cli.tools_config import _get_plugin_toolset_keys, enabled_mcp_server_names
+    from toolsets import TOOLSETS, resolve_toolset
+    configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
+    named = set(explicit) | {n[4:] for n in explicit if n.startswith('mcp-') and n not in configured}
+    plugin_keys = _get_plugin_toolset_keys()
+    # A plugin key may share a built-in name (``coding``); a composite pick like ``hermes-cli`` covers it only
+    # when every tool it resolves to is already in the pick, otherwise the name alone would smuggle tools in.
+    covered = {k for k in plugin_keys & set(TOOLSETS) if set(resolve_toolset(k)) <= requested}
+    return (plugin_keys | enabled_mcp_server_names(config)) - named - covered
 
 
 def _in_coding_workspace(config, source, cwd):

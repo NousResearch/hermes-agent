@@ -1,0 +1,64 @@
+"""An explicit ``-t`` pick is the session's whole toolset selection (#147832).
+
+``_get_platform_tools`` turns on every plugin toolset missing from ``known_plugin_toolsets`` and every
+enabled MCP server; a pick that names neither must not inherit them through the gateway create path.
+"""
+import pytest
+
+from gateway.session_policy import build_policy
+
+
+@pytest.fixture
+def extensions(tmp_path, monkeypatch):
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_toolset_keys_nowait', lambda: {'fake_coding_plugin'})
+    servers = {'srv': {'command': str(tmp_path / 'absent')}, 'other': {'command': str(tmp_path / 'absent')}}
+    return {'platform_toolsets': {'cli': ['hermes-cli']}, 'mcp_servers': servers}
+
+
+def _toolsets(tmp_path, cfg, pick):
+    return set(build_policy({'source': 'cli', 'cwd': str(tmp_path), 'toolsets': pick}, cfg).toolsets)
+
+
+def test_a_pick_without_extensions_gets_no_plugin_toolset_or_mcp_server(tmp_path, extensions):
+    assert _toolsets(tmp_path, extensions, ['session_search']) == {'session_search'}
+
+
+@pytest.mark.parametrize('server', ['srv', 'mcp-srv'])
+def test_a_named_mcp_server_stays_and_the_others_do_not(tmp_path, extensions, server):
+    toolsets = _toolsets(tmp_path, extensions, ['session_search', server])
+    assert 'other' not in toolsets and 'fake_coding_plugin' not in toolsets, toolsets
+    assert toolsets & {'srv', 'mcp-srv'}, toolsets
+
+
+def test_a_named_plugin_toolset_stays(tmp_path, extensions, monkeypatch):
+    monkeypatch.setattr('toolsets.validate_toolset', lambda name: True)
+    monkeypatch.setattr('hermes_cli.toolset_validation.saved_toolset_resolver', lambda _cfg: lambda name: True)
+    toolsets = _toolsets(tmp_path, extensions, ['session_search', 'fake_coding_plugin'])
+    assert toolsets == {'session_search', 'fake_coding_plugin'}, toolsets
+
+
+def test_no_pick_still_gets_the_profile_extensions(tmp_path, extensions):
+    toolsets = set(build_policy({'source': 'cli', 'cwd': str(tmp_path)}, extensions).toolsets)
+    assert {'fake_coding_plugin', 'srv', 'other'} <= toolsets, toolsets
+
+
+@pytest.fixture
+def builtin_named_plugin_keys(monkeypatch):
+    # The issue's leaked set: plugin keys that are also built-in toolset names.
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_toolset_keys_nowait', lambda: {'coding', 'delegation', 'fake_plug'})
+    return {'platform_toolsets': {'cli': ['hermes-cli']}}
+
+
+@pytest.mark.parametrize('source', ['cli', 'tui', 'gui', 'acp'])
+def test_a_plugin_key_named_like_a_builtin_does_not_ride_along(tmp_path, builtin_named_plugin_keys, source):
+    params = {'source': source, 'cwd': str(tmp_path), 'toolsets': ['session_search']}
+    assert set(build_policy(params, builtin_named_plugin_keys).toolsets) == {'session_search'}
+
+
+def test_a_builtin_named_plugin_key_stays_when_picked(tmp_path, builtin_named_plugin_keys):
+    assert _toolsets(tmp_path, builtin_named_plugin_keys, ['session_search', 'delegation']) == {'session_search', 'delegation'}
+
+
+def test_a_pick_covering_a_builtin_named_plugin_key_keeps_it(tmp_path, builtin_named_plugin_keys):
+    # ``coding`` already holds delegate_task, so the ``delegation`` key adds nothing the pick did not grant.
+    assert _toolsets(tmp_path, builtin_named_plugin_keys, ['coding']) == {'coding', 'delegation'}

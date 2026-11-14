@@ -7,8 +7,10 @@ Single `memory` tool: add/patch/remove or a batch `operations` list."""
 import copy
 import json
 import logging
+import re
 from contextvars import ContextVar
 from pathlib import Path
+import hermes_time
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -41,7 +43,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _op_texts, _scan_memory_content)
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -238,8 +240,36 @@ def memory_tool(action: str | None = None, target: str = "memory", content: str 
     return result
 
 
-def _applied(result: dict[str, Any]) -> tuple[str, str]:
+def _applied(result: dict[str, Any], store: MemoryStore, target: str, added: list[str]) -> tuple[str, str]:
+    if result.get("success"):
+        _add_relative_date_hint(result, _saved_texts(store, target, result, added))
     return ("success" if result.get("success") else "failed"), json.dumps(result, ensure_ascii=False)
+
+
+_WEEKDAYS = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+_RELATIVE_TIME_RE = re.compile(
+    rf"\b(?:today|tonight|tomorrow|yesterday|(?:next|last|this|coming) (?:week|month|year|weekend|{_WEEKDAYS})"
+    r"|in (?:a|an|one|two|three|a few|\d+) (?:days?|weeks?|months?|years?)"
+    r"|(?:a|an|one|two|three|a few|\d+) (?:days?|weeks?|months?|years?) ago)\b", re.IGNORECASE)
+
+
+def _saved_texts(store: MemoryStore, target: str, result: dict[str, Any], added: list[str]) -> list[str]:
+    """Entries this write left in the store: its adds and the entries its patches produced. An
+    add a later op patched away is no longer saved, so it is not scanned."""
+    patched = [result.get("patched_entry_after"), *(result.get("patched_entries_after") or {}).values()]
+    saved = set(store._entries_for(target))
+    return [text for text in [*added, *patched] if isinstance(text, str) and text in saved]
+
+
+def _add_relative_date_hint(result: dict[str, Any], written: list[Any]) -> None:
+    """A saved entry naming a time relative to now ("in 3 weeks") loses its anchor once this
+    conversation ends; ask for an absolute date. A hint on the saved write, never a refusal."""
+    match = next((m for text in written if isinstance(text, str) for m in [_RELATIVE_TIME_RE.search(text)] if m),
+                 None)
+    if match is not None:  # the profile's clock, not the server's: their "today" can differ by a day
+        result["date_hint"] = (
+            f"'{match.group(0)}' is relative to today ({hermes_time.now().date().isoformat()}) and this memory outlives "
+            "the conversation: patch the entry to state the absolute date.")
 
 
 def _invalid(message: str) -> tuple[str, str]:
@@ -267,7 +297,8 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
         gate_result = _apply_write_gate(store, "batch", target, None, None, operations)
         if gate_result is not None:
             return "rejected", gate_result
-        return _applied(store.apply_batch(target, operations))
+        return _applied(store.apply_batch(target, operations), store, target,
+                        [_op_texts(op)[0] for op in operations if isinstance(op, dict) and op.get("action") == "add"])
     # Reject calls with neither operations[] nor the legacy top-level action.
     # Without this guard the dispatch falls through to the generic
     # "Unknown action 'None'" error, which gives the model no signal about
@@ -286,7 +317,8 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
         return "rejected", invalid
-    return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text))
+    return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text), store, target,
+                    [(content or "").strip()] if action == "add" else [])
 
 
 def get_builtin_memory_config(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:

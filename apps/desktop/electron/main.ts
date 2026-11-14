@@ -1,5 +1,6 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
+import { createGlobalRemoteSessionRoute, probeRemoteAuthMode } from './global-remote-session-route'
 import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
@@ -485,7 +486,6 @@ import {
   type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
-  resolveProfileSessionAggregateRoute,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   tagPrimaryAggregateRows,
@@ -1892,7 +1892,6 @@ const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // lifecycles, so concurrent dials for one (connectionId, profile) scope
 // coalesce here — the second caller awaits the first spawn's result.
 const backendDialClaims = new BackendDialClaims()
-let globalRemoteConnectionPromise: Promise<any> | null = null
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -9903,144 +9902,17 @@ async function fetchJsonForProfile(profile, path) {
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
 
-  return requestJsonForConnection(conn, path, method, body)
-}
-
-async function requestJsonForConnection(conn, path: string, method: string, body?: string) {
   return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
 }
 
-// Mixed remote mode (app-global remote + an explicit override on the active
-// profile): the window's primary backend is that override, but the app-global
-// remote still owns every inherited profile's sessions, the default profile's
-// Telegram chat included (#81198). Dial it separately for those reads.
-async function ensureGlobalRemoteBackend() {
-  if (globalRemoteConnectionPromise) {
-    return globalRemoteConnectionPromise
-  }
-
-  const connectionAttempt = (async () => {
-    const remote = await resolveRemoteBackend(null)
-
-    if (!remote) {
-      throw new Error('The app-global Hermes backend is not remote.')
-    }
-
-    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
-
-    return remote
-  })()
-
-  globalRemoteConnectionPromise = connectionAttempt
-
-  try {
-    return await connectionAttempt
-  } catch (error) {
-    if (globalRemoteConnectionPromise === connectionAttempt) {
-      globalRemoteConnectionPromise = null
-    }
-
-    throw error
-  }
-}
-
-async function requestJsonForGlobalRemote(path: string, method: string, body?: string) {
-  const conn = await ensureGlobalRemoteBackend()
-  const connectionAttempt = globalRemoteConnectionPromise
-
-  try {
-    return await requestJsonForConnection(conn, path, method, body)
-  } catch (error) {
-    if (globalRemoteConnectionPromise === connectionAttempt) {
-      globalRemoteConnectionPromise = null
-    }
-
-    throw error
-  }
-}
-
-function profileSessionAggregateFetchOptions() {
-  return {
-    globalRemote: globalRemoteActive(),
-    primaryProfileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey())),
-    fetchJsonForGlobalRemote: (_profile, path) => requestJsonForGlobalRemote(path, 'GET')
-  }
-}
-
-async function requestJsonForGlobalProfile(path: string, method: string, body?: string) {
-  if (resolveProfileSessionAggregateRoute(profileSessionAggregateFetchOptions()) === 'global-remote') {
-    return requestJsonForGlobalRemote(path, method, body)
-  }
-
-  return requestJsonForProfile(null, path, method, body)
-}
-
-async function probeRemoteAuthMode(rawUrl) {
-  // Determine how a remote gateway expects callers to authenticate, WITHOUT
-  // sending any credentials. ``/api/status`` is public on every Hermes
-  // gateway (it backs the portal liveness probe) and reports:
-  //   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
-  //   auth_required: false → loopback/--insecure: legacy session-token auth
-  // ``/api/auth/providers`` (also public, only meaningful when gated) gives
-  // the human-facing provider name(s) for the login button label.
-  //
-  // The settings UI calls this as the user types a URL so it can render an
-  // OAuth login button vs a session-token entry box. Network/parse failures
-  // surface as ``reachable: false`` rather than throwing, so a half-typed or
-  // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-
-  let status
-
-  try {
-    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch (error: any) {
-    return {
-      baseUrl,
-      reachable: false,
-      authMode: 'unknown',
-      providers: [],
-      version: null,
-      error: error instanceof Error ? error.message : String(error)
-    }
-  }
-
-  const authRequired = authModeFromStatus(status) === 'oauth'
-  let providers = []
-
-  if (authRequired) {
-    // Best-effort: a gated gateway exposes the registered providers so the
-    // button can read "Sign in with Nous Research" instead of a generic
-    // label, and so a username/password provider can be distinguished from
-    // an OAuth-redirect one (``supports_password``). A failure here doesn't
-    // change the auth mode, so swallow it.
-    try {
-      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
-
-      if (Array.isArray(body?.providers)) {
-        providers = body.providers
-          .filter(p => p && typeof p === 'object')
-          .map(p => ({
-            name: String(p.name || ''),
-            displayName: String(p.display_name || p.name || ''),
-            supportsPassword: Boolean(p.supports_password)
-          }))
-          .filter(p => p.name)
-      }
-    } catch {
-      // Provider listing is optional metadata; the auth mode is already known.
-    }
-  }
-
-  return {
-    baseUrl,
-    reachable: true,
-    authMode: authRequired ? 'oauth' : 'token',
-    providers,
-    version: status?.version || null,
-    error: null
-  }
-}
+const globalRemoteSessions = createGlobalRemoteSessionRoute({
+  globalRemoteActive,
+  primaryHasRemoteOverride: () => Boolean(profileHasRemoteOverride(primaryProfileKey())),
+  request: (conn, path, method, body) => fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+  requestPrimary: (path, method, body) => requestJsonForProfile(null, path, method, body as string),
+  resolveGlobalRemote: () => resolveRemoteBackend(null),
+  waitReady: conn => waitForHermes(conn.baseUrl, conn.token, undefined, conn.authMode)
+})
 
 async function testDesktopConnectionConfig(input: any = {}) {
   if (input.mode === 'ssh') {
@@ -10220,7 +10092,7 @@ function resetBootProgressForReconnect() {
 function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
-  globalRemoteConnectionPromise = null
+  globalRemoteSessions.reset()
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
@@ -15095,7 +14967,7 @@ async function fetchJsonForBackend(
   })
 }
 
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
+ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl, fetchPublicJson))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, rawOpts) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
   // for supported auth_flows and /api/auth/providers for provider capabilities:
@@ -15608,12 +15480,12 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return requestJsonForGlobalProfile(path, method)
+        return globalRemoteSessions.request(path, method)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForGlobalProfile(path, method, body)
+      return globalRemoteSessions.request(path, method, body)
     }
 
     return undefined
@@ -15689,7 +15561,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
     }
 
     return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, {
-      aggregate: profileSessionAggregateFetchOptions()
+      aggregate: globalRemoteSessions.fetchOptions()
     })
   }
 
@@ -15709,7 +15581,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, {
     prefixForMerge: true,
-    aggregate: profileSessionAggregateFetchOptions()
+    aggregate: globalRemoteSessions.fetchOptions()
   })) as any
 
   if (pinned) {

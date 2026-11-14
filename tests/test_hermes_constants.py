@@ -59,6 +59,100 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == custom_root
 
+    @pytest.mark.parametrize("layout", ["native", "profile", "normalized-profile"])
+    def test_native_and_direct_named_profile_layouts_return_native_root(
+        self, tmp_path, monkeypatch, layout
+    ):
+        native_root = tmp_path / "user" / ".hermes"
+        profile = native_root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        home = {
+            "native": native_root,
+            "profile": profile,
+            "normalized-profile": native_root / "profiles" / "unused" / ".." / "work",
+        }[layout]
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: native_root
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert get_default_hermes_root() == native_root
+
+    def test_nested_scratch_home_under_native_root_stays_isolated(self, tmp_path, monkeypatch):
+        """Regression for #153098: only direct named profiles share the native root."""
+        native_root = tmp_path / "user" / ".hermes"
+        scratch = native_root / "profiles" / "work" / "cache" / "scratch" / "run" / ".hermes"
+        scratch.mkdir(parents=True)
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: native_root
+        )
+        monkeypatch.setenv("HERMES_HOME", str(scratch))
+
+        assert get_default_hermes_root() == scratch
+
+    def test_normalized_nested_scratch_home_stays_isolated(self, tmp_path, monkeypatch):
+        native_root = tmp_path / "user" / ".hermes"
+        scratch = native_root / "profiles" / "work" / "cache" / "scratch" / ".hermes"
+        scratch.mkdir(parents=True)
+        raw_home = scratch.parent / "unused" / ".." / scratch.name
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: native_root
+        )
+        monkeypatch.setenv("HERMES_HOME", str(raw_home))
+
+        assert get_default_hermes_root() == raw_home
+
+    @pytest.mark.platforms("posix")
+    def test_symlinked_layouts_use_the_resolved_home_shape(self, tmp_path, monkeypatch):
+        native_root = tmp_path / "user" / ".hermes"
+        profile = native_root / "profiles" / "work"
+        scratch = profile / "cache" / "scratch" / ".hermes"
+        custom_root = tmp_path / "custom"
+        custom_profile = custom_root / "profiles" / "work"
+        scratch.mkdir(parents=True)
+        custom_profile.mkdir(parents=True)
+        profile_link = tmp_path / "profile-link"
+        scratch_link = tmp_path / "scratch-link"
+        custom_profile_link = tmp_path / "custom-profile-link"
+        profile_link.symlink_to(profile, target_is_directory=True)
+        scratch_link.symlink_to(scratch, target_is_directory=True)
+        custom_profile_link.symlink_to(custom_profile, target_is_directory=True)
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: native_root
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_link))
+        assert get_default_hermes_root() == native_root
+
+        monkeypatch.setenv("HERMES_HOME", str(scratch_link))
+        assert get_default_hermes_root() == scratch_link
+
+        monkeypatch.setenv("HERMES_HOME", str(custom_profile_link))
+        assert get_default_hermes_root() == custom_root
+
+    def test_root_for_environment_keeps_nested_scratch_home_isolated(self, tmp_path):
+        user_home = tmp_path / "user"
+        local_appdata = user_home / "AppData" / "Local"
+        native_root = local_appdata / "hermes" if sys.platform == "win32" else user_home / ".hermes"
+        profile = native_root / "profiles" / "work"
+        scratch = profile / "cache" / "scratch" / "run" / ".hermes"
+        scratch.mkdir(parents=True)
+        base = {
+            "HOME": str(user_home),
+            "USERPROFILE": str(user_home),
+            "LOCALAPPDATA": str(local_appdata),
+        }
+
+        assert hermes_constants.hermes_root_for_environment(
+            {**base, "HERMES_HOME": str(native_root)}
+        ) == native_root
+        assert hermes_constants.hermes_root_for_environment(
+            {**base, "HERMES_HOME": str(profile)}
+        ) == native_root
+        assert hermes_constants.hermes_root_for_environment(
+            {**base, "HERMES_HOME": str(scratch)}
+        ) == scratch
+
     @pytest.mark.platforms("windows")
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""

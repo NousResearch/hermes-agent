@@ -112,11 +112,17 @@ def _hermes_root_of(native_home: Path, env_path: Path | None) -> Path:
     """The root that holds *env_path*: the native home, a custom root, or *env_path* itself."""
     if env_path is None:
         return native_home
-    try:
-        env_path.resolve().relative_to(native_home.resolve())  # under ~/.hermes (normal or profile mode)
-    except ValueError:  # Docker/custom root: <root>/profiles/<name> -> <root>, else HERMES_HOME itself
-        return env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    return native_home
+    resolved = env_path.resolve()
+    native_resolved = native_home.resolve()
+    if resolved == native_resolved:
+        return native_home
+    if resolved.parent.name == "profiles":
+        root = resolved.parent.parent
+        if root == native_resolved:
+            return native_home
+        # Preserve the caller's path spelling for ordinary custom profile layouts.
+        return env_path.parent.parent if env_path.parent.name == "profiles" else root
+    return env_path
 
 
 _ENV_REFERENCE = re.compile(r"%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z0-9_-]+)")

@@ -84,11 +84,19 @@ def _owner_ref(authority, ref, params):
     listed id: its busy gate, generation fence and eviction are keyed by the session it writes, so
     authorizing it on the owner while writing the segment would bypass the owner's FIFO. A segment
     of a live owner therefore stays a named refusal for those, as on main. A delete of a messaging
-    conversation's later compression segment, or a model/reasoning pick on it, resolves to its
-    lineage root, where its lane's session lives (``messaging_owner_ref``, as resume does)."""
+    conversation's later compression segment, or a model/reasoning pick or compress on it, resolves
+    to its lineage root, where its lane's session lives (``messaging_owner_ref``, as resume does):
+    a messaging chat has no frozen policy to compress into, so the gateway that owns its lane runs
+    the chat's own /compress (#144422)."""
     if params.get('operation') in CHAT_PICKS:
         # A messaging chat's picks are its lane's (route-keyed) overrides: a compression segment names
         # the lineage root its lane is mounted on. Any other row keeps its id.
+        from gateway.session_route_recovery import messaging_owner_ref
+        return messaging_owner_ref(authority, ref)
+    if params.get('operation') == 'compress':
+        # A messaging chat's compress runs on the gateway that owns its lane, so the segment a viewer
+        # named resolves to that mount as a pick does. A LOCAL row keeps its id: its busy gate,
+        # generation fence and eviction are keyed by the session it writes (#144422).
         from gateway.session_route_recovery import messaging_owner_ref
         return messaging_owner_ref(authority, ref)
     if params.get('operation') not in _OWNER_AUTHORIZED:
@@ -141,7 +149,9 @@ async def _owned_mutation(authority, actor, ref, params):
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
                 return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
     if params.get('operation') in {*_POLICY, 'compress', 'reset'} and not is_chat_pick(live, params['operation']):
-        authority._schedule(ref)
+        # The session the mutation ran on, not necessarily the row it named: a messaging chat's
+        # compress runs on its lane's mount, and only a mounted session can be refreshed (#144422).
+        authority._schedule(owner)
     return result
 
 
@@ -170,6 +180,13 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
         # No frozen policy to commit into: the chat's own /model and /reasoning override (#141152).
         from gateway.session_messaging_picks import apply_chat_pick
         return await apply_chat_pick(authority, ref, owner or ref, live, params, principal_id=actor.subject)
+    if operation == 'compress':
+        from gateway.session_messaging_compress import apply_chat_compress, is_messaging_live
+        if is_messaging_live(live):
+            # A messaging chat has no frozen local policy, so the prepare pass that fences a LOCAL
+            # compress has nothing to read. The gateway that owns the chat's lane compresses it
+            # instead — the same path the chat's own /compress runs (#144422).
+            return await apply_chat_compress(authority, ref, live, params)
 
     def authorize_write(conn):
         from hermes_state_mutation_binding import authorize_history, import_history_control

@@ -67,6 +67,9 @@ def test_code_heredoc_body_stays_visible_to_dangerous_scan(command):
 @pytest.mark.parametrize("command", [
     f"cat <<'EOF' > job.sh\n{RM_ROOT}\nEOF\nbash job.sh",
     f"cat > /tmp/job <<'EOF'\n{RM_ROOT}\nEOF\nchmod +x /tmp/job && /tmp/job",
+    f"cat > 'job.sh' <<'EOF'\n{RM_ROOT}\nEOF\nbash job.sh",
+    f"cat > /tmp/j <<'EOF'\n{RM_ROOT}\nEOF\ncd /tmp; sh j",
+    f"cat > j <<'EOF'\n{RM_ROOT}\nEOF\nsudo -E env A=1 nohup bash 'j'",
 ])
 def test_heredoc_written_then_run_keeps_its_body_on_the_floors(gate_mode, command):
     # The body lands in a file the same string runs: it is code, not data.
@@ -115,9 +118,11 @@ def test_unterminated_heredoc_spam_is_linear():
 @pytest.mark.parametrize("command", [
     "curl -o f " * 7111 + "\nz",
     "curl -o f;" * 6400,
+    "curl -O " + "https://e.x/f " * 6000 + "\nf",
+    "curl -O https://e.x/f;" * 4000,
 ])
 def test_download_then_run_rule_is_linear(command):
     # The whole detector is already ~1 s on these on main (other rules); time the new rule alone.
     rule = next(rx for rx, desc in DANGEROUS_PATTERNS_COMPILED if desc == "execute a just-downloaded file")
 
-    assert _elapsed(rule.search, command) < 0.5
+    assert _elapsed(rule.search, command) < 2

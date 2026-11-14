@@ -14,6 +14,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.transport import RelayTransport
+from gateway.relay.ws_transport import WebSocketRelayTransport
 from gateway.session import SessionSource
 from tests.gateway.relay.stub_connector import StubConnector
 from tests.gateway.relay.test_relay_adapter import make_desc
@@ -194,39 +195,93 @@ def replay_runner(adapter):
     return runner
 
 
-@pytest.mark.asyncio
-async def test_a_send_the_local_transport_refused_does_not_spend_an_attempt():
+class FakeSocket:
+    """Stands in for the WebSocket so the real transport writes frames and counts them."""
+
+    def __init__(self, transport, reply):
+        self.transport, self.reply, self.frames = transport, reply, []
+
+    async def send(self, data):
+        frame = json.loads(data)
+        self.frames.append(frame)
+        if self.reply == "raise":
+            raise ConnectionResetError("socket closed during write")
+        if isinstance(self.reply, dict):
+            self.transport._pending[frame["requestId"]].set_result(dict(self.reply))
+        # None: written, never acknowledged
+
+
+def ws_relay(monkeypatch, *, socket="absent", closing=False):
+    """A RelayAdapter over the real WebSocket transport. ``socket`` is ``"absent"`` or a reply."""
+    transport = WebSocketRelayTransport(
+        "ws://relay.invalid", "slack", "bot", reconnect=False, outbound_timeout_s=0.05
+    )
+    adapter = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport)
+    # The handshake had acknowledged the platform when the claim was resolved.
+    monkeypatch.setattr(transport, "is_platform_ready", lambda platform: True)
+    transport._closing = closing
+    if socket != "absent":
+        transport._ws = FakeSocket(transport, socket)
+    return adapter, transport
+
+
+async def boot_replay(adapter):
     _record(routing_metadata=ROUTING)
     _orphan("ob-1")
-    adapter, connector = relay()
-    connector.next_send_result = {"success": False, "error": "relay transport not connected"}
     runner = replay_runner(adapter)
+    await runner._redeliver_pending_obligations()
+    return runner, _row("ob-1")
 
-    assert await runner._redeliver_pending_obligations() == 0
-    # More refusals than the whole budget: the reply must still be owed, not abandoned.
+
+REFUSAL_TEXT = {"success": False, "error": "relay transport not connected"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("closing", [False, True])
+async def test_a_send_the_local_transport_refused_does_not_spend_an_attempt(monkeypatch, closing):
+    adapter, _ = ws_relay(monkeypatch, closing=closing)
+
+    _, refused = await boot_replay(adapter)
+
+    assert (refused["state"], refused["attempts"]) == ("failed", 0)
+    assert refused["last_error"] in {"relay transport not connected", "relay transport closed"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "socket",
+    [
+        "raise",  # the write raised: bytes may be out
+        None,  # written, acknowledgement lost
+        REFUSAL_TEXT,  # the connector answers with the local refusal's own words
+        {**REFUSAL_TEXT, "not_sent": True},  # ... and claims it was not sent
+        {"success": False, "error": "relay transport connection lost"},
+        {"success": False, "error": "partial", "message_id": "m-1"},
+    ],
+)
+async def test_a_reply_that_may_have_reached_the_platform_keeps_its_attempt(monkeypatch, socket):
+    adapter, transport = ws_relay(monkeypatch, socket=socket)
+
+    _, row = await boot_replay(adapter)
+
+    assert transport._ws.frames, "the frame must have been written for this case to mean anything"
+    assert (row["state"], row["attempts"]) == ("failed", 1)
+
+
+@pytest.mark.asyncio
+async def test_an_offline_relay_cannot_abandon_a_reply_it_never_sent(monkeypatch):
+    adapter, transport = ws_relay(monkeypatch)
+    runner, _ = await boot_replay(adapter)
+
+    # More local refusals than the whole budget: the reply must still be owed, not abandoned.
     for _ in range(dl.MAX_ATTEMPTS + 1):
         assert await runner._redeliver_failed_obligations_for_platform(Platform.SLACK, relay_adapter=adapter) == 0
-    refused = _row("ob-1")
-    assert (refused["state"], refused["attempts"]) == ("failed", 0)
-    assert refused["last_error"] == "relay transport not connected"
+    owed = _row("ob-1")
+    assert (owed["state"], owed["attempts"]) == ("failed", 0)
 
-    connector.next_send_result = {"success": True, "message_id": "m1"}
+    transport._ws = FakeSocket(transport, {"success": True, "message_id": "m1"})
     assert await runner._redeliver_failed_obligations_for_platform(Platform.SLACK, relay_adapter=adapter) == 1
     assert _row("ob-1")["state"] == "delivered"
-
-
-@pytest.mark.asyncio
-async def test_a_rejection_that_may_have_reached_the_platform_still_spends_an_attempt():
-    _record(routing_metadata=ROUTING)
-    _orphan("ob-1")
-    adapter, connector = relay()
-    connector.next_send_result = {"success": False, "error": "relay transport connection lost"}
-    runner = replay_runner(adapter)
-
-    assert await runner._redeliver_pending_obligations() == 0
-
-    lost = _row("ob-1")
-    assert (lost["state"], lost["attempts"]) == ("failed", 1)
 
 
 @pytest.mark.asyncio

@@ -523,7 +523,7 @@ class GatewayStartupMixin:
                         "Redelivered recovered final response to %s:%s (obligation %s, attempt %d)",
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
-                elif relay_refused_before_sending(adapter, row, error):
+                elif relay_refused_before_sending(adapter, row, result):
                     await self._release_runtime_claim_quiet(
                         row["obligation_id"], "failed to refund unsent relay obligation %s", error=error)
                 else:

@@ -50,16 +50,23 @@ class WorkerPersistenceError(RuntimeError):
 # The receipt budget: how long a worker waits for the owning gateway to confirm a durable write.
 # It must never be shorter than the server's own contention budget — the gateway applies each
 # receipt as one SQLite transaction that legitimately waits out sibling writers for up to
-# SessionDB._TRANSCRIPT_WRITE_PATIENCE_S (hermes_state.py), so a smaller client budget expires
-# first and the worker dies with worker_receipt_timeout while the server is still healthy and
-# merely busy (fleet incident 2026-11-13: two workers of one profile convoying on one 3 GB
-# state.db; the append itself measures sub-millisecond — the wait is the sibling's transaction).
-# Sourced from the server constant so the two cannot drift; a receipt budget LONGER than the
-# server's patience would only convert a fast failure into a slow one, so it is clamped equal.
+# TRANSCRIPT_WRITE_PATIENCE_S, so a smaller client budget expires first and the worker dies
+# with worker_receipt_timeout while the server is still healthy and merely busy (fleet incident
+# 2026-11-13: two workers of one profile convoying on one 3 GB state.db; the append itself
+# measures sub-millisecond — the wait is the sibling's transaction). Sourced from the same
+# constant the server itself uses, so the two cannot drift; a receipt budget LONGER than the
+# server's patience would only convert a fast failure into a slow one, so it stays clamped
+# equal. The residual race is accepted knowingly: the client timer starts at link.receive —
+# after send, transport, and gateway dispatch — so its window ends slightly BEFORE the
+# server's, and a write that would have committed in the server's last seconds can still
+# surface as worker_receipt_timeout. That skew is fail-safe (the worker under-claims success,
+# never over-claims it) and is exactly what the receipt_transport copy tells the operator
+# honestly: "could not confirm", never "not saved".
 # The fail-safe is unchanged: on expiry the worker still refuses to claim the write landed.
-from hermes_state import SessionDB as _SessionDB  # constant only; this facade never opens SQLite
-
-RECEIPT_BUDGET_S = _SessionDB._TRANSCRIPT_WRITE_PATIENCE_S
+# Imported from the stdlib-only constants module, never from hermes_state itself: this facade
+# is imported lazily under test seams that replace hermes_state.SessionDB, and the full
+# SessionDB facade import also costs ~0.2 s of worker startup (gate t_3aad2064 RED-1).
+from hermes_state_constants import TRANSCRIPT_WRITE_PATIENCE_S as RECEIPT_BUDGET_S
 
 
 def _caller_summary(limit=8):

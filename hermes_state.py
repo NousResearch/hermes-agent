@@ -26,6 +26,7 @@ from pathlib import Path
 from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+from hermes_state_constants import TRANSCRIPT_WRITE_PATIENCE_S
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import (
@@ -485,8 +486,11 @@ class SessionDB(
     # legitimately holds the lock for seconds: checkpoint at close, VACUUM, recovery, FTS
     # optimize); attempt-counted budgets destroyed turns on a healthy store. Transcript
     # writes (failure aborts the turn) get the long budget; observation-only activity
-    # writes sit on the response-critical path and get a sub-second one.
-    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+    # writes sit on the response-critical path and get a sub-second one. The transcript
+    # value lives in hermes_state_constants (import-cheap, dependency-free) because the
+    # worker receipt budget reads it there too — the client must never time out before
+    # the server's own patience, and neither layer may import the other to share it.
+    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, TRANSCRIPT_WRITE_PATIENCE_S, 0.5
     # A live compression lock gets a short wait (compression publishes in seconds), but the lease
     # is a correctness boundary: a writer still locked out afterwards is refused.
     # Observation-only activity heartbeat/label writes (#76354 review S1): these run on (or adjacent to) the

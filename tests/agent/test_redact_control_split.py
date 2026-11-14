@@ -1,5 +1,7 @@
 """Prefix tokens split by control chars or wrapped in ANSI CSI sequences must mask (#81012)."""
 
+import base64
+
 import pytest
 
 from agent.redact import redact_for_egress, redact_sensitive_text
@@ -74,3 +76,16 @@ def test_non_csi_escape_before_token_masks(seq):
     text = f"\x1b[31mOPENAI key:{seq}sk-" + "proj-" + body
     assert body[:12] not in _redact(text)
     assert body[:12] not in redact_for_egress(text)
+
+
+@pytest.mark.parametrize("payload", [
+    b'{"o":"1234567","n":"stack-xx","k":"Zq9"}',  # base64 ends in "==" padding
+    b'{"o":"1","n":"stack-x","k":"k>>"}',         # base64 carries "+", no padding
+])
+@pytest.mark.parametrize("split", ["\u200b", "\x1b", "\x1b[32m"])
+def test_split_grafana_cloud_token_masks_base64_tail(payload, split):
+    # glc_ bodies are standard base64 (#150339): "+", "/" and trailing "=" are body chars.
+    token = "glc_" + base64.b64encode(payload).decode()
+    result = _redact(token[:30] + split + token[30:] + " done")
+    assert token[30:-4] not in result
+    assert result.endswith(" done")

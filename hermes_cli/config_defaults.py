@@ -1341,11 +1341,11 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
-        # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
-        # summary is sized to the parent's remaining context headroom; trimmed text spills to
-        # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
-        # lost). 0 disables the ceiling; the dynamic budget still applies.
+        # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each summary is sized
+        # to the parent's remaining context headroom; trimmed text spills to ~/.hermes/cache/delegation/ with a
+        # head+tail window + read_file offset footer, nothing lost). 0 disables the ceiling; the dynamic budget still applies.
         "max_summary_chars": 24000,
+        "max_task_echo_chars": 200,  # goal/context chars echoed back in background receipts/completions; 0 = verbatim
         # Inactivity cap per child (seconds, floor 30) — time with NO progress, not total runtime. 0 = no cap:
         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.

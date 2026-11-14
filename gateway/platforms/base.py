@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
@@ -819,31 +820,6 @@ def _credential_home_roots() -> list[Path]:
     return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
 
 
-def _kanban_root() -> Path:
-    """Kanban is root-shared across profiles by design (``kanban_db.kanban_home``)."""
-    return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
-
-
-def _kanban_board_dirs() -> list[Path]:
-    """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
-    board whatever its name; the allow side filters further)."""
-    with contextlib.suppress(OSError):
-        return [p for p in (_kanban_root() / "kanban" / "boards").iterdir() if p.is_dir()]
-    return []
-
-
-def _kanban_attachment_roots() -> list[Path]:
-    """Return durable Kanban attachment roots without importing kanban_db."""
-    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
-    if override:
-        return [Path(override).expanduser()]
-    roots = [_kanban_root() / "kanban" / "attachments"]
-    roots.extend(path / "attachments" for path in _kanban_board_dirs()
-                 if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                 and (path / "kanban.db").is_file())
-    return roots
-
-
 def _media_delivery_allowed_roots() -> list[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     from gateway.media_policy import media_delivery_allow_dirs
@@ -863,12 +839,6 @@ def _media_delivery_recency_seconds() -> float:
     custom = media_delivery_trust_recent_seconds().strip()
     default = float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
-
-
-def _kanban_board_db_paths() -> list[Path]:
-    """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
-    ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
-    return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
 
 
 def _media_delivery_denied_paths() -> list[Path]:

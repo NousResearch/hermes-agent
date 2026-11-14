@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import struct
 import sys
 import threading
@@ -81,6 +82,35 @@ _HEADER_PROBE_LOCK_TIMEOUT = 0.1
 _HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
 _RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram")
+
+
+def _is_operator_store_link(link: Path, link_st: os.stat_result) -> bool:
+    """A ``state.db`` symlink this user owns, to an existing file this user owns.
+
+    A dangling link is refused: SQLite would create the store wherever it points, such as an
+    unmounted volume's mount point (symlinked home directories follow the same rule). A link or
+    target owned by anyone else is refused as planted (#109857).
+    """
+    try:
+        target_st = os.stat(link)
+    except OSError:
+        return False
+    uid = os.geteuid()
+    return link_st.st_uid == uid and target_st.st_uid == uid
+
+
+def refuse_planted_state_db_link(path: Path) -> None:
+    """Raise ``ELOOP`` when ``path`` is a symlink other than the operator's own store link.
+
+    For openers that canonicalize the path before ``SessionDB`` sees it (the registry), so the
+    link is judged before ``resolve()`` hides it.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode) and not _is_operator_store_link(path, st):
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
 
 
 def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:

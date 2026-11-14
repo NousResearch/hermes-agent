@@ -62,7 +62,7 @@ import hermes_state_lockguard as _lockguard
 from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_write import WriterMutexTimeout, maintain_after_commit, write_site, writer_mutex_until
 from hermes_state_dbfile import (
-    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _connect_tracked_db, _fd_is_truly_unlinked, _is_operator_store_link, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -261,7 +261,8 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     close, checkpoint, and unlink the sidecars while long-lived holders
     (gateway, desktop ``hermes serve``) keep using the deleted inodes.
     Symlinked state paths fail closed with ``ELOOP`` before the caller's
-    ``sqlite3.connect()`` can follow them (#109857).
+    ``sqlite3.connect()`` can follow them (#109857), except a ``state.db``
+    link the operator made to a store of their own (#145075).
     """
     if os.name == "nt":
         return
@@ -300,6 +301,10 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(st.st_mode):
+            if path == main_path and _is_operator_store_link(path, st):
+                # A store moved to other storage and linked back (#145075): SQLite follows the link as
+                # before, and the target keeps the mode its owner gave it.
+                continue
             # Fail closed exactly like the O_NOFOLLOW create above: silently
             # skipping the link lets the caller's sqlite3.connect() follow it
             # and operate on whatever it points at (#109857).

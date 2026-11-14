@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 import textwrap
 
+# Module level: the watcher is built after the update moved the checkout (post-swap imports test).
+from hermes_cli._subprocess_compat import process_start_time_stdlib
+
 _SOURCE = textwrap.dedent(
     """
         import sys
@@ -102,8 +105,6 @@ def watcher_source(old_pid: int, *, respawn_cwd: str, respawn_env_overlay: dict[
                    timeout_s: float, project_root: str) -> str:
     """The watcher program for *old_pid*, whose start time is read now, while the parent knows it
     is the gateway being replaced. Literals ride the source, not argv."""
-    from hermes_cli._subprocess_compat import process_start_time_stdlib
-
     return _SOURCE.format(respawn_cwd_literal=json.dumps(respawn_cwd),
                           respawn_env_literal=json.dumps(respawn_env_overlay),
                           watcher_timeout_literal=json.dumps(timeout_s),

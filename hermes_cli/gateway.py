@@ -72,6 +72,7 @@ from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gat
 # Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
 # import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
 from hermes_cli.gateway_restart_env import restart_watcher_env
+from hermes_cli.gateway_restart_watcher import watcher_source
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1077,8 +1078,6 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             # Fall back to the original argv: a visible window beats a failed respawn.
             respawn_cwd = ""
             respawn_env_overlay = {}
-
-    from hermes_cli.gateway_restart_watcher import watcher_source
 
     watcher = watcher_source(old_pid, respawn_cwd=respawn_cwd, respawn_env_overlay=respawn_env_overlay,
                              timeout_s=GATEWAY_RESTART_WATCHER_TIMEOUT_S, project_root=str(PROJECT_ROOT))

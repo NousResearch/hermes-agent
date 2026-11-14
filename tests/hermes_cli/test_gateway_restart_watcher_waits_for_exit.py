@@ -61,7 +61,7 @@ def test_watcher_judges_the_old_gateway_by_pid_and_start_time(tmp_path, monkeypa
     own (pid, start time) keeps it waiting. A reused PID is simulated by arming the watcher with a
     start time the live process does not have."""
     from gateway import status as gateway_status
-    from hermes_cli import _subprocess_compat
+    from hermes_cli import gateway_restart_watcher
 
     home = tmp_path / "home"
     home.mkdir()
@@ -77,7 +77,7 @@ def test_watcher_judges_the_old_gateway_by_pid_and_start_time(tmp_path, monkeypa
         return proc
 
     def _arm(marker, start_time):
-        monkeypatch.setattr(_subprocess_compat, "process_start_time_stdlib", lambda pid: start_time, raising=False)
+        monkeypatch.setattr(gateway_restart_watcher, "process_start_time_stdlib", lambda pid: start_time)
         relaunch = [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"]
         with monkeypatch.context() as m:
             m.setattr(subprocess, "Popen", _capture)

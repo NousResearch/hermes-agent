@@ -120,11 +120,12 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     bare ``/skill`` invocation."""
     if not isinstance(content, str):
         return None
-    if content.startswith(_AUTO_LOAD_PREFIX):
+    if _AUTO_LOAD_HEADER_RE.match(content):
         # Gateway auto-load scaffolding wraps the user's typed text in the same
-        # model-facing turn as the loaded skill bodies; strip it so providers
-        # store only what the user actually typed (see _describe_auto_loaded_skill_turn).
-        return _describe_auto_loaded_skill_turn(content)
+        # model-facing turn as the loaded skill bodies; keep only the typed text.
+        # A complete header is required so typed text that merely starts like one
+        # stays intact; a bare load carries no instruction.
+        return _auto_load_typed_text(content) or None
     if not content.startswith(_SKILL_INVOCATION_PREFIX):
         return content
     if _BUNDLE_MARKER in content:
@@ -151,18 +152,23 @@ def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
         return None
     name_match = re.match(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)"', content)
     name = name_match.group(1) if name_match else ""
-    # The payload footer ends with this exact sentence (_build_skill_message); the
-    # user's text is the last thing after the FINAL footer in the message.
+    tail = _auto_load_typed_text(content)
+    if not tail:
+        return f"/{name}" if name else None
+    return " ".join(tail.split())
+
+
+def _auto_load_typed_text(content: str) -> str:
+    """The user's text after the FINAL payload footer of an auto-load turn, stripped
+    (``""`` when none). The footer ends with this exact sentence (_build_skill_message)."""
     footer_end = content.rfind(_SKILL_DIR_NOTE_END)
     if footer_end == -1:
-        return f"/{name}" if name else None
+        return ""
     tail = content[footer_end + len(_SKILL_DIR_NOTE_END):].lstrip()
     while block_end := next((end for start, end in _TRAILING_BLOCK_ENDS if tail.startswith(start)), None):
         cut = tail.find(block_end)
         tail = tail[cut + len(block_end):].lstrip() if cut >= 0 else ""
-    if not tail.strip():
-        return f"/{name}" if name else None
-    return " ".join(tail.split()) or None
+    return tail.strip()
 
 
 def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:

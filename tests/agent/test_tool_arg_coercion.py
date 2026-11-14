@@ -41,6 +41,11 @@ class TestCoerceNumber:
         assert result == "3.14"
         assert isinstance(result, str)
 
+    def test_large_integer_preserves_precision(self):
+        """Large integers exceeding 2^53 - 1 must not lose precision through float casting."""
+        large_id = "9007199254740993"
+        assert _coerce_number(large_id, integer_only=True) == 9007199254740993
+        assert _coerce_number(large_id, integer_only=False) == 9007199254740993
 
 
 

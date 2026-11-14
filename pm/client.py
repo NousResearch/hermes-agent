@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import uuid
 
 from pm import paths, plugin_inputs
@@ -366,19 +370,169 @@ def ensure_python_tool(
     }))
 
 
+# Every launch asks "are the dependencies current?" before importing app code, and each answer costs
+# a bounded PM worker (runtime validation plus worker start-up: ~10 s on a 5.4 GB NTFS home, twice
+# per ``hermes`` invocation because the launcher re-execs into the store interpreter). The verdict
+# only changes when a file that decides the dependency set changes, so memoise it in the OS temp dir
+# and revalidate the memo by stat instead of re-running the probe.
+_CURRENCY_CACHE_PREFIX = "hermes-venv-current-"
+_CURRENCY_CACHE_VERSION = 1
+_CURRENCY_CACHE_TTL_SECONDS = 6 * 3600.0
+
+
+def _stat_signature(path: Path) -> str:
+    try:
+        stat = path.stat()
+    except OSError:
+        return "missing"
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def _directory_signature(path: Path) -> str:
+    """Entry names, not the directory mtime: some filesystems (this host's ext4 mount) do not
+    bump a directory's mtime when a child is added, and a dist appearing in site-packages must
+    invalidate the memo."""
+    try:
+        names = sorted(entry.name for entry in os.scandir(path))
+    except OSError:
+        return "missing"
+    return f"{len(names)}:{hashlib.sha256(chr(0).join(names).encode('utf-8')).hexdigest()[:16]}"
+
+
+def _member_digest(plugins: Members | Candidates | None) -> str | None:
+    """The member fingerprint ``Venv.expected_stamp`` uses, tagged with how it was named.
+
+    Content, not paths: a plugin manifest that gains a dependency changes the expected stamp
+    without moving the directory's mtime, so only ``members_stamp`` sees it. Passing no members is
+    *not* the same question as passing an empty set — ``None`` lets the engine derive the members
+    from the enabled extras — so the digest is tagged instead of both collapsing to ``""``.
+    ``None`` means "cannot fingerprint", and the caller must skip the memo rather than answer from
+    an entry keyed on a different question.
+    """
+    if plugins is None:
+        return "discovered"
+    if isinstance(plugins, Candidates):
+        from pm.publication import candidate_members
+
+        dirs = candidate_members(plugins.dirs)
+    elif isinstance(plugins, Members):
+        dirs = plugins.dirs
+    else:
+        return None  # The engine refuses any other shape; let it answer, not the memo.
+    try:
+        from pm.workspace import members_stamp
+
+        return f"members:{members_stamp(dirs)}"
+    except Exception:  # a fingerprint that fails must fall back to the probe, never change the answer
+        return None
+
+
+def _environment_signature(environment: Path) -> list[str]:
+    """What makes an environment usable: its interpreter, its marker, its distributions."""
+    distributions = sorted([environment / "Lib" / "site-packages",
+                            *environment.glob("lib/python*/site-packages")], key=str)
+    return [_stat_signature(environment / "Scripts" / "python.exe"),
+            _stat_signature(environment / "pyvenv.cfg"),
+            *(_directory_signature(path) for path in distributions)]
+
+
+def _currency_signature(project_root: Path, extras: list[str] | None,
+                        plugins: Members | Candidates | None) -> str | None:
+    """Fingerprint everything the verdict depends on, or ``None`` when it cannot be taken."""
+    from pm.environments import ACTIVATION_INPUTS, install_state_dir, selected_venv
+
+    state = install_state_dir(project_root)
+    try:
+        facts = json.loads((state / "facts.json").read_text(encoding="utf-8"))
+        environment = Path(facts["packages"]["venv"]["environment"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    # The verdict is about ``selected_venv``, which falls back to an in-tree ``venv``/``.venv`` when
+    # the install records none: that tree can appear or vanish without touching facts.json. A
+    # selection that cannot be resolved is the probe's answer to give (it returns False), so skip.
+    try:
+        selected = selected_venv(project_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    member_digest = _member_digest(plugins)
+    if member_digest is None:
+        return None
+    # The lockfile is package-relative, not project-relative: a pin edit changes the verdict even
+    # when the project root (and its uv.lock) is untouched.
+    inputs = [state / "facts.json", paths.lockfile_path(),
+              *(project_root / name for name in ACTIVATION_INPUTS)]
+    parts = [str(_CURRENCY_CACHE_VERSION), member_digest,
+             # The engine asks about the *set* of enabled extras.
+             ",".join(sorted(set(extras or ())))]
+    parts.extend(_stat_signature(path) for path in inputs)
+    parts.extend(_environment_signature(environment))
+    if selected != environment:
+        parts.append(str(selected))
+        parts.extend(_environment_signature(selected))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _cache_path(project_root: Path) -> Path:
+    """Where a project's memo lives: the OS temp dir, never the project or the install state.
+
+    A currency probe is documented as read-only against the install (``tests/pm/test_worker.py``
+    snapshots the tree around a batch of probes), so the memo must not appear in it. The name is
+    derived from the resolved root, so two checkouts never share an entry, and a lost temp file
+    only costs the next probe.
+    """
+    key = hashlib.sha256(f"{os.path.realpath(project_root)}|{_CURRENCY_CACHE_VERSION}"
+                         .encode()).hexdigest()[:32]
+    return Path(tempfile.gettempdir()) / f"{_CURRENCY_CACHE_PREFIX}{key}.json"
+
+
+def _cached_currency(project_root: Path, signature: str) -> bool | None:
+    try:
+        cached = json.loads(_cache_path(project_root).read_text(encoding="utf-8"))
+        age = time.time() - float(cached["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if cached.get("signature") != signature or not 0 <= age <= _CURRENCY_CACHE_TTL_SECONDS:
+        return None
+    return bool(cached.get("current"))
+
+
+def _remember_currency(project_root: Path, signature: str, current: bool) -> None:
+    target = _cache_path(project_root)
+    payload = {"signature": signature, "current": bool(current), "at": time.time()}
+    staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        staging.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(staging, target)
+    except OSError:
+        pass  # A cache that cannot be written only costs the next probe; it must never fail a launch.
+    finally:
+        staging.unlink(missing_ok=True)  # a failed replace must not leave temp litter behind
+
+
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
                     project_root: Path | None = None) -> bool:
     """Check through a ready PM, never bootstrap dependencies for a probe."""
     if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
         from pm.install import venv_is_current as direct
         return direct(extras=extras, plugins=plugins, project_root=project_root)
+    root = Path(project_root).absolute() if project_root is not None else paths.repo_root()
+    # One signature for both halves of the memo: re-deriving it after the probe would key the
+    # answer under a later state than the one it was measured against.
+    signature = _currency_signature(root, extras, plugins)
+    if signature is not None:
+        cached = _cached_currency(root, signature)
+        if cached is not None:
+            return cached
     try:
-        return bool(_request("venv_is_current", {"extras": extras, "plugins": plugin_inputs.encode(plugins)},
-                             project_root=project_root))
+        current = bool(_request("venv_is_current", {"extras": extras, "plugins": plugin_inputs.encode(plugins)},
+                                project_root=project_root))
     except InstallError as exc:
         if exc.package == "pm-runtime":
             return False  # Without its checker, currency cannot be established.
         raise
+    if signature is not None:
+        _remember_currency(root, signature, current)
+    return current
 
 
 def check_project_lock(source: Path, *, python: Path | None = None, cache: Path | None = None,

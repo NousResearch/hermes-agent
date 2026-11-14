@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
   AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS,
@@ -693,6 +694,12 @@ describe('Hermes REST helpers', () => {
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(9_000_000))).toBe(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
   })
 
+  it('uses a one-minute Chained STT deadline and a separate cold-model warm-up budget', () => {
+    expect(AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS).toBe(180_000)
+    expect(AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS).toBe(60_000)
+    expect(AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS).toBe(180_000)
+  })
+
   it('uses an extended timeout for blocking transcription', async () => {
     api.mockResolvedValueOnce({
       ok: true,
@@ -712,6 +719,14 @@ describe('Hermes REST helpers', () => {
       path: '/api/audio/transcribe',
       timeoutMs: AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
     })
+  })
+
+  it('uses an explicit short request deadline for Chained voice STT', async () => {
+    api.mockResolvedValueOnce({ ok: true, provider: 'local', text: 'hello' })
+
+    await transcribeAudio('data:audio/webm;base64,AA==', 'audio/webm', undefined, AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS)
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS }))
   })
 
   it('routes STT lease acquire/release to the stt-lease endpoint with a warm-up budget', async () => {

@@ -38,6 +38,7 @@ export function audioSpeakRequestTimeoutMs(text: string): number {
   return Math.min(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS, estimated)
 }
 
+export const AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS = 60_000
 export const AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS = 180_000
 export const AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS = 600_000
 // The transcribe payload is the base64 audio data URL itself, so its string
@@ -183,7 +184,8 @@ export function getActionStatus(name: string, lines = 200, profile?: ProfileScop
 export function transcribeAudio(
   dataUrl: string,
   mimeType?: string,
-  owner?: ResolvedOwner
+  owner?: ResolvedOwner,
+  timeoutMs?: number
 ): Promise<AudioTranscriptionResponse> {
   const request = {
     path: '/api/audio/transcribe',
@@ -193,9 +195,9 @@ export function transcribeAudio(
       mime_type: mimeType
     },
     // Transcription blocks until provider STT, file handling, and response
-    // encoding finish. Remote providers and long clips regularly exceed the
-    // default 15s Electron backend timeout.
-    timeoutMs: audioTranscribeRequestTimeoutMs(dataUrl)
+    // encoding finish. Chained voice supplies a shared end-to-end budget;
+    // other callers retain the longer size-aware request timeout.
+    timeoutMs: timeoutMs ?? audioTranscribeRequestTimeoutMs(dataUrl)
   }
 
   return owner
@@ -238,10 +240,8 @@ export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLea
   })
 }
 
-// Same cold-start class as TTS: acquiring a lease pre-loads the local STT
-// model (first-use download + load), which on CPU-bound hosts can exceed the
-// transcription floor on its own (issue #105955). The desktop acquires when
-// the mic opens so the load happens while the user is still speaking.
+// Keep cold local-model readiness separate from the shorter Chained decode
+// budget; a first-use load can take longer than transcribing a short clip.
 export const AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS = 180_000
 
 /**

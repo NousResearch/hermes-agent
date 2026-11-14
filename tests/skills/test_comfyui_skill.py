@@ -173,12 +173,82 @@ def test_model_download_tokens_go_through_child_env_not_argv(monkeypatch, capsys
     assert hf not in err and civ not in err
 
 
-def test_node_install_gets_no_supplied_token(monkeypatch):
+def _inherit_tokens(monkeypatch):
+    hf = "hf_" + "i" * 30
+    civ = "civ" + "j" * 30
+    monkeypatch.setenv("HF_API_TOKEN", hf)
+    monkeypatch.setenv("CIVITAI_API_TOKEN", civ)
+    return hf, civ
+
+
+def _child_env(env):
+    # env=None means the child inherits os.environ unchanged.
+    return dict(os.environ) if env is None else env
+
+
+def test_node_install_gets_no_token_even_when_inherited(monkeypatch):
+    """Node installs run third-party install code: no HF/CivitAI token, supplied or inherited."""
+    _inherit_tokens(monkeypatch)
     mod = _load_auto_fix_deps()
     calls = _record_subprocess(monkeypatch, mod)
     assert mod.install_node("some-pack")
     (cmd, env), = calls
-    assert env is None and "some-pack" in cmd
+    env = _child_env(env)
+    assert "some-pack" in cmd
+    assert "HF_API_TOKEN" not in env and "CIVITAI_API_TOKEN" not in env
+    assert env.get("PATH") == os.environ.get("PATH")
+
+
+def test_inherited_tokens_are_scoped_to_matching_host(monkeypatch):
+    hf, civ = _inherit_tokens(monkeypatch)
+    mod = _load_auto_fix_deps()
+    calls = _record_subprocess(monkeypatch, mod)
+    for url in ("https://civitai.com/api/download/models/1",
+                "https://huggingface.co/o/r/resolve/main/m.safetensors",
+                "https://example.com/m.safetensors"):
+        assert mod.install_model(url, "loras")
+    civ_env, hf_env, other_env = (_child_env(env) for _cmd, env in calls)
+    assert civ_env.get("CIVITAI_API_TOKEN") == civ and "HF_API_TOKEN" not in civ_env
+    assert hf_env.get("HF_API_TOKEN") == hf and "CIVITAI_API_TOKEN" not in hf_env
+    assert "HF_API_TOKEN" not in other_env and "CIVITAI_API_TOKEN" not in other_env
+
+
+def test_echoed_inherited_token_is_redacted(monkeypatch, capsys):
+    hf, _civ = _inherit_tokens(monkeypatch)
+    mod = _load_auto_fix_deps()
+    _record_subprocess(monkeypatch, mod, stdout=f"using token {hf}")
+    seen = []
+    real_run_cmd = mod.run_cmd
+    monkeypatch.setattr(mod, "run_cmd",
+                        lambda *a, **kw: seen.append(real_run_cmd(*a, **kw)) or seen[-1])
+    assert mod.install_model("https://huggingface.co/o/r/resolve/main/m.safetensors", "loras")
+    (_code, out), = seen
+    assert hf not in out
+
+
+def test_comfy_cli_host_aliases_get_their_token(monkeypatch):
+    monkeypatch.delenv("HF_API_TOKEN", raising=False)
+    monkeypatch.delenv("CIVITAI_API_TOKEN", raising=False)
+    mod = _load_auto_fix_deps()
+    hf = "hf_" + "a" * 30
+    civ = "civ" + "b" * 30
+    calls = _record_subprocess(monkeypatch, mod)
+    for url in ("https://huggingface.com/o/r/m.safetensors", "https://hf.co/o/r/m.safetensors",
+                "https://civitai.red/api/download/models/1"):
+        assert mod.install_model(url, "loras", hf_token=hf, civitai_token=civ)
+    envs = [_child_env(env) for _cmd, env in calls]
+    assert [e.get("HF_API_TOKEN") for e in envs] == [hf, hf, None]
+    assert [e.get("CIVITAI_API_TOKEN") for e in envs] == [None, None, civ]
+
+
+def test_malformed_model_url_fails_closed_without_raising(monkeypatch):
+    monkeypatch.delenv("HF_API_TOKEN", raising=False)
+    mod = _load_auto_fix_deps()
+    calls = _record_subprocess(monkeypatch, mod)
+    bad_url = "https://" + "[::1/x"
+    mod.install_model(bad_url, "loras", hf_token="hf_" + "c" * 30)
+    (_cmd, env), = calls
+    assert "HF_API_TOKEN" not in _child_env(env)
 
 
 def test_run_cmd_redacts_supplied_token_from_output(monkeypatch):

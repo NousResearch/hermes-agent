@@ -20,10 +20,11 @@ Usage:
     python3 auto_fix_deps.py workflow_api.json --models-from-file urls.json
     python3 auto_fix_deps.py workflow_api.json --dry-run
 
-Model auth: HF_API_TOKEN / CIVITAI_API_TOKEN in the environment (or
---hf-token / --civitai-token) reach comfy-cli through the child's
-environment for the matching download only. They are never put on the
-comfy-cli argv: its --set-*-api-token options persist the value to
+Model auth: HF_API_TOKEN / CIVITAI_API_TOKEN are stripped from every child
+environment. A model download whose URL host belongs to that provider gets
+its own token back (from --hf-token / --civitai-token, else the inherited
+env value); node installs and other hosts get neither. Tokens are never put
+on the comfy-cli argv: its --set-*-api-token options persist the value to
 config.ini and the argv is logged.
 """
 
@@ -55,12 +56,20 @@ def comfy_cli_available() -> str | None:
     return None
 
 
+# Host lists mirror comfy-cli's constants.HF_ALLOWED_HOSTS / CIVITAI_ALLOWED_HOSTS.
+_TOKEN_HOSTS = {
+    "HF_API_TOKEN": ("huggingface.co", "huggingface.com", "hf.co"),
+    "CIVITAI_API_TOKEN": ("civitai.com", "civitai.red"),
+}
+
+
 def run_cmd(cmd: list[str], *, dry_run: bool = False,
             env_overlay: dict[str, str] | None = None) -> tuple[int, str]:
     if dry_run:
         return 0, "[dry-run]"
     log(f"$ {' '.join(cmd)}")
-    env = {**os.environ, **env_overlay} if env_overlay else None
+    env = {k: v for k, v in os.environ.items() if k not in _TOKEN_HOSTS}
+    env.update(env_overlay or {})
     # health: allow HX006 -- node installs and multi-GB model downloads have no fair upper bound
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
                           check=False, stdin=subprocess.DEVNULL, env=env)
@@ -70,22 +79,27 @@ def run_cmd(cmd: list[str], *, dry_run: bool = False,
     return proc.returncode, out
 
 
-def _host_matches(url: str, domain: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return host == domain or host.endswith("." + domain)
+def _host_matches(url: str, domains: tuple[str, ...]) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:  # malformed URL: no token; comfy-cli fails the entry
+        return False
+    return any(host == d or host.endswith("." + d) for d in domains)
 
 
 def _model_auth_env(url: str, hf_token: str | None,
                     civitai_token: str | None) -> dict[str, str]:
     """Token env for comfy-cli, scoped to the provider that serves ``url``.
 
-    comfy-cli reads HF_API_TOKEN / CIVITAI_API_TOKEN from its environment
-    without persisting them, unlike --set-*-api-token which writes config.ini.
+    An explicit token wins over the inherited env value. comfy-cli reads
+    HF_API_TOKEN / CIVITAI_API_TOKEN from its environment without persisting
+    them, unlike --set-*-api-token which writes config.ini.
     """
-    if hf_token and _host_matches(url, "huggingface.co"):
-        return {"HF_API_TOKEN": hf_token}
-    if civitai_token and _host_matches(url, "civitai.com"):
-        return {"CIVITAI_API_TOKEN": civitai_token}
+    supplied = {"HF_API_TOKEN": hf_token, "CIVITAI_API_TOKEN": civitai_token}
+    for key, hosts in _TOKEN_HOSTS.items():
+        token = supplied[key] or os.environ.get(key)
+        if token and _host_matches(url, hosts):
+            return {key: token}
     return {}
 
 
@@ -117,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--api-key", help=f"or set ${ENV_API_KEY}")
     p.add_argument("--models-from-file",
                    help="JSON file mapping {model_filename: download_url} for models that need install")
-    p.add_argument("--hf-token", help="HuggingFace token for downloads (prefer $HF_API_TOKEN)")
-    p.add_argument("--civitai-token", help="CivitAI token for downloads (prefer $CIVITAI_API_TOKEN)")
+    p.add_argument("--hf-token", help="HuggingFace token for HF-hosted downloads (prefer $HF_API_TOKEN)")
+    p.add_argument("--civitai-token", help="CivitAI token for CivitAI-hosted downloads (prefer $CIVITAI_API_TOKEN)")
     p.add_argument("--dry-run", action="store_true",
                    help="Show what would be installed without doing it")
     p.add_argument("--no-restart", action="store_true",

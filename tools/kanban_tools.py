@@ -577,7 +577,8 @@ def heartbeat_current_worker_from_env() -> bool:
         from hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
-                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid),
+                                           "record_event": False}))
             succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__

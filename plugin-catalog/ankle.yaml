@@ -1,0 +1,35 @@
+name: ankle
+title: ANKLE OS
+repo: https://github.com/aleqth/ankle-hermes-plugin
+sha: 5d2e5fa00677f6d8bd2bd7d8b29e62da208de0a4
+description: >-
+  Build private website drafts in ANKLE Worlds, edit with revision checks, search SURF,
+  and explicitly publish websites through the hosted ANKLE OS MCP server at
+  https://aleqth.com/api/mcp. Verify portable .ankl exports from the returned result.
+  Portable Agent Plugins v1 package (plugin.json, mcp.json and pinned skill), with no
+  local executable code or declared Python/Node dependencies. All MCP requests require
+  valid scoped authentication: the bundled connection sends ANKLE_AGENT_KEY as a Bearer
+  header; a manual OAuth connection named ankle overrides that bundled connection.
+  Tool arguments, including queries, World content and authored HTML, are sent to the
+  hosted service. New website drafts are private; editing or attaching an existing page
+  does not hide its earlier published revision. Founding a World creates a public identity.
+  No wallet, signing or trading implementation is shipped. Hosted tool availability,
+  processing and pricing are controlled by the service; model-backed calls may incur
+  external provider usage and require authorization.
+maintainer: aleqth
+tier: community
+category: platform
+requires_hermes: ">=0.20"
+docs_url: https://github.com/aleqth/ankle-hermes-plugin/blob/5d2e5fa00677f6d8bd2bd7d8b29e62da208de0a4/README.md
+version: "2.3.0"
+readme: true
+platforms: []
+known_issues:
+  - "Packaging and skill checks do not establish authenticated end-to-end integration readiness; verify each requested workflow and report connection or service failures."
+  - "The bundled key connection requires ANKLE_AGENT_KEY from https://aleqth.com/developers in the active Hermes profile. The portable installer does not prompt for it. A manual OAuth server named ankle takes precedence; verify which connection is active."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ANKLE_AGENT_KEY

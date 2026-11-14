@@ -353,12 +353,10 @@ def _redact_opt(value: Any) -> Any:
     return _redact(value) if value else value
 
 
-def _redact_metadata(metadata: dict) -> Optional[dict]:
-    """Redact via a JSON round-trip; None if the result can't be re-parsed."""
-    try:
-        return json.loads(redact_sensitive_text(json.dumps(metadata), force=True))
-    except json.JSONDecodeError:
-        return None
+def _redact_metadata(metadata: dict) -> dict:
+    """Redact leaf-by-leaf: a whole-JSON pass can eat a string's closing quote and fail to re-parse."""
+    from agent.redact_structured import redact_structured
+    return redact_structured(metadata)
 
 
 def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
@@ -730,8 +728,7 @@ def _handle_complete(args: dict, **kw) -> str:
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
     if isinstance(metadata, dict):
-        # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
-        metadata = _redact_metadata(metadata) or metadata
+        metadata = _redact_metadata(metadata)
     created_cards = _coerce_str_list(
         args.get("created_cards"), "created_cards", "task ids", strip=True)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
@@ -881,7 +878,6 @@ def _handle_request_review(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     if metadata is not None:
         metadata = _redact_metadata(metadata)
-        _check(metadata is not None, "metadata could not be safely serialized")
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)

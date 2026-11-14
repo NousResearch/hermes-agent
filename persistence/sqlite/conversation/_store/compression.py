@@ -56,7 +56,9 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> dict[str, Any]:
 _CHAIN_CAP = 1000
 
 
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch")
+# ``_chat_adopted`` (``gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
+# chat onto stays that chat's conversation past a rotation, or the route guard rejects the new tip.
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:

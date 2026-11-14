@@ -59,8 +59,11 @@ CLI `show --json` and `kanban_show` expose the persisted contract.
 The shared `complete_task` boundary covers worker tools, CLI, review approval and
 dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
-re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
-required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
+re-reads the PR head/base. When a required check ran more than once on that head
+(a rerun, or a workflow re-triggered under `cancel-in-progress`), only each app's
+newest run counts, so a cancelled earlier attempt never vetoes its green rerun and
+a queued rerun keeps the card pending. Optional failed/skipped telemetry does not
+veto accepted required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required
 checks needs a local-only contract. `gh` must be authenticated with read access to

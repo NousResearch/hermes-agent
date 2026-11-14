@@ -805,19 +805,22 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
     from tools.skills_hub import HubLockFile
-    fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
-    attempt: dict = {}
-    try:
-        bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
-                                                    skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt)
-    except Exception as exc:
-        if fresh:
-            _record_skill_install(identifier, None, "failed", attempt, error=exc)
-        raise
-    if fresh and outcome:
-        _record_skill_install(identifier, bundle, outcome, attempt)
-    return installed
+    from tools.skills_hub_install import hub_install_lock
+
+    with hub_install_lock():
+        fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
+        attempt: dict = {}
+        try:
+            bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
+                                                        skip_confirm, invalidate_cache, name_override, source_id,
+                                                        attempt=attempt)
+        except Exception as exc:
+            if fresh:
+                _record_skill_install(identifier, None, "failed", attempt, error=exc)
+            raise
+        if fresh and outcome:
+            _record_skill_install(identifier, bundle, outcome, attempt)
+        return installed
 
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,

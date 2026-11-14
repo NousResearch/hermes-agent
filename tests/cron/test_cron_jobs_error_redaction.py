@@ -86,3 +86,42 @@ def test_finish_execution_redacts_error_in_ledger(tmp_cron_dir):
     assert finish_execution(record["id"], success=False, error=_PROVIDER_ERROR) is not None
 
     assert _KEY not in get_execution(record["id"])["error"]
+
+
+def test_unknown_admission_reason_is_redacted_and_still_lifts_its_pause(tmp_path, monkeypatch):
+    """CronExecutionUnknown text reaches jobs.json ``paused_reason`` and executions.db ``error``;
+    both get the same scrubbed string, so a verified terminal receipt still lifts the pause."""
+    from contextlib import asynccontextmanager
+    import json
+
+    from cron import executions, jobs, scheduler, scheduler_authority
+    from hermes_cli import gateway_client
+
+    with jobs.use_cron_store(tmp_path / "cron"):
+        job = jobs.create_job(prompt="report", schedule="every 1h", deliver="local")
+        fire = executions.create_execution(job["id"], source="test")["id"]
+        journal = scheduler_authority.journal_path(job["id"], fire)
+
+        def run_job(job, **kwargs):
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            journal.write_text(json.dumps({"params": {"job_id": job["id"], "request_id": fire,
+                                                      "extra_prompt": None}, "receipt": None}))
+            raise scheduler_authority.CronExecutionUnknown(f"Cron execution unverified: {_PROVIDER_ERROR}")
+        monkeypatch.setattr(scheduler, "run_job", run_job)
+        assert scheduler._run_one_job_body(dict(jobs.get_job(job["id"]), execution_id=fire)) is False
+
+        paused = jobs.get_job(job["id"])
+        assert paused["state"] == "paused"
+        assert _KEY not in paused["paused_reason"] and "unverified" in paused["paused_reason"]
+        assert _KEY not in executions.get_execution(fire)["error"]
+
+        class Peer:
+            async def rpc(self, method, **params):
+                return {"status": "terminal", "job": job, "result": [True, "document", "answer", None]}
+
+        @asynccontextmanager
+        async def connected():
+            yield Peer()
+        monkeypatch.setattr(gateway_client, "connect_gateway", connected)
+        scheduler_authority.reconcile_pending()
+        assert jobs.get_job(job["id"])["state"] == "scheduled"

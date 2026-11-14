@@ -591,9 +591,10 @@ DANGEROUS_PATTERNS = [
     (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
     # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
     # the span stops there and `nc -z h 80 # -e note` stays quiet. The flag is case-sensitive (`-C` is CRLF).
-    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=[\s<>])(?:[^\n;&|#]|(?<!\s)#)*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
+    # An `&` stays in the span only inside a redirect (`2>&1`, `<&0`, `&>x`); a background `&` ends it.
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
      "reverse shell via netcat -e/-c"),
-    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?=[\s<>])(?:[^\n;&|#]|(?<!\s)#)*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
+    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.

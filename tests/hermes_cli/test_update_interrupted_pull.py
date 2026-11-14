@@ -88,6 +88,21 @@ def _pull(root: Path) -> None:
                              discard_local_changes=False, keep_stash=False)
 
 
+def test_live_checkout_under_pytest_does_not_probe_recovery_marker(tmp_path, monkeypatch):
+    """The test guard must run before any stat under the executing checkout's git directory."""
+    root = tmp_path / "live-checkout"
+
+    class ForbiddenMarker:
+        def is_file(self):
+            raise AssertionError("live checkout marker was probed")
+
+    monkeypatch.setattr(er, "_project_root", lambda: root)
+    monkeypatch.setattr(er, "interrupted_pull_marker", lambda _root: ForbiddenMarker())
+    monkeypatch.setattr(er, "_pytest_owns_live_checkout", lambda candidate: candidate == root)
+
+    assert er.restore_interrupted_pull() is False
+
+
 def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monkeypatch):
     root, a, b = checkout
     real = update_cmd._git_run
@@ -288,7 +303,7 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
         (origin / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
     _git(origin, "commit", "-qam", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    _git(tmp_path, "clone", "-q", "--no-local", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
     pre, target = _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
     for i, name in enumerate(names[:150]):  # git got halfway
@@ -588,17 +603,13 @@ def test_an_empty_head_answer_keeps_the_marker(tmp_path, monkeypatch, capsys):
     marker for the next launch instead of reading as "the update finished"."""
     root, pre, target = _broken_release(tmp_path, 5)
     marker = _rollback_marker(root, pre, target)
-    stub = tmp_path / "silent-git"
-    stub.write_text("", encoding="utf-8")
-    monkeypatch.setattr(er, "_git_executable", lambda recorded="": str(stub))
-    real_run = subprocess.run
+    from hermes_cli import update_custody
 
-    def silent(argv, *args, **kwargs):  # every git call "succeeds" with no output
-        if argv and argv[0] == str(stub):
-            return subprocess.CompletedProcess(argv, 0, "", "")
-        return real_run(argv, *args, **kwargs)
+    def silent(git_cmd, args, **kwargs):
+        assert args == ["rev-parse", "HEAD"]
+        return subprocess.CompletedProcess(git_cmd + args, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", silent)
+    monkeypatch.setattr(update_custody, "run_git", silent)
     assert er.restore_interrupted_pull(root) is False
     assert marker.exists(), "an empty `rev-parse HEAD` deleted the marker over a torn tree"
     assert "Could not read HEAD" in capsys.readouterr().err

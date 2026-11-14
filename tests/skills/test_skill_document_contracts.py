@@ -116,3 +116,12 @@ def test_optional_skill_available_on_posix(skill):
 def test_optional_skill_availability_on_windows():
     assert skill_matches_platform(_document(QUESTIONNAIRE)[0])
     assert not skill_matches_platform(_document(DARWINIAN)[0])
+
+
+def test_claude_code_bypass_is_not_scoped_to_a_worktree():
+    # A git worktree isolates file edits, not the filesystem, network or credentials, so it
+    # must not be offered as the place where the permission bypass is safe.
+    _, body = _document("skills/autonomous-ai-agents/claude-code")
+    assert "it is not a filesystem, network or credential sandbox" in body
+    assert "sandbox runtime" in body
+    assert not re.search(r"throwaway worktree", body, re.IGNORECASE)

@@ -254,6 +254,25 @@ class TestEmailConnectClassification:
         assert adapter.fatal_error_retryable is False
 
     @pytest.mark.asyncio
+    async def test_smtp_temporary_auth_failure_is_retryable(self, monkeypatch):
+        import smtplib
+
+        adapter = self._make_adapter(monkeypatch)
+        from plugins.platforms.email import adapter as email_adapter
+
+        imap = MagicMock()
+        imap.uid.return_value = ("OK", [b""])
+        monkeypatch.setattr(email_adapter.imaplib, "IMAP4_SSL", lambda *a, **k: imap)
+        smtp = MagicMock()
+        smtp.login.side_effect = smtplib.SMTPAuthenticationError(454, b"temporary authentication failure")
+        monkeypatch.setattr(adapter, "_connect_smtp", lambda: smtp)
+
+        assert await adapter.connect() is False
+        assert adapter.fatal_error_code == "email_auth_error"
+        assert adapter.fatal_error_retryable is True
+        smtp.quit.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_smtp_transient_failure_stays_retryable(self, monkeypatch):
         adapter = self._make_adapter(monkeypatch)
         from plugins.platforms.email import adapter as email_adapter

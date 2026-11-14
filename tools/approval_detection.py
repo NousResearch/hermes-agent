@@ -197,9 +197,9 @@ _WIN_CMDPOS = (_CMDPOS + r'(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\
                r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
 # A cmdlet name ends its token: `Stop-Computer.ps1` / `Clear-Disk-Report` name other commands.
 _CMDLET_END = r'(?![\w.\\/-])'
-# A bare `-WhatIf` of the same invocation only previews; a quote/variable/splat/subexpression/comment before
-# it, or any `-WhatIf:<value>`, voids that (a closing quote may follow only at the end: `pwsh -c "… -WhatIf"`).
-_PS_NOT_WHATIF = r'(?!(?=[^\n;&|"\'`(){}$@#]*\s-whatif(?:\s|["\']?$))(?![^\n;&|"\'`(){}$@#]*-whatif:))'
+# A bare `-WhatIf` of the same invocation only previews; a quote/variable/splat/subexpression/comment before it, a
+# comma right before it (`srv1, -WhatIf` is an array element), or any `-WhatIf:<value>`, voids that (a closing quote may only end it: `pwsh -c "… -WhatIf"`).
+_PS_NOT_WHATIF = r'(?!(?=(?:[^\n;&|"\'`(){}$@#]*[^\n;&|"\'`(){}$@#\s,])?\s+-whatif(?:\s|["\']?$))(?![^\n;&|"\'`(){}$@#]*-whatif:))'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 

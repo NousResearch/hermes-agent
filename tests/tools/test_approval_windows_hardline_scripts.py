@@ -88,6 +88,7 @@ def test_escaped_quote_in_prose_does_not_end_the_string():
     "Restart-Computer -ComputerName srv1 -WhatIf -Force",
     'pwsh -c "Restart-Computer -WhatIf"',
     'pwsh -c "Get-Date; Stop-Computer -WhatIf"',
+    "Restart-Computer -ComputerName srv1, srv2 -WhatIf",
 ])
 def test_power_off_whatif_preview_is_not_hardline(cmd):
     assert not detect_hardline_command(cmd)[0], cmd
@@ -105,6 +106,9 @@ def test_power_off_whatif_preview_is_not_hardline(cmd):
     "Restart-Computer -WhatIf && Stop-Computer",
     "Restart-Computer -WhatIf" + chr(10) + "Stop-Computer",
     'pwsh -c "Restart-Computer -WhatIf; Stop-Computer"',
+    # After a comma `-WhatIf` is an array element (ComputerName @('localhost', '-WhatIf')), not the switch.
+    "Restart-Computer localhost, -WhatIf",
+    "Stop-Computer -ComputerName localhost,  -WhatIf -Force",
 ])
 def test_whatif_data_or_a_later_real_power_off_stays_hardline(cmd):
     assert detect_hardline_command(cmd)[0], cmd

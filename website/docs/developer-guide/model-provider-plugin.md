@@ -256,6 +256,7 @@ meaning says otherwise.
 | `process_args` | External-process default argv tail | `()` |
 | `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
 | `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
+| `login_args` | External-process CLI's own sign-in, as an argv tail after the resolved binary; sign-in hints show it | `()` |
 | `fallback_models` | Curated picker list when the live fetch fails | `()` |
 | `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
 | `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
@@ -389,6 +390,7 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 | `process_args` | Default argv tail, e.g. `("--mode", "acp")` |
 | `process_command_env_vars` | Env vars that override the binary, checked in order |
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
+| `login_args` | The CLI's own sign-in after the binary, e.g. `("auth", "login")`. Error replies, cron notices and the Desktop sign-in card show the binary plus these; empty keeps `hermes model`. Read from the declaration only, never by running the CLI |
 
 The `process_command_env_vars` and `process_args_env_var` names are executable authority: Hermes' generic env writers (dashboard, MCP and connector installs, `save_env_value`) refuse them, so set them in `.env` or the shell.
 

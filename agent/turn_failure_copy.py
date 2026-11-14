@@ -472,23 +472,22 @@ def oauth_relogin_command(provider: Any) -> str:
 
 
 def declared_login_command(profile: Any) -> str:
-    """The shell command a plugin's ``setup_status()`` names as its CLI's own login, or "".
+    """The shell command for a plugin CLI's own sign-in: its resolved binary plus ``login_args``, or "".
 
-    Only for a profile that overrides the hook: the base ``setup_status`` reports nothing, and an
-    override asks the CLI itself (``claude auth status`` is one short local call)."""
-    from providers.base import ProviderProfile
+    Built from the profile's declaration and a PATH lookup only: hints are rendered on the gateway's
+    event loop, and a plugin's ``setup_status()`` can run its CLI (``claude auth status``) for seconds."""
+    login_args = tuple(getattr(profile, "login_args", ()) or ())
+    if profile is None or not login_args:
+        return ""
+    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
 
-    if profile is None or type(profile).setup_status is ProviderProfile.setup_status:
-        return ""
-    try:
-        login = (profile.setup_status() or {}).get("login_command")
-    except Exception:  # health: allow BLE001 -- plugin hook boundary: a broken setup_status must not break the hint
-        return ""
-    if not login:
-        return ""
-    if not isinstance(login, (list, tuple)):
-        return str(login)
-    argv = [str(part) for part in login]
+    command = external_process_command(profile)
+    binary = resolve_external_process_command(command) or command
+    return render_login_command([binary, *(str(part) for part in login_args)]) if binary else ""
+
+
+def render_login_command(argv: list[str]) -> str:
+    """``argv`` as one line a user can paste into their shell, or "" when no single line would run."""
     import sys
 
     if sys.platform == "win32":
@@ -541,8 +540,9 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
+    relogin = oauth_relogin_command(provider) if "{relogin}" in template else ""
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
-                           relogin=oauth_relogin_command(provider))
+                           relogin=relogin)
     return f"{body}\n\nProvider said: {summary}"
 
 

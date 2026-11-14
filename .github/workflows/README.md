@@ -468,7 +468,10 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
 
 **Desktop Bundled Release.** This is the native build, sign, stage and publish
 pipeline for darwin-arm64, win32-x64/arm64 (+ universal bundle and Store
-bundle), and Termux. There is no Intel macOS (darwin-x64) build. The linux-x64/arm64 groups are **disabled** (dummy jobs).
+bundle), and Termux. There is no Intel macOS (darwin-x64) build. The
+linux-x64/arm64 groups build AppImages on tag builds only, as **diagnostic**
+jobs: they stage to the tag archive, write no feed, and gate nothing
+(`scripts.releases.job_groups.DIAGNOSTIC_JOBS`).
 
 | Mode | How it starts | Key inputs | Publishes |
 |---|---|---|---|
@@ -606,9 +609,7 @@ coverage:
 - **`e2e-desktop.yml`** is wired into `ci.yaml` with a bare `if: false`
   (deferred as flaky). Keep it a bare `false`. An expression form once made
   GitHub's parser reject the whole of `ci.yaml`.
-- **Linux desktop bundles** (`build-linux-x64/arm64` in
-  `desktop-bundled-release.yml`) and the Linux targets of `pm-bundle.yml` are
-  disabled.
+- **The Linux targets of `pm-bundle.yml`** are disabled.
 - **`install-e2e-red.yml`** updates its issue automatically only when the
   watched run came from a `schedule` event, and `install-e2e.yml` has no
   schedule. Today only a manual dispatch does anything.

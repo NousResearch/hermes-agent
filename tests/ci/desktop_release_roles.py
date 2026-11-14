@@ -29,6 +29,7 @@ CANARY_TAG = "v0.28.0+canary.20260818T101010Z"
 PLATFORM_ARCHES = {platform: tuple(a for p, a in TARGETS if p == platform) for platform, _ in TARGETS}
 PLATFORMS = tuple(PLATFORM_ARCHES)
 NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform, arch in TARGETS)
+LINUX_TARGETS = tuple(group for group in JOB_GROUPS if group.startswith("linux-"))
 # The release branch may write the shared dependency cache; commit and channel
 # builds run unreviewed inputs and may only read it.
 _MODE_BY_CACHE = {"write": "release", "read": "commit"}
@@ -48,8 +49,7 @@ def _only(matches: list[str], role: str) -> str:
     return matches[0]
 
 
-def native_builds(jobs: dict) -> dict[tuple[str, str], str]:
-    """``(target, "release" | "commit")`` -> id of that native build leg."""
+def _build_legs(jobs: dict) -> dict[tuple[str, str], str]:
     legs: dict[tuple[str, str], str] = {}
     for name, job in jobs.items():
         if not any(step.get("uses") == BUILD_CACHE_ACTION for step in job.get("steps", [])):
@@ -58,9 +58,22 @@ def native_builds(jobs: dict) -> dict[tuple[str, str], str]:
         key = (target, _MODE_BY_CACHE[job["cache-mode"]])
         assert key not in legs, f"{name} and {legs[key]} both build {key}"
         legs[key] = name
+    return legs
+
+
+def native_builds(jobs: dict) -> dict[tuple[str, str], str]:
+    """``(target, "release" | "commit")`` -> id of that native build leg."""
+    legs = {key: name for key, name in _build_legs(jobs).items() if key[0] not in LINUX_TARGETS}
     assert {target for target, _ in legs} == set(NATIVE_TARGETS), legs
     assert len(legs) == 2 * len(NATIVE_TARGETS), legs
     return legs
+
+
+def linux_builds(jobs: dict) -> dict[str, str]:
+    """Linux target -> its one build job, which only tag builds run."""
+    legs = {key: name for key, name in _build_legs(jobs).items() if key[0] in LINUX_TARGETS}
+    assert set(legs) == {(target, "release") for target in LINUX_TARGETS}, legs
+    return {target: name for (target, _mode), name in legs.items()}
 
 
 def selection_gates(jobs: dict) -> dict[str, str]:

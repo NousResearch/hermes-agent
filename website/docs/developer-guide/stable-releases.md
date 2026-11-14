@@ -307,8 +307,9 @@ retain no downloadable job artifacts.
 
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`, `linux-arm64`, and
-`termux`. Stable calls it once per group, except the linux groups, which wait
-for a real Linux build, and the `termux` and any other group whose lane the
+`termux`. Stable calls it once per group, except the linux groups, whose
+diagnostic AppImage builds no lane selects yet, and the `termux` and any other
+group whose lane the
 claim leaves out, which it does not call. The Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
@@ -513,7 +514,8 @@ See [the bundled update contract](https://github.com/NousResearch/hermes-agent/b
   All applicable source CI jobs still run, regardless of changed paths.
 - OSV vulnerability findings retain their existing advisory policy. Required
   scanner execution failures are failures, not advisory findings.
-- Disabled Linux desktop packaging is not claimed as shipped. Native Linux
+- Linux desktop AppImages, diagnostic canary builds, are not claimed as
+  shipped. Native Linux
   PM bundles, Docker, Nix and install/update checks remain required.
 - Housekeeping, autofix, comment and skills-index/deploy workflows are not
   release acceptance suites.

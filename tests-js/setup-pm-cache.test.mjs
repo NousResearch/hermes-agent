@@ -87,10 +87,12 @@ const payloadEvents = {
   branch: { event_name: 'push', ref: 'refs/heads/feature', sha: SHA },
 }
 
-it('finds a release and a commit leg for every native target, and the payload producer', () => {
+it('finds a release and a commit leg for every native target, a release leg per Linux target, and the payload producer', () => {
   const legs = desktopLegs.map(([, job]) => `${targetOf(job)}:${job['cache-mode']}`).sort()
   const targets = ['darwin-arm64', 'win32-arm64', 'win32-x64']
-  expect(legs).toEqual(targets.flatMap(target => [`${target}:read`, `${target}:write`]).sort())
+  // Linux builds only on tag builds, so it has no read-only commit leg.
+  expect(legs).toEqual([...targets.flatMap(target => [`${target}:read`, `${target}:write`]),
+    'linux-arm64:write', 'linux-x64:write'].sort())
   expect(cacheUsers(payload)).toHaveLength(1)
 })
 
@@ -129,7 +131,8 @@ it.each([
     expect(build.run).not.toContain('--prepare-only')
   }
   expect(restore.with.producer).toBe(producer)
-  expect(restore.with.source).toBe('${{ github.workspace }}')
+  // Inside a job container github.workspace names the host path, so those legs pass the checkout relatively.
+  expect(restore.with.source).toBe(job.container ? '.' : '${{ github.workspace }}')
   expect(upload.with).toEqual({
     ...restore.with,
     phase: 'save',

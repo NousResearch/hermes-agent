@@ -13,7 +13,8 @@ from urllib.parse import quote, unquote
 import pytest
 
 from tests.ci.desktop_release_roles import (
-    commit_summary, native_builds, needs_of, selection_gates, stage_step, termux_builder, universal_assembler,
+    DOWNLOADABLE_DISPATCHES, admitted, commit_summary, gate, native_builds, needs_of, selection_gates, stage_step,
+    termux_builder, universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
 from tests.scripts.test_release_r2 import r2_server
@@ -112,7 +113,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         if 'Not built' in line:
             assert f'[View build run]({run_url})' in line and base not in line
         elif line.startswith('| Linux'):
-            assert 'Disabled' in line and '](' not in line
+            assert 'Skipped (tag builds only)' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     # One failed arch must not cancel its siblings: the summary above only
     # has downloads to offer for the legs that were allowed to finish.
@@ -219,3 +220,12 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
                             'Render the full expected-binary matrix', summary_env)
     assert incomplete.returncode == 0, incomplete.stdout + incomplete.stderr
     assert f"failed: {gates['darwin-arm64']}" in summary.read_text(encoding='utf-8-sig')
+
+
+def test_the_commit_receipt_waits_only_on_jobs_a_commit_build_runs():
+    """The receipt requires every need to succeed, so a need the commit build skips blocks it."""
+    jobs = _workflow()['jobs']
+    commit = DOWNLOADABLE_DISPATCHES['commit']
+    for name in needs_of(jobs[commit_summary(jobs)]):
+        job = jobs[name]
+        assert 'if' not in job or gate(job['if'], commit, admitted(needs_of(job))), name

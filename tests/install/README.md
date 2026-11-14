@@ -125,7 +125,8 @@ previous-version upgrade baselines.
 
 This covers signed downloadable commit builds, canaries with upload enabled,
 and stable candidates. No-upload tag builds have no cross-job download handoff.
-Linux bundle jobs remain disabled, but Linux source-install desktop checks run.
+Linux AppImages are not smoked yet (their builds are diagnostic), but Linux
+source-install desktop checks run.
 Unsigned Store submissions are not sideloaded or re-signed for this smoke;
 their Store acceptance remains separate. Passing helper tests does not establish
 native installation or chat acceptance: those require the corresponding runner.

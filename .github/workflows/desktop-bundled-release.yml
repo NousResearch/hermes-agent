@@ -16,7 +16,8 @@ name: Desktop Bundled Release
 #     signed bundled one.
 #   build-darwin (darwin-arm64 only; there is no Intel macOS build)
 #     → sign + notarize + stage dmg/zip/blockmap + the feed input to the R2 tag archive
-#   build-linux                              → DISABLED for now (dummy skips)
+#   build-linux (linux-x64 + linux-arm64)   → tag builds only, diagnostic: AppImage
+#     staged to the tag archive; gates nothing and writes no Linux feed
 #   assemble-win32-bundle                   → native universal bundles
 #     (needs build-win32): all downloadable builds stage without touching feeds.
 #   smoke-darwin / smoke-win32 (per arch) → native install + chat
@@ -1202,28 +1203,190 @@ jobs:
           || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-arm64-commit.result == 'success' && needs.build-darwin-arm64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
-  # ── Linux builders (DISABLED for now) ─────────────────────────────────────
+  # ── Linux builders (diagnostic) ────────────────────────────────────────────
+  # One AppImage per arch, on tag builds only (canary tags, and stable
+  # candidates that select a linux group); commit and channel builds skip
+  # them. The container image is the oldest userland the arch supports, so
+  # source-built extensions link against that glibc: x64 builds on Ubuntu
+  # 22.04, arm64 on 24.04, and glibc_floor.py fails the build if anything
+  # packaged needs more. Nothing gates on these jobs
+  # (scripts.releases.job_groups.DIAGNOSTIC_JOBS) and no Linux feed is
+  # written: the AppImage and electron-builder's feed yml stage to the tag
+  # archive only.
   build-linux-x64:
-    name: bundled linux-x64 (disabled for now)
-    if: needs.validate.outputs.linux-x64 == 'true'
-    needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
+    name: bundled linux-x64
+    if: >-
+      needs.validate.outputs.linux-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    container:
+      image: ${{ matrix.target.image }}
+      # unshare --net for the offline payload smoke.
+      options: --cap-add SYS_ADMIN
+    environment: release-signing
+    cache-mode: write
+    # A failed Linux build stays visible on its job without failing the run.
+    continue-on-error: true
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x64
+            runner: blacksmith-32vcpu-ubuntu-2404
+            image: ubuntu:22.04
+            python: python3.11
+            alsa: libasound2
+    env: &linux-env
+      DEBIAN_FRONTEND: noninteractive
+      HERMES_DESKTOP_VARIANT: bundled
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
+    steps: &linux-steps
+      # The bootstrap scripts need Python >= 3.11; PM probes run node (libatomic)
+      # and cua-driver (X11, xkbcommon) while staging the payload. Preparation's
+      # native probe starts the downloaded Electron, which loads GTK, NSS, GBM
+      # and ALSA even as node; 24.04 renamed ALSA's package libasound2t64.
+      - name: Install the build userland
         shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+        env:
+          BOOTSTRAP_PYTHON: ${{ matrix.target.python }}
+          ALSA_PACKAGE: ${{ matrix.target.alsa }}
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates git build-essential cmake file xz-utils zstd \
+            libatomic1 libx11-6 libxi6 libxkbcommon0 \
+            libgtk-3-0 libnss3 libgbm1 "$ALSA_PACKAGE" "$BOOTSTRAP_PYTHON"
+          ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python3
+          ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python
+          # The checkout belongs to the runner's uid, not the container's root.
+          # System scope: preparation runs git there under its own HOME.
+          git config --system --add safe.directory '*'
+
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
+          filter: blob:none
+          fetch-tags: true
+
+      # Workspace-relative: in a job container github.workspace and runner.temp name host paths.
+      - name: Restore desktop dependency inputs
+        id: build-cache
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: restore
+          source: .
+          work: .build/desktop-job
+          cache: .cache/desktop-inputs
+          producer: desktop
+
+      - name: Prepare the complete desktop build
+        id: prepare
+        shell: bash
+        run: |
+          args=(--tag "$HERMES_PAYLOAD_TAG")
+          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
+          python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
+            --work "$GITHUB_WORKSPACE/.build/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
+          python3 -m scripts.ci.desktop_commands "$GITHUB_WORKSPACE/.build/desktop-job/prepared.json"
+
+      - name: Save dependency inputs before building
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: save
+          source: .
+          work: .build/desktop-job
+          cache: .cache/desktop-inputs
+          producer: desktop
+          key: ${{ steps.build-cache.outputs.cache-key }}
+
+      - name: Build and package
+        shell: bash
+        timeout-minutes: 200
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python scripts/bundles/desktop.py --prepared "$GITHUB_WORKSPACE/.build/desktop-job/prepared.json" --variant bundled
+          shopt -s nullglob
+          apps=(apps/desktop/release/linux*-unpacked)
+          if [ ${#apps[@]} -ne 1 ]; then
+            echo "::error::expected one unpacked Linux app under apps/desktop/release, found ${#apps[@]}"
+            exit 1
+          fi
+          echo "LINUX_APP=${apps[0]}" >> "$GITHUB_ENV"
+
+      - name: Audit bundle architecture
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          node apps/desktop/scripts/audit-bundle-arch.mjs \
+            --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
+
+      - name: Audit the glibc floor
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          python -m scripts.bundles.glibc_floor --arch "${MATRIX_LABEL##*-}" "$LINUX_APP"
+
+      - name: Smoke test the packaged payload (network disabled)
+        shell: bash
+        run: unshare --net bash scripts/smoke-payload.sh "$LINUX_APP/resources/agent-payload"
+
+      - name: Stage the AppImage to the tag archive
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        shell: bash
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          TARGET: ${{ matrix.target.label }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        # electron-builder embeds the AppImage's block map, and writes the feed
+        # yml only when a publish channel is configured. Neither is a feed here.
+        run: |
+          shopt -s nullglob
+          args=(--include '*.AppImage')
+          feeds=(apps/desktop/release/*-linux*.yml)
+          if [ ${#feeds[@]} -gt 0 ]; then args+=(--include '*-linux*.yml'); fi
+          python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+            --name "$TARGET" --root apps/desktop/release "${args[@]}"
 
   build-linux-arm64:
-    name: bundled linux-arm64 (disabled for now)
-    if: needs.validate.outputs.linux-arm64 == 'true'
-    needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
-        shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+    name: bundled linux-arm64
+    if: >-
+      needs.validate.outputs.linux-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    container:
+      image: ${{ matrix.target.image }}
+      options: --cap-add SYS_ADMIN
+    environment: release-signing
+    cache-mode: write
+    continue-on-error: true
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-arm64
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            image: ubuntu:24.04
+            python: python3.12
+            alsa: libasound2t64
+    env: *linux-env
+    steps: *linux-steps
 
   stage-receipt-darwin-arm64:
     name: Stage the darwin-arm64 stable receipt
@@ -2204,16 +2367,17 @@ jobs:
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
 
       # publish-canary consumes this job's result. Publish diagnostics first,
-      # then retain the original all-needs-success release gate.
+      # then require every need except the diagnostic Linux builds.
       - name: Preserve release success gate
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
         run: |
           python3 - <<'PY'
           import json, os
+          from scripts.releases.job_groups import gating_jobs
           from scripts.releases.stable import require_success
           needs = json.loads(os.environ['RELEASE_NEEDS'])
-          require_success(needs, list(needs))
+          require_success(needs, gating_jobs(needs))
           PY
 
   commit-builds-summary:
@@ -2224,8 +2388,6 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
         build-darwin-arm64,
-        build-linux-x64,
-        build-linux-arm64,
         assemble-win32-bundle,
         smoke-darwin-arm64,
         smoke-win32-arm64,
@@ -2430,8 +2592,6 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
         build-darwin-arm64,
-        build-linux-x64,
-        build-linux-arm64,
         builds-table,
         assemble-win32-bundle,
         smoke-darwin-arm64,
@@ -2440,6 +2600,7 @@ jobs:
         publish-win32-updater,
         publish-darwin-updater
       ]
+    # The Linux builds are diagnostic (scripts.releases.job_groups.DIAGNOSTIC_JOBS).
     if: |
       always()
       && inputs.build_commit == '' && inputs.channel == ''
@@ -2448,10 +2609,8 @@ jobs:
       && needs.validate.outputs.darwin-arm64 == 'true'
       && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
       && needs.validate.outputs.win32-bundle == 'true'
-      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
       && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
       && needs.build-darwin-arm64.result == 'success'
-      && needs.build-linux-x64.result == 'success' && needs.build-linux-arm64.result == 'success'
       && needs.builds-table.result == 'success'
       && needs.assemble-win32-bundle.result == 'success'
       && needs.smoke-darwin-arm64.result == 'success'

@@ -31,6 +31,8 @@ GROUP_SMOKES = {
     "win32-arm64": ("smoke-win32-arm64",),
     "win32-x64": ("smoke-win32-x64",),
 }
+# Reported, never gating: the Linux desktop builds stay diagnostic until proven green.
+DIAGNOSTIC_JOBS = frozenset({"build-linux-x64", "build-linux-arm64"})
 # The per-arch groups whose smoke installs the signed MSIX.
 SIGNED_WINDOWS_GROUPS = frozenset({"win32-arm64", "win32-x64"})
 # Stable splits the Windows groups across calls. Its bundle call runs both MSIX smokes from the
@@ -64,6 +66,11 @@ def parse_jobs(raw: str | None) -> dict[str, bool]:
 def selects_all(raw: str | None) -> bool:
     """True only when the input selects every group."""
     return all(parse_jobs(raw).values())
+
+
+def gating_jobs(names) -> list[str]:
+    """The jobs among ``names`` whose result can block a release."""
+    return [name for name in names if name not in DIAGNOSTIC_JOBS]
 
 
 def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False,

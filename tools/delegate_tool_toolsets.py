@@ -121,3 +121,14 @@ def _resolve_child_toolsets(
         dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
     )
     return child_toolsets, child_disabled_toolsets
+
+def _with_profile_disabled_toolsets(disabled_toolsets: list[str]) -> list[str]:
+    """*disabled_toolsets* plus the bound profile's own ``agent.disabled_toolsets``. Called inside a profile
+    route's scope: the parent's grant caps the child, and the routed profile still turns off what it turns off
+    (the tool list, the tool_search catalog and connectors all subtract the child's ``disabled_toolsets``)."""
+    from agent.skill_utils import parse_config_string_list
+    from hermes_cli.config import load_config_readonly
+
+    agent_cfg = load_config_readonly().get("agent")
+    profile_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets")) if isinstance(agent_cfg, dict) else []
+    return list(dict.fromkeys([*disabled_toolsets, *profile_disabled]))

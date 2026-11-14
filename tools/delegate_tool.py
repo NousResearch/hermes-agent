@@ -53,6 +53,7 @@ from tools.delegate_tool_tasks import (
 from tools.delegate_tool_tuning import pin_child_service_tier
 from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
+    _with_profile_disabled_toolsets,
 )
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
@@ -277,6 +278,8 @@ def _build_child_agent(
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
     )
     with delegated_profile_scope(profile_home):
+        if profile_home is not None:
+            child_disabled_toolsets = _with_profile_disabled_toolsets(child_disabled_toolsets)
         rt = _resolve_child_runtime(
             parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
             override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,

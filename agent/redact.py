@@ -17,8 +17,10 @@ from urllib.parse import unquote_plus
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.redact_command_segments import _command_segments
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_discord import _redact_discord_tokens
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
@@ -26,6 +28,7 @@ from agent.redact_headers import (
 )
 from agent.redact_pattern_shape import _pattern_structure
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
+from agent.redact_zhipu import _ZHIPU_API_KEY_RE
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +251,8 @@ _PREFIX_PATTERNS = [
     r"glffct-[A-Za-z0-9_\-]{10,}",      # GitLab feature-flags client token
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
+    r"glsa_[A-Za-z0-9]{10,}(?:_[A-Fa-f0-9]{8})?",  # Grafana service-account token (+ hex checksum)
+    r"glc_eyJ[A-Za-z0-9+/]{29,}={0,3}",  # Grafana Cloud token: base64 of a JSON object, so "eyJ"
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 ]
 
@@ -502,6 +507,9 @@ def _looks_like_opaque_credential(value: str) -> bool:
     return sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]")) >= 2
 
 
+_CONFIG_LITERAL_VALUES = frozenset({"true", "false", "yes", "no", "on", "off", "null", "none"})
+
+
 def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> bool:
     """Shared gate for the ENV / JSON / YAML assignment passes: skip programmatic env
     lookups used as values, optionally require a word-bounded keyword in the key,
@@ -518,6 +526,10 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # again only erases what the sentinel deliberately kept — the vendor label (``Digest ***`` →
     # ``***``, ``«redacted:ghp_…»`` → ``«redacted-secret»``). Same guard _redact_python_repr_fields uses.
     if value == "***" or value.startswith("«redacted"):
+        return False
+    # ``redact_secrets: true`` is configuration state, not a credential: masking a boolean/null
+    # literal under a secret-named key corrupts the config view the agent copies back (#142574).
+    if value.lower() in _CONFIG_LITERAL_VALUES:
         return False
     if check_keyword and not _key_has_secret_keyword(key):
         return False
@@ -638,8 +650,12 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # Authorization / Proxy-Authorization, any scheme or bare credential; header
 # name and scheme word preserved. The credential class excludes quotes: pulling
 # a closing quote into the mask turns value corruption into SYNTAX corruption
-# (unterminated quote → shell EOF / SyntaxError).
-_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
+# (unterminated quote → shell EOF / SyntaxError). A scheme word with no token after it
+# (``"authorization: bearer "``, ``(Authorization: Basic)``) is not a credential: the optional
+# scheme group backs off and would otherwise mask the scheme word itself (#142574).
+_AUTH_SCHEME_WORD = r"(?:bearer|basic|bot|token|digest|negotiate|ntlm|oauth)(?=[`)\],.;:!?]*(?:[\s\"']|$))"
+_AUTH_HEADER_RE = re.compile(
+    rf"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(?!{_AUTH_SCHEME_WORD})([^\s\"']+)", re.IGNORECASE)
 
 # Gate for _AUTH_HEADER_RE: the header-name substring in ANY casing. A mixed-case
 # name (aUtHoRiZaTiOn) contains neither the all-lower nor the all-upper run, so
@@ -787,8 +803,9 @@ _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 _WEBAPP_LINK_CREDENTIAL_RE = re.compile(
     r"((?<![A-Za-z0-9_-])hermes-session=|/webapp/launch#(?:[^\s#]*?&)?ticket=)[A-Za-z0-9_-]{20,}")
 
-# E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+# E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers. A ``+`` glued
+# to a word or dot is a version suffix, not a phone: ``python-3.14.7+20260901-linux-x64`` (#142574).
+_SIGNAL_PHONE_RE = re.compile(r"(?<![0-9A-Za-z_.])(\+[1-9]\d{6,14})(?![A-Za-z0-9])")  # ASCII: CJK-glued numbers still mask
 
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).
@@ -954,16 +971,6 @@ def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
     if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
         return m.group(0)
     return mask(token)
-
-# Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
-# provider-shaped instead of applying a generic high-entropy dotted-token rule:
-# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
-# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
-# ``<md5>.sqlite3``) never match.
-_ZHIPU_API_KEY_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
-)
-
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
 # masked secret never emits multiline or invisible bytes into display output.
@@ -1271,18 +1278,37 @@ def _redact_query_string(query: str) -> str:
     )
 
 
-def _canonical_url_param_name(name: str) -> str:
-    """Decode a URL parameter name (up to 3 unquote rounds) for case-insensitive matching."""
+def _decode_url_param_name(name: str) -> str:
     decoded = name
     for _ in range(3):
         next_value = unquote_plus(decoded)
         if next_value == decoded:
             break
         decoded = next_value
-    folded = decoded.casefold()
+    return decoded
+
+
+def _canonical_url_param_name(name: str) -> str:
+    """Decode a URL parameter name (up to 3 unquote rounds) for case-insensitive matching."""
+    folded = _decode_url_param_name(name).casefold()
     # Preserve policy names that are canonically hyphenated (for example
     # x-amz-signature) before accepting underscore-normalized aliases.
     return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")
+
+
+def _is_sensitive_url_param(name: str) -> bool:
+    """A query-param name that holds a credential: the URL-only names above, plus the names the JSON-field
+    rule masks (its closed list and the affixed-key policy: ``accessToken``, ``x-api-key``,
+    ``private_token``, ``secret_key``, ``passwd``, ``api_key_value``), so both passes agree on what a
+    secret is (#119852). Every ``redact_url_credentials=True`` caller shares this list, compaction
+    summaries included, so a ``pageToken`` or ``X-Amz-Credential`` value is masked there too, as the
+    JSON rule masks those fields."""
+    if _canonical_url_param_name(name) in _SENSITIVE_QUERY_PARAMS:
+        return True
+    decoded = _decode_url_param_name(name).replace("-", "_")  # camelCase kept: _key_name_words splits on it
+    # Same suffix drop as _json_affixed_key_secret: ``api_key_value`` / ``passwordValue`` hold the credential.
+    return (bool(_JSON_KEY_NAMES_FULL_RE.fullmatch(decoded))
+            or _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", decoded)))
 
 
 def _redact_strict_url_credentials(text: str) -> str:
@@ -1290,7 +1316,7 @@ def _redact_strict_url_credentials(text: str) -> str:
     network references); preserves keys, separators, public params, hosts, paths."""
     text = _STRICT_URL_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}=***"
-        if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
+        if _is_sensitive_url_param(m.group(2)) else m.group(0), text)
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
@@ -1382,7 +1408,6 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
-_JSON_FLAG_VALUES = frozenset({"true", "false", "yes", "no", "null", "none"})
 _JSON_VALUE_SUFFIX_RE = re.compile(r"[_.\-]?(?:value|Value|VALUE)$")
 
 
@@ -1397,9 +1422,9 @@ def _json_affixed_key_secret(key: str, value: str) -> bool:
     # A key that does not END in the credential word is metadata about one: ``passwordChanged``,
     # ``password_expires_at``, ``tokenUrl``, ``secret_id``, ``secret_arn``, ``PASSWORD_STORE_DIR``
     # carry timestamps, URLs and ids that look opaque, so the value shape cannot decide (#149435
-    # review). A boolean answers ``has_password``, it does not hold one.
+    # review).
     # ``api_key_value`` / ``passwordValue`` hold the credential itself: drop that one suffix first.
-    return _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", key)) and value.casefold() not in _JSON_FLAG_VALUES
+    return _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", key))
 
 
 def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
@@ -1629,8 +1654,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:
-        _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
-        text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
+        _mask = _mask_token_nonreusable if file_read else _mask_token
+        text = _ZHIPU_API_KEY_RE.sub(lambda m: _mask(m.group(1)), text)
+        text = _redact_discord_tokens(text, _mask)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
@@ -1756,36 +1782,6 @@ _HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
 _HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
-def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
-    ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
-    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
-    segments: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    for ch in command:
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = None
-            continue
-        if ch in "'\"":
-            quote = ch
-            buf.append(ch)
-            continue
-        if ch in "|;&":
-            seg = "".join(buf).strip()
-            if seg:
-                segments.append(seg)
-            buf = []
-            continue
-        buf.append(ch)
-    seg = "".join(buf).strip()
-    if seg:
-        segments.append(seg)
-    return segments
-
-
 def _is_under_hermes_home(path: str) -> bool:
     """True when an absolute ``config.yaml`` path sits under the active Hermes home or root.
 
@@ -1890,15 +1886,20 @@ _BEARER_RESIDUE_RE = re.compile(
 )
 
 
-def redact_for_egress(text: str, *, keep_phone_numbers: bool = False) -> str:
+def redact_for_egress(text: str, *, urls: bool = False, keep_phone_numbers: bool = False) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
     telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
     sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
     matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned.
-    ``keep_phone_numbers`` skips only the E.164 pass (``redact_for_chat_egress``'s opt-in)."""
+    ``keep_phone_numbers`` skips only the E.164 pass (``redact_for_chat_egress``'s opt-in).
+
+    ``urls=True`` also masks credential-named query params and URL userinfo — for archival sinks
+    (memory providers, telemetry) where no one follows the URL. Chat delivery leaves it off so a magic
+    link or OAuth URL the agent hands the user still works."""
     text = str(text or "")
     try:
-        text = redact_sensitive_text(text, force=True, keep_phone_numbers=keep_phone_numbers)
+        text = redact_sensitive_text(text, force=True, redact_url_credentials=urls,
+                                     keep_phone_numbers=keep_phone_numbers)
     except Exception:
         return REDACTION_UNAVAILABLE
     if "earer" in text.lower():  # IGNORECASE regex; the gate must fold case too (#108807)

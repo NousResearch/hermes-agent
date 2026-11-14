@@ -18,6 +18,7 @@ import agent.file_safety as fs
 
 SECRET_STORES = (
     "auth/google_oauth.json", "cache/bws_cache.json", "vault/vault.key", "browser-profile/Default/Cookies",
+    "google_token.json", "google_client_secret.json", "google_oauth_pending.json",
 )
 WRITABLE_CONTROL_FILES = ("auth.json", "config.yaml", "webhook_subscriptions.json")
 

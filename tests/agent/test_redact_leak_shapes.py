@@ -5,9 +5,11 @@ non-reusable ``file_read`` + ``secret_file`` sentinel, and the look-alike identi
 samples next to it stay byte-identical.
 """
 
+import time
+
 import pytest
 
-from agent.redact import redact_sensitive_text, redact_terminal_output
+from agent.redact import redact_for_egress, redact_sensitive_text, redact_terminal_output
 
 V = "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6J"
 SK = "sk-" + "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6Jt1Pa0Sg7Ye4Uo2"
@@ -75,6 +77,48 @@ class TestDatabaseClientCredentials:
     ])
     def test_masked(self, text, secret):
         _assert_masked(text, secret)
+
+    @pytest.mark.parametrize("text, expected", [
+        ("Server=db;User Id=sa;Password=it's-s3cretpw;Database=x",
+         "Server=db;User Id=sa;Password=***;Database=x"),
+        ('Server=db;User Id=sa;Password=ab"s3cretpw;Database=x',
+         "Server=db;User Id=sa;Password=***;Database=x"),
+        ("host=db user=app password=ab's3cretpw dbname=x", "host=db user=app password=*** dbname=x"),
+        # The quote that wraps the whole string still ends the value.
+        ("conn = 'Server=db;User Id=sa;Password=s3cretpw'", "conn = 'Server=db;User Id=sa;Password=***'"),
+        ('{"Default": "Server=db;User Id=sa;Password=s3cretpw"}',
+         '{"Default": "Server=db;User Id=sa;Password=***"}'),
+        ('psql "host=db user=app password=s3cretpw"', 'psql "host=db user=app password=***"'),
+        # ...also when an operator follows it, so the code after the string survives.
+        ("c = 'Server=db;User Id=sa;Password=s3cretpw'.format(a)",
+         "c = 'Server=db;User Id=sa;Password=***'.format(a)"),
+        ('c = "Server=db;User Id=sa;Password=s3cretpw"+suffix',
+         'c = "Server=db;User Id=sa;Password=***"+suffix'),
+        ("psql 'host=db user=app password=s3cretpw'&& echo ok",
+         "psql 'host=db user=app password=***'&& echo ok"),
+    ])
+    def test_quote_inside_unquoted_password_masked(self, text, expected):
+        assert redact_sensitive_text(text, force=True) == expected
+
+    @pytest.mark.parametrize("head, key", [
+        ("Server=db;User Id=sa;Password=x;", "Password="),
+        ("host=db user=app ", "password="),
+    ])
+    def test_repeated_keys_after_template_value_stay_linear(self, head, key):
+        # Each key's ``${'…}`` value runs to end of line and is skipped as a template; a later key
+        # must not rescan that tail, or the line costs O(n^2).
+        line = head + ("${'" + key) * 6000 + "}"
+        t0 = time.perf_counter()
+        redact_terminal_output(line, force=True)
+        assert time.perf_counter() - t0 < 2.0
+
+    @pytest.mark.parametrize("line", [
+        "Server=db;User Id=sa;" + "Pass" + "word=${a'" + "Pass" + "word=s3cretpw}",
+        "host=db user=app " + "pass" + "word=${a'" + "pass" + "word=s3cretpw}",
+    ])
+    def test_key_inside_template_shaped_value_masked(self, line):
+        # The quote no longer ends the first value, so it reaches ``}`` and looks like a template.
+        assert "s3cretpw" not in redact_terminal_output(line, force=True)
 
     def test_braced_odbc_password_masked_in_a_file_read(self):
         # ``cat`` output is read as code, where ``{pw}`` is a template; an ODBC brace is a literal.
@@ -284,3 +328,21 @@ class TestKnownPrefixUnderscoreDashTail:
         """A too-short body keeps the pattern silent even with an underscore tail —
         the fix loosened the boundary, not the length gate."""
         assert redact_sensitive_text("ghp_tooshort_x here", force=True) == "ghp_tooshort_x here"
+
+
+@pytest.mark.parametrize("name", ["accessToken", "refreshToken", "apiToken", "x-api-key", "auth_token",
+                                  "private_token", "access_key", "secret_key", "credential", "passwd",
+                                  "mysql_pwd", "sshpass", "client-key-data", "my_api_key_value",
+                                  "passwordValue", "api_key_value"])
+def test_egress_url_query_mask_covers_the_json_field_secret_names(name):
+    # #119852: the archival URL pass masks the same credential names the JSON-field rule does.
+    value = "Zo4" + "q8vN3kPw2xR7tL"
+    out = redact_for_egress(f"https://x.example/y?{name}={value}&page=2", urls=True)
+    assert value not in out and "page=2" in out
+
+
+@pytest.mark.parametrize("name", ["page", "public_key", "key_id", "token_count", "max_tokens", "tokenUrl",
+                                  "redirect_uri", "state"])
+def test_egress_url_query_mask_keeps_metadata_names(name):
+    url = "https://x.example/y?" + name + "=Zo4q8vN3kPw2xR7tL&page=2"
+    assert redact_for_egress(url, urls=True) == url

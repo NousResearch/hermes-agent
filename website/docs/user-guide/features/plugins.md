@@ -453,6 +453,9 @@ Hermes records Git install source and revision in `.install-metadata.json`.
 Unpinned tracked installs compare the saved source's remote HEAD, or a matching
 saved `update_url` feed. Pinned installs remain pinned. Self-cloned directories
 need `hermes plugins adopt NAME` before they become tracked installations.
+A plugin directory that is a link to a checkout somewhere else is never
+tracked, because Hermes does not change files outside the plugins directory:
+pull updates in that checkout, and delete the link to remove the plugin.
 Manually copied or provenance-drifted directories receive diagnostic guidance.
 Pip entry-point plugins can report an owning distribution's available version;
 that check does not turn them into Git-managed installs.

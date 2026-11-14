@@ -68,7 +68,7 @@ hermes webhook subscribe <name> \
   --signature generic
 ```
 
-`--signature` pins the scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab` or `linear`. GitHub, GitLab and Linear senders need their provider value or every delivery gets 401.
+`--signature` pins the scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab` or `linear`. GitHub, GitLab and Linear senders need their provider value or every delivery is rejected with 404 (the same answer as an unknown route).
 
 Returns the webhook URL and a masked HMAC secret (the full value is in `webhook_subscriptions.json` under the Hermes home). The user configures their service to POST to that URL.
 

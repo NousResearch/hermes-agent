@@ -656,6 +656,31 @@ class TestBlueBubblesGateBeforeDownload:
         assert len(handled) == handled_count
 
 
+class TestBlueBubblesWebhookPassword:
+    @pytest.mark.asyncio
+    async def test_whitespace_only_password_is_unset_and_never_matches(self, monkeypatch):
+        """A blank password must fail closed, not authenticate a webhook that sends the same blanks."""
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "   ")
+        from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+        adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={"server_url": "http://localhost:1234"}))
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {"guid": "msg-ws", "text": "hello", "handle": {"address": "+15555550100"},
+                     "isFromMe": False, "chats": [{"guid": "iMessage;-;+15555550100"}]},
+        }, password="   "))
+        await asyncio.sleep(0)
+
+        assert not adapter.password
+        assert response.status == 401
+        assert handled == []
+
+
 class TestBlueBubblesPluginRegistration:
     def test_register_declares_platform_entry_hooks(self):
         """Plugin shape: the former core wiring (_BUILTIN_ADAPTERS row, _send_bluebubbles,
@@ -728,3 +753,31 @@ class TestBlueBubblesAttachmentAuthorization:
         assert response.status == 200
         download.assert_not_awaited()
         assert [e.media_urls for e in handled] == [[]]  # still dispatched so the runner can deny/pair
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict", [False, None, True])
+    async def test_read_receipt_only_for_authorized_senders(self, monkeypatch, verdict):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(None if verdict is None else (lambda *args, **kwargs: verdict))
+        mark_read = AsyncMock()
+
+        async def fake_handle_message(event):
+            pass
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", mark_read)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-rr",
+                "text": "hello",
+                "handle": {"address": "+155****0199"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+155****0199"}],
+            },
+        }))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert mark_read.await_count == (1 if verdict is True else 0)

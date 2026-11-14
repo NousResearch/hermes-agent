@@ -29,3 +29,23 @@ def test_default_keeps_an_unquoted_body_visible():
     """Variable/arithmetic expansion may act on the body later, so the default does not mask it."""
     command = "cat > notes.md <<EOF\n$MAINTENANCE_NOTE\nEOF\n"
     assert strip_inert_heredoc_bodies(command) == command
+
+
+def test_security_scan_keeps_a_code_consumer_body_visible():
+    """``mask_code_consumers=False`` is for guards scanning for forbidden substrings (#127698)."""
+    command = "python3 - <<'EOF'\nreboot\nEOF\n"
+    assert strip_inert_heredoc_bodies(command) != command
+    assert strip_inert_heredoc_bodies(command, mask_code_consumers=False) == command
+
+
+def test_a_copier_stays_data_even_for_a_security_scan():
+    """``tee`` writes stdin to a file and never runs it, so it is not a code-bearing consumer."""
+    command = "tee notes.md <<'EOF'\nreboot\nEOF\n"
+    assert strip_inert_heredoc_bodies(command, mask_code_consumers=False) != command
+
+
+def test_floors_flag_composes_with_the_security_scan_flag():
+    """Both relaxations name different things, so a caller may pass them together."""
+    command = "cat > notes.md <<EOF\nreboot the board after the flash\nEOF\n"
+    assert strip_inert_heredoc_bodies(
+        command, require_quoted_delimiter=False, mask_code_consumers=False) != command

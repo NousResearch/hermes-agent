@@ -261,7 +261,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
     # it is routine. It can carry ProxyCommand / Match exec, so it goes through the
-    # approval gate instead (build_write_approval_paths).
+    # approval gate instead (_approval_paths_by_key).
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
@@ -311,17 +311,6 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def build_write_approval_paths(home: str) -> set[str]:
-    """Paths that need human APPROVAL to write but are not hard-denied credentials.
-
-    ``~/.ssh/config`` is routine to edit and holds no key bytes, but can carry
-    ``ProxyCommand`` / ``Match exec``; shell rc files run at login. Interactive file tools prompt
-    (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
-    non-interactive callers (ACP shims, background jobs) fail closed.
-    """
-    return set(_approval_paths_by_key(home))
-
-
 # Login shell startup files: approval-gated for the file tools and, via
 # tools.approval_detection._SHELL_RC_FILES, for terminal writes. One inventory so the two
 # gates cannot drift apart (#85321).
@@ -329,8 +318,12 @@ SHELL_RC_FILES: tuple[str, ...] = (".bashrc", ".zshrc", ".profile", ".bash_profi
 
 
 def _approval_paths_by_key(home: str) -> dict[str, str]:
-    """Approval-gated path -> the approval key that gates it. Each class has its own key so an
-    approve-always answer for ``~/.ssh/config`` never authorizes ``~/.bashrc`` (or vice versa)."""
+    """Paths that need human APPROVAL to write but are not hard-denied credentials -> the approval key.
+
+    ``~/.ssh/config`` holds no key bytes but can carry ``ProxyCommand`` / ``Match exec``; shell rc
+    files run at login. Interactive file tools prompt; callers without a human channel fail closed.
+    Each class has its own key so an approve-always answer for ``~/.ssh/config`` never authorizes
+    ``~/.bashrc`` (or vice versa)."""
     paths = {os.path.realpath(os.path.join(home, ".ssh", "config")): "ssh_config_write"}
     paths.update({os.path.realpath(os.path.join(home, name)): "shell_rc_write" for name in SHELL_RC_FILES})
     return paths
@@ -381,12 +374,13 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
 
 def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
-    # Approval-gated paths skip only the credential deny (so the ``.ssh/`` prefix
-    # doesn't swallow ``~/.ssh/config``) and let interactive tools prompt; the
-    # protected-subpath and HERMES_WRITE_SAFE_ROOT checks below still apply.
+    # Only ``~/.ssh/config`` skips the credential deny (so the ``.ssh/`` prefix doesn't swallow it)
+    # and reaches the approval prompt. Shell rc files need no exemption, and granting one would let
+    # ``~/.bashrc`` -> ``~/.ssh/authorized_keys`` turn the credential deny into a shell_rc_write
+    # prompt. The protected-subpath and HERMES_WRITE_SAFE_ROOT checks below still apply.
     key = deny_key(resolved)
-    approval_gated = any(key in map(deny_key, build_write_approval_paths(home)) for home in homes)
-    if not approval_gated and any(
+    ssh_configs = {deny_key(os.path.realpath(os.path.join(home, ".ssh", "config"))) for home in homes}
+    if key not in ssh_configs and any(
         key in map(deny_key, build_write_denied_paths(home))
         or any(key.startswith(deny_key(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes

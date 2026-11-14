@@ -489,6 +489,10 @@ button.portal-section-title:hover {
 
 .portal-sidebar [data-slot='agent-section'] .portal-section-scroll {
   flex: 1 1 auto;
+  /* An open machine's card is wider than the rows by its pad on each side: the scroller takes that
+     pad itself, so the card is neither clipped nor scrollable sideways. */
+  margin-inline: calc(-1 * var(--portal-sidebar-machine-pad));
+  padding-inline: var(--portal-sidebar-machine-pad);
   padding-bottom: 1.25rem;
   /* Only the bottom edge fades: an open machine's header sticks to the top edge and must stay
      legible over the agents scrolling under it. */
@@ -912,7 +916,9 @@ button.portal-section-title:hover {
   margin-top: var(--portal-sidebar-chats-pad);
 }
 
-.portal-sidebar [data-slot='agent-group']:has(> .portal-agent-sessions) + [data-slot='agent-group'] {
+.portal-sidebar
+  [data-slot='agent-group']:has(> .portal-agent-sessions [data-session-key])
+  + [data-slot='agent-group'] {
   margin-top: 0;
 }
 

@@ -292,6 +292,18 @@ describe('Portal sidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Show: Research/ }))
     expect(screen.getByRole('button', { name: 'Expand: Research' }).getAttribute('aria-expanded')).toBe('false')
   })
+  it('offers the fold only on an agent that has chats to fold', () => {
+    $profiles.set([...$profiles.get(), { name: 'idle', display_name: 'Idle', is_default: false }] as typeof $profiles.value)
+    mount()
+
+    const idle = screen.getByRole('group', { name: /^Idle ·/ })
+
+    expect(within(idle).queryByRole('button', { name: /^(Collapse|Expand): Idle$/ })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Collapse: Research' })).toBeTruthy()
+
+    act(() => $sessions.set([...$sessions.get(), makeSessionInfo({ id: 'first', title: 'First chat', profile: 'idle' })]))
+    expect(within(idle).getByRole('button', { name: 'Collapse: Idle' })).toBeTruthy()
+  })
   it('shows Portal pin guidance only for a settled empty list, not loading, errors, or filtering', () => {
     vi.spyOn(apiClient, 'hermesApi').mockImplementation(() => new Promise(() => {}))
     $sessions.set([makeSessionInfo({ id: 'regular', title: 'Regular chat', profile: 'default' })])

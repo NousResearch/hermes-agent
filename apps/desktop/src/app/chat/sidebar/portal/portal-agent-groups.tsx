@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode, RefObject } from 'react'
 
+import { SIDEBAR_PROFILE_GROUP_HEADER_AREA } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { FadeScroll } from '@/components/ui/fade-scroll'
 import { Tip } from '@/components/ui/tooltip'
+import { useContributions } from '@/contrib'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
@@ -71,6 +73,9 @@ function AgentCard({
   const { t } = useI18n()
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
   const summary = chatCount ? t.simplifiedAgents.chatCount(chatCount) : t.simplifiedAgents.noChats
+  const headerItems = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
+  // The disclosure is offered only when folding would hide something: chats, routines or plugin chrome.
+  const foldable = chatCount > 0 || Boolean(routines?.count) || headerItems.length > 0
 
   return (
     <div
@@ -81,21 +86,23 @@ function AgentCard({
     >
       <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
         <SimplifiedBotChatRow agent={agent} fallbackSummary={summary} />
-        <Tip label={toggleLabel}>
-          <Button
-            aria-expanded={open}
-            aria-label={toggleLabel}
-            className="portal-agent-collapse"
-            onClick={() => {
-              recordIaAction(open ? 'ia.section.agent_collapsed' : 'ia.section.agent_expanded')
-              onToggle(agentKey(agent), open)
-            }}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <ChevronDown aria-hidden />
-          </Button>
-        </Tip>
+        {foldable && (
+          <Tip label={toggleLabel}>
+            <Button
+              aria-expanded={open}
+              aria-label={toggleLabel}
+              className="portal-agent-collapse"
+              onClick={() => {
+                recordIaAction(open ? 'ia.section.agent_collapsed' : 'ia.section.agent_expanded')
+                onToggle(agentKey(agent), open)
+              }}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <ChevronDown aria-hidden />
+            </Button>
+          </Tip>
+        )}
         <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
       </div>
       {open && (

@@ -394,7 +394,7 @@ there to keep a parent's room opt-in. A quoted `"false"` counts as `false`; opti
 `<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
 
 With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is
-hidden in group chats, channels and threads, so a healthy marker-only turn there stays silent where
+hidden in group chats, channels, threads and webhook sources, so a healthy marker-only turn there stays silent where
 `allow_silence` is unset (see
 [Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)). An
 explicit `allow_silence: false`, on the room or the platform, still keeps the notice there.

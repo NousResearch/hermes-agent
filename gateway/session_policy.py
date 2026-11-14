@@ -1001,35 +1001,69 @@ def route_launch_key(authority, policy, config):
     return launch_key(authority, policy)
 
 
+def _policy_refused(field: str, detail: str) -> RuntimeStoreError:
+    """A receipt refusal that names its check. ``storage_unavailable`` stays the wire code; ``field``
+    and ``detail`` say which check fired, so an operator can tell a blank model from a bad surface
+    without reading the source (#148540)."""
+    return RuntimeStoreError('storage_unavailable', field=field, detail=detail)
+
+
 def restore_policy(data):
-    """Reject incomplete private policy rather than rebuilding from current defaults."""
+    """Reject incomplete private policy rather than rebuilding from current defaults.
+
+    Every refusal names the check that fired (``RuntimeStoreError.field`` / ``.detail``) so the gateway
+    log and the client can tell the reasons' many checks apart instead of reporting the bare
+    ``storage_unavailable`` (#148540). The accepted set is unchanged: same checks, same order, same
+    decision — only the reporting became field-specific.
+    """
     try:
         policy = LocalSessionPolicy(**data)
         from gateway.session_a2a import is_forward_policy
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
-        if ((not is_forward_policy(policy) and
-             (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
-                or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not isinstance(policy.model, str) or not policy.model.strip()
-                or not isinstance(policy.toolsets, (list, tuple))
-                or any(not isinstance(name, str) for name in policy.toolsets)
-                or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
-                or not isinstance(policy.skills_prompt, (str, type(None)))
-                or type(policy.coding_posture) is not bool
-                or not _valid_client_env(policy.client_env_json) or type(policy.client_env_remote) is not bool
-                or not _valid_client_env(policy.client_env_rules_json, list)
-                or policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES
-                or (policy.edit_approval_policy != 'ask' and policy.source != 'acp')
-                or (policy.safe_mode and not policy.ignore_user_config)):
-            raise ValueError('invalid policy')
+        if not is_forward_policy(policy) and (
+                policy.source not in surfaces or policy.platform != surfaces[policy.source]):
+            raise _policy_refused('source', f'stored source/platform {policy.source}/'
+                                            f'{policy.platform} is not a known surface pair')
+        if not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute():
+            raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
+        if not isinstance(policy.model, str) or not policy.model.strip():
+            raise _policy_refused('model', 'the stored policy names no model')
+        if not isinstance(policy.toolsets, (list, tuple)) or any(
+                not isinstance(name, str) for name in policy.toolsets):
+            raise _policy_refused('toolsets', 'the stored toolsets are not a list of names')
+        if type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool:
+            raise _policy_refused('safe_mode' if type(policy.safe_mode) is not bool
+                                  else 'ignore_user_config', 'the stored flag is not a boolean')
+        if not isinstance(policy.skills_prompt, (str, type(None))):
+            raise _policy_refused('skills_prompt', 'the stored skills prompt is not a string')
+        if type(policy.coding_posture) is not bool:
+            raise _policy_refused('coding_posture', 'the stored flag is not a boolean')
+        if not _valid_client_env(policy.client_env_json):
+            raise _policy_refused('client_env_json', 'the stored client environment map is malformed')
+        if type(policy.client_env_remote) is not bool:
+            raise _policy_refused('client_env_remote', 'the stored flag is not a boolean')
+        if not _valid_client_env(policy.client_env_rules_json, list):
+            raise _policy_refused('client_env_rules_json', 'the stored client environment rules are '
+                                                           'malformed')
+        if policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES:
+            raise _policy_refused('edit_approval_policy', 'the stored edit approval policy is unknown')
+        if policy.edit_approval_policy != 'ask' and policy.source != 'acp':
+            raise _policy_refused('edit_approval_policy', 'only an acp receipt may store a non-ask '
+                                                          'edit approval policy')
+        if policy.safe_mode and not policy.ignore_user_config:
+            raise _policy_refused('safe_mode', 'safe mode requires ignore_user_config')
         from dataclasses import replace
-        for value in (policy.config_json, policy.request_json, policy.terminal_json):
-            if not isinstance(json.loads(value), dict):
-                raise ValueError('invalid policy object')
+        for name in ('config_json', 'request_json', 'terminal_json'):
+            if not isinstance(json.loads(getattr(policy, name)), dict):
+                raise _policy_refused(name, 'the stored policy object is not a JSON object')
         terminal = json.loads(policy.terminal_json)
         if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
-            raise ValueError('terminal policy mismatch')
+            raise _policy_refused('terminal_json', 'TERMINAL_CWD does not match the stored cwd')
         return replace(policy, toolsets=tuple(policy.toolsets))
+    except RuntimeStoreError:
+        # A refusal that already names its field keeps its own reason (it is a ValueError subclass,
+        # so the blanket wrap below would otherwise flatten it back to the bare code).
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
 

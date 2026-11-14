@@ -1267,6 +1267,30 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _eval_payload(args: list[str]) -> str | None:
+    """Return the shell code eval would run: its arguments joined by spaces."""
+    # eval takes no options: only an explicit ``--`` is consumed. A first word such
+    # as ``-x`` is code (zsh reports it missing and runs the rest of the list).
+    if args and args[0] == "--":
+        args = args[1:]
+    return " ".join(args) or None
+
+
+def _eval_payloads(command: str):
+    """Yield the code each ``eval`` in *command* hands back to the shell, like a ``-c`` payload.
+    Kept out of _execution_flag_findings: eval is not itself a dangerous mechanism, only its code is."""
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "eval":
+                continue
+            # Bound to eval's own command: a `$(eval …)` / backtick nested in an outer command ends at
+            # its closing `)`/`` ` ``, so the outer command's arguments are not eval code.
+            tokens = _shell_segment_tokens(_shell_command_segment(segment, start), 0)
+            payload = _eval_payload(tokens[1:]) if tokens else None
+            if payload:
+                yield payload
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -1701,7 +1725,9 @@ def _command_detection_variants(command: str):
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source = pending.pop()
+        payloads = [payload for _, payload in _execution_flag_findings(source)]
+        for payload in (*payloads, *_eval_payloads(source)):
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command

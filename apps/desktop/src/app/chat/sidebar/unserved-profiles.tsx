@@ -33,7 +33,9 @@ export function useUnservedProfiles(profiles: readonly ProfileInfo[]): ReadonlyS
       .then(({ agents, primaryConnectionId }) => {
         if (live) {
           const own = agents.filter(agent => agent.connectionId === primaryConnectionId)
-          setUnserved(new Set(own.filter(agent => agent.reachable === false).map(agent => normalizeProfileKey(agent.profile))))
+          setUnserved(
+            new Set(own.filter(agent => agent.reachable === false).map(agent => normalizeProfileKey(agent.profile)))
+          )
         }
       })
       .catch(() => undefined)

@@ -170,7 +170,11 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
 
-        return showUndoRollbackHint(ctx, sid, result.target_message as undefined | { id?: unknown; timestamp?: unknown })
+        return showUndoRollbackHint(
+          ctx,
+          sid,
+          result.target_message as undefined | { id?: unknown; timestamp?: unknown }
+        )
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -318,7 +322,10 @@ export function canonicalTools(ctx: SlashRunCtx) {
         return
       }
 
-      ctx.transcript.page(renderToolsListing(asRpcResult<ToolsShowResult>(raw) ?? {}), t('slashCmd.ops.slashWorker.toolsTitle'))
+      ctx.transcript.page(
+        renderToolsListing(asRpcResult<ToolsShowResult>(raw) ?? {}),
+        t('slashCmd.ops.slashWorker.toolsTitle')
+      )
     })
     .catch(ctx.guardedErr)
 }

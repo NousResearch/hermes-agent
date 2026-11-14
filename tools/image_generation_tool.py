@@ -570,14 +570,11 @@ def _build_no_backend_setup_message() -> str:
     return "\n".join(lines)
 
 
-def _get_plugin_provider(name: str, *, force: bool = False):
+def _get_plugin_provider(name: str):
     """Discover plugins (local import: importing this module must not trigger discovery) and return the named provider."""
     from agent.image_gen_registry import get_provider
     from hermes_cli.plugins import _ensure_plugins_discovered
-    if force:
-        _ensure_plugins_discovered(force=True)
-    else:
-        _ensure_plugins_discovered()
+    _ensure_plugins_discovered()
     return get_provider(name)
 
 
@@ -697,9 +694,12 @@ def _dispatch_to_plugin_provider(
         return None
     if provider is None:
         # Long-lived sessions may have discovered plugins before a bundled backend
-        # was patched in or config changed: retry once with a forced refresh.
+        # was patched in or config changed: one forced refresh per plugin-source
+        # stamp (a per-call pass would unload every plugin and still miss).
+        from hermes_cli.plugin_provider_retry import lookup_with_forced_refresh
         try:
-            provider = _get_plugin_provider(configured, force=True)
+            provider = lookup_with_forced_refresh(
+                "image_gen", configured, lambda: _get_plugin_provider(configured))
         except Exception as exc:
             logger.debug("image_gen plugin force-refresh skipped: %s", exc)
     if provider is None:

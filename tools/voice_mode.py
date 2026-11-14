@@ -1464,14 +1464,15 @@ def _check_plugin_stt_provider(provider: str) -> bool:
         return False
     try:
         from agent.transcription_registry import get_provider
+        from hermes_cli.plugin_provider_retry import lookup_with_forced_refresh
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)
         if plugin_provider is None:
             # Match the transcription dispatcher: long-lived processes may need
-            # one refresh after plugins or configuration change.
-            _ensure_plugins_discovered(force=True)
-            plugin_provider = get_provider(key)
+            # one refresh after plugins or configuration change — at most one per
+            # plugin-source stamp, never one per call.
+            plugin_provider = lookup_with_forced_refresh("stt", key, lambda: get_provider(key))
     except Exception as exc:
         logger.debug("STT plugin requirements check skipped for '%s': %s", key, exc)
         return False

@@ -84,24 +84,26 @@ def _truncate_stdout_text(stdout_text: str, env: Any = None) -> tuple[str, dict[
 def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
     """Write full stdout to cache/exec; return its path (None on failure — best-effort,
     the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files).
+    reruns coalesce. The spill is a second emitter of the output the warning tells the
+    model to page with read_file, so it gets the same ANSI strip + secret redaction as
+    the inline text, and is owner-only (cache/exec is never bind-mounted into a backend).
     In a hosted scope the file goes into the agent's own sandbox (*env*) or nowhere: the
     output is the tenant's and this host keeps none of it."""
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
-        from tools.spill_safety import write_text_exclusive
+        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
         from tools.tool_result_storage import _persist_hosted
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
             stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
                            + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
+        stdout_text = _sanitize_output_text(stdout_text)
         digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
         if (hosted_path := _persist_hosted(stdout_text, f"exec-stdout-{digest}", env)) is not None:
             return hosted_path or None
-        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = ensure_spill_dir(get_hermes_dir("cache/exec", "exec_spill"))
         path = cache_dir / f"stdout-{digest}.txt"
-        write_text_exclusive(path, stdout_text, private=False, overwrite=True)
+        write_text_exclusive(path, stdout_text, overwrite=True)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill execute_code stdout: %s", exc)
@@ -520,13 +522,18 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
-    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
-    output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
+def _sanitize_output_text(text: str) -> str:
+    """ANSI strip + secret redaction for tool-bound output text. code_file=True: output
+    often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
     from tools.ansi_strip import strip_ansi
     from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(strip_ansi(text), code_file=True)
+
+
+def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
+    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction."""
     stdout_text, metadata = _truncate_stdout_text(stdout_text, env)
-    return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
+    return _sanitize_output_text(stdout_text), metadata
 
 
 def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:

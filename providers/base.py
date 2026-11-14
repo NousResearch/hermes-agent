@@ -224,7 +224,8 @@ class ProviderProfile:
     # The CLI's own sign-in, as an argv tail after the resolved binary, e.g. ("auth", "login"). Sign-in
     # hints (error copy, cron notices, the Desktop card) show it; empty keeps ``hermes model``. Declared,
     # not probed: hints are built on the gateway's event loop, so they never run ``setup_status()``.
-    login_args: tuple = ()
+    # Keyword-only so a plugin subclass's own positional option keeps its slot.
+    login_args: tuple = field(default=(), kw_only=True)
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

@@ -430,3 +430,41 @@ def test_alerted_gate_honours_cooldown_opt_out_and_legacy_rows(monkeypatch, tmp_
     assert inc.ack_incident(inc_id) is True
     monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 0)
     assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)
+
+
+
+def test_reminder_cooldown_escalates_per_ping_and_resets_on_recovery(monkeypatch, tmp_path):
+    """``failure_repeat_alert_backoff`` stretches the cooldown by its factor for every ping the
+    incident already sent (6h, 18h, ... with 3), and a green run starts the count over."""
+    from datetime import timedelta
+
+    from hermes_constants import get_hermes_home
+
+    inc = _point_db(monkeypatch, tmp_path)
+    (get_hermes_home() / "config.yaml").write_text(
+        "cron:\n  failure_repeat_alert_hours: 6\n  failure_repeat_alert_backoff: 3\n")
+    job = _job()
+    _, inc_id = sched._upsert_incident_for_failure(job, "repeat boom")
+
+    def ago(hours):
+        stamp = (sched._hermes_now() - timedelta(hours=hours)).isoformat()
+        with inc._transaction() as conn:
+            conn.execute("UPDATE cron_incidents SET alerted_at=? WHERE id=?", (stamp, inc_id))
+        return sched._upsert_incident_for_failure(job, "repeat boom")[0]
+
+    sched._mark_incident_alerted(inc_id)  # first ping: 6h cooldown
+    assert ago(5) is True and ago(7) is False
+    sched._mark_incident_alerted(inc_id)  # reminder: cooldown now 18h
+    assert inc.get_incident(inc_id)["alert_count"] == 2
+    assert ago(10) is True and ago(19) is False
+
+    sched._resolve_incidents_for_recovered_job(job)
+    sched._upsert_incident_for_failure(job, "repeat boom")  # re-opens the signature
+    assert inc.get_incident(inc_id)["alert_count"] == 0
+    sched._mark_incident_alerted(inc_id)
+    assert ago(7) is False
+
+    # A long flat-cooldown history must cap at a week, not overflow into per-run pings.
+    with inc._transaction() as conn:
+        conn.execute("UPDATE cron_incidents SET alert_count=1000 WHERE id=?", (inc_id,))
+    assert ago(167) is True and ago(169) is False

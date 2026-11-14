@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -14,22 +15,81 @@ def _fmt_state(subsystem: str) -> str:
     return f"{subsystem}.write_approval = {'on' if on else 'off'}"
 
 
+_DEFAULT_LIMIT = 20
+_SUMMARY_CLIP = 80
+
+
 def _fmt_pending_list(subsystem: str) -> str:
+    return _fmt_pending_list_inner(subsystem, show_all=False)
+
+
+def _fmt_all_pending_list(subsystem: str) -> str:
+    return _fmt_pending_list_inner(subsystem, show_all=True)
+
+
+def _fmt_pending_list_inner(subsystem: str, show_all: bool) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
-    lines = [f"Pending {subsystem} writes ({len(records)}):"]
-    for r in records:
-        origin = r.get("origin", "foreground")
-        tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
-        if subsystem == wa.MEMORY:
-            lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
-    lines.append("")
-    lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
+    total = len(records)
+    visible = records if show_all else records[:_DEFAULT_LIMIT]
+    lines = [f"Pending {subsystem} writes ({total}):"]
+    if subsystem == wa.SKILLS:
+        _fmt_skills_grouped(lines, visible)
+    else:
+        for record in visible:
+            _fmt_one_record(lines, record)
+            if subsystem == wa.MEMORY:
+                lines.extend(f"      {line}" for line in _matched_entries(record["payload"]))
+    if not show_all and total > _DEFAULT_LIMIT:
+        lines.extend(["", f"… and {total - _DEFAULT_LIMIT} more — /{subsystem} pending --all"])
+    lines.extend(["", f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>"])
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
+
+
+def _fmt_one_record(lines: list[str], record: dict) -> None:
+    origin = record.get("origin", "foreground")
+    tag = " [auto]" if origin == "background_review" else ""
+    summary = (record.get("summary") or "").strip()
+    if len(summary) > _SUMMARY_CLIP:
+        summary = summary[:_SUMMARY_CLIP].rstrip() + "…"
+    lines.append(f"  {record['id']}{tag}  {summary}")
+
+
+def _fmt_skills_grouped(lines: list[str], records: list[dict]) -> None:
+    by_name: dict[str, list[dict]] = {}
+    names: list[str] = []
+    for record in records:
+        name = _extract_skill_name(record)
+        if name not in by_name:
+            by_name[name] = []
+            names.append(name)
+        by_name[name].append(record)
+    for name in names:
+        group = by_name[name]
+        if len(group) == 1:
+            _fmt_one_record(lines, group[0])
+        else:
+            actions = ", ".join(record.get("action", "?") for record in group)
+            lines.append(f"  ⚠ {name}  ({len(group)} pending: {actions})")
+            for record in group:
+                _fmt_one_record(lines, record)
+
+
+def _extract_skill_name(record: dict) -> str:
+    payload = record.get("payload", {})
+    name = payload.get("name", "")
+    if name:
+        return str(name).strip()[:60]
+    summary = (record.get("summary") or "").strip()
+    match = re.match(r"^(create|update|patch|delete)\s+(.+?)(?:\s*[—–-].*)?$", summary, re.IGNORECASE)
+    if match:
+        return match.group(2).strip()
+    fallback = payload.get("old_string", "").split("\n")[0][:40]
+    return fallback or summary[:40]
+
 
 
 def handle_pending_subcommand(
@@ -45,7 +105,8 @@ def handle_pending_subcommand(
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
     sub, rest = args[0].lower(), args[1:]
     if sub == "pending":
-        return _fmt_pending_list(subsystem)
+        show_all = len(rest) >= 1 and rest[0].lower() in {"--all", "-a", "all"}
+        return (_fmt_all_pending_list(subsystem) if show_all else _fmt_pending_list(subsystem))
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
     if sub in {"reject", "deny", "drop"}:

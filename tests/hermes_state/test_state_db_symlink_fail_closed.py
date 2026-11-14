@@ -10,11 +10,12 @@ import pytest
 
 from hermes_state import SessionDB, _secure_state_db_files
 
+pytestmark = pytest.mark.platforms("posix")  # POSIX symlinks and permission bits
+
 
 class TestSecureStateDbSymlinkFailClosed:
     """A planted state.db/-wal/-shm symlink must stop the writable open (#109857)."""
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     @pytest.mark.parametrize("planted_name", ["state.db-wal", "state.db-shm"])
     def test_planted_symlink_fails_closed(self, tmp_path, planted_name):
         """Hardening raises ELOOP instead of skipping, so the caller's
@@ -33,7 +34,6 @@ class TestSecureStateDbSymlinkFailClosed:
         assert exc_info.value.errno == errno.ELOOP
         assert stat.S_IMODE(target.stat().st_mode) == 0o666
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     def test_swap_after_lstat_cannot_chmod_replacement_target(
         self, tmp_path, monkeypatch
     ):
@@ -75,7 +75,6 @@ class TestSecureStateDbSymlinkFailClosed:
         assert swapped
         assert stat.S_IMODE(target.stat().st_mode) == 0o666
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     @pytest.mark.parametrize("foreign", ["link", "target"])
     def test_main_db_link_owned_by_another_user_fails_closed(
         self, tmp_path, monkeypatch, foreign
@@ -106,7 +105,6 @@ class TestSecureStateDbSymlinkFailClosed:
         assert exc_info.value.errno == errno.ELOOP
         assert stat.S_IMODE(target.stat().st_mode) == 0o666
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     def test_session_db_open_refuses_dangling_link(self, tmp_path):
         """End to end: a state.db link whose target is missing (an unmounted
         volume) fails closed instead of SQLite creating a store behind it."""
@@ -120,7 +118,6 @@ class TestSecureStateDbSymlinkFailClosed:
 
         assert not target.exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     def test_registry_refuses_dangling_link_before_resolving_it(self, tmp_path):
         """The shared registry (gateway, CLI) resolves the path before SessionDB
         sees it, so it must judge the link first: a dangling one never gets a
@@ -138,7 +135,6 @@ class TestSecureStateDbSymlinkFailClosed:
         assert exc_info.value.errno == errno.ELOOP
         assert not target.exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     def test_registry_opens_through_operator_store_link(self, tmp_path):
         import hermes_state_registry
 
@@ -154,7 +150,6 @@ class TestSecureStateDbSymlinkFailClosed:
         finally:
             hermes_state_registry.release_or_close(db)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")
     def test_session_db_opens_through_operator_store_link(self, tmp_path):
         """A store the operator moved to other storage and linked back
         (#145075) keeps working: sessions land in the link's target."""

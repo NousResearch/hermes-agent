@@ -469,6 +469,90 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_ignores_stale_quota_error_after_review_requested(
+    kanban_home, monkeypatch,
+):
+    """Stale last_failure_error must not park a card after a non-quota latest run.
+
+    Review does not clear last_failure_error. Rate-limit cooldown only looks at
+    the latest ended run, so after review_requested it no longer applies — but
+    check_respawn_guard used to apply _RESPAWN_BLOCKER_RE to the leftover quota
+    text and return blocker_auth on every dispatcher tick, including lane=review.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    quota_err = (
+        "pid 38464 exited rate-limited (quota wall) — "
+        "requeued without counting a failure"
+    )
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+
+    def _end_run(conn, task_id, outcome, status, error):
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome=?, status=?, ended_at=? WHERE id=?",
+            (outcome, status, now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (error, task_id),
+        )
+        conn.commit()
+        return task_id
+
+    with kbc.connect() as conn:
+        review_id = kb.create_task(conn, title="stale-quota-review", assignee="a")
+        claimed = kb.claim_task(conn, review_id)
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?",
+            (quota_err, review_id),
+        )
+        conn.commit()
+        assert kb.request_review(
+            conn, review_id, summary="ready for review", reviewer="r",
+            expected_run_id=claimed.current_run_id,
+        )
+        # request_review ends the run as review_requested and does not clear
+        # last_failure_error. Force ended_at so "latest ended" is deterministic
+        # even with the patched clock.
+        conn.execute(
+            "UPDATE task_runs SET ended_at=? WHERE task_id=? AND outcome='review_requested'",
+            (now, review_id),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, review_id, lane="review") is None
+        assert kbd.check_respawn_guard(conn, review_id) is None
+
+        completed_id = kb.create_task(conn, title="stale-quota-completed", assignee="a")
+        _end_run(conn, completed_id, "completed", "done", quota_err)
+        assert kbd.check_respawn_guard(conn, completed_id) != "blocker_auth"
+
+        rl_id = kb.create_task(conn, title="latest-rate-limited", assignee="a")
+        _end_run(conn, rl_id, "rate_limited", "rate_limited", quota_err)
+        assert kbd.check_respawn_guard(conn, rl_id) == "rate_limit_cooldown"
+        assert kbd.check_respawn_guard(conn, rl_id, lane="review") == "rate_limit_cooldown"
+
+        auth_id = kb.create_task(conn, title="latest-auth-crash", assignee="a")
+        _end_run(conn, auth_id, "crashed", "failed", "401 auth failed")
+        # Captured crash output is context, not a diagnosis (#117097).
+        assert kbd.check_respawn_guard(conn, auth_id) is None
+
+        spawn_auth_id = kb.create_task(conn, title="latest-auth-spawn", assignee="a")
+        _end_run(conn, spawn_auth_id, "spawn_failed", "failed", "401 auth failed")
+        assert kbd.check_respawn_guard(conn, spawn_auth_id) == "blocker_auth"
+
+        failed_id = kb.create_task(conn, title="latest-auth-failed", assignee="a")
+        _end_run(conn, failed_id, "failed", "failed", "401 auth failed")
+        assert kbd.check_respawn_guard(conn, failed_id) == "blocker_auth"
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

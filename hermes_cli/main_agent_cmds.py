@@ -105,7 +105,10 @@ def cmd_acp(args):
 def cmd_tools(args):
     from hermes_cli.main import _require_tty
     action = getattr(args, "tools_action", None)
-    if action in {"list", "disable", "enable"}:
+    if action == "diagnose":
+        from hermes_cli.tools_diagnose import tools_diagnose_command
+        sys.exit(tools_diagnose_command(args))
+    elif action in {"list", "disable", "enable"}:
         from hermes_cli.tools_config import tools_disable_enable_command
         tools_disable_enable_command(args)
     elif action == "post-setup":

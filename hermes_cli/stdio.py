@@ -7,10 +7,11 @@ subprocesses and child Python ``print()`` calls agree on encoding.
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 
-__all__ = ["configure_windows_stdio", "is_windows"]
+__all__ = ["configure_windows_stdio", "is_windows", "tolerate_closed_stdout"]
 
 _CONFIGURED = False
 
@@ -118,3 +119,49 @@ def _augment_path_with_known_tools() -> None:
     prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]
     if prepend:
         os.environ["PATH"] = os.pathsep.join([*prepend, existing])
+
+
+
+def _stdout_reader_gone() -> bool:
+    """Whether stdout's reader has closed: a pending flush fails again, or (a large write leaves
+    nothing buffered) poll() reports the write end in error/hangup."""
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        return True
+    try:
+        import select
+
+        poller = select.poll()
+        poller.register(sys.stdout.fileno(), select.POLLOUT)
+        return any(ev & (select.POLLERR | select.POLLHUP) for _fd, ev in poller.poll(0))
+    except (AttributeError, OSError, ValueError):  # no poll() on Windows, or no real fd
+        return False
+
+
+def tolerate_closed_stdout(entry):
+    """Wrap a CLI entry point so a reader closing stdout early (``hermes config show | head``)
+    exits quietly instead of printing a BrokenPipeError traceback. The final flush runs inside
+    the guard so output that fit in the buffer fails here, not as an "Exception ignored" line at
+    shutdown. A BrokenPipeError from anything else (a socket, a child's pipe) still raises.
+    """
+    @functools.wraps(entry)
+    def wrapper(*args, **kwargs):
+        try:
+            try:
+                result = entry(*args, **kwargs)
+            except SystemExit:  # sys.exit(rc) / argparse --help: their output needs the flush too
+                sys.stdout.flush()
+                raise
+            sys.stdout.flush()
+            return result
+        except BrokenPipeError:
+            if not _stdout_reader_gone():
+                raise
+            # Point fd 1 at devnull so shutdown's own flush has somewhere to go; exit 1 like
+            # rich's on_broken_pipe, which the rich-rendered subcommands (skills list) already do.
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            raise SystemExit(1) from None
+
+    return wrapper

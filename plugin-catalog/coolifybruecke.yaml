@@ -1,7 +1,7 @@
 name: coolifybruecke
 title: Coolifybrücke
 repo: https://github.com/studioluftbruecke/hermes-coolifybruecke
-sha: 2b02a05137f236e8f46c53c6f625cf841faf2d8a
+sha: a5a138502e4ff17458b2a343082a35b151f8913d
 description: >-
   See what needs you across your Coolify instance, deploy with your approval, and let Hermes
   explain failed deploys. Disclosure: calls only your Coolify instance with the token you give it,
@@ -12,13 +12,13 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://coolifybruecke.luftbruecke.studio
-version: "0.2.1"
-image: https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/banner.png
+version: "0.2.7"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-1.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-2.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-3.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-4.png
 readme: true
 platforms: [linux, macos]
 known_issues:

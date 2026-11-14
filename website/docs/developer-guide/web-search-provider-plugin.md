@@ -30,6 +30,11 @@ Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(.
 
 When neither key is set, Hermes auto-detects the backend from whichever API key/URL is present in the environment. `hermes tools` walks users through selection.
 
+An explicit YAML backend or stored tools selection is strict: an unknown name,
+disabled plugin, or missing capability produces an error instead of silently
+switching to another registered provider. Registered capable providers remain
+selected when their credentials are unavailable so their setup error can surface.
+
 ## Directory structure
 
 ```

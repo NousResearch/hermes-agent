@@ -191,6 +191,15 @@ def _get_extract_backend() -> str:
     return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
 
 
+def _has_explicit_capability_backend(capability: str) -> bool:
+    """YAML backend choices are as deliberate as a stored tools selection."""
+    return bool(
+        _configured_backend(f"{capability}_backend")
+        or _configured_backend("backend")
+        or selection_exists("web")
+    )
+
+
 def _ddgs_package_importable() -> bool:
     """ddgs is the only backend gated on package presence; single symbol so tests can patch it."""
     try:
@@ -324,8 +333,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
-            if provider is None and backend and selection_exists("web"):
-                error_text = debug_call_data["error"] = _strict_selection_error("search", backend)
+            if backend and _has_explicit_capability_backend("search"):
+                error_text = debug_call_data["error"] = (
+                    _strict_selection_error("search", backend) if provider is None else
+                    f"Selected web backend '{backend}' does not support search. Set web.search_backend to a search-capable provider."
+                )
                 _finish_debug("web_search_tool", debug_call_data)
                 return json.dumps({"success": False, "error": error_text}, indent=2, ensure_ascii=False)
             # Never-configured install: legacy availability-walked autodetect.

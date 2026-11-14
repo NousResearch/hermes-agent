@@ -10,6 +10,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
+import { $pluginRecords, installedDesktopCatalogEntries } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
 import { type CatalogLookupReply, lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
@@ -160,6 +161,8 @@ export function PluginsCard({
   const sharedError = useStore($agentPluginsError)
   const sharedStatus = useStore($agentPluginsStatus)
   const loadedProfile = useStore($agentPluginsProfile)
+  const records = useStore($pluginRecords)
+
   // The shared plugin list may be empty or another profile's: load the chat's own.
   useEffect(() => {
     if (owner) {
@@ -175,7 +178,7 @@ export function PluginsCard({
   })
 
   const {
-    installed,
+    installed: agentInstalled,
     error: inventoryError,
     pending: inventoryPending
   } = cardInventory(owner, {
@@ -187,6 +190,9 @@ export function PluginsCard({
     sharedStatus,
     loadedProfile
   })
+
+  // Desktop plugins live in one app-level folder, not a profile's: a desktop-only entry installed is installed.
+  const installed = new Set([...agentInstalled, ...installedDesktopCatalogEntries(records).keys()])
 
   const rows = presence.data ?? []
 

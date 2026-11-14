@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
 from tests.ci.test_update_ci_routing import _REPO, _ci_run, _consumers_reached, _real_classifier
 
 
@@ -63,6 +64,6 @@ def test_update_migration_on_a_journey_home_runs_no_plugin_install_code():
     finally:
         sys.setprofile(None)
     files = {f for f, _name in ran}
-    assert (_REPO / "hermes_cli/memory_provider_migration.py").resolve().as_posix() in files
-    hit = [rel for rel in _PLUGIN_INSTALL if (_REPO / rel).resolve().as_posix() in files]
+    assert (_REPO / current_path("hermes_cli/memory_provider_migration.py")).resolve().as_posix() in files
+    hit = [rel for rel in _PLUGIN_INSTALL if (_REPO / current_path(rel)).resolve().as_posix() in files]
     assert hit == [], f"the update runs {hit} on a journey home"

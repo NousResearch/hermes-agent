@@ -132,8 +132,9 @@ async def _new(view, rest):
     from agent.i18n import t
     info = await view.client.rpc("session.info", session_id=view.session_id)
     accepted = set((await view.client.rpc("runtime.describe")).get("session_create", {}).get("parameters", []))
+    # ``client`` names the client that created that session, never this terminal.
     request = {key: value for key, value in (info.get("launch_request") or {}).items()
-               if key in accepted and key not in {"request_id", "title"}}
+               if key in accepted and key not in {"request_id", "title", "client"}}
     if info.get("cwd") and "cwd" in accepted:
         request["cwd"] = info["cwd"]
     # The frozen request never holds the launch key; the one this terminal supplied rides along.

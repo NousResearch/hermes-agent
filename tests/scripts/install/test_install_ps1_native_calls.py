@@ -52,6 +52,12 @@ def _git(repo: Path, *args: str) -> str:
                           check=True, capture_output=True, text=True).stdout.strip()
 
 
+@pytest.fixture
+def _ready_git(pinned_git_store, monkeypatch):
+    """The repository-stage tests share one ready pinned Git (see conftest.py)."""
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(pinned_git_store))
+
+
 def _stage(origin: Path, home: Path, *extra: str, **env_extra: str) -> tuple[subprocess.CompletedProcess, dict]:
     env = dict(os.environ, HERMES_REPO_URL=str(origin), HERMES_HOME=str(home), **env_extra)
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
@@ -62,6 +68,7 @@ def _stage(origin: Path, home: Path, *extra: str, **env_extra: str) -> tuple[sub
     return result, frames[0]
 
 
+@pytest.mark.usefixtures("_ready_git")
 def test_rerun_parks_local_work_and_pins_only_branch_commits(tmp_path):
     origin = tmp_path / "origin"
     origin.mkdir()
@@ -116,6 +123,7 @@ def _clone_argv(trace: Path) -> list[str]:
     return line.split("built-in: git clone ", 1)[1].split()
 
 
+@pytest.mark.usefixtures("_ready_git")
 def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
     """A pinned install (the desktop bootstrap passes -Commit) checks out only the pin, as install.sh does."""
     origin, pin, _ = _pin_fixture(tmp_path)
@@ -130,6 +138,7 @@ def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
     assert _git(tmp_path / "pinned" / "hermes-agent", "rev-parse", "HEAD") == pin
 
 
+@pytest.mark.usefixtures("_ready_git")
 def test_pinned_fresh_clone_publishes_nothing_when_the_pin_is_refused(tmp_path):
     origin, _, off_branch = _pin_fixture(tmp_path)
     home = tmp_path / "home"

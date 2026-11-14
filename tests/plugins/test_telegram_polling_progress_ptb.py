@@ -171,7 +171,9 @@ async def test_real_base_request_ptb_replacement_decode_records_progress():
     assert result == []
     assert progress.is_set()
     assert adapter._polling_network_error_count == 0
-    assert adapter._polling_conflict_count == 0
+    # One success opens the conflict quiet window; the episode ends only once it elapses.
+    assert adapter._polling_conflict_count == 3
+    assert adapter._polling_conflict_quiet_since is not None
     assert adapter._send_path_degraded is False
 
 
@@ -225,14 +227,20 @@ async def test_real_base_request_valid_success_envelope_records_progress():
         result = await request.post(
             "https://api.telegram.org/bot-token/getUpdates"
         )
+        assert result == []
+        assert progress.is_set()
+        assert adapter._polling_network_error_count == 0
+        assert adapter._polling_conflict_count == 3
+        assert adapter._send_path_degraded is False
+
+        # Successful polling for a full quiet window ends the conflict episode.
+        adapter._polling_conflict_quiet_since -= tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+        assert await request.post("https://api.telegram.org/bot-token/getUpdates") == []
     finally:
         tg_adapter._POLLING_GENERATION_CONTEXT.reset(context_token)
 
-    assert result == []
-    assert progress.is_set()
-    assert adapter._polling_network_error_count == 0
     assert adapter._polling_conflict_count == 0
-    assert adapter._send_path_degraded is False
+    assert adapter._polling_conflict_quiet_since is None
 
 
 
@@ -294,8 +302,44 @@ async def test_real_ptb_stop_cleanup_cannot_heal_recovery_generation():
 
         assert replacement_generation == generation + 1
         assert adapter._polling_network_error_count == 0
-        assert adapter._polling_conflict_count == 0
+        assert adapter._polling_conflict_count == 3
+        assert adapter._polling_conflict_quiet_since is not None
         assert adapter._send_path_degraded is False
+    finally:
+        polling_request.block.set()
+        if app.updater.running:
+            await app.updater.stop()
+        await _cancel_task(adapter._polling_progress_verifier_task)
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_network_recovery_stop_skips_read_receipt_without_refetch_warning(caplog):
+    """The skipped read receipt must not make PTB warn that fetched updates may be fetched again:
+    the same Updater resumes from its offset (#131783)."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123456:test-token"))
+    polling_request = _GetUpdatesRequest()
+    polling_request.initial_conflict_sent = polling_request.replacement_enabled = True
+    app = (
+        tg_adapter.Application.builder()
+        .token("123456:test-token")
+        .request(_GeneralRequest())
+        .get_updates_request(adapter._instrument_polling_request(polling_request))
+        .build()
+    )
+    adapter._app = app
+    await app.initialize()
+    try:
+        await adapter._start_polling_once(app, drop_pending_updates=False, error_callback=lambda _e: None)
+        await asyncio.wait_for(adapter._polling_progress_event.wait(), timeout=2)
+        polling_request.block.set()
+        with caplog.at_level("WARNING", logger="telegram.ext.Updater"):
+            assert await adapter._stop_updater_or_go_fatal(
+                app, "network-recovery", skip_read_receipt_cleanup=True
+            )
+        assert polling_request.cleanup_calls == 0
+        assert not app.updater.running
+        assert not [r for r in caplog.records if r.name == "telegram.ext.Updater"]
     finally:
         polling_request.block.set()
         if app.updater.running:

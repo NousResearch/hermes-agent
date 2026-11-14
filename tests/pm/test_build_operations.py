@@ -220,6 +220,33 @@ def test_check_lock_never_changes_source(locked_source, tmp_path, build_tools, l
     assert not (source / ".venv").exists()
 
 
+def test_check_lock_does_not_refetch_a_locked_direct_url_wheel(tmp_path, build_tools, served):
+    """A current lock passes while a direct-URL wheel host is down; a stale one still fails."""
+    from pm import check_project_lock, lock_project
+
+    docroot, base = served
+    wheel = _wheel(docroot, "url_dep")
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = source / "pyproject.toml"
+    manifest.write_text(
+        '[project]\nname="url-root"\nversion="1"\nrequires-python=">=3.11"\n'
+        f'dependencies=["url-dep @ {base}/{wheel.name}"]\n'
+        '[tool.uv]\npackage=false\nno-index=true\n', encoding="utf-8",
+    )
+    lock_project(source, python=Path(sys.executable), cache=tmp_path / "lock-cache",
+                 env=build_tools, explicit=True)
+    wheel.unlink()  # The release asset now fails (404 here, 504 in the incident).
+    # A fresh runner: nothing cached from the lock above.
+    check_project_lock(source, python=Path(sys.executable), cache=tmp_path / "runner-cache",
+                       env=build_tools, explicit=True)
+
+    manifest.write_text(manifest.read_text().replace('version="1"', 'version="2"'), encoding="utf-8")
+    with pytest.raises(InstallError):
+        check_project_lock(source, python=Path(sys.executable), cache=tmp_path / "runner-cache",
+                           env=build_tools, explicit=True)
+
+
 def test_frozen_export_keeps_markers_and_excludes_build_metadata(locked_source, tmp_path, build_tools):
     from packaging.requirements import Requirement
     from pm import export_requirements

@@ -102,23 +102,7 @@ def build_models_payload(
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
 
-    # Managed local runtime: staged GGUFs are selectable like any provider's models, but
-    # list_authenticated_providers can't know about them (no credential — reachability is the
-    # credential), so inject the row here where every picker surface inherits it.
-    local_row = _local_runtime_row(ctx)
-    if local_row is not None:
-        rows = _without_slug(rows, "llamacpp") + [local_row]
-        # A live session on the managed server reports provider "custom" (raw base_url label), which
-        # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
-        # checkmark. The Local row owns the managed server's identity — drop such custom rows.
-        if local_row.get("is_current"):
-            staged = set(local_row["models"])
-
-            def _is_managed_custom(row: dict) -> bool:
-                models = {str(m) for m in (row.get("models") or [])}
-                return _slug(row) == "custom" and bool(models) and models <= staged
-
-            rows = [r for r in rows if not _is_managed_custom(r)]
+    rows, local_row = inject_local_runtime_row(rows, ctx)
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -544,13 +528,18 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from agent.codex_service_tiers import ultrafast_offered
+    from agent.codex_service_tiers import daybreak_offered, ultrafast_offered
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+
+    # Daybreak rides the Responses request; the opt-in codex app-server runtime never sends it.
+    _model_cfg = (metadata_config or {}).get("model")
+    _app_server = isinstance(_model_cfg, dict) and str(
+        _model_cfg.get("openai_runtime") or "").strip().lower() == "codex_app_server"
 
     for row in rows:
         slug = row.get("slug") or ""
@@ -572,6 +561,8 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             if fast and model_supports_ultrafast(model) and ultrafast_offered(
                     model, provider=slug, base_url=row.get("api_url")):
                 entry["ultrafast"] = True
+            if not _app_server and daybreak_offered(model, provider=slug, base_url=row.get("api_url")):
+                entry["daybreak"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -1005,6 +996,53 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
                 # Window plans: the picker shows the usage word, not per-token prices.
                 row.pop("pricing", None)
+
+
+def inject_local_runtime_row(rows: list[dict], ctx: ConfigContext) -> tuple[list[dict], dict | None]:
+    """Add the managed local runtime's ``llamacpp`` row to authenticated-provider ``rows`` — every
+    picker (desktop/CLI payload and the chat-platform ``/model`` picker) goes through here.
+    ``list_authenticated_providers`` can't know about staged GGUFs (no credential — reachability is
+    the credential). Returns ``(rows, local_row)``; ``local_row`` is ``None`` when nothing is staged."""
+    if _local_runtime_excluded(ctx):
+        return rows, None  # ``model_catalog.excluded_providers`` hides it like any provider row
+    local_row = _local_runtime_row(ctx)
+    if local_row is None:
+        return rows, None
+    rows = _without_slug(rows, "llamacpp") + [local_row]
+    # A live session on the managed server reports provider "custom" (raw base_url label), which
+    # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
+    # checkmark. The Local row owns the managed server's identity — drop such custom rows, but only
+    # one pointing AT the managed server: a saved endpoint elsewhere that shares model names is a
+    # different provider the user must still be able to switch back to.
+    managed_url = _managed_runtime_url() if local_row.get("is_current") else ""
+    if managed_url:
+        staged = set(local_row["models"])
+
+        def _is_managed_custom(row: dict) -> bool:
+            models = {str(m) for m in (row.get("models") or [])}
+            return (_slug(row) == "custom" and bool(models) and models <= staged
+                    and str(row.get("api_url") or "").strip().rstrip("/") == managed_url)
+
+        rows = [r for r in rows if not _is_managed_custom(r)]
+    return rows, local_row
+
+
+def _local_runtime_excluded(ctx: ConfigContext) -> bool:
+    from hermes_cli.providers import LLAMACPP_ALIASES
+
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    return bool(excluded & set(LLAMACPP_ALIASES))
+
+
+def _managed_runtime_url() -> str:
+    """The running managed server's base URL (normalized), ``""`` when none is recorded."""
+    try:
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+        managed = _state_endpoint()
+    except Exception:  # health: allow BLE001 -- a torn/legacy runtime state file must degrade to "no managed server" (as _local_runtime_row does), never break the picker
+        return ""
+    return str((managed or {}).get("base_url") or "").strip().rstrip("/")
 
 
 def _local_runtime_row(ctx: ConfigContext) -> dict | None:

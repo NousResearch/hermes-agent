@@ -290,7 +290,7 @@ def fetch_pure_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: P
     # Build-backend deps the deb-venv's app install resolves offline:
     # the app dir install (even --no-deps) prepares metadata through
     # build-system.requires, which needs setuptools in the find-links.
-    reqs.append("setuptools==83.0.0")
+    reqs.append("setuptools==84.1.0")
     if not reqs:
         return
     proc = subprocess.run(

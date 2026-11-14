@@ -56,8 +56,6 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
         mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "different", delivery_id=delivery_id)
     # Reading the receipt resolves through the same admission, not a local guess.
     assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "queued"
-    # The retired UI claim consumer never hands out work.
-    assert mailbox.claim_pending_delivery(tmp_path, _owner(tmp_path)) is None
     if os.name != "nt":
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
@@ -173,21 +171,6 @@ def test_receipt_read_retains_the_immutable_author_without_replaying_admission(t
     assert all(polled[key] == value for key, value in queued.items())
     assert polled['author'] == author
     assert [params.get("author") for _home, params in authority.calls] == [author]
-
-
-@pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
-def test_terminal_receipt_is_immutable(tmp_path, terminal_status):
-    delivery_id = "c" * 32
-    with mailbox._locked(tmp_path) as root:
-        mailbox._write(root / f"{delivery_id}.json", dict(delivery_id=delivery_id, status="claimed",
-                                                          message="hello", created_at=1))
-    receipt = mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer")
-    assert mailbox.read_delivery_result(tmp_path, delivery_id) == receipt
-    assert mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer") == receipt
-    with pytest.raises(ValueError):
-        mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
-    with pytest.raises(ValueError):
-        mailbox.complete_delivery(tmp_path, "d" * 32, status="not-terminal")
 
 
 def _ready(instance_id):

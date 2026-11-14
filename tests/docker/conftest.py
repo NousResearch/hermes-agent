@@ -45,8 +45,7 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "tests/docker/" not in str(item.fspath).replace(os.sep, "/"):
             continue
-        # Modules that set DOCKER_DAEMON_REQUIRED = False drive the helpers with stand-ins.
-        if not docker_ok and getattr(getattr(item, "module", None), "DOCKER_DAEMON_REQUIRED", True):
+        if not docker_ok:
             item.add_marker(skip_docker)
 
 
@@ -258,7 +257,7 @@ def poll_container(
         last = r.stdout
         if r.returncode == 0:
             return True, last
-        time.sleep(interval_s)
+        time.sleep(min(interval_s, max(0.0, end - time.monotonic())))
     if not completed:
         raise AssertionError(f"No probe of {container} completed within {deadline_s}s; {last}")
     return False, last

@@ -15,6 +15,8 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.display import redact_tool_args_for_display
+from agent.redact import redact_sensitive_text
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
@@ -323,20 +325,33 @@ def _codex_item_to_args(item: dict) -> dict:
     return {"query": item.get("query") or ""} if item_type == "webSearch" else {}
 
 
-def _codex_item_to_preview(item: dict) -> Any:
-    """Short preview for the tool.started bubble; None when nothing useful (UI tolerates None)."""
+def _codex_item_to_preview(item: dict, args: dict | None = None) -> Any:
+    """Short preview for the tool.started bubble; None when nothing useful (UI tolerates None).
+
+    ``args`` overrides the item's raw arguments (the display-redacted copy)."""
     item_type = item.get("type") or ""
     if item_type in _PREVIEW_FIELDS:
-        return (item.get(_PREVIEW_FIELDS[item_type]) or "")[:120] or None
+        source = args if args is not None else item
+        return (source.get(_PREVIEW_FIELDS[item_type]) or "")[:120] or None
     if item_type == "fileChange":
         paths = [c.get("path") for c in _item_changes(item) if c.get("path")]
         return (", ".join(paths[:3]) + (f", +{len(paths) - 3} more" if len(paths) > 3 else "")) if paths else None
     if item_type in _MCP_LIKE_ITEM_TYPES:
-        args = item.get("arguments") or {}
+        args = args if args is not None else item.get("arguments") or {}
         if isinstance(args, dict) and args:
             with suppress(TypeError, ValueError):
                 return json.dumps(args, ensure_ascii=False)[:120]
     return None
+
+
+def _codex_display_args(name: str, args: dict) -> dict:
+    """Display-safe copy of a codex item's args for progress previews and tool cards.
+
+    Native ``exec_command`` text gets the same forced secret redaction as the terminal tool's display
+    path; Hermes-tools MCP items carry the bare Hermes tool name, so the shared display redactor applies."""
+    if name == "exec_command" and isinstance(args.get("command"), str):
+        return {**args, "command": redact_sensitive_text(args["command"], force=True)}
+    return redact_tool_args_for_display(name, args) or args
 
 
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
@@ -391,11 +406,12 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         args = _codex_item_to_args(item)
         if item_id:
             started[item_id] = (name, args, time.monotonic())
+        shown = _codex_display_args(name, args)
         agent_cb("tool_progress_callback", "tool_progress_callback raised on tool.started for %s", name,
-                 args=("tool.started", name, _codex_item_to_preview(item), args))
+                 args=("tool.started", name, _codex_item_to_preview(item, shown), shown))
         # Stable-ID tool card (TUI/desktop) fires alongside the progress bubble.
         agent_cb("tool_start_callback", "tool_start_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args))
+                 args=(_stable_call_id(item, name), name, shown))
 
     def _fire_tool_completed(item: dict) -> None:
         name = _codex_item_to_tool_name(item)
@@ -411,7 +427,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                  kwargs={"duration": duration, "is_error": is_error, "result": result})
         args = prior[1] if prior is not None else _codex_item_to_args(item)
         agent_cb("tool_complete_callback", "tool_complete_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args, result))
+                 args=(_stable_call_id(item, name), name, _codex_display_args(name, args), result))
 
     def _fire_delta(params: dict, attr: str) -> None:
         text = _delta_text(params)

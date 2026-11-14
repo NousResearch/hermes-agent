@@ -266,3 +266,51 @@ def test_pronounless_action_guardrails_reject_questions_and_finals():
 
 
 
+
+
+# An earlier turn's tool rows stay in ``messages`` for the whole session (gateway, CLI).
+_EARLIER_TOOL_TURN = [
+    {"role": "user", "content": "earlier request"},
+    {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+    {"role": "tool", "tool_call_id": "1", "content": "old result"},
+    {"role": "assistant", "content": "earlier answer"},
+]
+
+
+def test_earlier_turn_tool_rows_do_not_disable_the_guard():
+    """#69778: an ack that opens a new turn still continues in a session that used tools before."""
+    msgs = [*_EARLIER_TOOL_TURN, {"role": "user", "content": CODE_USER}]
+    for require_workspace in (True, False):
+        assert looks_like_codex_intermediate_ack(
+            _agent(True), CODE_USER, CODE_ACK, msgs, require_workspace=require_workspace
+        )
+
+
+def test_tool_rows_in_the_current_turn_still_end_it():
+    """The model already acted this turn, so a trailing ack stays the final answer."""
+    msgs = [
+        *_EARLIER_TOOL_TURN,
+        {"role": "user", "content": CODE_USER},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "2"}]},
+        {"role": "tool", "tool_call_id": "2", "content": "listed files"},
+    ]
+    for require_workspace in (True, False):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(True), CODE_USER, CODE_ACK, msgs, require_workspace=require_workspace
+        )
+
+
+def test_a_nudge_row_after_tool_work_does_not_reopen_the_guard():
+    """A synthetic user row (empty-response, stall or degenerate nudge) is not a new turn: the
+    model already acted, so the reply after it is still the final answer."""
+    msgs = [
+        {"role": "user", "content": CODE_USER},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "2"}]},
+        {"role": "tool", "tool_call_id": "2", "content": "listed files"},
+        {"role": "assistant", "content": "(empty)"},
+        {"role": "user", "content": "[System: process the tool results above and continue.]"},
+    ]
+    for require_workspace in (True, False):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(True), CODE_USER, CODE_ACK, msgs, require_workspace=require_workspace
+        )

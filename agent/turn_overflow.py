@@ -23,9 +23,10 @@ from agent.conversation_compression import (
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
-    get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
+    get_context_length_from_provider_error, is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
+from agent.process_transport import is_local_server
 from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 
@@ -227,7 +228,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     if exhausted is not None:
         return exhausted
     agent._buffer_diagnostic_status(
-        f"⚠️  Request payload too large (413) — compression attempt "
+        f"⚠️  Request payload too large — compression attempt "
         f"{st.compression_attempts}/{st.max_compression_attempts}..."
     )
 
@@ -401,7 +402,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     window = agent.context_compressor.context_length
     request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
     if (
-        is_local_endpoint(agent.base_url)
+        is_local_server(agent.base_url, agent.provider)
         and not re.search(r"\d{4,}", error_msg)
         and isinstance(window, int) and window > 0
         and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION

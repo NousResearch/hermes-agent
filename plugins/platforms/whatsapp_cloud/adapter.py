@@ -44,7 +44,7 @@ from gateway.platforms._shared import config_connected_extra
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
-from gateway.platforms.helpers import bounded_put
+from gateway.platforms.helpers import bounded_put, caption_is_command
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
@@ -103,6 +103,9 @@ _MESSAGE_TYPE_BY_KIND = {
     "location": MessageType.TEXT, "contacts": MessageType.TEXT,
 }
 _HTTP_PREFIXES = ("http://", "https://")
+_PHONE_ALLOW_ID_RE = re.compile(r"^\+?[\d\s().-]+$")
+_PHONE_ALLOW_ID_DIGITS_RE = re.compile(r"^[1-9][0-9]{5,14}$")
+_BSUID_RE = re.compile(r"^[A-Z]{2}\.[A-Za-z0-9]{1,128}$")
 
 
 def _interactive_inner(raw_message: dict[str, Any]) -> dict[str, Any]:
@@ -239,16 +242,31 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return self._reply_prefix.replace("\\n", "\n") if self._reply_prefix is not None else ""
 
     @staticmethod
-    def _normalize_allow_ids(ids: set[str]) -> set[str]:
-        """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
-        return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
+    def _normalize_allow_id(entry: str) -> str:
+        """Normalize a phone allowlist entry without collapsing non-phone principals.
+
+        Cloud senders can be business-scoped user IDs (BSUIDs), whose letters are
+        part of the principal and must not be discarded like phone punctuation.
+        """
+        bare = entry.split("@", 1)[0].strip()
+        if _PHONE_ALLOW_ID_RE.fullmatch(bare):
+            digits = re.sub(r"\D", "", bare)
+            if _PHONE_ALLOW_ID_DIGITS_RE.fullmatch(digits):
+                return digits
+        return bare if _BSUID_RE.fullmatch(bare) else entry.strip()
+
+    @classmethod
+    def _normalize_allow_ids(cls, ids: set[str]) -> set[str]:
+        return {cls._normalize_allow_id(entry) for entry in ids}
 
     def _entry_matches(self, entries, target: str) -> bool:
-        """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
-        so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
+        """Match phone aliases while treating Cloud BSUIDs as exact principals."""
         entries = set(entries or ())
-        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
-        return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
+        target = str(target).strip()
+        normalized = self._normalize_allow_ids(entries)
+        if _BSUID_RE.fullmatch(target):
+            return target in normalized or "*" in normalized
+        return self._normalize_allow_id(target) in normalized or super()._entry_matches(entries, target)
 
     def _webhook_identity_matches(self, entry_id: Any, metadata: Any) -> bool:
         """Bind a signed callback to this adapter's configured Meta identities."""
@@ -495,18 +513,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return f"⚠️ *{ea_header_text()}*\n\n"
 
     _EA_CODE_CLOSE = "\n```\n\n"
-    _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
+    _EA_CARD_CAP = 1024  # interactive.body.text cap; past it _truncate_body would cut the deadline line
+
+    def _approval_request_ids(self) -> OrderedDict[str, str]:
+        """approval_id → ``tools.approval`` request id; created on first use, like Telegram's
+        ``_approval_counter``, so adapters assembled without ``__init__`` still resolve."""
+        return self.__dict__.setdefault("_exec_approval_request_ids", OrderedDict())
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
         tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(
-            self._truncate_body(prompt.text),
-            (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
-            (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
-        return await self._send_interactive(
+        buttons = [(f"appr:{approval_id}:{c}", self._truncate_button_label(t(f"platform.whatsapp.{c}_button")))
+                   for c in ("approve", "deny") if c == "deny" or "once" in prompt.choices]  # Deny-only: cut command
+        interactive = self._button_interactive(self._truncate_body(prompt.text), *buttons)
+        result = await self._send_interactive(
             prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+        if result.success and prompt.request_id:
+            bounded_put(self._approval_request_ids(), approval_id, prompt.request_id, INTERACTIVE_STATE_CACHE_SIZE)
+        return result
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[dict[str, Any]] = None,
@@ -873,8 +898,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         return session_key
 
+    async def _refused_tap(self, to: str, requester: Optional[str]) -> bool:
+        """Answer a tap ``gateway.approval_actor`` refused (left pending for its requester)."""
+        if requester:
+            from gateway.approval_actor import refusal_text
+            await self._reply_best_effort(to, refusal_text(requester), "[whatsapp_cloud] prompt refusal reply failed")
+        return bool(requester)
+
     async def _handle_clarify_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, clarify_id, choice = parts
+        from gateway.approval_actor import clarify_refusal
+        if await self._refused_tap(to, clarify_refusal(clarify_id, to, extra=self.config.extra)):
+            return True
         session_key = self._pop_tap_state(
             self._clarify_state, clarify_id,
             "[whatsapp_cloud] clarify tap with no matching state (clarify_id=%s) — likely stale; falling back to text",
@@ -917,6 +952,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
+        from gateway.approval_actor import approval_refusal
+        if await self._refused_tap(to, approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
+                                                        request_id=self._approval_request_ids().get(approval_id), choice=choice)):
+            return True
         session_key = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
@@ -924,10 +963,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         if not session_key:
             return False
+        request_id = self._approval_request_ids().pop(approval_id, None)
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval(session_key, choice)
+        count = approval.resolve_gateway_approval_card(session_key, choice, request_id, actor_id=to,
+                                                       extra=self.config.extra)
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:
@@ -940,6 +981,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_slash_confirm_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, choice, confirm_id = parts
+        from gateway.approval_actor import slash_confirm_refusal
+        if await self._refused_tap(to, slash_confirm_refusal(self._slash_confirm_state.get(confirm_id) or "", confirm_id, to,
+                                                             extra=self.config.extra)):
+            return True
         session_key = self._pop_tap_state(
             self._slash_confirm_state, confirm_id,
             "[whatsapp_cloud] slash_confirm tap with no matching state (confirm_id=%s) — likely stale",
@@ -1033,7 +1078,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         media_urls, media_types, media_text_inlined = [], [], []
         if msg_type_str in _INBOUND_MEDIA_KINDS:
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
-            if msg_type_str == "document" and media_urls:
+            if msg_type_str == "document" and media_urls and not caption_is_command(body):
                 body, media_text_inlined = self._inject_document_text(media_urls, body)
         # Meta's ``context`` gives only the quoted message's id (+ author), never its text or
         # bytes; resolve both from rich_sent_store so run.py can build "[Replying to: ...]" and

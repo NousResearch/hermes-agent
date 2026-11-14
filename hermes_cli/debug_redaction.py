@@ -7,10 +7,10 @@ import re
 from agent.redact import (
     _SENSITIVE_QUERY_PARAMS,
     REDACTION_UNAVAILABLE,
-    SECRET_HEADER_NAME_LIST,
     _canonical_url_param_name,
     redact_sensitive_text,
 )
+from agent.redact_headers import SECRET_HEADER_NAME_LIST
 
 _REDACTED = "[REDACTED]"
 _EMAIL_ADDRESS_RE = re.compile(

@@ -121,11 +121,12 @@ _AUTH_LOCK_TIMEOUT_PREFIXES = (
 
 
 def agent_init_failed_message(exc: Any) -> str:
-    if any(prefix in str(exc) for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
-        return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+    detail = str(exc).rstrip(". ")  # resolver messages end in a sentence; no ".." before the hint
+    if any(prefix in detail for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
+        return (f"Hermes could not start the assistant for this session. Details: {detail}. "
                 "Wait for the other process to release the lock (or exit it — check for a running "
                 "dashboard or background hermes process), then retry.")
-    return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+    return (f"Hermes could not start the assistant for this session. Details: {detail}. "
             "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
 
 

@@ -142,6 +142,29 @@ class TestSubscribe:
         _subscribe(FakeSession(_grant()))
         assert list(_routes(home).values()) == [first]  # identical: in-flight runs keep their route digest
 
+    def test_a_new_route_is_pinned_to_timestamp_bound_signatures(self, home):
+        """MCP servers sign with Standard Webhooks; an unpinned route would also take a body-only
+        GitHub/Linear MAC under the same secret, which carries no timestamp (#84265)."""
+        _subscribe(FakeSession(_grant()))
+        assert next(iter(_routes(home).values()))["signature"] == "generic"
+
+    def test_resubscribing_a_pre_pin_route_keeps_it_unpinned(self, home):
+        _subscribe(FakeSession(_grant()))
+        data = _routes(home)
+        del next(iter(data.values()))["signature"]  # a route written before pins existed
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        _subscribe(FakeSession(_grant()))
+        assert _routes(home) == data  # identical bytes: in-flight runs keep their route digest
+
+    @pytest.mark.parametrize("pin", ["github", False, ""])  # the gateway refuses an invalid pin; dropping it unpins
+    def test_resubscribing_keeps_a_stored_pin(self, home, pin):
+        _subscribe(FakeSession(_grant()))
+        data = _routes(home)
+        next(iter(data.values()))["signature"] = pin
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        _subscribe(FakeSession(_grant()))
+        assert _routes(home) == data
+
     def test_a_fresh_subscription_ignores_state_left_by_a_removed_route(self, home):
         name = events._route_name("ambush", "feed.emission.created", ARGS)  # e.g. after `hermes webhook remove`
         (home / "mcp_event_subscriptions.json").write_text(json.dumps({name: {"cursor": "stale"}}))

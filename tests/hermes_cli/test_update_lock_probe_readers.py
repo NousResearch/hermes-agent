@@ -6,7 +6,8 @@ gateway that ``ensure`` just started probes the same lock while it boots (its la
 dead marker). A probe that took the lock exclusively turned that collision into "an update owns
 the install": the first launch after the kill refused with ``Gateway draining: update_paused``.
 
-Real processes and the real lock file; a real holder still fences (control).
+Real processes and the real lock file. Each reader is paused mid-probe, while it holds its lock,
+so the collision is certain rather than raced; a real holder still fences (control).
 """
 
 from __future__ import annotations
@@ -22,19 +23,46 @@ from hermes_cli import gateway_runtime, update_lock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_READER = r"""
-import sys, threading
+_PAUSED_PROBE = r"""
+import sys
 sys.path.insert(0, sys.argv[1])
 from hermes_cli import update_lock
-root = sys.argv[2]
-stop = threading.Event()
-threading.Thread(target=lambda: (sys.stdin.readline(), stop.set()), daemon=True).start()
-print("ready", flush=True)
-probes = 0
-while not stop.is_set():
-    update_lock.checkout_lock_held(root)
-    probes += 1
-print(probes, flush=True)
+paused = []
+
+def pause():
+    if not paused:
+        paused.append(True)
+        print("probing", flush=True)
+        sys.stdin.readline()
+
+if sys.platform == "win32":
+    # The Windows probe gives its shared lock straight back: stop between LockFileEx and UnlockFileEx.
+    kernel32, overlapped = update_lock._windows_lockfile_api()
+
+    class PauseBeforeUnlock:
+        def __getattr__(self, name):
+            return getattr(kernel32, name)
+
+        def UnlockFileEx(self, *args):
+            pause()
+            return kernel32.UnlockFileEx(*args)
+
+    update_lock._windows_lockfile_api = lambda: (PauseBeforeUnlock(), overlapped)
+else:
+    # POSIX keeps the shared flock until checkout_lock_held closes the descriptor.
+    shared_probe = update_lock._try_shared_lock
+
+    def probe(fd):
+        taken = shared_probe(fd)
+        pause()
+        return taken
+
+    update_lock._try_shared_lock = probe
+held = update_lock.checkout_lock_held(sys.argv[2])
+if not paused:  # never reached the shared probe: fail the handshake instead of faking it
+    print("unprobed", flush=True)
+    sys.exit(3)
+print(held, flush=True)
 """
 
 _HOLDER = r"""
@@ -70,29 +98,25 @@ def install(tmp_path, monkeypatch):
 
 
 def _assert_readers_never_fence(root: Path, home: Path) -> None:
-    readers = [_spawn(_READER, root) for _ in range(2)]
+    readers = []
     try:
+        # One at a time: the second probes while the first holds its lock, and both hold while the
+        # launch polls.
+        for _ in range(2):
+            readers.append(_spawn(_PAUSED_PROBE, root))
+            assert readers[-1].stdout.readline().strip() == "probing"
+        assert not gateway_runtime._update_fenced({home}), "a launch read another reader's probe as an update"
         for reader in readers:
-            assert reader.stdout.readline().strip() == "ready"
-        fenced = polls = 0
-        end = time.monotonic() + 2.0
-        while time.monotonic() < end:
-            polls += 1
-            fenced += gateway_runtime._update_fenced({home})
-        # Both readers probed for the whole window: neither exited (or crashed) before the polls ended.
-        assert [reader.poll() for reader in readers] == [None, None]
-        for reader in readers:
-            reader.stdin.write("stop\n")
+            reader.stdin.write("go\n")
             reader.stdin.flush()
-        probes = [int(reader.stdout.readline()) for reader in readers]
+        assert [reader.stdout.readline().strip() for reader in readers] == ["False", "False"], \
+            "a reader read the other reader's probe as a held lock"
         assert [reader.wait(timeout=30) for reader in readers] == [0, 0]
     finally:
         for reader in readers:
             if reader.poll() is None:
                 reader.kill()
                 reader.wait(timeout=30)
-    assert min(probes) > 0
-    assert fenced == 0, f"{fenced} of {polls} ensure polls read another reader's probe as an update"
 
     holder = _spawn(_HOLDER, root)
     try:

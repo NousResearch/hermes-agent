@@ -77,7 +77,7 @@ export const arSettings = {
       advancedOutput: 'حدود المخرجات',
       advancedDelegation: 'الوكلاء الفرعيون',
       advancedDesktop: 'سطح المكتب وبدء التشغيل',
-      gatewayConnection: 'هذه النافذة',
+      gatewayConnection: 'البوابة الأساسية',
       gatewayDevices: 'الاتصالات المحفوظة',
       gatewayManagedUpdates: 'التحديثات البعيدة',
       gatewayManagedUpdatesUnavailable: 'تتطلب التحديثات البعيدة إصدار سطح مكتب يدعم تحديثات SSH المُدارة.',
@@ -619,7 +619,10 @@ export const arSettings = {
       invalidJson: 'JSON غير صالح',
       voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
       voiceShortcutHintDesc:
-        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.',
+      desktopReadAloudTitle: 'قراءة الردود صوتياً في هذا التطبيق',
+      desktopReadAloudDesc:
+        'ينطق كل رد مكتمل في Desktop. هو نفس مفتاح زر حقل الكتابة؛ ينطبق على كل النوافذ المفتوحة، وإيقافه يوقف الرد أثناء قراءته. خيار «قراءة الردود صوتياً» أدناه مخصص للمراسلة وCLI.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -690,7 +693,14 @@ export const arSettings = {
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
       webappHostTitle: 'مضيف Hermes',
       webappHostDesc:
-        'يستخدم Webapp دائمًا مضيف Hermes الذي يقدّمه. لتبديل البوابة أو تسجيل الدخول إلى Hermes Cloud أو إدارة الاتصالات المحفوظة، استخدم تطبيق Hermes Desktop.',
+        'يعمل Webapp دائمًا على مضيف Hermes الذي يقدّمه. الاتصالات المحفوظة أدناه هي قائمة هذا الجهاز، مشتركة مع تطبيق Hermes Desktop؛ ويتم الوصول إلى البوابات الأخرى عبر هذا المضيف.',
+      webappOauthPaste: {
+        title: 'إكمال تسجيل الدخول',
+        description: 'إذا انتهت علامة تبويب تسجيل الدخول على عنوان لا يُحمَّل (هذا المتصفح ليس على جهاز البوابة)، فالصق ذلك العنوان هنا.',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: 'إكمال',
+        failed: 'تعذّر إكمال تسجيل الدخول'
+      },
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:
@@ -752,8 +762,7 @@ export const arSettings = {
       saveFailed: 'تعذر حفظ إعدادات البوابة',
       webAccess: {
         title: 'الوصول عبر الويب',
-        intro:
-          'افتح Hermes الموجود على هذا الحاسوب من هاتفك أو من حاسوب آخر، مع تسجيل الدخول بحساب Nous. من يسجّل الدخول يمكنه تشغيل الأوامر على هذا الحاسوب.',
+        intro: 'افتح Hermes الموجود على هذا الحاسوب من هاتفك أو من حاسوب آخر، مع تسجيل الدخول بحساب Nous. من يسجّل الدخول يمكنه تشغيل الأوامر على هذا الحاسوب.',
         failed: 'تعذّر تغيير الوصول عبر الويب',
         running: 'قيد التشغيل',
         stopped: 'متوقف',
@@ -769,12 +778,18 @@ export const arSettings = {
         pendingOn: 'تم الحفظ. ستقدّم البوابة تطبيق الويب بعد إعادة تشغيلها.',
         pendingOff: 'تم الإيقاف، لكن البوابة تواصل تقديم تطبيق الويب حتى إعادة تشغيلها.',
         unavailableDetail: reason => `تعذّر على البوابة تقديم تطبيق الويب: ${reason}`,
-        restartBusy:
-          'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
+        restartBusy: 'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
         restartFailed: 'تم الحفظ، لكن تعذّرت إعادة تشغيل البوابة. اختر «إعادة تشغيل البوابة» للمحاولة مجددًا.',
         restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        startStages: {
+          preparing: 'جارٍ تجهيز تطبيق الويب. قد يستغرق إنشاؤه بضع دقائق.',
+          building: 'جارٍ إنشاء تطبيق الويب. قد يستغرق ذلك بضع دقائق.',
+          registering: 'جارٍ إعداد تسجيل الدخول عبر Nous لهذا العنوان.',
+          restarting: 'جارٍ إعادة تشغيل البوابة لتقديم تطبيق الويب.'
+        },
+        startElapsed: time => `الوقت المنقضي: ${time}`,
         start: 'تشغيل',
         stop: 'إيقاف',
         restartGateway: 'إعادة تشغيل البوابة',
@@ -783,8 +798,7 @@ export const arSettings = {
         lanUnencrypted: 'الاتصال غير مشفّر: يمكن لآخرين على هذه الشبكة قراءة ما ترسله وتستقبله.',
         noLan: 'لا يملك هذا الحاسوب عنوان شبكة يمكن للأجهزة الأخرى الوصول إليه.',
         modePublic: 'عنواني الخاص',
-        modePublicDetail: port =>
-          `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`
+        modePublicDetail: port => `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`
       }
     },
     keys: {
@@ -882,10 +896,6 @@ export const arSettings = {
         compression: {
           label: 'الضغط',
           hint: 'ضغط السياق'
-        },
-        skills_hub: {
-          label: 'مركز المهارات',
-          hint: 'بحث المهارات'
         },
         approval: {
           label: 'الموافقة',
@@ -996,6 +1006,13 @@ export const arSettings = {
       clearDirFailed: 'تعذر مسح المجلد الافتراضي'
     },
     toolsets: {
+      browserRealProfile: {
+        reimportSignins: 'إعادة استيراد تسجيلات الدخول',
+        signinsImportedTitle: 'تسجيلات الدخول في المتصفح المدمج',
+        signinsImported: count => `تم تسجيل الدخول إلى المتصفح المدمج باستخدام ${count} من ملفات تعريف الارتباط من ملف متصفحك.`,
+        signinsRemote: 'تعمل هذه الواجهة الخلفية على جهاز آخر، لذا لا يُستورد ملف متصفحها إلى المتصفح المدمج.',
+        signinsFailed: 'تعذر استيراد تسجيلات الدخول إلى المتصفح المدمج',
+      },
       loadingConfig: 'جار تحميل الإعدادات',
       savedTitle: 'تم حفظ بيانات الاعتماد',
       savedMessage: key => `تم تحديث ${key}.`,

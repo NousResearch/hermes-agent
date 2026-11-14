@@ -56,3 +56,20 @@ def test_named_presence_rejects_catalog_platform_before_app_probe(catalog, monke
     assert row["state"] != "present"
     assert row["reason"] == "unsupported_os"
     assert row["download_url"] is None
+
+
+def test_unreadable_liveness_is_unknown_never_present(tmp_path, monkeypatch):
+    """A liveness block that fails validation must not render as a healthy 'present' card:
+    the module contract is that an unreadable declaration is unknown."""
+    import sys
+
+    from hermes_platform.declaration import parse_declaration
+
+    exe = tmp_path / "app"
+    exe.write_text("", encoding="utf-8")
+    decl = parse_declaration(
+        "App", {sys.platform: {"presence": "executable", "location": str(exe)}},
+        {"app": True}, where="test")
+    bad = {"kind": "server_json", "path": "relative/no.json"}  # unrooted on every OS
+    assert presence_mod._server_presence(decl, bad, "App") is presence_mod.UNKNOWN
+    assert presence_mod._server_presence(decl, None, "App") == presence_mod.Presence("present", reason="available")

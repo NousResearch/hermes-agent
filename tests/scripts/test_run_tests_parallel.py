@@ -45,6 +45,8 @@ def _probe_root(tmp_path):
     (scripts / "ci").mkdir(parents=True, exist_ok=True)
     real = Path(__file__).resolve().parents[2] / "scripts"
     shutil.copy2(real / "run_tests_parallel.py", scripts)
+    shutil.copy2(real / "run_tests_launch.py", scripts)
+    shutil.copy2(real / "run_tests_fork_child.py", scripts)
     # The runner shares the platforms() spec resolver with the CI lane selector.
     shutil.copy2(real / "ci" / "list_os_marked_tests.py", scripts / "ci")
     return root
@@ -296,6 +298,17 @@ def _make_probe_dir(tmp_path: Path) -> Path:
         "def test_beta():\n    assert True\n"
     )
     return probe_dir
+
+
+def _load_runner(name: str):
+    """scripts/run_tests_parallel.py as a module, for tests of its helpers."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
@@ -808,3 +821,216 @@ def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(
     slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
               for i in range(3)]
     assert sorted(f for s in slices for f in s) == sorted(files)
+
+
+
+_FORK_PROBE = textwrap.dedent("""
+    import atexit, json, multiprocessing, multiprocessing.util, os, sys, tempfile
+    from pathlib import Path
+
+    OUT = Path({out!r})
+
+    def _worker_facts(parent_tmpdir):
+        return {{
+            "tmpdir_is_parents": os.environ.get("TMPDIR") == parent_tmpdir,
+            "gettempdir_under_parents": tempfile.gettempdir().startswith(parent_tmpdir),
+            "own_pid": os.getpid() != int(os.environ["PROBE_PARENT_PID"]),
+        }}
+
+    def _nested_workers():
+        # A test's own workers, as a real suite starts them: spawn, and the default.
+        os.environ["PROBE_PARENT_PID"] = str(os.getpid())
+        facts = {{}}
+        for method in ("spawn", None):
+            ctx = multiprocessing.get_context(method)
+            with ctx.Pool(1) as pool:
+                facts[method or "default"] = pool.apply(_worker_facts, (os.environ["TMPDIR"],))
+        return facts
+
+    def test_child_starts_like_a_fresh_pytest_process():
+        atexit.register(lambda: (OUT.parent / ("atexit-" + OUT.name)).write_text("ran"))
+        OUT.write_text(json.dumps({{
+            "own_session": os.getsid(0) == os.getpid(),
+            "tmpdir": os.environ.get("TMPDIR"),
+            "temproot": os.environ.get("PYTEST_DEBUG_TEMPROOT"),
+            "gettempdir": tempfile.gettempdir(),
+            "cwd": os.getcwd(),
+            "path0": sys.path[0],
+            "sys_path": sys.path,
+            "argv0": sys.argv[0],
+            "product_preloaded": sorted(m for m in ("hermes_cli", "agent", "gateway", "tools") if m in sys.modules),
+            "forkserver_env": os.environ.get("HERMES_TEST_FORKSERVER"),
+            "mp_process": multiprocessing.current_process().name,
+            "mp_parent": multiprocessing.parent_process(),
+            "main_module": sys.modules["__main__"].__spec__.name,
+            "mp_main_is_main": sys.modules.get("__mp_main__") is sys.modules["__main__"],
+            "mp_tempdir_in_tmpdir": multiprocessing.util.get_temp_dir().startswith(os.environ["TMPDIR"]),
+            "nested_workers": _nested_workers(),
+        }}))
+
+    def test_failure_is_reported():
+        assert {fail!r} == "no"
+""").lstrip()
+
+
+@pytest.mark.platforms("linux")
+def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, monkeypatch) -> None:
+    """HERMES_TEST_FORKSERVER=1 must hand each file the state a fresh ``python -m pytest`` has."""
+    seen = {}
+    for fork in ("", "1"):
+        probe_dir = tmp_path / f"probe{fork}"
+        probe_dir.mkdir()
+        out = tmp_path / f"facts{fork}.json"
+        (probe_dir / "test_probe_fork.py").write_text(_FORK_PROBE.format(out=str(out), fail="no"), encoding="utf-8")
+        # Runs first (-j 1, path order): the probe must not be the server's first child,
+        # which inherits less runner state than every later one. The first file copies
+        # the runner's environment before the knob is consumed, so it checks that.
+        (probe_dir / "test_a_first.py").write_text(
+            "import os\n\ndef test_first():\n    assert 'HERMES_TEST_FORKSERVER' not in os.environ\n",
+            encoding="utf-8")
+        monkeypatch.setenv("HERMES_TEST_FORKSERVER", fork)
+        # No retries: a retried first file runs after the knob is consumed and passes anyway.
+        proc = _run_runner(probe_dir, "--file-retries", "0")
+        assert proc.returncode == 0, proc.stdout
+        assert ("fork server: on" in proc.stdout) == bool(fork), proc.stdout
+        facts = json.loads(out.read_text())
+        assert (tmp_path / f"atexit-facts{fork}.json").read_text() == "ran"
+        assert facts["tmpdir"] == facts["temproot"] == facts["gettempdir"], facts
+        # Per-run paths differ between the two runs; compare their shape instead.
+        facts["tmpdir"] = facts["temproot"] = facts["gettempdir"] = "<per-file root>"
+        facts["cwd"] = os.path.relpath(facts["cwd"], tmp_path).replace(os.sep, "/")
+        facts["path0"] = os.path.relpath(facts["path0"], tmp_path).replace(os.sep, "/").replace(f"probe{fork}", "probe")
+        facts["sys_path"] = [p.replace(str(tmp_path), "<tmp>").replace(f"probe{fork}", "probe") for p in facts["sys_path"]]
+        seen[fork] = facts
+    assert seen["1"] == seen[""], seen
+    # A test's own workers start, see the file's TMPDIR, and return their result.
+    worker = {"tmpdir_is_parents": True, "gettempdir_under_parents": True, "own_pid": True}
+    assert seen["1"]["nested_workers"] == {"spawn": worker, "default": worker}, seen["1"]
+    assert seen["1"]["own_session"] and seen["1"]["product_preloaded"] == []
+    assert seen["1"]["forkserver_env"] is None  # the runner consumes it; tests never see it
+
+
+@pytest.mark.platforms("linux")
+def test_no_file_in_the_opening_wave_sees_the_fork_server_knob(tmp_path: Path, monkeypatch) -> None:
+    """Files that copy the runner's env before the first one starts the server must not see the knob."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    check = "import os\n\ndef test_knob_absent():\n    assert 'HERMES_TEST_FORKSERVER' not in os.environ\n"
+    for i in range(24):
+        (probe_dir / f"test_wave_{i:02d}.py").write_text(check, encoding="utf-8")
+    monkeypatch.setenv("HERMES_TEST_FORKSERVER", "1")
+    proc = _run_runner(probe_dir, "-j", "12", "--file-retries", "0")
+    assert proc.returncode == 0, proc.stdout
+    assert "fork server: on" in proc.stdout and "24 tests passed" in proc.stdout, proc.stdout
+
+
+@pytest.mark.platforms("linux")
+def test_fork_server_reports_failures_and_kills_stragglers(tmp_path: Path, monkeypatch) -> None:
+    """A failing file is red, and a hung file is killed at the per-file timeout, under the fork server."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_red.py").write_text(
+        _FORK_PROBE.format(out=str(tmp_path / "f.json"), fail="yes"), encoding="utf-8")
+    grandchild = tmp_path / "grandchild.pid"
+    # The grandchild's env lacks the file's temp root, so only the process-group
+    # kill can find it, not the runner's leftover sweep.
+    (probe_dir / "test_probe_hang.py").write_text(
+        "import os, subprocess, time\n\n"
+        "def test_hangs():\n"
+        "    child = subprocess.Popen(['sleep', '600'], env={'PATH': os.environ['PATH']})\n"
+        f"    open({str(grandchild)!r}, 'w').write(str(child.pid))\n"
+        "    time.sleep(600)\n",
+        encoding="utf-8")
+    monkeypatch.setenv("HERMES_TEST_FORKSERVER", "1")
+    proc = _run_runner(probe_dir, "-j", "2", "--file-timeout", "5", "--file-retries", "0")
+    assert proc.returncode != 0, proc.stdout
+    assert "test_probe_red.py" in proc.stdout and "1 failed" in proc.stdout, proc.stdout
+    assert "5s exceeded; process tree SIGKILL'd" in proc.stdout, proc.stdout
+    pid = int(grandchild.read_text())
+    deadline = time.monotonic() + 5
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _pid_alive(pid), "the timed-out file's grandchild outlived it"
+
+
+@pytest.mark.platforms("linux")
+def test_fork_child_drops_the_servers_env_and_cached_tempdir(tmp_path: Path) -> None:
+    """A variable only the fork server has, and its cached gettempdir(), must not reach a file."""
+    repo_root = Path(__file__).resolve().parents[2]
+    probe = tmp_path / "test_probe_child.py"
+    probe.write_text(
+        "import os, tempfile\n\n"
+        "def test_sees_only_its_own_state():\n"
+        "    assert 'HERMES_FORK_SERVER_ONLY' not in os.environ\n"
+        "    assert tempfile.gettempdir() == os.environ['TMPDIR']\n",
+        encoding="utf-8",
+    )
+    file_tmp = tmp_path / "file-tmp"
+    file_tmp.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["TMPDIR"] = str(file_tmp)
+    out = tmp_path / "out.txt"
+    # Stand-in for the fork server: it has its own variable and has already asked gettempdir().
+    server = (
+        "import json, os, sys, tempfile\n"
+        "os.environ['HERMES_FORK_SERVER_ONLY'] = '1'\n"
+        "tempfile.tempdir = sys.argv[1]\n"
+        "sys.path.insert(0, sys.argv[2])\n"
+        "from scripts import run_tests_fork_child\n"
+        "run_tests_fork_child.run(argv=['pytest', sys.argv[3], '-q', '-p', 'no:cacheprovider'],\n"
+        "                         cwd=sys.argv[4], env=json.loads(sys.argv[5]), sys_path=sys.path[1:],\n"
+        "                         out_path=sys.argv[6])\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", server, str(tmp_path), str(repo_root), str(probe), str(tmp_path),
+         json.dumps(env), str(out)],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert proc.returncode == 0, out.read_text(encoding="utf-8") + proc.stderr
+    assert "1 passed" in out.read_text(encoding="utf-8")
+
+
+@pytest.mark.platforms("linux")
+def test_fork_server_exit_status_survives_concurrent_starts() -> None:
+    """Starting a child polls every live child; a status read racing that poll must not turn 0 into 255."""
+    import multiprocessing
+    from concurrent.futures import ThreadPoolExecutor
+
+    from scripts import run_tests_launch
+
+    ctx = multiprocessing.get_context("forkserver")
+
+    def one(_):
+        proc = ctx.Process(target=sys.exit, args=(0,))
+        run_tests_launch.start_forked(proc)
+        return run_tests_launch.forked_exit_status(proc, 60)
+
+    # Unlocked, about 1 status in 400 comes back 255; 2000 children take ~3s.
+    with ThreadPoolExecutor(16) as pool:
+        statuses = list(pool.map(one, range(2000)))
+    assert statuses == [0] * 2000, sorted(set(statuses))
+
+
+def test_a_green_file_that_exits_non_zero_reports_its_exit_status(tmp_path: Path) -> None:
+    """The failure dump of a file whose tests all passed must say how the process exited."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "conftest.py").write_text(
+        "def pytest_sessionfinish(session):\n    session.exitstatus = 3\n", encoding="utf-8")
+    (probe_dir / "test_green.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+    assert proc.returncode != 0, proc.stdout
+    assert "all tests passed but pytest exited non-zero" in proc.stdout, proc.stdout
+    assert "(pytest child exit status 3)" in proc.stdout, proc.stdout
+
+
+def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> None:
+    """A slow file submitted last runs alone at the end of the run; start it first."""
+    rtp = _load_runner("rtp_order")
+    root = Path("/repo")
+    a, b, c, d = (root / f"tests/test_{n}.py" for n in "abcd")
+    files = [a, b, c, d]
+    cache = {"tests/test_b.py": 1.0, "tests/test_c.py": 90.0, "tests/test_d.py": 5.0}
+    # Uncached a gets the 2.0s default estimate, between d and b.
+    assert rtp._longest_first(files, cache, root) == [c, d, a, b]
+    assert rtp._longest_first(files, {}, root) == files

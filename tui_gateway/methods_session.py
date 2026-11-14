@@ -1515,19 +1515,19 @@ def _(rid, params: dict) -> dict:
                      "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
 
 
-def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
-    """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
+def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float, terminal: str) -> dict | None:
+    """kitty payload for a TTY that speaks it; only kitty is grid-safe in Ink. ``auto`` trusts the client's *terminal*."""
     from agent.pet import constants, render
-    from agent.pet.render import PetRenderer
+    from agent.terminal_image import kitty_color_hex
     configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
-    if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
+    if (terminal if configured in ("", "auto") else configured) != "kitty":
         return None
     image_id = render.kitty_image_id(pet.slug)
     # kitty sizes from scaled pixels, so unicode_cols is moot here.
-    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
+    payload = render.PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
     if not payload:
         return None
-    return {"graphics": "kitty", "imageId": image_id, "color": render.kitty_color_hex(image_id),
+    return {"graphics": "kitty", "imageId": image_id, "color": kitty_color_hex(image_id),
             "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
             "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
             "scale": scale}
@@ -1548,7 +1548,7 @@ def _(rid, params: dict) -> dict:
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
     base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
-    if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)):
+    if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale, str(params.get("terminal")))):
         return _ok(rid, {**base, **kitty})
     renderer = PetRenderer(str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols)
     count = renderer.frame_count(state) or 1
@@ -2003,7 +2003,7 @@ def _(rid, params: dict, session: dict) -> dict:
     busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
-    removed = 0
+    removed, rewound = 0, None
     with session["history_lock"]:
         if session.get("running"):
             return busy
@@ -2012,12 +2012,14 @@ def _(rid, params: dict, session: dict) -> dict:
         from agent.context_compressor import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
             try:
-                removed = _rewind_active_session_history(session, user_turns - 1)[2]
+                removed = (rewound := _rewind_active_session_history(session, user_turns - 1))[2]
+            except SessionNotOwned as exc:
+                return _session_not_owned_err(rid, exc)
             except Exception as exc:
                 return _err(rid, 5008, f"undo: {exc}")
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
-    return _ok(rid, {"removed": removed})
+    return _ok(rid, {"removed": removed, **_tools_mod("tui_gateway.checkpoints").undo_hint_fields(session, rewound, params)})
 
 
 def _save_via_compute_host(rid, params: dict) -> dict:
@@ -2031,41 +2033,6 @@ def _save_via_compute_host(rid, params: dict) -> dict:
     if not isinstance(result := ack.get("result"), dict):
         return _err(rid, 5011, "compute-host session save returned an invalid response")
     return _ok(rid, result)
-
-
-def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
-    """``session.compress`` for a turn-isolated session: forward ``/compress`` to the host."""
-    sid = str(params.get("session_id") or "")
-    focus_topic = _str_param(params, "focus_topic")
-
-    def _on_late_ack(late: dict, _sid=sid) -> None:
-        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name="session.compress")
-    try:
-        ack = _send_compute_host_control(
-            sid, route_name="session.compress", command="/compress" + (f" {focus_topic}" if focus_topic else ""),
-            # compression.context_total_ceiling_seconds: the host legitimately runs that long.
-            wait=True, timeout=_compute_host_compress_wait_seconds(), on_late_ack=_on_late_ack)
-    except queue.Empty:
-        # Waiter gave up, host still compressing; the late-ack handler adopts the rotated session when it
-        # lands. Not an error (a 5019 here reported timeouts that later succeeded).
-        return _ok(rid, {"status": "pending", "turn_isolation": True,
-                         "message": ("compression still running in the background; "
-                                     "the transcript will refresh when it finishes")})
-    except Exception as exc:
-        return _err(rid, 5019, f"compute-host compress failed: {exc}")
-    if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
-        return resp
-    _apply_compute_host_metadata_mirror(session, ack)
-    if isinstance(host_result := ack.get("result"), dict):
-        # Host-owned result verbatim (carries `status: aborted` / `summary.aborted`).
-        return _ok(rid, {**host_result, "turn_isolation": True})
-    host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
-    return _ok(rid, {
-        "status": "compressed", "turn_isolation": True,
-        # `messages` goes top-level for the transcript replacement; don't duplicate it in the ack.
-        "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info,
-        "messages": _history_to_messages(ack.get("messages"), profile_home=session.get("profile_home")) if isinstance(ack.get("messages"), list) else [],
-        "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
 
 
 def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
@@ -2132,6 +2099,8 @@ def _(rid, params: dict) -> dict:
             return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
     except CompressionBusy as e:
         return _err(rid, 4009, str(e))
+    except SessionNotOwned as e:  # refused before the summarizer ran: nothing to finalize
+        return _session_not_owned_err(rid, e)
     except CompressionLockHeld as e:
         _status_update(sid, "ready")
         from agent.manual_compression_feedback import describe_compression_lock_skip

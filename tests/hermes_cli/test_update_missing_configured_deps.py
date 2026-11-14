@@ -39,7 +39,7 @@ def configured_update(source_launch, tmp_path, monkeypatch):
     # Application source is unchanged; the toy manifest keeps PM resolution
     # offline while exercising the real selected-environment launch boundary.
     for path in repository.iterdir():
-        if path.name in {"hermes_cli", "gateway", "agent", "tools", "plugins", "pm"} or path.suffix == ".py":
+        if path.name in {"hermes_cli", "gateway", "agent", "tools", "plugins", "pm", "hermes_platform"} or path.suffix == ".py":
             if (root / path.name).exists():
                 # source_launch already stubs hermes_cli/source_completion.py; link the rest of that
                 # package's modules beside it.
@@ -130,7 +130,8 @@ def test_update_installs_the_extras_configured_features_need(monkeypatch, tmp_pa
     monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
     repair._install_configured_features_missing_deps(tmp_path)
     assert calls == [(["discord", "google-chat", "mcp"],
-                      {"explicit": True, "project_root": tmp_path, "evict_incompatible_plugins": True})]
+                      {"explicit": True, "project_root": tmp_path, "evict_incompatible_plugins": True,
+                       "automatic": ["discord", "google-chat", "mcp"]})]
     out = capsys.readouterr().out
     assert "IRC: irc hint" in out
     assert "Discord" not in out and "MCP servers" not in out

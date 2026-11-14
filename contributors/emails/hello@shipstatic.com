@@ -1,0 +1,1 @@
+shipstatic-com

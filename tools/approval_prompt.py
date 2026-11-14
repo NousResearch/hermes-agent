@@ -111,9 +111,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
                approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_description = redact_sensitive_text(description)
+    from agent.redact import redact_approval_display
+    display_command = redact_approval_display(command)
+    display_description = redact_approval_display(description)
     # Smart DENY and a session-less gate both reduce the menu to once/deny.
     once_only = smart_denied or not allow_session
 
@@ -219,13 +219,13 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         return _attempt(name, "deny", "unavailable", fallback)
 
     try:
-        from agent.redact import redact_sensitive_text
+        from agent.redact import redact_approval_display
         from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
 
         timeout_seconds = _ctx._get_approval_timeout()
         request = ApprovalRequest.create(
-            command=redact_sensitive_text(command, force=True),
-            description=redact_sensitive_text(description, force=True), pattern_key=pattern_key,
+            command=redact_approval_display(command, force=True),
+            description=redact_approval_display(description, force=True), pattern_key=pattern_key,
             pattern_keys=tuple(pattern_keys), session_key=session_key, surface=surface, allow_session=allow_session,
             allow_permanent=allow_permanent, timeout_seconds=timeout_seconds,
         )

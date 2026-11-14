@@ -211,12 +211,12 @@ class TestCoverageGaps:
 
 
     def test_get_clarify_timeout_exception_returns_default(self, monkeypatch):
-        """get_clarify_timeout returns 3600 when load_config raises."""
+        """get_clarify_timeout returns the 90s default when load_config raises."""
         from tools import clarify_gateway as cm
 
         monkeypatch.setattr("hermes_cli.config.load_config",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        assert cm.get_clarify_timeout() == 3600
+        assert cm.get_clarify_timeout() == 90
 
 
 class TestClarifyTimeoutResolution:
@@ -229,13 +229,13 @@ class TestClarifyTimeoutResolution:
         """The classic CLI builds its config from ``cli._cli_config_defaults()``; a seeded
         legacy ``clarify.timeout`` there wins over the user's ``agent.clarify_timeout`` in
         the resolver, capping every CLI modal at that value (120 s) while the docs promise
-        3600 s / unlimited. The CLI defaults must leave the legacy key unset."""
+        90 s / unlimited. The CLI defaults must leave the legacy key unset."""
         import cli
         from tools import clarify_gateway as cm
 
         defaults = cli._cli_config_defaults()
         assert (defaults.get("clarify") or {}).get("timeout") is None
-        assert cm.resolve_clarify_timeout(defaults) == 3600
+        assert cm.resolve_clarify_timeout(defaults) == 90
         cli._merge_file_config(defaults, {"agent": {"clarify_timeout": 900}})
         assert cm.resolve_clarify_timeout(defaults) == 900
 

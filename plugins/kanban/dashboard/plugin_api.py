@@ -1606,7 +1606,8 @@ def decompose_task_endpoint(task_id: str, payload: DecomposeBody, board: Optiona
     outcome = _run_aux(board, "kanban_decompose", "decompose_task", task_id, payload.author)
     return {
         "ok": bool(outcome.ok), "task_id": outcome.task_id, "reason": outcome.reason,
-        "fanout": bool(outcome.fanout), "child_ids": outcome.child_ids or [], "new_title": outcome.new_title}
+        "fanout": bool(outcome.fanout), "question": bool(outcome.question),
+        "child_ids": outcome.child_ids or [], "new_title": outcome.new_title}
 
 
 # --- Orchestration settings (kanban.orchestrator_profile / default_assignee /

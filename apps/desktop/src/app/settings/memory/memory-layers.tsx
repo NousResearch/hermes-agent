@@ -10,6 +10,8 @@ import type { MemoryProviderStatus, MemoryStatusResponse } from '@/types/hermes'
 
 import { isExternalMemoryProvider } from '../helpers'
 import { ListRow, Pill } from '../primitives'
+import { useSettingsOwner } from '../profile-scope'
+import { SettingsCard } from '../settings-card'
 
 const STATUS_TONE: Record<MemoryProviderStatus, 'destructive' | 'success' | 'warn'> = {
   missing: 'destructive',
@@ -122,7 +124,7 @@ export function MemoryLayersSummary({ builtin, onRetry, provider, status, status
   const { active, selected } = memoryProviderRows(status, provider)
 
   return (
-    <div className="grid gap-1" data-testid="memory-layers">
+    <SettingsCard classicClassName="grid gap-1" data-testid="memory-layers">
       {selected !== undefined ? (
         <ListRow
           action={<ProviderName m={m} row={selected} />}
@@ -151,7 +153,7 @@ export function MemoryLayersSummary({ builtin, onRetry, provider, status, status
         />
       ) : null}
       <ListRow action={builtinPill(m, builtin)} description={m.builtinDesc} title={m.builtinLayer} />
-    </div>
+    </SettingsCard>
   )
 }
 
@@ -178,7 +180,8 @@ export function MemoryLayersSlot({ sectionId, subpage, ...panel }: MemoryLayersS
 /** `provider` is the page's live `memory.provider` draft; the active provider
  *  and readiness come from GET /api/memory, refetched whenever
  *  `$memoryStatusRevision` moves (config autosave, provider setup, OAuth). */
-export function MemoryLayersPanel({ builtin, profile, provider }: MemoryLayersPanelProps) {
+export function MemoryLayersPanel({ builtin, profile: requestedProfile, provider }: MemoryLayersPanelProps) {
+  const profile = useSettingsOwner() ?? requestedProfile
   const revision = useStore($memoryStatusRevision)
   const [status, setStatus] = useState<MemoryStatusResponse | null>(null)
   const [failed, setFailed] = useState(false)

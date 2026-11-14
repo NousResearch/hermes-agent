@@ -10,6 +10,7 @@ import { Lock } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { notify, notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
@@ -31,6 +32,8 @@ interface SkillsTabProps {
   installedPending?: boolean
   installedError?: unknown
   onRefresh: () => void
+  agentControls?: boolean
+  agentLayout?: boolean
 }
 
 /** One management controller for the unified catalog, remounted on scope changes
@@ -46,9 +49,14 @@ function ScopedSkillsTab({
   onQueryChange,
   skills,
   installedPending = false,
-  installedError
+  installedError,
+  agentControls = true,
+  agentLayout = false
 }: SkillsTabProps) {
   const { t } = useI18n()
+  // The redesign paints the catalog's frame at once; its add buttons wait for the installed list
+  // (disabled), so a spinner above the feed would only push the page down when it goes.
+  const redesign = usePortalShell()
   const mounted = useRef(true)
   const mutationBusy = useRef(false)
   const editorRequest = useRef(0)
@@ -78,7 +86,7 @@ function ScopedSkillsTab({
   // The backend saves one disabled-list config value: serialize individual and
   // bulk changes together, not merely the members of a bulk action.
   async function applyEnabled(targets: SkillInfo[], enabled: boolean, bulk = false) {
-    if (mutationBusy.current || installedPending || installedError || targets.length === 0) {
+    if (!agentControls || mutationBusy.current || installedPending || installedError || targets.length === 0) {
       return
     }
 
@@ -225,7 +233,7 @@ function ScopedSkillsTab({
     <CatalogAlert onRetry={onRefresh} retryLabel={t.skills.refresh} title={t.skills.skillsLoadFailed}>
       {installedError instanceof Error ? installedError.message : null}
     </CatalogAlert>
-  ) : installedPending ? (
+  ) : installedPending && !redesign ? (
     <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
   ) : null
 
@@ -235,24 +243,27 @@ function ScopedSkillsTab({
         actions={
           <>
             <UpdateSkillsButton profile={profile} />
-            <ListStripMenu
-              items={[
-                {
-                  disabled: controlsDisabled || !skills.some(skill => skill.enabled && usageOf(skill) === 0),
-                  label: t.skills.disableUnused,
-                  onSelect: () =>
-                    void applyEnabled(
-                      skills.filter(skill => skill.enabled && usageOf(skill) === 0),
-                      false,
-                      true
-                    )
-                }
-              ]}
-              label={t.skills.tabSkills}
-              toggle={bulkSwitch}
-            />
+            {agentControls && (
+              <ListStripMenu
+                items={[
+                  {
+                    disabled: controlsDisabled || !skills.some(skill => skill.enabled && usageOf(skill) === 0),
+                    label: t.skills.disableUnused,
+                    onSelect: () =>
+                      void applyEnabled(
+                        skills.filter(skill => skill.enabled && usageOf(skill) === 0),
+                        false,
+                        true
+                      )
+                  }
+                ]}
+                label={t.skills.tabSkills}
+                toggle={bulkSwitch}
+              />
+            )}
           </>
         }
+        agentLayout={agentLayout}
         installedPending={installedPending || Boolean(installedError)}
         notice={notice}
         onQueryChange={onQueryChange}
@@ -271,13 +282,15 @@ function ScopedSkillsTab({
                 <Lock className="size-3.5" />
               </span>
             )}
-            <CatalogSwitch
-              aria-label={skill.name}
-              checked={skill.enabled}
-              disabled={controlsDisabled}
-              onCheckedChange={enabled => void applyEnabled([skill], enabled)}
-              size="xs"
-            />
+            {agentControls && (
+              <CatalogSwitch
+                aria-label={skill.name}
+                checked={skill.enabled}
+                disabled={controlsDisabled}
+                onCheckedChange={enabled => void applyEnabled([skill], enabled)}
+                size="xs"
+              />
+            )}
           </span>
         )}
         renderInstalledDetail={skill => (
@@ -286,6 +299,7 @@ function ScopedSkillsTab({
               <p className="text-xs text-(--ui-text-tertiary)">{t.skills.usageCount(usageOf(skill))}</p>
             )}
             <SkillDetail
+              agentControls={agentControls}
               onArchive={() => {
                 if (!saving.current) {
                   setArchiveTarget(skill.name)

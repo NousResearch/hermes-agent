@@ -16,13 +16,17 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
+import { useI18n } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
 import type { atom } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
+
+/** The core copy this pane renders: it mounts without an I18nProvider here, so the base catalog. */
+const coreCopy = () => renderHook(() => useI18n()).result.current.t
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -89,15 +93,14 @@ describe('the pane follows the roster hydrating after mount', () => {
   it('starts fail-closed, then paints once the row arrives', async () => {
     renderPane()
 
-    expect(screen.getByText('This bot has to appear in the roster first.')).toBeTruthy()
+    expect(screen.getByText(translateBots('cron.needsRosterFirst'))).toBeTruthy()
 
     // The same focused bot chat now resolves to its exact roster row. Nothing
     // else changes — only a store write the pane must be subscribed to see.
     act(() => $lastRoster.set([{ connectionId: 'local', name: 'research' }]))
 
-    await waitFor(() => expect(screen.queryByText('This bot has to appear in the roster first.')).toBeNull())
+    await waitFor(() => expect(screen.queryByText(translateBots('cron.needsRosterFirst'))).toBeNull())
     expect(await screen.findByText('Report')).toBeTruthy()
-    expect(screen.getByText('Scheduled jobs')).toBeTruthy()
   })
 
   it('offers a create affordance once the owner resolves', async () => {
@@ -108,10 +111,10 @@ describe('the pane follows the roster hydrating after mount', () => {
 
     // The reported "create silently no-ops" symptom starts here: while the
     // owner is stuck unresolved the pane never offers any create control.
-    expect(await screen.findByText('No scheduled jobs yet')).toBeTruthy()
+    expect(await screen.findByText(coreCopy().cron.emptyTitleNew)).toBeTruthy()
 
     // Both doors: the header action and the empty state's own call to action.
-    const create = screen.getAllByRole('button', { name: 'New cron' })
+    const create = screen.getAllByRole('button', { name: coreCopy().cron.newCron })
 
     expect(create).toHaveLength(2)
 
@@ -129,7 +132,7 @@ describe('identity matching stays exact', () => {
 
     act(() => $lastRoster.set([{ connectionId: 'local', name: 'research' }]))
 
-    await waitFor(() => expect(screen.getByText('This bot has to appear in the roster first.')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(translateBots('cron.needsRosterFirst'))).toBeTruthy())
     expect(request).not.toHaveBeenCalled()
   })
 })

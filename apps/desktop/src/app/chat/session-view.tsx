@@ -46,6 +46,10 @@ export interface SessionView {
   kind: 'primary' | 'tile'
   $runtimeId: ReadableAtom<string | null>
   $storedId: ReadableAtom<string | null>
+  /** The stored id of the chat whose messages this surface is painting, null while it has none yet.
+   *  It trails `$storedId` across a switch: the selection moves first, the transcript after, and
+   *  anything a message registers in that gap belongs to the chat that wrote it. */
+  $transcriptStoredId: ReadableAtom<string | null>
   $messages: ReadableAtom<ChatMessage[]>
   $busy: ReadableAtom<boolean>
   $awaitingResponse: ReadableAtom<boolean>
@@ -133,6 +137,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $reasoningEffortWire: primaryField<string>(state => state.reasoningEffortWire ?? '', $currentReasoningEffortWire),
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId,
+  $transcriptStoredId: computed($primaryState, state => state?.storedSessionId ?? null),
   $turnStartedAt: primaryField<number | null>(state => state.turnStartedAt, $turnStartedAt)
 }
 

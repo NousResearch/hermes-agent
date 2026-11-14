@@ -47,6 +47,7 @@
  * pin that contract at the one seam that got it wrong.
  */
 import { readStatusCode } from './api-transport'
+import { shellMessages } from './shell-wording'
 
 export function resolveJsonBody<T>(body: T): T {
   return body
@@ -143,13 +144,6 @@ export interface AdvertisedAuthProvider {
 /** Dashboard `basic` auth is username/password; `/api/status` often lists it as a bare string. */
 const PASSWORD_PROVIDER_NAMES = new Set(['basic'])
 
-const OAUTH_NOT_SIGNED_IN_MESSAGE =
-  'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
-  'Open Settings → Gateway and click "Sign in", or switch back to Local.'
-
-const OAUTH_SESSION_EXPIRED_MESSAGE =
-  'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
-
 /**
  * Normalize `/api/auth/providers` objects *or* `/api/status` `auth_providers`
  * string names into the shape `oauthGuardMayHardFail` understands.
@@ -205,7 +199,7 @@ export function normalizeAdvertisedAuthProviders(providers: unknown): Advertised
  * ticket mint 401s — that must send the user to Sign in, not "expired".
  */
 export function oauthTicketFailureAuthMessage(hasDecryptableNativeSession: boolean): string {
-  return hasDecryptableNativeSession ? OAUTH_SESSION_EXPIRED_MESSAGE : OAUTH_NOT_SIGNED_IN_MESSAGE
+  return hasDecryptableNativeSession ? shellMessages.remoteSessionExpired() : shellMessages.remoteUnsignedOauth()
 }
 
 /**

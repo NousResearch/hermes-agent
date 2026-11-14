@@ -125,7 +125,7 @@ async function openSeededSession(page: Page): Promise<void> {
  * surface is empty rather than waiting for the old caption to leave the page.
  */
 async function openNewSession(page: Page): Promise<void> {
-  await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
+  await page.locator('[data-slot="sidebar"] button[aria-label="New chat"]').first().click()
   await page.waitForFunction(
     ([expected, surfaceSelector]: [string, string]) => {
       const surfaces = document.querySelectorAll(surfaceSelector)

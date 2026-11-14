@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
+import { simplifiedAgentsCopy } from './simplified-agents'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
@@ -28,10 +29,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['zh'],
   gatewayGroupOpen: {
-    opening: "正在打开群聊…",
+    opening: '正在打开群聊…',
     lookupFailed: "无法在网关上查找此群组，请重试。",
-    missing: "此群聊已不存在。"
+    missing: '此群聊已不存在。'
   },
   catalog: zhCatalog,
   externalOpenFailed: {
@@ -157,8 +159,7 @@ export const zhOverrides = {
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewayConnectionLost: '与网关的连接已断开',
-      gatewayConnectionLostDetail:
-        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
+      gatewayConnectionLostDetail: 'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要登录网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
@@ -362,6 +363,8 @@ export const zhOverrides = {
       'nav.artifacts': '打开制品',
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
+      'nav.back': '后退',
+      'nav.forward': '前进',
       'session.new': '新建会话',
       'session.newTab': '新建会话标签',
       'session.newWindow': '新建窗口',
@@ -432,6 +435,7 @@ export const zhOverrides = {
       'profile.prev': '上一个配置',
       'profile.toggleAll': '切换全部配置视图',
       'profile.create': '创建配置',
+      'agents.new': '新建配置档案（配置档案页面）',
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
@@ -719,6 +723,13 @@ export const zhOverrides = {
       system: { label: '跟随系统', description: '跟随系统外观' }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: '工具调用',
+        toolViewDesc: '简洁模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+        product: '简洁',
+        introSplashTitle: '欢迎界面',
+        embedsTitle: '链接预览'
+      },
       chatTextScaleTitle: '聊天文字大小',
       chatTextScaleDesc: '相对于界面缩放调整对话文字和消息输入框的字号。侧边栏和控件大小保持不变。',
       title: '外观',
@@ -1389,8 +1400,7 @@ export const zhOverrides = {
     },
     managedUpdates: {
       title: '托管更新',
-      intro:
-        '以事务方式更新由桌面端托管的 SSH 安装：先排空会话，再更新远端检出，最后恢复每个 profile，并生成关联回执。',
+      intro: '以事务方式更新由桌面端托管的 SSH 安装：先排空会话，再更新远端检出，最后恢复每个 profile，并生成关联回执。',
       sshConnection: '桌面端托管的 SSH 安装',
       update: '更新',
       updating: '更新中…',
@@ -2022,6 +2032,15 @@ export const zhOverrides = {
 
   skillDeepLink: zhSkillDeepLink,
   skills: {
+    inventoryScopeHint:
+      '安装项适用于所选智能体及机器。各智能体的工具启用状态和覆盖设置在智能体设置中管理。使用同一 Nous 账户的智能体会共享托管连接器账户。',
+    agentScopeHint: '更改仅适用于此智能体。现有对话会保留当前工具。',
+    toolSecretsHint:
+      '此智能体使用的 API 密钥、端点和提供商。提供商登录凭据可能在智能体之间共享；使用同一 Nous 账户的智能体会共享托管连接器账户。',
+    openAgentSettings: '配置档案设置',
+    openToolLibrary: '浏览工具库',
+    remotePluginHint: '在此配置档案所属的网关上打开它以管理插件。插件安装使用已连接的网关。',
+    showAllToolsets: (count: number) => `显示全部 ${count} 项`,
     tabSkills: '技能',
     tabToolsets: '工具集',
     configuringProfile: '正在配置：',
@@ -2531,7 +2550,8 @@ export const zhOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: '无需机器人令牌',
-      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      intro: (platform: string) =>
+        `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
       link: (platform: string) => `关联 ${platform}`,
       linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
       linkedAccounts: '已关联账号',
@@ -2552,7 +2572,8 @@ export const zhOverrides = {
       managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
       managedIntro: '此代理的账号在 Nous Portal 中关联。',
       openPortal: '在 Nous Portal 中关联账号',
-      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+      noNewAccount: (platform: string) =>
+        `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
     },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
@@ -3039,6 +3060,7 @@ export const zhOverrides = {
     tabFiles: '文件',
     tabLinks: '链接',
     noArtifactsTitle: '未找到产物',
+    partialIndex: (failed: number, total: number) => `索引产物时跳过了 ${total} 个最近会话中的 ${failed} 个。`,
     noArtifactsDesc: '当会话生成图片和文件输出时，它们会显示在这里。',
     failedLoad: '产物加载失败',
     openFailed: '打开失败',
@@ -3233,6 +3255,7 @@ export const zhOverrides = {
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',
     placeholderFollowUp: '发送后续消息',
+    browseAllSessions: '浏览所有会话…',
     newSessionPlaceholders: [
       '我们要构建什么？',
       '给 Hermes 一个任务',
@@ -3965,6 +3988,8 @@ export const zhOverrides = {
       daybreakFailed: 'Daybreak 更新失败'
     },
     gatewayMenu: {
+      connectionLabel: '连接',
+      inferenceLabel: '推理',
       gateway: '网关',
       connected: '已连接',
       connecting: '连接中',
@@ -3978,7 +4003,13 @@ export const zhOverrides = {
       connection: label => `连接：${label}`,
       recentActivity: '最近活动',
       viewAllLogs: '查看全部日志 →',
-      messagingPlatforms: '消息平台'
+      messagingPlatforms: '消息平台',
+      machineStatus: (machine, status) => `${machine} 状态：${status}`,
+      checkAgain: '重新检查',
+      switchToMachine: '切换到这台机器',
+      machineSettings: '网关与机器',
+      restartTitle: '重启网关？',
+      restartBody: '这台机器上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
     },
     approvalMode: {
       title: '审批模式',
@@ -4154,12 +4185,9 @@ export const zhOverrides = {
     terminalCloseAll: '关闭全部',
     terminalNewOn: '新建终端于…',
     terminalGatewayRemoved: '已移除的网关',
-    terminalGatewayRemovedBody:
-      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
-    terminalGatewayNoShellBody:
-      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
-    terminalDisconnectedBody:
-      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
+    terminalGatewayRemovedBody: '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody: '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody: '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 
@@ -4647,6 +4675,7 @@ export const zhOverrides = {
 
   desktop: {
     audioReadFailed: '无法读取录制的音频',
+    sessionOpenFailed: '无法打开此会话',
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',
     promptFailed: '提示词发送失败',

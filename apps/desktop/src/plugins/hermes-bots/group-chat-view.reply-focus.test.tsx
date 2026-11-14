@@ -28,7 +28,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     usePluginI18n: () => translateBots
   }
 })
-vi.mock('./avatar', () => ({ avatarColor: () => '#888', botAppearance: () => ({}), BotFace: () => null }))
+vi.mock('./avatar', () => ({ avatarColor: () => '#888', botAppearance: () => ({}), BotBadge: () => null }))
 afterEach(cleanup)
 
 it('legacy Reply focuses the seeded main or matching thread input without disturbing another draft', async () => {

@@ -1,8 +1,9 @@
 import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores'
 
-import { createLayoutPersistence } from '@/lib/layout-persistence'
+import { createLayoutPersistence, type LayoutScope } from '@/lib/layout-persistence'
 import { type Codec, persistentAtom } from '@/lib/persisted'
 import type { SidebarRowMeta } from '@/store/layout'
+import { $shellChoice, rendersPortalShell } from '@/store/shell-variant'
 import type { ToolViewMode } from '@/store/tool-view'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 
@@ -56,14 +57,27 @@ export const $interfaceMode = persistentAtom<InterfaceMode>(
   modeCodec
 )
 
+const layoutScope = (): LayoutScope => ({
+  mode: $interfaceMode.get(),
+  shell: rendersPortalShell($shellChoice.get()) ? 'portal' : 'classic'
+})
+
+/** The arrangement is scoped by mode × shell, so neither the picker nor the redesign switch
+ *  can rewrite the other scope's layout. */
 export const modeLayout = createLayoutPersistence(
-  $interfaceMode.get(),
+  layoutScope(),
   !isSecondaryWindow() && !isBrowserWindow() && !isHudWindow()
 )
 
 export function setInterfaceMode(mode: InterfaceMode) {
-  modeLayout.change(mode, () => $interfaceMode.set(mode))
+  modeLayout.change({ ...modeLayout.scope, mode }, () => $interfaceMode.set(mode))
 }
+
+// Both inputs are machine-wide preferences that also change from another window (a storage
+// event sets the atom directly). Follow every change here so the scope never lags its inputs;
+// a change already made through `setInterfaceMode` is a no-op by then.
+$interfaceMode.listen(() => modeLayout.change(layoutScope()))
+$shellChoice.listen(() => modeLayout.change(layoutScope()))
 
 /** The ⌘K row and the rebindable `view.toggleSimpleMode` action. */
 export function toggleSimpleMode() {
@@ -86,6 +100,7 @@ export interface ModeContext {
 }
 
 export interface ModePolicy {
+  chatItemsOpen: boolean
   fileBrowserOpen: boolean
   hideCodeDiffs: boolean
   profileRailVisible: boolean
@@ -104,6 +119,8 @@ type PolicyEntry<K extends ModePolicyKey> = ((context: ModeContext) => ModePolic
 type PolicyTable = { readonly [K in ModePolicyKey]?: PolicyEntry<K> }
 
 const SIMPLE_POLICY: PolicyTable = {
+  // The chat's items open on click (its "N items" button), never by default.
+  chatItemsOpen: false,
   // Hide-style panes rest closed; their keybinds and the agent still reveal them.
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.

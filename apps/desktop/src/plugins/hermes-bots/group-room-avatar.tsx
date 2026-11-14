@@ -1,6 +1,6 @@
 import { useValue } from '@hermes/plugin-sdk'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { avatarColor, botAppearance, BotBadge } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { $botMeta } from './data'
 
@@ -10,5 +10,5 @@ export function RoomBotAvatar({ name, size = 24 }: { name: string; size?: number
   const appearance = botAppearance(name, meta?.[name])
   const photo = appearance.image && !isBackfilledFacePng(appearance.image) ? appearance.image : null
 
-  return <BotFace color={avatarColor(appearance.color, name)} image={photo} name={name} shape={appearance.shape} size={size} />
+  return <BotBadge color={avatarColor(appearance.color, name)} image={photo} name={name} shape={appearance.shape} size={size} />
 }

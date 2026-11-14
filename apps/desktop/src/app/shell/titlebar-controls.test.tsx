@@ -9,12 +9,23 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
-import { $fileBrowserOpen, $leftSideOpen, CHAT_SIDEBAR_PANE_ID, FILE_BROWSER_PANE_ID } from '@/store/layout'
+import { $interfaceMode } from '@/store/interface-mode'
+import {
+  $fileBrowserOpen,
+  $leftSideOpen,
+  $sidebarOpen,
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
+  setSidebarOpen
+} from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
+import { $shellChoice } from '@/store/shell-variant'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
-import { ROUTES_AREA } from '../routes'
+import { $widthClass } from '../redesign/breakpoints'
+import { $workspaceIsPage, ROUTES_AREA } from '../routes'
 
+import { $shellSheet } from './shell-sheet'
 import { TITLEBAR_CHROME_CHANGED_EVENT } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
@@ -77,10 +88,55 @@ describe('TitlebarControls fixed clusters', () => {
   })
 
   it('hides the app clusters on an overlay', () => {
+    $shellChoice.set(false)
     renderControls('/settings')
 
     expect(windowControls()).toBeNull()
     expect(appControls()).toBeNull()
+    $shellChoice.set(null)
+  })
+
+  it('parks the redesign’s clusters on its overlay destinations, keeping titleBar slots mounted', () => {
+    const life = { cleanups: 0, mounts: 0 }
+
+    function PluginRight() {
+      useEffect(() => {
+        life.mounts += 1
+
+        return () => {
+          life.cleanups += 1
+        }
+      }, [])
+
+      return <span>plugin-right</span>
+    }
+
+    $shellChoice.set(true)
+
+    const disposeRight = registry.register({
+      area: 'titleBar.right',
+      id: 'test-plugin-right',
+      render: () => <PluginRight />
+    })
+
+    try {
+      renderControls('/')
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+
+      for (const page of ['/settings', '/profiles', '/cron']) {
+        act(() => navigateTo(page))
+        // Out of sight and out of reach while the destination owns the band, but never torn down.
+        expect(windowControls()?.hidden).toBe(true)
+        expect(screen.getByText('plugin-right').closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
+      }
+
+      act(() => navigateTo('/'))
+      expect(windowControls()?.hidden).toBe(false)
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+    } finally {
+      act(disposeRight)
+      $shellChoice.set(null)
+    }
   })
 
   it('a titleBar.tools item alone does not claim the band', () => {
@@ -161,10 +217,16 @@ describe('TitlebarControls fixed clusters', () => {
       expect(pluginTool()).not.toBeNull()
     })
 
-    it('hides plugin titlebar contributions on an overlay', () => {
+    it('hides plugin titlebar contributions on an overlay: unmounted in classic, parked in the redesign', () => {
+      $shellChoice.set(false)
       renderControls('/settings')
-
       expect(pluginChrome()).toBeNull()
+      cleanup()
+
+      $shellChoice.set(true)
+      renderControls('/settings')
+      expect(pluginChrome()?.closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
+      $shellChoice.set(null)
     })
 
     it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {
@@ -202,6 +264,7 @@ describe('titlebar app-action cluster', () => {
     $narrowOverlayPaneIds.set(new Set())
     setTitlebarAppActionsSide('right')
     cleanup()
+    $shellChoice.set(null)
     vi.unstubAllGlobals()
     delete window.document.documentElement.dataset.hermesDesktopHost
   })
@@ -291,7 +354,8 @@ describe('titlebar app-action cluster', () => {
     }
   })
 
-  it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {
+  it('moves classic settings, layout, and HUD to the left when the appearance setting says left', () => {
+    $shellChoice.set(false)
     setTitlebarAppActionsSide('left')
     renderControls('/')
 
@@ -305,6 +369,7 @@ describe('titlebar app-action cluster', () => {
   })
 
   it('keeps HUD hidden in the browser on either app-action side', () => {
+    $shellChoice.set(false)
     vi.stubGlobal('hermesDesktop', { ...window.hermesDesktop, hud: undefined })
     renderControls('/')
 
@@ -316,5 +381,130 @@ describe('titlebar app-action cluster', () => {
     expect(screen.queryByLabelText('HUD mode')).toBeNull()
     expect(within(screen.getByLabelText('Window controls')).getByLabelText('Open settings')).toBeTruthy()
     expect(screen.getByLabelText('Layout editor')).toBeTruthy()
+  })
+})
+
+it('keeps settings only in the global rail when simplified mode is enabled', () => {
+  $shellChoice.set(false)
+  renderControls('/')
+  expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  act(() => $shellChoice.set(true))
+  expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
+  act(() => $shellChoice.set(false))
+  expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  cleanup()
+  $shellChoice.set(null)
+})
+
+it('offers the Advanced band only the way back to a hidden sidebar: the open Chats destination folds it', () => {
+  $shellChoice.set(null)
+  setSidebarOpen(true)
+  renderControls('/')
+  expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
+
+  act(() => setSidebarOpen(false))
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
+  expect($leftSideOpen.get()).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
+  cleanup()
+})
+
+it('brings a hidden sidebar back in Simple mode from one floating button at the stage, not the band', () => {
+  const previousMode = $interfaceMode.get()
+  $shellChoice.set(null)
+  $interfaceMode.set('simple')
+  setSidebarOpen(false)
+  renderControls('/')
+
+  expect(screen.queryByRole('button', { name: 'Show sidebar' })).toBeNull()
+  const reveal = screen.getByRole('button', { name: 'Show chats' })
+  expect(reveal.getAttribute('data-slot')).toBe('panel-reveal')
+  fireEvent.click(reveal)
+  expect($sidebarOpen.get()).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+
+  // Below wide the band's button is the sheet's menu in every mode, and no floating button shows.
+  act(() => {
+    setSidebarOpen(false)
+    $narrowViewport.set(true)
+  })
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+
+  act(() => $narrowViewport.set(false))
+  cleanup()
+  setSidebarOpen(true)
+  $interfaceMode.set(previousMode)
+})
+
+describe('the redesigned band on a compact window', () => {
+  beforeEach(() => {
+    act(() => {
+      $widthClass.set('compact')
+      $narrowViewport.set(true)
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    act(() => {
+      $widthClass.set('wide')
+      $narrowViewport.set(false)
+      $shellSheet.set(null)
+      $workspaceIsPage.set(false)
+    })
+  })
+
+  it('is menu, title and new session: no Back or Forward (the browser has them)', () => {
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+    expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
+    expect(within(left).getByRole('button', { name: /^(Show|Hide) sidebar/ })).toBeTruthy()
+  })
+
+  it('opens the rail as a sheet from a workspace page, which has no chat sidebar', () => {
+    act(() => $workspaceIsPage.set(true))
+    renderControls('/capabilities')
+    fireEvent.click(
+      within(screen.getByLabelText('Window controls')).getByRole('button', { name: /^(Show|Hide) sidebar/ })
+    )
+    expect($shellSheet.get()).toBe('nav')
+  })
+
+  it('keeps the rail, and so no menu, on a medium workspace page', () => {
+    act(() => {
+      $widthClass.set('medium')
+      $workspaceIsPage.set(true)
+    })
+    renderControls('/capabilities')
+    expect(
+      within(screen.getByLabelText('Window controls')).queryByRole('button', { name: /^(Show|Hide) sidebar/ })
+    ).toBeNull()
+  })
+})
+
+describe('Back and Forward in the redesigned band', () => {
+  afterEach(() => {
+    cleanup()
+    delete document.documentElement.dataset.hermesDesktopHost
+  })
+
+  it('leads the native app’s band at desktop width', () => {
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).getByRole('button', { name: 'Back' })).toBeTruthy()
+    expect(within(left).getByRole('button', { name: 'Forward' })).toBeTruthy()
+  })
+
+  it('is left to the browser when the app is hosted in one, at any width', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
   })
 })

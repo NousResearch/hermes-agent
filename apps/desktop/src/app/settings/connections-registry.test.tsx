@@ -2,8 +2,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { en } from '@/i18n/en'
 import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 import { deferred } from '@/test/deferred'
 
 import {
@@ -40,6 +42,8 @@ const registry: DesktopConnectionsRegistry = {
 }
 
 beforeEach(() => {
+  // The classic page; the redesign's Manage menu is covered in its own block.
+  $shellChoice.set(false)
   $connection.set({
     baseUrl: 'http://homelab.lan:9119',
     connectionId: 'homelab',
@@ -64,6 +68,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  $shellChoice.set(null)
   $connection.set(null)
   cleanup()
   vi.clearAllMocks()
@@ -92,7 +97,7 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.click(within(screen.getByDisplayValue('Delete').parentElement!).getByRole('button', { name: 'Remove' }))
     fireEvent.change(screen.getByPlaceholderText('Existing token ...abc123'), { target: { value: 'new-token' } })
     fireEvent.click(screen.getByText('Save connection'))
-    await screen.findByText('Store the gateway token in plain text?')
+    await screen.findByText(en.settings.gateway.plainTextConfirmTitle)
 
     const expected = {
       id: 'homelab',
@@ -321,9 +326,7 @@ describe('ConnectionsRegistrySection', () => {
     })
     fireEvent.click(screen.getByText('Save connection').closest('button')!)
 
-    await waitFor(() =>
-      expect(screen.getByText('A connection to this gateway URL already exists (“Homelab”).')).toBeTruthy()
-    )
+    await waitFor(() => expect(screen.getByText(en.settings.connections.duplicateUrl('Homelab'))).toBeTruthy())
     expect(save).not.toHaveBeenCalled()
   })
 
@@ -343,9 +346,7 @@ describe('ConnectionsRegistrySection', () => {
   it('lets users opt into restoring the last-used source', async () => {
     render(<ConnectionsRegistrySection />)
 
-    fireEvent.click(
-      await screen.findByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' })
-    )
+    fireEvent.click(await screen.findByRole('switch', { name: en.settings.connections.launchModeTitle }))
 
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
   })
@@ -359,7 +360,7 @@ describe('ConnectionsRegistrySection', () => {
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
-    expect(screen.getByText('At startup, return to Sessions on the last-used gateway')).toBeTruthy()
+    expect(screen.getByRole('switch', { name: en.settings.connections.launchModeTitle })).toBeTruthy()
   })
 
   it('sorts a large registry and searches names and endpoints', async () => {
@@ -400,7 +401,7 @@ describe('ConnectionsRegistrySection', () => {
       </div>
     )
 
-    const search = await screen.findByRole('searchbox', { name: 'Search gateways…' })
+    const search = await screen.findByRole('searchbox', { name: en.settings.connections.searchPlaceholder })
     const settingsScroller = screen.getByTestId('settings-scroller')
     settingsScroller.scrollTop = 200
     vi.spyOn(search, 'getBoundingClientRect')
@@ -467,6 +468,38 @@ describe('ConnectionsRegistrySection', () => {
 
     fireEvent.change(search, { target: { value: '' } })
     expect(search.closest<HTMLElement>('.border-t')?.style.minHeight).toBe('')
+  })
+})
+
+describe('ConnectionsRegistrySection in the redesign', () => {
+  it('keeps every per-connection action behind one Manage menu and adds from the list card', async () => {
+    $shellChoice.set(true)
+    render(<ConnectionsRegistrySection />)
+
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Manage: Homelab' }), { button: 0, ctrlKey: false })
+    const menu = await screen.findByRole('menu')
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map(item => item.textContent)
+    ).toEqual([
+      en.settings.connections.testConnection,
+      en.settings.connections.makePrimary,
+      en.settings.connections.editConnection,
+      en.settings.connections.removeConnection
+    ])
+
+    fireEvent.click(within(menu).getByRole('menuitem', { name: en.settings.connections.makePrimary }))
+    await waitFor(() => expect(setPrimary).toHaveBeenCalledWith('homelab'))
+
+    // The app-managed local entry can be tested but never edited or removed.
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Manage: This device' }), { button: 0, ctrlKey: false })
+    const localMenu = await screen.findByRole('menu')
+    expect(within(localMenu).queryByRole('menuitem', { name: en.settings.connections.removeConnection })).toBeNull()
+    fireEvent.keyDown(localMenu, { key: 'Escape' })
+
+    fireEvent.click(screen.getByRole('button', { name: en.settings.connections.addConnection }))
+    expect(await screen.findByRole('button', { name: en.settings.connections.save })).toBeTruthy()
   })
 })
 

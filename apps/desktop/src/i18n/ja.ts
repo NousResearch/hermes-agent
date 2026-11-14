@@ -27,12 +27,17 @@ import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const jaOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['ja'],
+  keybinds: {
+    actions: { 'agents.new': '新しいプロファイル（プロファイルページ）', 'nav.back': '戻る', 'nav.forward': '進む' }
+  },
   gatewayGroupOpen: {
-    opening: "グループチャットを開いています…",
+    opening: 'グループチャットを開いています…',
     lookupFailed: "ゲートウェイでこのグループを検索できませんでした。もう一度お試しください。",
-    missing: "このグループチャットはもう存在しません。"
+    missing: 'このグループチャットはもう存在しません。'
   },
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
@@ -496,6 +501,13 @@ export const jaOverrides = {
       system: { label: 'システム', description: 'OS の外観に合わせる' }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: 'ツール呼び出し',
+        toolViewDesc: 'シンプル表示はツールの生データを隠し、テクニカル表示は入出力をすべて表示します。',
+        product: 'シンプル',
+        introSplashTitle: 'ようこそ画面',
+        embedsTitle: 'リンクプレビュー'
+      },
       chatTextScaleTitle: 'チャットの文字サイズ',
       chatTextScaleDesc:
         'UI スケールを基準に、会話とメッセージ入力欄の文字を拡大縮小します。サイドバーや操作ボタンのサイズは変わりません。',
@@ -1026,8 +1038,7 @@ export const jaOverrides = {
       authTitle: '認証',
       authSignedInPassword:
         'このゲートウェイはユーザー名とパスワードを使用します。サインイン済みです。セッションは自動的に更新されます。',
-      authSignedInOauth:
-        'このゲートウェイは OAuth を使用します。サインイン済みです。セッションは自動的に更新されます。',
+      authSignedInOauth: 'このゲートウェイは OAuth を使用します。サインイン済みです。セッションは自動的に更新されます。',
       authNeedsPassword:
         'このゲートウェイはユーザー名とパスワードを使用します。このデスクトップアプリを承認するにはサインインしてください。',
       authNeedsOauth: provider =>
@@ -1311,12 +1322,14 @@ export const jaOverrides = {
         enabledTitle: '実プロファイルブラウジング：オン',
         enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
         disabledTitle: '実プロファイルブラウジング：オフ',
-        disabledMessage: 'プロファイルのスナップショットは削除され、アプリ内ブラウザもそのログインから外れます。新しいセッションはクリーンなブラウザを使用します。',
+        disabledMessage:
+          'プロファイルのスナップショットは削除され、アプリ内ブラウザもそのログインから外れます。新しいセッションはクリーンなブラウザを使用します。',
         failedSave: '実プロファイル設定を保存できませんでした',
         reimportSignins: 'ログイン情報を再インポート',
         signinsImportedTitle: 'アプリ内ブラウザのログイン',
         signinsImported: count => `ブラウザプロファイルの Cookie ${count} 件でアプリ内ブラウザにログインしました。`,
-        signinsRemote: 'このバックエンドは別のマシンで動作しているため、そのブラウザプロファイルはアプリ内ブラウザにインポートされません。',
+        signinsRemote:
+          'このバックエンドは別のマシンで動作しているため、そのブラウザプロファイルはアプリ内ブラウザにインポートされません。',
         signinsFailed: 'アプリ内ブラウザにログイン情報をインポートできませんでした',
         prompt: {
           title: 'サイトにログインしたまま利用',
@@ -1334,6 +1347,16 @@ export const jaOverrides = {
 
   skillDeepLink: jaSkillDeepLink,
   skills: {
+    inventoryScopeHint:
+      'インストールは選択したエージェントとマシンに適用されます。エージェントごとのツールの有効化と個別設定はエージェント設定で管理します。ホスト型コネクタのアカウントは、同じ Nous アカウントを使うエージェント間で共有されます。',
+    agentScopeHint: '変更はこのエージェントにのみ適用されます。既存の会話では現在のツールが維持されます。',
+    toolSecretsHint:
+      'このエージェントが使う API キー、エンドポイント、プロバイダー。プロバイダーへのログイン情報はエージェント間で共有される場合があります。ホスト型コネクタのアカウントは、同じ Nous アカウントを使うエージェント間で共有されます。',
+    openAgentSettings: 'プロファイル設定',
+    openToolLibrary: 'ツールライブラリを見る',
+    remotePluginHint:
+      'プラグインを管理するには、このプロファイルをそのゲートウェイで開いてください。プラグインのインストールには接続中のゲートウェイを使用します。',
+    showAllToolsets: (count: number) => `全 ${count} 件を表示`,
     plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
       search: '検索',
@@ -1638,7 +1661,8 @@ export const jaOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'ボットトークン不要',
-      intro: (platform: string) => `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
+      intro: (platform: string) =>
+        `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
       link: (platform: string) => `${platform} をリンク`,
       linkAnother: (platform: string) => `別の ${platform} アカウントをリンク`,
       linkedAccounts: 'リンク済みアカウント',
@@ -1651,15 +1675,18 @@ export const jaOverrides = {
       copied: 'コピーしました',
       copyFailed: (command: string) => `コピーできませんでした。${command} と入力してください。`,
       waiting: 'ボットがメッセージを受け取るのを待っています。コードは1回だけ使えます。',
-      linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
+      linked: (platform: string) =>
+        `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
       expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
-      refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
+      refused: (platform: string) =>
+        `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
       qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
       managed: 'Team Gateway が管理',
       managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
       managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
       openPortal: 'Nous Portal でアカウントをリンク',
-      noNewAccount: (platform: string) => `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
+      noNewAccount: (platform: string) =>
+        `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
     },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
@@ -1766,7 +1793,10 @@ export const jaOverrides = {
       MATTERMOST_ALLOW_ALL_USERS: { label: 'すべての Mattermost ユーザーを許可' },
       MATTERMOST_HOME_CHANNEL: { label: 'ホームチャンネル' },
       QQ_ALLOW_ALL_USERS: { label: 'すべての QQ ユーザーを許可' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ ホームチャンネル', help: 'Cron 配信のデフォルトチャンネルまたはグループ。' },
+      QQBOT_HOME_CHANNEL: {
+        label: 'QQ ホームチャンネル',
+        help: 'Cron 配信のデフォルトチャンネルまたはグループ。'
+      },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ ホームチャンネル名' },
       SLACK_BOT_TOKEN: {
         label: 'Slack ボットトークン',
@@ -2026,8 +2056,7 @@ export const jaOverrides = {
     topOfHour: '毎時 0 分',
     everyHourAt: minute => `毎時 :${minute} に`,
     newCron: '新しい Cron',
-    emptyDescNew:
-      'Cron 式でプロンプトを実行するスケジュールを設定します。Hermes が実行して、選択した宛先に結果を送信します。',
+    emptyDescNew: 'Cron 式でプロンプトを実行するスケジュールを設定します。Hermes が実行して、選択した宛先に結果を送信します。',
     emptyDescSearch: '検索キーワードを広げてください。',
     emptyTitleNew: 'スケジュールされたジョブがまだありません',
     emptyTitleSearch: '一致なし',
@@ -2118,6 +2147,7 @@ export const jaOverrides = {
     tabFiles: 'ファイル',
     tabLinks: 'リンク',
     noArtifactsTitle: 'アーティファクトが見つかりません',
+    partialIndex: (failed: number, total: number) => `アーティファクトのインデックス作成中に、最近のセッション ${total} 件中 ${failed} 件をスキップしました。`,
     noArtifactsDesc: 'セッションで生成された画像やファイルの出力がここに表示されます。',
     failedLoad: 'アーティファクトの読み込みに失敗しました',
     openFailed: '開くことができませんでした',
@@ -2307,6 +2337,7 @@ export const jaOverrides = {
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',
     placeholderFollowUp: 'フォローアップを送信',
+    browseAllSessions: 'すべてのセッションを表示…',
     newSessionPlaceholders: [
       '何を作りますか？',
       'Hermes にタスクを与える',
@@ -2974,6 +3005,8 @@ export const jaOverrides = {
       daybreakFailed: 'Daybreak の更新に失敗しました'
     },
     gatewayMenu: {
+      connectionLabel: '接続',
+      inferenceLabel: '推論',
       gateway: 'ゲートウェイ',
       connected: '接続済み',
       connecting: '接続中',
@@ -2987,7 +3020,13 @@ export const jaOverrides = {
       connection: label => `接続: ${label}`,
       recentActivity: '最近のアクティビティ',
       viewAllLogs: 'すべてのログを見る →',
-      messagingPlatforms: 'メッセージングプラットフォーム'
+      messagingPlatforms: 'メッセージングプラットフォーム',
+      machineStatus: (machine, status) => `${machine} の状態: ${status}`,
+      checkAgain: '再確認',
+      switchToMachine: 'このマシンに切り替える',
+      machineSettings: 'ゲートウェイとマシン',
+      restartTitle: 'ゲートウェイを再起動しますか？',
+      restartBody: 'このマシンで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
     },
     approvalMode: {
       title: '承認モード',
@@ -3659,6 +3698,7 @@ export const jaOverrides = {
 
   desktop: {
     audioReadFailed: '録音した音声を読み取れませんでした',
+    sessionOpenFailed: 'このセッションを開けませんでした',
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',

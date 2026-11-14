@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -21,6 +21,7 @@ import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion
 import { normalize } from '@/lib/text'
 import { onboardingChatStore } from '@/store/onboarding-session'
 import { $sessions } from '@/store/session'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
@@ -167,7 +168,7 @@ export function useSlashCompletions(options: {
           text: `/resume ${session.id}`,
           display: sessionTitle(session),
           meta: (session.preview ?? '').trim(),
-          group: 'Sessions'
+          group: translateNow('sidebar.sessions')
         }))
 
         // Trailing "more" affordance (Cursor-style): picking it opens the full
@@ -175,9 +176,9 @@ export function useSlashCompletions(options: {
         // submitting it (Enter) still opens the overlay if the action is skipped.
         items.push({
           text: '/resume',
-          display: 'Browse all sessions…',
+          display: translateNow('composer.browseAllSessions'),
           meta: '',
-          group: 'Sessions',
+          group: translateNow('sidebar.sessions'),
           action: 'session-picker'
         })
 
@@ -357,6 +358,7 @@ export function useSlashCompletions(options: {
   const live = useLiveCompletionAdapter({ enabled, epoch: `${epoch}:${locale}`, fetcher, isCached, toItem })
   // Slash commands come after setup: none in the onboarding chat until its run ends.
   const off = useStore(useMemo(() => onboardingChatStore(sessionId ?? null), [sessionId]))
+  const setupGuide = useStore($setupGuideOnboarding)
 
-  return off ? { adapter: null, loading: false } : live
+  return off && !setupGuide ? { adapter: null, loading: false } : live
 }

@@ -3,7 +3,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $desktopBoot } from '@/store/boot'
-import { closeSecondaryGateways, isActivePrimary, requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import {
+  closeSecondaryGateways,
+  isActivePrimary,
+  requestGatewayForAgent,
+  requestGatewayForProfile
+} from '@/store/gateway'
 import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
@@ -184,7 +189,10 @@ it('a bare tab on a gateway launched as a named profile names default when it as
 })
 
 it('a bare tab opens on the saved default the same way, and records it in its address as a switch does', async () => {
-  window.localStorage.setItem('hermes:webapp:default-profile:/', JSON.stringify({ connectionId: 'local', profile: 'research' }))
+  window.localStorage.setItem(
+    'hermes:webapp:default-profile:/',
+    JSON.stringify({ connectionId: 'local', profile: 'research' })
+  )
   await bootWebappTab('/#/')
 
   expect($activeGatewayProfile.get()).toBe('research')
@@ -220,9 +228,7 @@ it('picking a profile the gateway does not serve is refused with the reason and 
   await bootWebappTab('/?profile=research#/')
   expect($activeGatewayProfile.get()).toBe('research')
 
-  await expect(ensureGatewayProfile('solo')).rejects.toThrow(
-    'This gateway does not serve profile "solo", so this tab cannot open it.'
-  )
+  await expect(ensureGatewayProfile('solo')).rejects.toMatchObject({ name: 'UnservedProfileError', profile: 'solo' })
   expect($activeGatewayProfile.get()).toBe('research')
   expect(FakeWebSocket.instances).toHaveLength(1)
   expect(mints.map(url => url.searchParams.get('profile'))).toEqual([null])
@@ -234,7 +240,7 @@ it('a refused pick is final: the store does not redial the profile the gateway d
   await bootWebappTab('/?profile=research#/')
   const dials = vi.spyOn(window.hermesDesktop!, 'getGatewayWsUrl')
 
-  await expect(ensureGatewayProfile('solo')).rejects.toThrow('This gateway does not serve profile "solo"')
+  await expect(ensureGatewayProfile('solo')).rejects.toMatchObject({ name: 'UnservedProfileError', profile: 'solo' })
   // Well past the redial ladder's ceiling: every scheduled redial would have run by now.
   await act(async () => {
     await vi.advanceTimersByTimeAsync(120_000)

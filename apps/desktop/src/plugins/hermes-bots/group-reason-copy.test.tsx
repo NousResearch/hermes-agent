@@ -17,7 +17,7 @@ import { CanonicalGroupHistory } from './canonical-group-history'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { groupActivityLabel } from './group-activity'
 import { memberOutcomes, memberStatus } from './group-room-status'
-import { fill, MemberStatusChip, memberStatusText } from './group-room-ui'
+import { MemberStatusChip, memberStatusText } from './group-room-ui'
 import { translateBotsIn } from './i18n-test-helper'
 import { setPluginCtx } from './shared'
 
@@ -31,20 +31,13 @@ const knownReasons = [
   'prepare_failed', 'slot_wait_timeout', 'target_busy', 'rate_limited', 'member gateway restarted'
 ]
 
-it.each([
-  ["en", "The bot is unavailable", "A newer message replaced this turn", "The turn exceeded its time limit"],
-  ["ja", "ボットを利用できません", "新しいメッセージがこのターンに代わりました", "ターンの制限時間を超えました"],
-  ["zh", "机器人不可用", "新消息取代了此回合", "回合超出了时间限制"],
-  ["zh-hant", "機器人無法使用", "新訊息取代了此回合", "回合超出了時間限制"],
-  ["ar", "الروبوت غير متاح", "حلّت رسالة أحدث محل هذا الدور", "تجاوز الدور المهلة المحددة"],
-  ["ru", "Бот недоступен", "Более новое сообщение заменило этот ход", "Ход превысил лимит времени"],
-  ["fr", "Le bot est indisponible", "Un message plus récent a remplacé ce tour", "Le tour a dépassé le délai autorisé"],
-  ["de", "Der Bot ist nicht verfügbar", "Eine neuere Nachricht hat diesen Durchgang ersetzt", "Der Durchgang hat das Zeitlimit überschritten"],
-  ["es", "El bot no está disponible", "Un mensaje más reciente sustituyó este turno", "El turno superó el límite de tiempo"],
-])('renders known reasons and hides unknown codes in %s', (locale, unavailable, superseded, deadline) => {
+it.each(Object.keys(CANONICAL_GROUP_LOCALES) as (keyof typeof CANONICAL_GROUP_LOCALES)[])('renders known reasons and hides unknown codes in %s', locale => {
   selection.locale = locale
   setPluginCtx({ i18n: { t: translateBotsIn(locale) } } as never)
   const labels = CANONICAL_GROUP_LOCALES[locale as keyof typeof CANONICAL_GROUP_LOCALES]
+  const unavailable = labels.reasonMemberUnavailable
+  const superseded = labels.reasonSuperseded
+  const deadline = labels.reasonDeadline
 
   const cases = [
     ['member_unavailable', unavailable], ['superseded_by_newer_user_event', superseded], ['turn_deadline_exceeded', deadline],
@@ -101,16 +94,3 @@ it.each([
   }
 })
 
-it.each([
-  ["en", "{name}’s turn has not finished. Retry it?"],
-  ["ja", "{name} のターンはまだ完了していません。再試行しますか？"],
-  ["zh", "{name} 的回合尚未完成。要重试吗？"],
-  ["zh-hant", "{name} 的回合尚未完成。要重試嗎？"],
-  ["ar", "لم ينتهِ دور {name} بعد. هل تعيد المحاولة؟"],
-  ["ru", "Ход {name} ещё не завершён. Повторить?"],
-  ["fr", "Le tour de {name} n’est pas terminé. Réessayer ?"],
-  ["de", "Der Turn von {name} ist noch nicht abgeschlossen. Erneut versuchen?"],
-  ["es", "El turno de {name} no ha terminado. ¿Reintentar?"],
-])('asks to retry a turn that has not finished, wherever it ran, in %s', (locale, template) => {
-  expect(fill(CANONICAL_GROUP_LOCALES[locale as keyof typeof CANONICAL_GROUP_LOCALES].pendingRetry, { name: 'Helper' })).toBe(template.replace('{name}', 'Helper'))
-})

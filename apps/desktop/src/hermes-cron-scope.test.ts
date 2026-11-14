@@ -13,6 +13,7 @@ import {
   triggerCronJob,
   updateCronJob
 } from './hermes'
+import { deferred } from './test/deferred'
 
 // Contract: every cron helper must carry the active gateway profile, so a
 // multi-profile / remote user's cron list, runs, and mutations hit the backend
@@ -142,10 +143,20 @@ describe('cron run rows carry their owning connection', () => {
     expect(rows[0].profile).toBe('research')
   })
 
-  it('leaves run rows untagged on a local/single-source window', async () => {
+  it('leaves connectionless legacy primary rows on the profile-only route', async () => {
     const rows = await getCronJobRuns('job-1')
 
     expect(rows[0].connection_id).toBeUndefined()
+  })
+
+  it('keeps delayed native-local runs local after selecting a remote gateway', async () => {
+    const pending = deferred<{ runs: typeof run[] }>()
+    setApiRequestConnection('local')
+    api.mockReturnValueOnce(pending.promise)
+    const request = getCronJobRuns('job-1')
+    setApiRequestConnection('gw-tailscale')
+    pending.resolve({ runs: [{ ...run }] })
+    expect((await request)[0]).toMatchObject({ connection_id: 'local', profile: 'research' })
   })
 
   it('never clobbers an owner a row already names', async () => {

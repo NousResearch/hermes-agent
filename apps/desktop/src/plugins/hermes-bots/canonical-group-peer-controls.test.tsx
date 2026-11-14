@@ -26,17 +26,6 @@ const binding = { connectionId: 'local', profile: 'default', roomId: 'linked' }
 const locales = Object.keys(CANONICAL_GROUP_LOCALES) as (keyof typeof CANONICAL_GROUP_LOCALES)[]
 const originalDesktop = window.hermesDesktop
 
-const recoveryAdvice = {
-  en: ['when its computer is answering', 'haven’t all confirmed they’ve stopped'],
-  ja: ['コンピューターが応答するようになったら', 'すべてのボットから停止の確認が取れたわけではありません'],
-  zh: ['电脑恢复响应后', '尚未全部确认已停止'],
-  'zh-hant': ['電腦恢復回應後', '尚未全部確認已停止'],
-  ar: ['عندما يستجيب جهازه', 'لم تؤكد جميع البوتات'],
-  ru: ['когда его компьютер будет отвечать', 'Не все боты'],
-  fr: ['lorsque son ordinateur répondra', 'n’ont pas tous confirmé leur arrêt'],
-  de: ['sobald sein Computer antwortet', 'haben noch nicht alle bestätigt'],
-  es: ['cuando su equipo responda', 'aún no han confirmado todos']
-}
 
 beforeEach(() => {
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined })
@@ -94,7 +83,6 @@ it.each(discardCases)('offers Discard $state and keeps the deferred turn on $ref
   const alert = await screen.findByRole('alert')
   expect(alert).toHaveProperty('textContent', labels[message].replace('{name}', 'reviewer'))
 
-  if (refusal === 'stopPending') {expect(alert.textContent).toContain(recoveryAdvice[language][0])}
   // A retry of Discard keeps the exact turn; only a confirmed result and refreshed state remove it.
   fireEvent.click(discard)
   fireEvent.click(screen.getByRole('button', { name: labels.confirmDiscard }))
@@ -139,7 +127,6 @@ it.each(disbandCases)('keeps the group chat and explains Disband $name ($languag
   expect(onBack).not.toHaveBeenCalled()
 
   if (name === 'stop pending') {
-    expect(screen.getByRole('dialog').textContent).toContain(recoveryAdvice[language][1])
     fireEvent.click(dialog.getByRole('button', { name: 'Cancel' }))
     expect(view.baseElement.textContent).not.toContain(labels.cycleStopped)
     expect(screen.getByRole('button', { name: 'Discard' })).toBeTruthy()

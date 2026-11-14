@@ -1,0 +1,794 @@
+/* Redesigned shell frame (Figma 906:19396, 1089:7972): the window canvas shows through the titlebar
+   band and the 60px rails; each zone at the window top is a panel with a hairline edge whose
+   leading top corner rounds at 9px (906:19804, 1089:8226), as does the row's trailing one. Tokens come from tokens/, the artwork and the panels' veils over it from portal-artwork.css. */
+
+/* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
+   its rendering state (scroll, draft) but is skipped by style, layout and paint, so covering and
+   uncovering cost a flip and a translucent page never shows it through. */
+[data-route-covered] {
+  content-visibility: hidden;
+}
+
+/* ── Panels ───────────────────────────────────────────────────────────────────────────────── */
+
+/* A window-top zone is canvas down to its titlebar band's bottom edge, where the panel starts —
+   the same edge for every zone; a tab row that cannot share the band sits on the panel under its
+   corner. The header's ::before paints the panel (clipped by the zone) ahead of everything else
+   in the zone, so every pane, opaque or not, and the tab row sit on it. */
+:root[data-shell='portal'] [data-tree-group][data-window-top],
+:root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] {
+  background-color: transparent;
+}
+
+:root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header]::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: var(--zone-band-height, 100%);
+  height: 100dvh;
+  border-block-start: 1px solid var(--portal-panel-divider);
+  border-inline-start: 1px solid var(--portal-panel-divider);
+  background-color: var(--ui-editor-surface-background);
+  pointer-events: none;
+}
+
+/* The sessions pane paints its own translucent panel so the artwork reads through it. */
+:root[data-shell='portal'] [data-tree-group][data-zone-pane='sessions'] > [data-panel-header]::before {
+  background-color: transparent;
+}
+
+/* The outer edge of the row needs no hairline: the rail's canvas is the edge. */
+:root[data-shell='portal']
+  [data-tree-group][data-window-top][data-window-start]:not([data-zone-page])
+  > [data-panel-header]::before {
+  border-inline-start-width: 0;
+}
+
+/* A workspace page lies on the frame like the chat does (06 · Settings/Account 16292:19723), with no
+   edge of its own at the top. */
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-zone-page] > [data-panel-header]::before {
+  border-block-start-width: 0;
+}
+
+/* Only the row's outer corners round: the panels inside the workspace frame meet square
+   (Content 16292:14463). */
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-window-start] > [data-panel-header]::before {
+  border-start-start-radius: var(--portal-panel-radius);
+}
+
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-window-end] > [data-panel-header]::before {
+  border-start-end-radius: var(--portal-panel-radius);
+}
+
+/* The body clips its pane layers (overflow: hidden), so they take the panel's corners. The
+   conversation header between them overlays the stage out of flow (app/chat/stage.css). */
+:root[data-shell='portal']
+  [data-tree-group][data-window-top][data-window-start]
+  > [data-panel-header]
+  ~ [data-zone-body]
+  > * {
+  border-start-start-radius: var(--portal-panel-radius);
+}
+
+:root[data-shell='portal']
+  [data-tree-group][data-window-top][data-window-end]
+  > [data-panel-header]
+  ~ [data-zone-body]
+  > * {
+  border-start-end-radius: var(--portal-panel-radius);
+}
+
+/* ── Workspace frame ── the chat sidebar and the stage (or a page's nav and body), and in developer
+   mode the side tool panes, sit in one card on the canvas, the artwork around it (Content
+   16292:14463 at x 65–1265, y 60–865 of the 1280×880 window: 15px corners, a soft shadow, a 1px
+   highlight along its top). The rails are canvas chrome on either side of it: 5px from the global
+   rail, and from the developer rail when it shows, 15px from the window's end and floor otherwise.
+   A phone (compact, breakpoints.ts: min-width 640px) keeps every pixel. */
+@media (min-width: 640px) {
+  :root[data-shell='portal'] [data-slot='layout-cover'] {
+    position: relative;
+    isolation: isolate;
+    margin-inline: var(--portal-workspace-inset-start) var(--portal-workspace-inset-end);
+    margin-block-end: var(--portal-workspace-inset-bottom);
+  }
+
+  :root[data-shell='portal'] [data-slot='layout-cover']:has(+ [data-slot='developer-rail']) {
+    margin-inline-end: var(--portal-workspace-inset-start);
+  }
+
+  /* The shadow lies under the frame, which starts under the band; the highlight lies over it. */
+  :root[data-shell='portal'] [data-slot='layout-cover']::before,
+  :root[data-shell='portal'] [data-slot='layout-cover']::after {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: var(--titlebar-band-height) 0 0;
+    border-radius: var(--portal-panel-radius);
+    box-shadow: var(--portal-shadow-workspace);
+    pointer-events: none;
+  }
+
+  :root[data-shell='portal'] [data-slot='layout-cover']::after {
+    z-index: 1;
+    box-shadow: var(--portal-shadow-workspace-highlight);
+  }
+
+  :root[data-shell='portal'] [data-slot='layout-tree'] {
+    overflow: clip;
+    border-end-start-radius: var(--portal-panel-radius);
+    border-end-end-radius: var(--portal-panel-radius);
+  }
+
+  /* Inside the frame the panels meet without hairlines: their fills tell them apart (Panel and
+     Panel/flexible draw no stroke), and the frame's own edge is its shadow and highlight. */
+  :root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header]::before {
+    border-width: 0;
+  }
+
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
+    padding-inline: var(--portal-workspace-inset-start) var(--portal-workspace-inset-end);
+    padding-block-end: var(--portal-workspace-inset-bottom);
+  }
+
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised] {
+    border-radius: var(--portal-panel-radius);
+    box-shadow: var(--portal-shadow-workspace);
+  }
+
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised]::after {
+    content: '';
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: var(--portal-shadow-workspace-highlight);
+    pointer-events: none;
+  }
+}
+
+/* A workspace page's own shell repaints the page background; on the frame the panel's veiled art
+   is that background. */
+:root[data-shell='portal'] [data-tree-group][data-zone-page] :is([data-page-surface], .page-search-body) {
+  background-color: transparent;
+}
+
+/* ── Chrome buttons ───────────────────────────────────────────────────────────────────────── */
+
+/* 30×30 r3, the band's navy tile and a 16px glyph at .4 (16292:15285). Figma draws no hover/pressed
+   states: they brighten the tile a step each. Selection (a shown tool pane) is the brand square with
+   its 1px ring (Overview 856:2665). */
+:root[data-shell='portal'] .portal-chrome-button {
+  inline-size: var(--portal-chrome-button-size);
+  block-size: var(--portal-chrome-button-size);
+  padding: 0;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-chrome);
+  box-shadow: none;
+  color: var(--portal-text-chrome);
+  font-size: 1rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Hover paints at once; only the return eases (DESIGN.md › Motion). */
+  :root[data-shell='portal'] .portal-chrome-button:not(:hover) {
+    transition:
+      background-color var(--portal-motion-fast) var(--portal-ease),
+      color var(--portal-motion-fast) var(--portal-ease);
+  }
+}
+
+:root[data-shell='portal'] .portal-chrome-button .codicon[class*='codicon-'] {
+  font-size: 1rem;
+}
+
+:root[data-shell='portal'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
+  background-color: var(--portal-surface-chrome-hover);
+  color: var(--ui-text-secondary);
+}
+
+:root[data-shell='portal'] .portal-chrome-button:active:not(:disabled) {
+  background-color: var(--portal-surface-chrome-pressed);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
+  background-color: var(--portal-selection-background);
+  /* 895:17703 draws the ring at ~.6 of the brand fill. */
+  box-shadow: inset 0 0 0 1px var(--portal-raw-brand-60);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] .portal-chrome-button:disabled {
+  opacity: 0.4;
+}
+
+/* The rail's account square (906:19409): a brand fill that darkens a step on hover and press. */
+:root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand {
+  background-color: var(--portal-brand-fill);
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 85%, var(--portal-raw-black));
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:active:not(:disabled) {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 70%, var(--portal-raw-black));
+  color: var(--portal-on-brand);
+}
+
+/* ── Rails ────────────────────────────────────────────────────────────────────────────────── */
+
+/* 60px columns on the canvas (906:19409 / 906:19875). The developer rail starts under the band, its
+   top group 17px below the panel edge and the bottom group 20px off the window floor, 30px buttons
+   15px apart. */
+:root[data-shell='portal'] .portal-rail {
+  display: flex;
+  min-block-size: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9375rem;
+  padding-block: 1.0625rem 1.25rem;
+}
+
+/* The global rail runs from the window top, its destinations at --portal-rail-top (90px, clear of
+   native traffic lights in the column) on a 50px pitch, its foot 40px off the floor (16292:15233). It
+   reads the same on every destination and in every sidebar state: nothing in it moves. It sits on the
+   canvas with no edge of its own: the workspace frame beside it carries the separation. */
+:root[data-shell='portal'] [data-slot='global-nav'].portal-rail {
+  justify-content: flex-start;
+  gap: var(--portal-rail-gap);
+  padding-block: var(--portal-rail-top) var(--portal-rail-bottom);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button {
+  inline-size: var(--portal-rail-button);
+  block-size: var(--portal-rail-button);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-rail-fill);
+  color: var(--portal-rail-ink);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
+  background-color: var(--portal-rail-fill-hover);
+  color: var(--ui-text-secondary);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
+  background-color: var(--portal-rail-fill-selected);
+  box-shadow: none;
+  color: var(--portal-rail-ink-selected);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button .codicon[class*='codicon-'] {
+  font-size: var(--portal-rail-glyph);
+}
+
+/* The foot's destinations draw their glyphs a step larger (bell, user: 16292:15274). */
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-foot .portal-chrome-button .codicon[class*='codicon-'] {
+  font-size: var(--portal-rail-glyph-foot);
+}
+
+/* A destination that needs the user (Routines with a failed routine, Figma 1081:29422): the error
+   ink's dot at the glyph's top end, ringed by the rail so it reads on the brand selection too. */
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:has(> [data-slot='rail-alert']) {
+  position: relative;
+}
+
+:root[data-shell='portal'] [data-slot='rail-alert'] {
+  position: absolute;
+  inset-block-start: 0.1875rem;
+  inset-inline-end: 0.1875rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-status-error-ink);
+  box-shadow: 0 0 0 2px var(--portal-surface-canvas);
+}
+
+/* Figma's robot fills more of its box than the codicons do (906:19430). */
+:root[data-shell='portal'] .portal-rail-robot {
+  inline-size: calc(var(--portal-rail-glyph) * 1.125);
+  block-size: calc(var(--portal-rail-glyph) * 1.125);
+}
+
+/* The developer rail's destinations rest at .8 ink. */
+:root[data-shell='portal'] .portal-rail:not([data-slot='global-nav']) .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
+  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+}
+
+:root[data-shell='portal'] .portal-rail-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9375rem;
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-group {
+  gap: var(--portal-rail-gap);
+}
+
+:root[data-shell='portal'] .portal-rail-group {
+  /* Room for the focus outline inside the scroll box. */
+  padding: 0.1875rem;
+  margin: -0.1875rem;
+  scrollbar-width: none;
+}
+
+/* Short (breakpoints.ts SHORT_QUERY: a landscape phone, a raised keyboard): the rail's rhythm
+   tightens and the whole rail scrolls as one column, destinations and footer alike, so every
+   destination stays reachable however little height the window has. */
+@media (max-height: 30rem) {
+  :root[data-shell='portal'] .portal-rail {
+    justify-content: flex-start;
+    gap: var(--portal-space-tight);
+    padding-block: var(--portal-space-compact);
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  /* The destinations rise to the band's foot, still clear of native traffic lights. */
+  :root[data-shell='portal'] [data-slot='global-nav'].portal-rail {
+    gap: var(--portal-space-tight);
+    padding-block: var(--titlebar-band-height) var(--portal-space-compact);
+  }
+
+  :root[data-shell='portal'] .portal-rail-group {
+    flex: none;
+    gap: var(--portal-space-tight);
+    overflow: visible;
+  }
+}
+
+/* ── Panel reveal (Simple mode, 1061:7816) ─────────────────────────────────────────────────────
+   The way back to a folded chat sidebar or page panel: a floating 44×40 button at the stage's
+   top-leading corner, under the band and clear of its controls, on the floating surface. It sits
+   over the stage, under menus, popovers and dialogs. */
+:root[data-shell='portal'] .portal-panel-reveal {
+  position: fixed;
+  z-index: var(--portal-layer-stage-overlay);
+  inset-block-start: calc(var(--titlebar-band-height) + var(--portal-panel-reveal-inset));
+  inset-inline-start: calc(var(--portal-rail-reserve) + var(--portal-panel-reveal-inset));
+  inline-size: var(--portal-panel-reveal-width);
+  block-size: var(--portal-panel-reveal-height);
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-floating-shadow);
+  color: var(--ui-text-secondary);
+}
+
+:root[data-shell='portal'] .portal-panel-reveal .codicon[class*='codicon-'] {
+  font-size: var(--portal-panel-reveal-glyph);
+}
+
+:root[data-shell='portal'] .portal-panel-reveal:is(:hover, :focus-visible) {
+  background-image: linear-gradient(var(--portal-surface-floating-hover) 0 0);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] .portal-panel-reveal:active {
+  background-image: linear-gradient(var(--portal-surface-chrome-pressed) 0 0);
+}
+
+/* ── Developer panes (files, review, terminal) ───────────────────────────────────────────── */
+
+/* Inside a panel, "background" is the panel: pane chrome painted bg-background (the Browser's blank
+   page and toolbar, editors' masks) takes the zone's surface instead of the skin's page navy. Kept-
+   alive pane hosts float outside their zone, over the stage-coloured panel. */
+:root[data-shell='portal'] :is([data-pane-host], [data-tree-group][data-window-top] > [data-zone-body]) {
+  --color-background: var(--ui-editor-surface-background);
+}
+
+/* The panes sit on their zone's panel: no fill or edge of their own (Figma's right panel,
+   491:41172, draws no border; the panel hairline is the zone's). */
+:root[data-shell='portal'] :is([data-slot='files-pane'], [data-slot='review-pane']) {
+  border-width: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+/* The terminal's text starts on the panel's standard inset, under its tab labels (the tab row's
+   10px gutter plus a tab's own 10px), not 8px off the panel edge. */
+:root[data-shell='portal'] [data-slot='terminal-instance'] {
+  padding-inline: 1.25rem;
+  padding-bottom: 0.75rem;
+}
+
+/* Header: a display-type title with the full path under it ("Project/Session Files", 491:41183),
+   actions at the end as quiet 24px buttons. */
+:root[data-shell='portal'] :is([data-slot='files-pane'], [data-slot='review-pane']) [data-slot='pane-section-header'] {
+  block-size: auto;
+  align-items: flex-start;
+  gap: 0.375rem;
+  padding: 1.25rem 1.25rem 0.75rem;
+}
+
+:root[data-shell='portal'] [data-slot='pane-title'] {
+  gap: 0.375rem;
+}
+
+/* Review's actions share its title row; a narrow pane drops them under the whole title rather than
+   cutting the title short. */
+:root[data-shell='portal'] [data-slot='review-pane'] [data-slot='pane-section-header'] {
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+}
+
+:root[data-shell='portal'] [data-slot='review-pane'] [data-slot='pane-section-header'] > :first-child {
+  flex: 1 0 auto;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='pane-title'], [data-slot='review-pane'] [data-slot='pane-section-header'])
+  [data-slot='panel-label'] {
+  padding-inline-start: 0;
+  color: var(--ui-text-primary);
+  font: 300 var(--portal-type-display-lg-size) / 1.1 var(--portal-font-display);
+  letter-spacing: var(--portal-tracking-display);
+  text-transform: none;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='files-pane'], [data-slot='review-pane'])
+  [data-slot='panel-label']
+  > [aria-hidden='true'] {
+  display: none;
+}
+
+:root[data-shell='portal'] [data-slot='pane-subtitle'] {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='files-pane'], [data-slot='review-pane'])
+  [data-slot='pane-section-header']
+  [data-slot='button'] {
+  margin-block-start: 0.25rem;
+  border-radius: var(--portal-radius-control);
+}
+
+/* A pane's one-line empty state ("No diffs") reads as a quiet sentence, not a tracked label. */
+:root[data-shell='portal']
+  :is([data-slot='files-pane'], [data-slot='review-pane'])
+  :not([data-slot='pane-section-header'] *)
+  > [data-slot='panel-label'] {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Rows: 13px labels with their glyph at op .6 (491:41172 list). Selection is neutral. */
+:root[data-shell='portal'] [data-project-tree] [data-slot='tree-row'] {
+  gap: 0.625rem;
+  margin-inline: 0.625rem;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-ui-size);
+}
+
+:root[data-shell='portal'] [data-project-tree] [data-slot='tree-row'][aria-selected='true'] {
+  background-color: var(--portal-neutral-selection-background);
+}
+
+/* ── Pages ────────────────────────────────────────────────────────────────────────────────── */
+
+/* The page nav is a column of the canvas, divided from the body by the panel hairline
+   (Settings 856:2740). */
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-tour='overlay-nav'] {
+  border-inline-end: 1px solid var(--portal-panel-divider);
+}
+
+/* ── Zone tab strips ──────────────────────────────────────────────────────────────────────── */
+
+/* A window-top zone's tabs ride its band on the canvas, as Figma's header tab pills
+   (906:19481): 13px labels in r3 pills, the open tab on a 5% ink fill, no underline. */
+:root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] [data-zone-tabstrip] {
+  --pane-tab-strip-bg: transparent;
+  --pane-tab-active-bg: transparent;
+  align-items: center;
+  gap: 0.25rem;
+  padding-inline: 0.625rem;
+  background-color: transparent;
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tablist'] {
+  align-items: center;
+  gap: 0.25rem;
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] {
+  block-size: 1.5rem;
+  border-width: 0;
+  border-radius: var(--portal-radius-control);
+  box-shadow: none;
+  font-size: var(--portal-type-ui-size);
+  font-weight: 400;
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] :is(span, button) {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:hover {
+  background-color: var(--portal-surface-row-hover);
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
+  background-color: var(--portal-surface-selected);
+}
+
+/* Kept-alive pane hosts (terminal, browser) float over their zone's body: the outer corners too. */
+:root[data-shell='portal'] [data-pane-host][data-window-start] {
+  border-start-start-radius: var(--portal-panel-radius);
+}
+
+:root[data-shell='portal'] [data-pane-host][data-window-end] {
+  border-start-end-radius: var(--portal-panel-radius);
+}
+
+/* ── Titlebar band ────────────────────────────────────────────────────────────────────────── */
+
+/* The session tab rides the stage's leading edge, --portal-session-tab-inset past it (16292:15297).
+   It is anchored to the
+   workspace pane itself (CSS anchor positioning), so it tracks a sash drag, a sidebar collapse or a
+   window resize in the same frame as the panels, with no script in the path; the measured
+   --workspace-* edges are only the fallback where the anchor is absent. The cluster spans the
+   stage's width in the band, clamped clear of the leading cluster (macOS lights included, via
+   --portal-band-start) and of the trailing controls; the pill truncates inside it before the "+"
+   gives way. RTL mirrors through the flex direction: the same span, content from its start. */
+:root[data-shell='portal'] [data-session-anchor='workspace'] {
+  anchor-name: --portal-workspace;
+}
+
+:root[data-shell='portal'] .portal-session-tab-cluster {
+  --portal-session-tab-lead: calc(var(--portal-band-start) + var(--titlebar-controls-width, 0px));
+  --portal-session-tab-trail: calc(
+    var(--titlebar-tools-right, 0px) + var(--titlebar-tools-width, 0px) + var(--titlebar-control-gap)
+  );
+
+  position-anchor: --portal-workspace;
+  left: max(
+    calc(anchor(left, var(--workspace-left, 0px)) + var(--portal-session-tab-inset)),
+    var(--portal-session-tab-lead)
+  );
+  right: max(anchor(right, var(--workspace-right, 0px)), var(--portal-session-tab-trail));
+  min-width: 0;
+  /* The span is band, not control: it drags the window and passes the pointer through; only the
+     pill (a drag handle itself) and "+" take it. */
+  pointer-events: none;
+  -webkit-app-region: drag;
+}
+
+:root[data-shell='portal'] .portal-session-tab {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--titlebar-control-gap);
+}
+
+:root[data-shell='portal'] .portal-session-tab > * {
+  pointer-events: auto;
+}
+
+:root[data-shell='portal'] .portal-session-tab [data-slot='button'] {
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+/* 30px pill, the band's navy tile, r3; its label at the UI step (Figma's 13 drawn at 14). */
+:root[data-shell='portal'] .portal-session-tab-title {
+  display: block;
+  min-width: 0;
+  max-inline-size: 18rem;
+  block-size: var(--portal-chrome-button-size);
+  overflow: hidden;
+  padding: 0 0.625rem;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-chrome);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: var(--portal-chrome-button-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The main chat's Agent settings closes the band's trailing cluster (16292:15303). */
+:root[data-shell='portal'] [data-titlebar-cluster='right'] > [data-slot='portal-agent-settings'] {
+  margin-inline-end: var(--portal-band-trail-inset);
+}
+
+/* Too narrow for a readable title: the pill steps aside and "+" stays. */
+@container portal-session-tab (max-width: 6rem) {
+  :root[data-shell='portal'] .portal-session-tab-title {
+    display: none;
+  }
+}
+
+:root[data-shell='portal'] .portal-session-tab-cluster {
+  container: portal-session-tab / inline-size;
+}
+
+/* A seam between window-top panels already has the panel hairline (below the band); the sash's
+   own resting hairline would also cross the band. It keeps its hover band. */
+/* The trailing side is a window-top zone, or a split whose zones reach the window top. */
+:root[data-shell='portal']
+  [data-sash-overlap]:is(:has(+ [data-tree-group][data-window-top]), :has(+ * [data-tree-group][data-window-top]))
+  > span:first-child {
+  opacity: 0;
+}
+
+/* Panels start below the titlebar band, so does the seam between them: its grab band and hover line
+   never cross the band (and never sit over the band's own buttons). */
+:root[data-shell='portal']
+  [data-sash-overlap]:is(:has(+ [data-tree-group][data-window-top]), :has(+ * [data-tree-group][data-window-top])) {
+  top: var(--titlebar-band-height);
+}
+
+/* ── Toasts ── one place for every kind (components/notifications.tsx): the stage's end corner,
+   so they never cover a page header or the band (y 60-200 holds every page's title and actions).
+   They rest on top of the docked composer when there is one (the chat's primary composer names
+   itself the anchor; landing's centred composer does not), else 16px off the window floor. */
+:root[data-shell='portal']
+  [data-zone-pane='workspace']
+  [data-chat-surface]:not([data-chat-landing='true'])
+  [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  anchor-name: --portal-toast-floor;
+}
+
+.hermes-toast-region {
+  /* Inside the stage, never across a seam: a narrow window's stage is narrower than a toast. */
+  right: calc(var(--workspace-right, 0px) + 1rem + var(--portal-safe-end));
+  bottom: calc(1rem + var(--portal-safe-bottom));
+  width: min(24rem, calc(100vw - var(--workspace-left, 0px) - var(--workspace-right, 0px) - 2rem));
+}
+
+@supports (bottom: anchor(--a top, 0px)) {
+  .hermes-toast-region {
+    /* The dock's own floor band is stage-coloured padding: rest on the card, not on that band. */
+    bottom: calc(anchor(--portal-toast-floor top, 0.25rem) + 0.75rem);
+  }
+}
+
+/* A toast arrives with a short rise on the shared motion scale; it leaves at once (a dismissal is the
+   user's own act, and a fading toast would linger over what they returned to). */
+@media (prefers-reduced-motion: no-preference) {
+  .hermes-toast-region .hermes-toast-surface {
+    animation: portal-toast-in var(--portal-motion-base) var(--portal-ease) both;
+  }
+}
+
+@keyframes portal-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.375rem);
+  }
+}
+
+/* A live Light/Dark switch paints the new mode at once (themes/context.tsx holds transitions for its
+   first frames): an easing colour would otherwise cross the new background and blank its label. The
+   one !important here: it must beat every transition declaration, whatever its specificity. */
+:root[data-shell='portal'][data-theme-switching] :is(*, ::before, ::after) {
+  transition: none !important;
+}
+
+/* ── Floating tools: find bar and the layout editor ──────────────────────────────────────────────
+   Both float over the stage, so they take the redesign's floating surface (portal-floating.css):
+   r8, hairline, the shared shadow; their buttons hover like menu rows. */
+:root[data-shell='portal'] :is([data-slot='find-bar'], [data-slot='layout-edit-card']) {
+  border-color: var(--portal-floating-stroke);
+  border-radius: var(--portal-radius-floating);
+  background-color: var(--portal-floating-surface);
+  box-shadow: var(--portal-floating-shadow);
+}
+
+:root[data-shell='portal'] [data-slot='find-bar'] button {
+  border-radius: var(--portal-radius-control);
+}
+
+:root[data-shell='portal'] [data-slot='find-bar'] button:hover {
+  background-color: var(--portal-floating-item-hover);
+}
+
+:root[data-shell='portal'] [data-slot='find-bar'] input {
+  border-radius: var(--portal-radius-control);
+}
+
+/* ── Sheets below wide (DESIGN.md › Responsive) ───────────────────────────────────────────────────
+   Below wide the chat sidebar (the pane tree's narrow overlay) and a page's panel slide over a
+   full-width stage instead of squeezing it: a full-height panel past the rail, under the band's
+   height of canvas, over a scrim that a tap, Esc or a pick dismisses (app/shell/shell-sheet.ts). On
+   compact the rail has no column, so it rides the sheet: the sheet is the desktop's left side. */
+:root[data-shell='portal'] [data-narrow-overlay] {
+  position: fixed;
+  z-index: var(--portal-layer-sheet);
+  border-color: var(--portal-panel-divider);
+  box-shadow: var(--portal-shadow-floating);
+  overscroll-behavior: contain;
+}
+
+:root[data-shell='portal'] [data-narrow-overlay-side='left'] {
+  inset-inline-start: var(--portal-rail-width);
+}
+
+:root[data-shell='portal'] :is([data-narrow-overlay-backdrop], .portal-sheet-scrim) {
+  position: fixed;
+  z-index: var(--portal-layer-sheet-scrim);
+  inset: 0;
+  background-color: var(--portal-surface-scrim);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] :is([data-narrow-overlay-backdrop], .portal-sheet-scrim) {
+    animation: portal-scrim-in var(--portal-motion-slow) var(--portal-ease) both;
+  }
+
+  :root[data-shell='portal'] [data-narrow-overlay-side='left'] {
+    animation: portal-sheet-in var(--portal-motion-slow) var(--portal-ease) both;
+  }
+}
+
+@keyframes portal-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes portal-sheet-in {
+  from {
+    translate: -1.5rem 0;
+    opacity: 0;
+  }
+}
+
+/* The band stands down under a sheet: its controls would otherwise float over the scrim. */
+:root[data-shell='portal'][data-portal-sheet] :is([data-titlebar-cluster], .portal-session-tab-cluster) {
+  visibility: hidden;
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): no rail column. The global rail joins the chat
+   sidebar's or a page's sheet (or opens alone on a page with none) at the window's edge, on the
+   canvas, from the band down; the developer rail has no compact form. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] :is([data-slot='global-nav'], [data-slot='developer-rail']) {
+    display: none;
+  }
+
+  :root[data-shell='portal']:is([data-portal-sheet='sessions'], [data-portal-sheet='page'], [data-portal-sheet='nav'])
+    [data-slot='global-nav'] {
+    position: fixed;
+    z-index: var(--portal-layer-sheet-rail);
+    inset-block: 0;
+    inset-inline-start: 0;
+    display: flex;
+    width: var(--portal-rail-width);
+    background-color: var(--portal-surface-canvas);
+    overscroll-behavior: contain;
+  }
+}
+
+/* ── Safe areas (browser host, viewport-fit=cover: app/redesign/browser-chrome.ts) ──────────────
+   On a phone with a notch or a home indicator the whole app root is inset by the safe area, and is
+   the containing block of everything fixed inside it (band clusters, route pages, sheets), so no
+   surface needs its own inset; the canvas paints the areas around it. Only where a device reports
+   one: every other window lays out exactly as before. */
+html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-area] body {
+  background-color: var(--portal-surface-canvas);
+}
+
+html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-area]
+  #root:not([data-browser-viewport]) {
+  position: fixed;
+  inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)
+    env(safe-area-inset-left, 0px);
+  contain: layout;
+}

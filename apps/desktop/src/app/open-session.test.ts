@@ -15,6 +15,7 @@ const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
 
 vi.mock('@/store/session-states', () => ({
+  canOpenSessionOwner: () => true,
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
     !focused || (focused === 'main' && workspaceIsPage),
   focusedSessionWorkspaceScope: () => focusedSessionWorkspaceScope(),
@@ -37,6 +38,7 @@ vi.mock('./routes', () => ({
 
 import { $activeSessionId, $selectedStoredSessionId, $sessionResumeRequest } from '@/store/session'
 import { _resetUserSessionOpenForTests, currentUserSessionOpen } from '@/store/session-open-intent'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
@@ -156,7 +158,7 @@ describe('openSession', () => {
   it('tab opens a stacked session tile when not on screen', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'tab')
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined, undefined, { workspaceMode: 'sessions' })
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -194,7 +196,7 @@ describe('openSession', () => {
     $selectedStoredSessionId.set('s0')
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'stack')
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined, undefined, { workspaceMode: 'sessions' })
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -203,7 +205,7 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     reuseBlankDraftTile.mockReturnValue(true)
     openSession('s1', navigate, 'stack')
-    expect(reuseBlankDraftTile).toHaveBeenCalledWith('s1')
+    expect(reuseBlankDraftTile).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
     expect(openSessionTile).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
@@ -221,7 +223,7 @@ describe('openSession', () => {
     $activeSessionId.set('runtime-a')
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'stack')
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined, undefined, { workspaceMode: 'sessions' })
   })
 
   it('stack loads into main when it holds only a blank draft', () => {
@@ -288,8 +290,21 @@ describe('openSession', () => {
 
   it('window pops out when the bridge supports it', () => {
     openSession('s1', navigate, 'window')
-    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1', { ownerRoute: undefined })
     expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  // Main marks the row read and records its scope in this window before popping out; the
+  // redesign's cross-profile list leaves this window's same-id row untouched.
+  it.each([
+    [false, 1],
+    [true, 0]
+  ])('window pop-out touches this window’s row only in classic (redesign=%s)', (redesign, calls) => {
+    $shellChoice.set(redesign)
+    openSession('s1', navigate, 'window')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1', { ownerRoute: undefined })
+    expect(setSessionTileWorkspaceScope).toHaveBeenCalledTimes(calls)
+    $shellChoice.set(null)
   })
 
   it('window falls back to a tab when pop-out is unavailable', () => {
@@ -297,7 +312,7 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'window')
     expect(openSessionInNewWindow).not.toHaveBeenCalled()
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined, undefined, { workspaceMode: 'sessions' })
   })
 
   it('no-ops on an empty id', () => {
@@ -327,7 +342,7 @@ describe('openSession marks a chat the person opened', () => {
   it('leaves it alone for a native pop-out', () => {
     const before = currentUserSessionOpen()
     openSession('s1', navigate, 'window')
-    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1', { ownerRoute: undefined })
     expect(currentUserSessionOpen()).toBe(before)
   })
 })

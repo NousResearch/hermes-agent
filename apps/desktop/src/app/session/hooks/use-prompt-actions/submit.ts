@@ -41,6 +41,7 @@ import {
 } from '@/store/session'
 import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $failedSendRollsBack } from '@/store/shell-policy'
 import type { SessionInfo } from '@/types/hermes'
 
 import { cronRunWriteGateApplies, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
@@ -162,6 +163,50 @@ export interface ResumedRuntimeBindingDeps {
   sessions: SessionInfo[]
   storedSessionId: string
   updateSessionState: SubmitPromptDeps['updateSessionState']
+}
+
+
+
+/** A send the composer stashed and will reload on refusal: typed (not hidden machine text). */
+function composerRestoresSend(options: SubmitTextOptions | undefined): boolean {
+  return Boolean(options && 'composerScope' in options && options.displayKind !== 'hidden')
+}
+
+/** How the thread answers a refused send: rolled back whole (redesign, words back in the composer),
+ *  else the bubble stays with an error card. */
+function answerRefusedSend(options: SubmitTextOptions | undefined, answer: { rollBack: () => void; card: () => void }) {
+  if ($failedSendRollsBack.get() && composerRestoresSend(options)) {
+    answer.rollBack()
+  } else {
+    answer.card()
+  }
+}
+
+/** A refused send answered in the thread: the error card after the user's bubble, the turn idle. */
+function withFailedSendCard(state: ClientSessionState, err: unknown, fallback: string): ClientSessionState {
+  const occurredAt = Date.now() / 1000
+
+  const card: ChatMessage = {
+    id: `assistant-error-${Date.now()}`,
+    role: 'assistant',
+    parts: [],
+    error: inlineErrorMessage(err, fallback) || fallback,
+    ...ownershipErrorSurface(err),
+    branchGroupId: state.pendingBranchGroup ?? undefined,
+    completedAt: occurredAt,
+    timestamp: occurredAt
+  }
+
+  return {
+    ...state,
+    messages: [...state.messages, card],
+    busy: false,
+    awaitingResponse: false,
+    pendingBranchGroup: null,
+    sawAssistantPayload: true,
+    // The failed submit's clock seed dies with the turn it never got.
+    turnStartedAt: null
+  }
 }
 
 export function rebindPaneToResumedRuntime({
@@ -1377,35 +1422,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        const message = inlineErrorMessage(err, copy.promptFailed)
-        const occurredAt = Date.now() / 1000
+        // A composer send gets its words back in the composer (use-composer-submit). The redesign
+        // then rolls the send back whole, so the toast below is its one error surface; classic,
+        // and any send nothing gives back, keep the bubble and answer it with an error card.
+        const failedSessionId = sessionId
 
-        updateSessionState(
-          sessionId,
-          state => ({
-            ...state,
-            messages: [
-              ...state.messages,
-              {
-                id: `assistant-error-${Date.now()}`,
-                role: 'assistant',
-                parts: [],
-                error: message || copy.promptFailed,
-                ...ownershipErrorSurface(err),
-                branchGroupId: state.pendingBranchGroup ?? undefined,
-                completedAt: occurredAt,
-                timestamp: occurredAt
-              }
-            ],
-            busy: false,
-            awaitingResponse: false,
-            pendingBranchGroup: null,
-            sawAssistantPayload: true,
-            // The failed submit's clock seed dies with the turn it never got.
-            turnStartedAt: null
-          }),
-          targetStoredSessionId
-        )
+        answerRefusedSend(options, {
+          rollBack: () => dropOptimistic(failedSessionId),
+          card: () =>
+            updateSessionState(
+              failedSessionId,
+              state => withFailedSendCard(state, err, copy.promptFailed),
+              targetStoredSessionId
+            )
+        })
 
         if (targetIsCurrentView() && isProviderSetupError(err)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)

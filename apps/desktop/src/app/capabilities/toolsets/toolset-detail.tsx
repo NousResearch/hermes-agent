@@ -20,12 +20,14 @@ export function ToolsetDetail({
   toolset,
   toolCalls,
   onConfiguredChange,
-  profile
+  profile,
+  configure = true
 }: {
   toolset: ToolsetInfo
   toolCalls: Record<string, number>
-  onConfiguredChange: () => void
+  onConfiguredChange?: () => void
   profile?: ProfileScope
+  configure?: boolean
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -52,7 +54,7 @@ export function ToolsetDetail({
           ))}
         </div>
       )}
-      {toolset.name === 'vision' && (
+      {configure && toolset.name === 'vision' && (
         // Vision has no provider matrix — model resolution runs through the
         // auxiliary model config. Point at the actual home (Settings → Models,
         // aux "vision" row) via an internal deep link instead of leaving the
@@ -63,7 +65,20 @@ export function ToolsetDetail({
           </p>
           <div>
             <Button
-              onClick={() => navigate(`${SETTINGS_ROUTE}?tab=config:model&aux=vision`)}
+              onClick={() => {
+                const query = new URLSearchParams({ tab: 'config:model', aux: 'vision' })
+
+                if (profile) {
+                  query.set('agentProfile', typeof profile === 'string' ? profile : (profile.profile ?? 'default'))
+                  query.set('panel', 'settings')
+
+                  if (typeof profile === 'object' && profile.connectionId) {
+                    query.set('connection', profile.connectionId)
+                  }
+                }
+
+                navigate(`${SETTINGS_ROUTE}?${query}`)
+              }}
               size="xs"
               variant="textStrong"
             >
@@ -72,24 +87,28 @@ export function ToolsetDetail({
           </div>
         </div>
       )}
-      {toolset.name === 'computer_use' && <ComputerUsePanel onConfiguredChange={onConfiguredChange} />}
+      {configure && toolset.name === 'computer_use' && (
+        <ComputerUsePanel onConfiguredChange={onConfiguredChange} profile={profile} />
+      )}
       {/* Real-profile consent toggle ABOVE the backend/provider matrix — the
           config option users kept missing because its only GUI home was the
           generic Settings → Config editor. */}
-      {toolset.name === 'browser' && <BrowserRealProfilePanel profile={profile} />}
-      {toolset.name === 'terminal' && (
+      {configure && toolset.name === 'browser' && <BrowserRealProfilePanel profile={profile} />}
+      {configure && toolset.name === 'terminal' && (
         <TerminalBackendPanel
           key={profileScopeKey(profile)}
           onConfiguredChange={onConfiguredChange}
           profile={profile}
         />
       )}
-      <ToolsetConfigPanel
-        key={`${toolset.name}:${profileScopeKey(profile)}`}
-        onConfiguredChange={onConfiguredChange}
-        profile={profile}
-        toolset={toolset.name}
-      />
+      {configure && (
+        <ToolsetConfigPanel
+          key={`${toolset.name}:${profileScopeKey(profile)}`}
+          onConfiguredChange={onConfiguredChange}
+          profile={profile}
+          toolset={toolset.name}
+        />
+      )}
     </>
   )
 }

@@ -1,0 +1,33 @@
+/* Redesign typography (fonts and sizes in tokens/type.css). */
+:root[data-shell='portal']
+  :is(
+    [data-contrib-shell],
+    [data-page-surface],
+    [data-slot='dialog-content'],
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content'],
+    [data-slot='popover-content'],
+    [data-slot='tooltip-content'],
+    .hermes-floating-surface
+  ) {
+  font-family: var(--portal-font-body);
+}
+
+:root[data-shell='portal'] [data-page-surface] h1 {
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-xl-size);
+  line-height: 1.1;
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+}
+
+:root[data-shell='portal'] [data-slot='dialog-title'] {
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}

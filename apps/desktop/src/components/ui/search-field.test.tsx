@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SearchField } from './search-field'
@@ -45,5 +46,45 @@ describe('SearchField', () => {
     rerender(<SearchField loading onChange={() => {}} placeholder="Search" value="query" />)
 
     expect(queryByRole('button', { name: /clear/i })).toBeNull()
+  })
+
+  it('with escapeClears: one Escape clears the text, the next leaves the field, and neither travels on', () => {
+    function Harness({ onOuterKey }: { onOuterKey: () => void }) {
+      const [value, setValue] = useState('codex')
+
+      return (
+        <div onKeyDown={onOuterKey}>
+          <SearchField aria-label="Search chats" escapeClears onChange={setValue} placeholder="Search" value={value} />
+        </div>
+      )
+    }
+
+    const outer = vi.fn()
+    const { getByRole } = render(<Harness onOuterKey={outer} />)
+    const input = getByRole('textbox', { name: 'Search chats' }) as HTMLInputElement
+
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input.value).toBe('')
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    expect(document.activeElement).toBe(input)
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    expect(document.activeElement).not.toBe(input)
+    expect(outer).not.toHaveBeenCalled()
+  })
+
+  it('without escapeClears leaves Escape to the caller, as before', () => {
+    const outer = vi.fn()
+
+    const { getByRole } = render(
+      <div onKeyDown={outer}>
+        <SearchField onChange={() => {}} placeholder="Search" value="codex" />
+      </div>
+    )
+
+    fireEvent.keyDown(getByRole('textbox'), { key: 'Escape' })
+    expect(outer).toHaveBeenCalledTimes(1)
   })
 })

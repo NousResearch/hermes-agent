@@ -10,7 +10,11 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { createSessionMutationClient, type SessionMutationIdentity, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+import {
+  createSessionMutationClient,
+  type SessionMutationIdentity,
+  type SessionMutationSnapshot
+} from '../../../shared/src/session-http-mutations'
 
 import {
   ambientOwnerConnectionId,
@@ -63,22 +67,15 @@ function sessionScopeQuery(scope?: ProfileScope): string {
   return profile ? `?profile=${encodeURIComponent(profile)}` : ''
 }
 
-/**
- * The active registered gateway owns every row it returns, but its HTTP APIs
- * correctly know nothing about this Desktop-local registry id. Preserve an
- * explicit owner from a multi-source response; otherwise stamp the active
- * non-local source so a later resume cannot fall back to a same-named local
- * profile. Delegates to the canonical row-stamp helper so this stays the ONE
- * write shape for connection_id on backend-returned rows.
- */
-function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
-  // Durable half of the same ownership contract (#94724): enumeration under
-  // registry topology triggers the one-shot server-side owner backfill for
-  // the serving store when its owner is a single match. Fire-and-forget;
-  // idempotent server-side; never blocks or fails the list that triggered it.
+/** Capture provenance before awaiting a list. Native local is an explicit
+ * owner; a connectionless legacy remote primary keeps its profile-only route.
+ * Responses may already contain other owners from the multi-source splice. */
+function captureListOwner(): string | undefined {
+  // Backfill and ownership both use the source that STARTED the request, never
+  // the gateway selected while its response was in flight.
   maybeBackfillLegacySessionOwners()
 
-  return stampRowsWithOwningConnection(sessions, getApiRequestConnection())
+  return ambientOwnerConnectionId()
 }
 
 /**
@@ -107,6 +104,8 @@ export async function listSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
+  const owner = captureListOwner()
+
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
@@ -117,7 +116,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
+    sessions: pageWindow(stampRowsWithOwningConnection(result.sessions, owner, true), limit),
     offset: 0
   }
 }
@@ -144,6 +143,7 @@ export async function listAllProfileSessions(
   filter: SessionSourceFilter = {},
   offset = 0
 ): Promise<PaginatedSessions> {
+  const owner = captureListOwner()
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
   const excludeParam = filter.excludeSources?.length
@@ -160,7 +160,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
+    sessions: pageWindow(stampRowsWithOwningConnection(result.sessions, owner, true), limit),
     offset: Math.max(0, offset)
   }
 }
@@ -312,6 +312,7 @@ export function scanSessionPullRequests(
 
 export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   const capabilityKey = getApiRequestConnection() ?? ''
+  const owner = captureListOwner()
 
   if (sidebarBatchEndpointMissing.has(capabilityKey)) {
     return listSidebarSessionsLegacy(req)
@@ -356,17 +357,17 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   return {
     recents: {
       ...result.recents,
-      sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []),
+      sessions: stampRowsWithOwningConnection(result.recents?.sessions ?? [], owner, true),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     cron: {
       ...result.cron,
-      sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []),
+      sessions: stampRowsWithOwningConnection(result.cron?.sessions ?? [], owner, true),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     messaging: {
       ...result.messaging,
-      sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
+      sessions: stampRowsWithOwningConnection(result.messaging?.sessions ?? [], owner, true),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     errors: result.errors,
@@ -384,21 +385,41 @@ class MissingMutationSnapshotRoute extends Error {}
  *  verdict on the read, before any write was attempted, selects it; a session/profile 404,
  *  refusal, conflict, timeout or failed write keeps the canonical CAS path and its retained
  *  identity. */
-export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionMutationSnapshot>,
-  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>): Promise<T> {
-  return runSessionMutation(key, () => read().catch(error => {
-    // The prepared read is shared by equal concurrent edits; its verdict must
-    // travel with that rejection, rather than one caller's local closure.
-    if (isUnroutedRestPath(error)) { throw new MissingMutationSnapshotRoute(String(error), { cause: error }) }
-    throw error
-  }), send).catch(error => {
-    if (!(error instanceof MissingMutationSnapshotRoute)) { throw error }
+export function mutateSessionFenced<T>(
+  key: string,
+  read: () => Promise<SessionMutationSnapshot>,
+  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>
+): Promise<T> {
+  return runSessionMutation(
+    key,
+    () =>
+      read().catch(error => {
+        // The prepared read is shared by equal concurrent edits; its verdict must
+        // travel with that rejection, rather than one caller's local closure.
+        if (isUnroutedRestPath(error)) {
+          throw new MissingMutationSnapshotRoute(String(error), { cause: error })
+        }
+
+        throw error
+      }),
+    send
+  ).catch(error => {
+    if (!(error instanceof MissingMutationSnapshotRoute)) {
+      throw error
+    }
 
     return send({})
   })
 }
 
-function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+export function mutateSessionHttp<T>(
+  id: string,
+  method: 'PATCH' | 'DELETE',
+  payload: Record<string, unknown>,
+  profile?: ProfileScope,
+  beforeSend?: (identity: Partial<SessionMutationIdentity>) => void,
+  revalidate?: () => Promise<void>
+): Promise<T> {
   // Null is the window's v1 route (its primary, local or remote); defaulting it to
   // the registry's 'local' source would pin a remote primary's edits to this machine.
   const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
@@ -407,24 +428,47 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
   const suffix = query.size ? `?${query}` : ''
   const key = JSON.stringify([scope, id, method, payload])
 
-  const send = (identity: Partial<SessionMutationIdentity>) => {
+  const send = async (identity: Partial<SessionMutationIdentity>) => {
+    // Revalidation may read the row after the fenced snapshot. Any newer edit
+    // then conflicts instead of becoming part of a stale destructive decision.
+    if (revalidate) {
+      await revalidate()
+    }
+
+    beforeSend?.(identity)
+
     if (method === 'DELETE') {
       const params = new URLSearchParams(query)
 
-      for (const [name, value] of Object.entries(identity)) { params.set(name, String(value)) }
+      for (const [name, value] of Object.entries(identity)) {
+        params.set(name, String(value))
+      }
 
       return hermesApi<T>({ ...scope, path: params.size ? `${path}?${params}` : path, method })
     }
 
-    return hermesApi<T>({ ...scope, path, method,
-      body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
+    return hermesApi<T>({
+      ...scope,
+      path,
+      method,
+      body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) }
+    })
   }
 
-  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
+  return mutateSessionFenced(
+    key,
+    () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }),
+    send
+  )
 }
 
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
+export function setSessionArchived(id: string, archived: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(
+    id,
+    'PATCH',
+    { archived, ...(archived ? { pinned: false } : {}) },
+    profile && typeof profile === 'object' ? profile : sessionWriteProfile(profile)
+  )
 }
 
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
@@ -719,6 +763,10 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
   return mutateSessionHttp(id, 'DELETE', {}, profile)
 }
 
-export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
+export function renameSession(
+  id: string,
+  title: string,
+  profile?: string | null
+): Promise<{ ok: boolean; title: string }> {
   return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }

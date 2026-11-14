@@ -7,8 +7,10 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
+import { $widthClass, BELOW_WIDE_QUERY, type WidthClass } from '@/app/redesign/breakpoints'
 import { setPluginEnabled } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
+import { matchesQuery } from '@/hooks/use-media-query'
 import { translateNow } from '@/i18n'
 import { LAYOUT_KEYS } from '@/lib/layout-persistence'
 import { Codecs } from '@/lib/persisted'
@@ -16,6 +18,7 @@ import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { $portalShell, $shellChoice, rendersPortalShell } from '@/store/shell-variant'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
@@ -48,6 +51,7 @@ import {
 import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
+import { $routeCollapsedPanes, toggledSet } from './store-route-collapse'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -117,24 +121,6 @@ export const NEW_SESSION_DRAG = '__new-session-drag__'
  * Not persisted here — each binding's store owns persistence.
  */
 export const $hiddenTreePanes = atom<ReadonlySet<string>>(new Set())
-
-/** Add/remove `item` in a readonly set, returning a fresh set — or null when
- *  membership already matches `present` (so callers can early-out on a no-op). */
-function toggledSet<T>(set: ReadonlySet<T>, item: T, present: boolean): Set<T> | null {
-  if (set.has(item) === present) {
-    return null
-  }
-
-  const next = new Set(set)
-
-  if (present) {
-    next.add(item)
-  } else {
-    next.delete(item)
-  }
-
-  return next
-}
 
 export function setTreePaneHidden(paneId: string, hidden: boolean) {
   const next = toggledSet($hiddenTreePanes.get(), paneId, hidden)
@@ -819,6 +805,7 @@ export const $newSessionTabAction = atom<(() => void) | null>(null)
  */
 export function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   const hidden = $hiddenTreePanes.get()
+  const routeCollapsed = $routeCollapsedPanes.get()
   const registered = registry.getArea('panes')
   const paneFor = (id: string) => registered.find(c => c.id === id)
 
@@ -829,17 +816,13 @@ export function shownPanesInGroup(group: { panes: readonly string[] }): string[]
       return false
     }
 
-    if (hidden.has(id)) {
+    if (hidden.has(id) || routeCollapsed.has(id)) {
       return false
     }
 
     // Match TreeGroup's paneShown for the narrow breakpoint — collapsible
     // panes drop out of the strip when the viewport collapses them.
-    if (
-      typeof window !== 'undefined' &&
-      window.matchMedia?.(SIDEBAR_COLLAPSE_MEDIA_QUERY).matches &&
-      Boolean((pane.data as { collapsible?: boolean } | undefined)?.collapsible)
-    ) {
+    if (isNarrowViewport() && Boolean((pane.data as { collapsible?: boolean } | undefined)?.collapsible)) {
       return false
     }
 
@@ -1288,18 +1271,31 @@ export function revealTreePane(paneId: string) {
 }
 
 /**
- * Narrow viewport (the app's sidebar-collapse breakpoint): panes whose
- * contribution declares `collapsible: true` leave the grid and become
- * edge overlays (see NarrowOverlays in renderer.tsx).
+ * Narrow viewport: panes whose contribution declares `collapsible: true` leave the grid and become
+ * edge overlays (see NarrowOverlays in renderer.tsx). Classic collapses them below its sidebar dock
+ * point; the redesign keeps them docked only on a wide window (app/redesign/breakpoints.ts), so a
+ * medium window gets a full-width stage with the sidebar as a sheet. This is the pane tree's layout
+ * posture, not the plugin contract: `host.state.viewport.narrow` (sdk/viewport.ts) stays the dock
+ * point in both shells.
  */
-// Optional-chained + `typeof window` guarded like every other matchMedia call
-// site: this module is imported by non-DOM code paths (session actions) whose
-// test env has no `window`/`matchMedia` — an unguarded call throws at load.
-const narrowQuery = typeof window !== 'undefined' ? window.matchMedia?.(SIDEBAR_COLLAPSE_MEDIA_QUERY) : undefined
+export function narrowViewportFor(portal: boolean, width: WidthClass): boolean {
+  return portal ? width !== 'wide' : width === 'compact'
+}
 
-export const $narrowViewport = atom(Boolean(narrowQuery?.matches))
+/** Read at call time (event handlers, toggles), so it agrees with the media queries right now. */
+export function isNarrowViewport(): boolean {
+  return $portalShell.get() ? matchesQuery(BELOW_WIDE_QUERY) : matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
+}
 
-narrowQuery?.addEventListener('change', event => $narrowViewport.set(event.matches))
+// Read from the stored choice (`$portalShell` derives from it), so loading this module needs only
+// plain atoms.
+const narrowNow = () => narrowViewportFor(rendersPortalShell($shellChoice.get()), $widthClass.get())
+
+export const $narrowViewport = atom(narrowNow())
+
+const syncNarrowViewport = () => $narrowViewport.set(narrowNow())
+$shellChoice.listen(syncNarrowViewport)
+$widthClass.listen(syncNarrowViewport)
 
 /** The titlebar flip toggle (⌘\): mirror the whole layout left↔right. */
 export function mirrorLayoutTree() {
@@ -1860,6 +1856,8 @@ export function activateTreePane(groupId: string, paneId: string) {
 
   if (tree) {
     commit(setActivePaneOp(tree, groupId, paneId))
+    // The redesign reopens a hidden pane whose tab is picked; classic only activates it, as main.
+    ;($portalShell.get() ? paneOpeners[paneId] : undefined)?.()
   }
 }
 

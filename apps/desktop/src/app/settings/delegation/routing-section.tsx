@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { DelegationRouting, ProfileScope } from '@/hermes'
@@ -13,6 +12,8 @@ import { $settingsRequestProfile } from '@/store/settings-scope'
 
 import { useOwnerCatalog } from '../delegation-model-provider-field'
 import { Pill, SectionHeading, SettingsSection } from '../primitives'
+import { useSettingsOwner } from '../profile-scope'
+import { useSettingsGatewayRequest } from '../settings-owner-request'
 
 import { ModelRoutesEditor } from './model-routes'
 import { enableAdvancedDelegation, installAdvancedDelegation, useAdvancedDelegationPlugin } from './plugin-actions'
@@ -254,8 +255,11 @@ function BlockedBanner({ message, action, scope }: { message: string; action?: R
 function AdvancedDelegationStatus({ blocked, scope }: { blocked: boolean; scope: ProfileScope }) {
   const { t } = useI18n()
   const r = t.settings.model.subagents.routing
-  const { requestGateway } = useGatewayRequest()
-  const owner = useStore($settingsRequestProfile) ?? null
+  // An agent page's plugin list, install and enable belong to its owner, never the app's active
+  // profile or the classic "Applies to" pick.
+  const requestGateway = useSettingsGatewayRequest()
+  const selectedProfile = useStore($settingsRequestProfile)
+  const owner = useSettingsOwner()?.profile ?? selectedProfile ?? null
   const { row, state } = useAdvancedDelegationPlugin(requestGateway, owner)
 
   if (state === 'loading') {

@@ -78,7 +78,7 @@ async function selectProfile(page: Page, name: string): Promise<void> {
 
 async function expectSearchScopedTo(page: Page, profile: keyof typeof MARKER): Promise<void> {
   const other = profile === 'default' ? PROFILE_B : 'default'
-  const search = page.getByRole('textbox', { name: 'Search sessions' })
+  const search = page.getByRole('textbox', { name: 'Search chats' })
 
   await search.fill('')
   await search.fill('zebra')

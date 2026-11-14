@@ -1,4 +1,4 @@
-import type { CronJob, CronJobUpdates } from '@/types/hermes'
+import type { CronJob, CronJobUpdates } from '@/types/cron'
 
 import { truncateText } from './job-state'
 

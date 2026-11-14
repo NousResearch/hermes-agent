@@ -1,0 +1,14 @@
+/* Layers (LANGUAGE §4), portal-local: stacking inside the stage and the composer. The app's overlay
+   stack (styles.css --z-*) stays authoritative for menus, dialogs and toasts. */
+:root[data-shell='portal'] {
+  /* The docked composer's own top layer (its spectrum edge over the card). */
+  --portal-layer-dock: 5;
+  /* What floats over the transcript inside the stage (the conversation header row). */
+  --portal-layer-stage-overlay: 20;
+  /* Sheets below wide (the chat sidebar, a page panel) and their scrim: over the stage and the band,
+     under menus and popovers (z-50), so a row's menu opens over its sheet. The rail joins a compact
+     sheet from outside the page layer (route pages are z-50), so it alone sits just over it. */
+  --portal-layer-sheet-scrim: 44;
+  --portal-layer-sheet: 45;
+  --portal-layer-sheet-rail: 51;
+}

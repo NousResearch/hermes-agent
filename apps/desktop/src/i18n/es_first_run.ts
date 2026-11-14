@@ -1,6 +1,26 @@
 import type { FirstRunCopy } from './types_first_run'
 
 export const esFirstRun: FirstRunCopy = {
+  guide: {
+    title: 'Configura Hermes',
+    resume: 'Reanudar la configuración',
+    upgradeRequired:
+      'Hermes en esta máquina necesita una actualización para configurar sin sesión. Ejecuta hermes update en esa máquina, reinicia Hermes y vuelve a intentarlo. Tus chats no han cambiado.',
+    intro: 'Unas preferencias opcionales y luego tu chat habitual. La configuración nunca crea una conversación.',
+    appearance: 'Apariencia',
+    model: 'Elige un modelo',
+    ready: 'Tu modelo está listo.',
+    providerNeeded: 'Conecta un proveedor o usa el modelo gratuito antes de enviar un mensaje.',
+    freeModel: 'Usar el modelo gratuito',
+    freeUnavailable: 'El modelo gratuito no está disponible aquí. Conecta un proveedor o elige uno más tarde.',
+    providers: 'Conectar un proveedor',
+    finish: 'Finalizar la configuración',
+    skip: 'Omitir la configuración',
+    back: 'Atrás',
+    check: 'Comprobar disponibilidad',
+    checking: 'Comprobando…',
+    privacy: 'Compartir métricas de uso es opcional.'
+  },
   beats: {
     name: 'Nombre',
     theme: 'Color de acento',

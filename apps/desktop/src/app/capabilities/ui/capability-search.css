@@ -1,0 +1,17 @@
+.capability-search-v2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.capability-search-v2 > :first-child {
+  flex: 1 1 18rem;
+  min-width: min(100%, 18rem);
+  width: auto;
+}
+
+.capability-search-v2 > [data-catalog-actions] {
+  margin-left: auto;
+}

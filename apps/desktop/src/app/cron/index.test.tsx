@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import type { CronJob, SessionInfo } from '@/hermes'
+import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
+import { $shellChoice } from '@/store/shell-variant'
+
+import { routinesCopy } from '../routines/routines-copy'
 
 import { CronView } from './index'
 
@@ -49,7 +54,9 @@ async function renderCron() {
   await act(async () => {
     result = render(
       <QueryClientProvider client={queryClient}>
-        <CronView onClose={vi.fn()} />
+        <MemoryRouter>
+          <CronView onClose={vi.fn()} />
+        </MemoryRouter>
       </QueryClientProvider>
     )
   })
@@ -71,6 +78,8 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  // CronView's own behaviour is classic's; the redesign renders the Routines page (src/app/routines).
+  $shellChoice.set(false)
   setCronJobs([job])
   setCronFocusJobId(null)
   setChangeEventsAvailable(false)
@@ -88,6 +97,19 @@ afterEach(() => {
   setCronFocusJobId(null)
   setChangeEventsAvailable(false)
   vi.clearAllMocks()
+  $shellChoice.set(null)
+})
+
+it('returns keyboard focus to New routine after cancelling the redesign editor', async () => {
+  $shellChoice.set(true)
+  await renderCron()
+  await screen.findAllByText('Status report')
+  const opener = screen.getAllByRole('button', { name: en.cron.newCron })[0]
+  opener.focus()
+  fireEvent.click(opener)
+  await screen.findByText(routinesCopy('en').pickDescription)
+  fireEvent.keyDown(window.document.activeElement!, { key: 'Escape' })
+  await waitFor(() => expect(window.document.activeElement).toBe(opener))
 })
 
 describe('CronView queued trigger feedback (#70826)', () => {

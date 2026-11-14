@@ -7,12 +7,14 @@
  * main -> tree adoption lands it on the chosen edge; closing removes it.
  */
 
-import { lazy, type ReactNode, Suspense } from 'react'
+import { type ReactNode, Suspense } from 'react'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { translateNow } from '@/i18n'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
+import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
 import {
   $routesVersion,
   ARTIFACTS_ROUTE,
@@ -24,15 +26,12 @@ import {
 
 import { paneMirror } from './pane-mirror'
 
-const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
-const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
-
-// Built-in page views + their pane titles, keyed by route.
-const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
-  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
-  [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, title: 'Capabilities' }
+// Built-in page views + their pane title keys (the nav labels), keyed by route. Titles resolve when
+// read, so they follow the language and the shell's wording (Artifacts vs Library).
+const BUILTIN_PAGES: Record<string, { render: () => ReactNode; titleKey: string }> = {
+  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, titleKey: 'sidebar.nav.artifacts' },
+  [MESSAGING_ROUTE]: { render: () => <MessagingView />, titleKey: 'sidebar.nav.messaging' },
+  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, titleKey: 'sidebar.nav.capabilities' }
 }
 
 /** Humanize a route path into a tab title: `/my-atlas` → `My Atlas`. */
@@ -48,7 +47,7 @@ const humanizePath = (path: string): string =>
  *  else a humanized path — never the internal `${source}:${id}` key. */
 function routeTitle(path: string): string {
   if (BUILTIN_PAGES[path]) {
-    return BUILTIN_PAGES[path].title
+    return translateNow(BUILTIN_PAGES[path].titleKey)
   }
 
   return contributedRoutes().find(r => r.path === path)?.title ?? humanizePath(path)

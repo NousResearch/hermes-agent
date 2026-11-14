@@ -7,6 +7,7 @@ export const zhHantChat = {
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',
     placeholderFollowUp: '傳送後續訊息',
+    browseAllSessions: '瀏覽所有工作階段…',
     newSessionPlaceholders: [
       '我們要建立什麼？',
       '給 Hermes 一個任務',
@@ -411,6 +412,7 @@ export const zhHantChat = {
 
   desktop: {
     audioReadFailed: '無法讀取錄製的音訊',
+    sessionOpenFailed: '無法開啟此工作階段',
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',

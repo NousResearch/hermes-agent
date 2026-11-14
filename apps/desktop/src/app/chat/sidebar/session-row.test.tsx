@@ -5,6 +5,7 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ProfileTagModule from '@/app/chat/profile-tag'
 import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -57,7 +58,10 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
+vi.mock('@/app/chat/profile-tag', async importOriginal => ({
+  ...(await importOriginal<typeof ProfileTagModule>()),
+  ProfileTag: () => null
+}))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its

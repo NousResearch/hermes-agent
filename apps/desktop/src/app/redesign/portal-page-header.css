@@ -1,0 +1,182 @@
+/* The page header (page-header.tsx; DESIGN.md › Page header). One geometry for every routed page:
+   the H1 row (H1, actions at its end), the description under it, an optional leading tile spanning
+   both, then the tab bar. Only the redesign renders these classes. The page's column rules place the
+   header horizontally and its top padding (--portal-page-top) vertically. */
+
+.portal-page-header {
+  display: grid;
+  min-width: 0;
+  /* The tab row scrolls sideways on a phone; its content must not widen the column. */
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: var(--portal-page-rhythm);
+}
+
+.portal-page-header[data-tabs] {
+  gap: var(--portal-page-header-gap);
+  margin-bottom: var(--portal-page-header-gap);
+}
+
+.portal-page-header-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'title actions'
+    'description description';
+  align-content: start;
+  align-items: center;
+  column-gap: 1rem;
+}
+
+/* With tabs the block always reserves the agent header's height (877:4166), description or not. */
+.portal-page-header[data-tabs] > .portal-page-header-title {
+  min-height: var(--portal-page-title-block);
+}
+
+.portal-page-header-title[data-leading] {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'leading title actions'
+    'leading description description';
+}
+
+.portal-page-header-leading {
+  display: flex;
+  grid-area: leading;
+}
+
+.portal-page-header-title > h1 {
+  grid-area: title;
+  min-width: 0;
+  /* Clip the inline axis only: the display face's descenders reach below its 1.1 line box, and
+     `hidden` would cut them. */
+  overflow-x: clip;
+  overflow-y: visible;
+  color: var(--ui-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-page-header-description {
+  grid-area: description;
+  min-width: 0;
+  margin-top: 0.375rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.portal-page-header-actions {
+  display: flex;
+  min-width: 0;
+  grid-area: actions;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* ── Tabs (877:4200) ──
+   Equal-width tabs: the list is a max-content grid whose 1fr columns all take the widest tab's
+   width. The selected tab's 2px underline overlaps the rail, a divider hairline under the row. */
+
+.portal-page-tabs {
+  border-bottom: 1px solid var(--portal-stroke-divider);
+}
+
+.portal-page-tabs-list {
+  display: grid;
+  width: max-content;
+  max-width: 100%;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+}
+
+.portal-page-tabs-list > [role='tab'] {
+  display: flex;
+  height: var(--portal-page-tab-height);
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  margin-bottom: -1px;
+  /* 877:4200: a 20px label, 10px to the underline. */
+  padding: 0 var(--portal-page-tab-inset) 0.625rem;
+  border-bottom: 2px solid transparent;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.portal-page-tabs-list > [role='tab']:hover,
+.portal-page-tabs-list > [aria-selected='true'] {
+  color: var(--ui-text-primary);
+}
+
+.portal-page-tabs-list > [aria-selected='true'] {
+  border-bottom-color: var(--portal-surface-brand);
+}
+
+.portal-page-tabs-list > [role='tab']:focus-visible {
+  border-radius: var(--portal-radius-control);
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+/* The count (919:9286) reserves three digits, so a count loading in never widens its tab. */
+.portal-page-tab-count {
+  min-width: 3ch;
+  color: var(--ui-text-quaternary);
+  font-size: var(--portal-type-micro-size);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-ui);
+  text-align: start;
+}
+
+[aria-selected='true'] > .portal-page-tab-count {
+  color: var(--ui-text-tertiary);
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): the actions take their own row under the titles and
+   the tabs keep their own widths in one scrolling row. */
+@media (max-width: 639.98px) {
+  .portal-page-header-title {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'title'
+      'description'
+      'actions';
+  }
+
+  .portal-page-header-title[data-leading] {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'leading title'
+      'leading description'
+      'actions actions';
+  }
+
+  .portal-page-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    margin-top: 1rem;
+  }
+
+  /* One row always: a second row orphans the last tab under its own rail. The tabs keep their own
+     widths, and a list wider than the phone scrolls sideways. */
+  .portal-page-tabs-list {
+    display: flex;
+    width: auto;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .portal-page-tabs-list > [role='tab'] {
+    flex: none;
+    padding-inline: var(--portal-space-compact);
+  }
+
+  .portal-page-tabs-list > [role='tab']:first-child {
+    padding-inline-start: 0;
+  }
+}

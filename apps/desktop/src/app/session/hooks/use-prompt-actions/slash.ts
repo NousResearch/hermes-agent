@@ -1246,8 +1246,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             await refreshSessions().catch(() => undefined)
             renderSlashOutput(
               finalTitle
-                ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
-                : 'Session title cleared.'
+                ? translateNow('promptNotices.sessionCommands.titleSet', finalTitle, queued)
+                : translateNow('promptNotices.sessionCommands.titleCleared')
             )
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)

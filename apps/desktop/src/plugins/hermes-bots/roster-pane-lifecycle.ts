@@ -22,32 +22,45 @@ interface RosterSnapshotInput {
   activeSourceRoster: RosterRow[]
 }
 
+/** Publish one roster snapshot to the shared state every Bot Mode reader and the shell use: the
+ *  roster atom, tab owner labels, the source inventory, and the per-snapshot side effects (avatar
+ *  pulls, inbound activity, messaging-protocol backfill). The Bots pane publishes while it is
+ *  mounted; where the shell hosts no pane, the headless publisher does (`roster-publisher.ts`). */
+export function publishRosterSnapshot({
+  data,
+  roster,
+  allMeta,
+  activeSourceRoster
+}: Omit<RosterSnapshotInput, 'live'>) {
+  // Offline-owner ghosts belong only to the pane's render. Shared roster state
+  // feeds merge caching, group membership, creation, and durable sync.
+  $lastRoster.set(roster.filter(row => !row?.ghost))
+  // Tabs caption a bot chat by its bot (#99152); republished with the
+  // roster so a rename follows and tiles restored at boot resolve.
+  roster.forEach(bot => {
+    host.setWorkspaceOwnerLabel?.(botWorkspaceOwnerKey(bot), displayName(bot, botRosterMeta(bot, allMeta)))
+  })
+
+  if (Array.isArray(data?.sources)) {
+    $lastSources.set(data.sources)
+  }
+
+  // Names were already reconciled when the snapshot was fetched
+  // (data.ts::fetchRosterSnapshot), for every reader, pane open or not.
+  pullServerAvatars(activeSourceRoster)
+  trackInboundActivity(roster)
+  backfillMessagingProtocol(activeSourceRoster)
+}
+
 export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSourceRoster }: RosterSnapshotInput) {
   useEffect(() => {
     if (!live) {
       return
     }
 
-    // Offline-owner ghosts belong only to this render. Shared roster state
-    // feeds merge caching, group membership, creation, and durable sync. These
-    // writes must settle after render: other subscribers of the same atoms
-    // would otherwise be updated while BotsPane was still rendering.
-    $lastRoster.set(roster.filter(row => !row?.ghost))
-    // Tabs caption a bot chat by its bot (#99152); republished with the
-    // roster so a rename follows and tiles restored at boot resolve.
-    roster.forEach(bot => {
-      host.setWorkspaceOwnerLabel?.(botWorkspaceOwnerKey(bot), displayName(bot, botRosterMeta(bot, allMeta)))
-    })
-
-    if (Array.isArray(data?.sources)) {
-      $lastSources.set(data.sources)
-    }
-
-    // Names were already reconciled when the snapshot was fetched
-    // (data.ts::fetchRosterSnapshot), for every reader, pane open or not.
-    pullServerAvatars(activeSourceRoster)
-    trackInboundActivity(roster)
-    backfillMessagingProtocol(activeSourceRoster)
+    // These writes must settle after render: other subscribers of the same
+    // atoms would otherwise be updated while BotsPane was still rendering.
+    publishRosterSnapshot({ data, roster, allMeta, activeSourceRoster })
     // React Query owns the stable server snapshot; derived arrays intentionally
     // follow that snapshot rather than retriggering on their own atom writes.
     // Key on the `profiles`/`sources` subtrees, not the envelope: every 5 s

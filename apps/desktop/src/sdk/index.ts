@@ -17,7 +17,6 @@
  *    and the future seam for per-plugin capability grants.
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
-
 import { computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
@@ -49,6 +48,7 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { shellCopy } from '@/lib/shell-copy'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -556,6 +556,12 @@ async function awaitProfileActivation(
   // by mutation: removing it changed no test outcome.
 }
 
+const routeGoneMessage = (profile: string) =>
+  shellCopy({
+    classic: `The ${profile} gateway is no longer available.`,
+    redesign: `The machine running ${profile} is no longer available.`
+  })
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -617,7 +623,7 @@ export const host = {
   // rejection a plugin's .catch() sees, never an error-boundary crash.
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
-  logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+  logs: async (params: Parameters<typeof getLogs>[0]) => getLogs(params),
 
   /** Complete client-local MCP sign-in for a pinned bot profile, optionally
    *  installing its catalog entry first. Uses the same OAuth flow as Settings. */
@@ -1111,7 +1117,7 @@ export const host = {
           // (explicit): a synthesized local route is never in getProfileRoutes,
           // so checking it would spuriously abort a local bot's hydration retry.
           if (explicitRoute && !(await pluginRouteStillRegistered(explicitRoute))) {
-            throw new Error(`The ${targetProfile} gateway is no longer available.`)
+            throw new Error(routeGoneMessage(targetProfile))
           }
 
           // Logged per attempt so a support bundle shows the retry happened at
@@ -1694,6 +1700,7 @@ export { Wordmark } from '@/components/chat/wordmark'
  *  `width`/`height`. */
 export type { FloatingAnchor } from '@/components/pane-shell/tree/renderer/floating-rect'
 export { StatusDot, type StatusTone } from '@/components/status-dot'
+export { AgentMark } from '@/components/ui/agent-mark'
 export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
 export { Checkbox } from '@/components/ui/checkbox'
@@ -1769,15 +1776,15 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
+
+// -- contracts ----------------------------------------------------------------
+
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
-
-// -- contracts ----------------------------------------------------------------
-
 /** Settings ▸ Plugins entries (`ctx.registerSettingsPage`); `pluginSettingsHref` deep-links one. */
 export { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 export type { Contribution } from '@/contrib/types'
@@ -1806,6 +1813,7 @@ export {
   type PluginLocaleBundles,
   type PluginMessages,
   type PluginMessageValue,
+  type PluginShellWording,
   type PluginTranslate,
   translateNow,
   useI18n,
@@ -1860,6 +1868,7 @@ export { catalogProviderMatches } from '@/lib/model-options'
  *  hand-picked color still sits with the generated ones; reach for them
  *  instead of literal hex, which can't follow the theme. */
 export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-color'
+
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
@@ -1868,7 +1877,6 @@ export { queryClient } from '@/lib/query-client'
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'
-
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */

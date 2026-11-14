@@ -8,10 +8,14 @@
  * new language) via `mergeTranslations`; a pack string sitting where English
  * has a function is wrapped into a positional `{0}`/`{1}` formatter.
  *
- * Resolution order for one id: bundled <id> (or en) → registrations in the
- * order they arrived (last wins per key). `$appLocaleVersion` bumps on every
- * change so React translators re-resolve. Picker metadata (endonym, English
- * name, direction) is composed with the bundled table in `./languages`.
+ * Resolution order for one id: bundled <id> (or en) → the redesigned shell's
+ * wording overlay when this window renders that shell (`./redesign`) →
+ * registrations in the order they arrived (last wins per key), so packs win
+ * over both shells' wording. `$appLocaleVersion` bumps on every change so
+ * React translators re-resolve; the shell is read per call from the
+ * presentation leaf, so a toggle flip re-resolves without a reload. Picker
+ * metadata (endonym, English name, direction) is composed with the bundled
+ * table in `./languages`.
  */
 
 import {
@@ -24,7 +28,10 @@ import {
 } from '@hermes/shared/i18n'
 import { atom } from 'nanostores'
 
+import { portalPresentation } from '@/store/shell-presentation'
+
 import { isBundledLocale, TRANSLATIONS } from './catalog'
+import { redesignCatalog } from './redesign'
 import type { Locale, Translations } from './types'
 
 /** Who registered a language: the backend's pack layer, a plugin, or app code. */
@@ -58,8 +65,11 @@ interface Entry extends RegisteredLocaleMeta {
   translations?: Record<string, unknown>
 }
 
+/** Which shell's wording a catalog is in. Classic is the base catalog verbatim. */
+export type ShellWording = 'classic' | 'redesign'
+
 const entries = new Map<Locale, Entry[]>()
-const resolved = new Map<Locale, { version: number; value: Translations }>()
+const resolved = new Map<string, { version: number; value: Translations }>()
 
 /** Bumps whenever a language is registered or dropped. Translators key on it. */
 export const $appLocaleVersion = atom(0)
@@ -222,17 +232,30 @@ export function registeredLocaleMeta(locale: Locale): RegisteredLocaleMeta[] {
   }))
 }
 
-/** The merged catalog for `locale`: bundled (or English) with every
- *  registration layered on. Memoized per registry version. */
-export function resolveTranslations(locale: Locale): Translations {
+/** The wording a window renders: the redesign's when it shows the portal shell (never the HUD or
+ *  a popped-out Browser, which always render classic). */
+export function shellWordingFor(portalShell: boolean): ShellWording {
+  return portalShell ? 'redesign' : 'classic'
+}
+
+/** THIS window's wording right now, for translators outside React. */
+export function currentShellWording(): ShellWording {
+  return shellWordingFor(portalPresentation())
+}
+
+/** The merged catalog for `locale` in `shell`'s wording: bundled (or English),
+ *  the redesign overlay when asked, then every registration layered on.
+ *  Memoized per (locale, shell) and registry version. */
+export function resolveTranslations(locale: Locale, shell: ShellWording = currentShellWording()): Translations {
   const version = $appLocaleVersion.get()
-  const cached = resolved.get(locale)
+  const cacheKey = `${shell}:${locale}`
+  const cached = resolved.get(cacheKey)
 
   if (cached && cached.version === version) {
     return cached.value
   }
 
-  let value = baseCatalog(locale)
+  let value = shell === 'redesign' ? redesignCatalog(locale, baseCatalog(locale)) : baseCatalog(locale)
 
   for (const entry of entries.get(locale) ?? []) {
     if (entry.translations) {
@@ -243,7 +266,7 @@ export function resolveTranslations(locale: Locale): Translations {
     }
   }
 
-  resolved.set(locale, { version, value })
+  resolved.set(cacheKey, { version, value })
 
   return value
 }

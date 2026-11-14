@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { RemoteSetupFields } from '@/components/remote-setup/fields'
 import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -20,21 +19,19 @@ import {
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
+import { Globe, Loader2, Plus, RefreshCw, SearchIcon } from '@/lib/icons'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
-import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
+import { ConnectionEditorFields } from './connection-editor'
+import { type ConnectionKindMeta, ConnectionRow, ConnectionsEmpty } from './connection-row'
+import { SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
+import { SettingsAddRow, SettingsCard, SettingsDisclosure, SettingsGroup } from './settings-card'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 
-const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
-  cloud: Cloud,
-  local: Monitor,
-  remote: Globe,
-  ssh: Terminal
-}
-
-interface EditorState {
+export interface EditorState {
   // null id → creating a new connection.
   id: null | string
   kind: DesktopConnectionKind
@@ -236,10 +233,19 @@ function useRegistryChanges(
  * instances / SSH hosts). Storage-level management — the active/primary
  * switchover UX is the connection-mode controls above this section.
  */
-export function ConnectionsRegistrySection() {
+interface ConnectionsRegistrySectionProps {
+  /** Page-owned rows the redesign files under Advanced, after the launch policy's own row. */
+  advanced?: ReactNode
+  /** How many settings `advanced` holds, for the disclosure's count badge. */
+  advancedCount?: number
+}
+
+export function ConnectionsRegistrySection({ advanced, advancedCount = 0 }: ConnectionsRegistrySectionProps = {}) {
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const { t } = useI18n()
   const s = t.settings.connections
+  const pages = useSettingsPagesCopy()
+  const redesign = usePortalShell()
   const activeConnectionId = useStore($activeConnectionId)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
@@ -553,7 +559,7 @@ export function ConnectionsRegistrySection() {
     }
   }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
 
-  const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
+  const kindMeta: ConnectionKindMeta = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
     local: { desc: s.kindLocalDesc, label: s.kindLocal },
     remote: { desc: s.kindRemoteDesc, label: s.kindRemote },
@@ -604,345 +610,72 @@ export function ConnectionsRegistrySection() {
     return null
   }
 
-  return (
-    <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
-      <SectionHeading icon={Globe} page title={s.title} />
-      <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
-      {/* Source selection lives in Sessions. Primary is the registry fallback,
-          not an immediate workspace switch. */}
-      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {s.stagedNote}
-      </p>
+  const searchField = !loading && showSearch && (
+    <Input
+      aria-label={s.searchPlaceholder}
+      containerClassName="mt-3 mb-0 w-full max-w-sm"
+      onChange={event => updateSearchQuery(event.target.value)}
+      placeholder={s.searchPlaceholder}
+      prefix={<SearchIcon className="size-3.5" />}
+      ref={searchInputRef}
+      size="sm"
+      type="search"
+      value={searchQuery}
+    />
+  )
 
-      {!loading && showSearch && (
-        <Input
-          aria-label={s.searchPlaceholder}
-          containerClassName="mt-3 mb-0 w-full max-w-sm"
-          onChange={event => updateSearchQuery(event.target.value)}
-          placeholder={s.searchPlaceholder}
-          prefix={<SearchIcon className="size-3.5" />}
-          ref={searchInputRef}
-          size="sm"
-          type="search"
-          value={searchQuery}
-        />
-      )}
+  const connectionRows = loading ? (
+    <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
+  ) : !registry || registry.connections.length === 0 ? (
+    <ConnectionsEmpty title={s.empty} />
+  ) : displayedConnections.length === 0 ? (
+    <ConnectionsEmpty title={s.noSearchResults} />
+  ) : (
+    displayedConnections.map(conn => (
+      <ConnectionRow
+        busy={busyId === conn.id}
+        conn={conn}
+        isCurrent={activeConnectionId === conn.id}
+        isPrimary={registry.primary === conn.id}
+        key={conn.id}
+        kindMeta={kindMeta}
+        onEdit={() => openEditor(editorFromConnection(conn), conn)}
+        onMakePrimary={() => void makePrimary(conn.id)}
+        onRemove={() => setRemoveTarget(conn)}
+        onTest={() => void test(conn)}
+        peers={sortedConnections}
+        testing={testingId === conn.id}
+      />
+    ))
+  )
 
-      {loading ? (
-        <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
-      ) : !registry || registry.connections.length === 0 ? (
-        <EmptyState title={s.empty} />
-      ) : displayedConnections.length === 0 ? (
-        <EmptyState title={s.noSearchResults} />
-      ) : (
-        displayedConnections.map(conn => {
-          const Icon = KIND_ICONS[conn.kind]
-          const isCurrent = activeConnectionId === conn.id
-          const isPrimary = registry.primary === conn.id
-          const busy = busyId === conn.id
-          // Display-only: this connection is a second address for a backend
-          // already registered under another entry (same install_id).
-          const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
+  const editorFields = editor && (
+    <ConnectionEditorFields
+      dupeError={dupeError}
+      editor={editor}
+      hasLocal={hasLocal}
+      kindMeta={kindMeta}
+      onCancel={() => openEditor(null)}
+      onDupeErrorChange={setDupeError}
+      onEditorChange={setEditor}
+      onSave={() => void save()}
+      remote={remote}
+      saving={saving}
+    />
+  )
 
-          const baseDescription =
-            conn.kind === 'ssh'
-              ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
-              : conn.url
-                ? `${kindMeta[conn.kind].label} · ${conn.url}`
-                : kindMeta[conn.kind].desc
+  const launchPolicy = (
+    <ConnectionLaunchPolicy
+      available={Boolean(bridge?.setLaunchMode)}
+      busy={launchModeBusy}
+      loading={loading}
+      onChange={setLaunchMode}
+      registry={registry}
+    />
+  )
 
-          return (
-            <ListRow
-              action={
-                <div className="flex items-center gap-2">
-                  <Button
-                    disabled={testingId === conn.id}
-                    onClick={() => {
-                      triggerHaptic('selection')
-                      void test(conn)
-                    }}
-                    size="sm"
-                    variant="outline"
-                  >
-                    {testingId === conn.id ? <Loader2 className="animate-spin" /> : s.testConnection}
-                  </Button>
-                  {!isPrimary && (
-                    <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
-                      {s.makePrimary}
-                    </Button>
-                  )}
-                  {conn.kind !== 'local' && (
-                    <>
-                      <Button
-                        aria-label={s.editConnection}
-                        onClick={() => openEditor(editorFromConnection(conn), conn)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Pencil className="size-3.5" />
-                      </Button>
-                      <Button
-                        aria-label={s.removeConnection}
-                        disabled={busy}
-                        onClick={() => setRemoveTarget(conn)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
-                      </Button>
-                    </>
-                  )}
-                </div>
-              }
-              description={
-                sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription
-              }
-              key={conn.id}
-              title={
-                <span className="flex items-center gap-2">
-                  <Icon className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate">{conn.label}</span>
-                  {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
-                  {isPrimary && <Pill>{s.primaryPill}</Pill>}
-                  {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
-                </span>
-              }
-            />
-          )
-        })
-      )}
-
-      {editor ? (
-        <div className="mt-4 space-y-3 rounded-lg border border-border/60 p-4">
-          <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
-            {/* Kind is fixed once created (buttons disable on edit). On create
-                every kind is offered; Local is disabled while the managed
-                local entry exists (the registry holds at most one). */}
-            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh'] as const)).map(kind => (
-              <Button
-                disabled={Boolean(editor.id) || (kind === 'local' && hasLocal)}
-                key={kind}
-                onClick={() => {
-                  setDupeError(null)
-
-                  // Cloud uses browser sign-in even after a token-auth remote edit.
-                  if (kind === 'cloud') {
-                    remote.setAuthMode('oauth')
-                  }
-
-                  setEditor({ ...editor, kind })
-                }}
-                size="sm"
-                variant={editor.kind === kind ? 'default' : 'outline'}
-              >
-                {kindMeta[kind].label}
-              </Button>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">{kindMeta[editor.kind].desc}</p>
-          {!editor.id && hasLocal ? <p className="text-xs text-muted-foreground">{s.localAddHint}</p> : null}
-          {!editor.id && editor.kind === 'cloud' ? (
-            <p className="text-xs text-muted-foreground">{s.cloudAddHint}</p>
-          ) : null}
-
-          <ListRow
-            action={
-              <Input
-                onChange={e => setEditor({ ...editor, label: e.target.value })}
-                placeholder={s.labelPlaceholder}
-                value={editor.label}
-              />
-            }
-            description={s.labelDesc}
-            title={s.labelTitle}
-          />
-
-          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <RemoteSetupFields
-              disabled={saving}
-              onUrlChange={() => setDupeError(null)}
-              setup={remote}
-              urlOnly={editor.kind === 'cloud'}
-            />
-          )}
-
-          {editor.kind === 'cloud' && (
-            <ListRow
-              action={
-                remote.credentials.oauthConnected ? (
-                  <Pill tone="primary">{t.settings.gateway.signedIn}</Pill>
-                ) : (
-                  <Button
-                    disabled={saving || remote.signingIn || !remote.payload.remoteUrl}
-                    onClick={() => void remote.signIn()}
-                    size="sm"
-                  >
-                    {remote.signingIn ? <Loader2 className="animate-spin" /> : null}
-                    {remote.isPassword
-                      ? t.settings.gateway.signIn
-                      : t.settings.gateway.signInWith(remote.providerLabel)}
-                  </Button>
-                )
-              }
-              description={
-                remote.credentials.oauthConnected
-                  ? remote.isPassword
-                    ? t.settings.gateway.authSignedInPassword
-                    : t.settings.gateway.authSignedInOauth
-                  : remote.isPassword
-                    ? t.settings.gateway.authNeedsPassword
-                    : t.settings.gateway.authNeedsOauth(remote.providerLabel)
-              }
-              title={t.settings.gateway.authTitle}
-            />
-          )}
-
-          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <div className="grid gap-2">
-              <div>
-                <div className="text-sm font-medium">{s.headersTitle}</div>
-                <p className="mt-1 text-xs text-muted-foreground">{s.headersDesc}</p>
-              </div>
-              {editor.headers.map((row, index) => (
-                <div className="flex items-center gap-2" key={index}>
-                  <Input
-                    className="flex-1"
-                    onChange={e =>
-                      setEditor({
-                        ...editor,
-                        headers: editor.headers.map((h, i) => (i === index ? { ...h, name: e.target.value } : h))
-                      })
-                    }
-                    placeholder="CF-Access-Client-Id"
-                    value={row.name}
-                  />
-                  <Input
-                    className="flex-1"
-                    onChange={e =>
-                      setEditor({
-                        ...editor,
-                        headers: editor.headers.map((h, i) => (i === index ? { ...h, value: e.target.value } : h))
-                      })
-                    }
-                    placeholder={row.stored ? s.headerValueSaved : s.headerValuePlaceholder}
-                    type="password"
-                    value={row.value}
-                  />
-                  <Button
-                    onClick={() => setEditor({ ...editor, headers: editor.headers.filter((_, i) => i !== index) })}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    {s.headerRemove}
-                  </Button>
-                </div>
-              ))}
-              <div>
-                <Button
-                  onClick={() =>
-                    setEditor({ ...editor, headers: [...editor.headers, { name: '', stored: false, value: '' }] })
-                  }
-                  size="sm"
-                  variant="outline"
-                >
-                  {s.headerAdd}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {editor.kind === 'ssh' && (
-            <>
-              <ListRow
-                action={
-                  <Input
-                    onChange={e => {
-                      setDupeError(null)
-                      setEditor({ ...editor, host: e.target.value })
-                    }}
-                    placeholder="user@host:22"
-                    value={editor.host}
-                  />
-                }
-                title={s.sshHostTitle}
-              />
-              <ListRow
-                action={
-                  <Input
-                    onChange={e => setEditor({ ...editor, remoteHermesPath: e.target.value })}
-                    placeholder={t.settings.gateway.sshHermesPathPlaceholder}
-                    value={editor.remoteHermesPath}
-                  />
-                }
-                description={t.settings.gateway.sshHermesPathDesc}
-                title={t.settings.gateway.sshHermesPathTitle}
-              />
-            </>
-          )}
-
-          {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}
-
-          <div className="flex justify-end gap-2">
-            <Button disabled={saving} onClick={() => openEditor(null)} size="sm" variant="ghost">
-              {s.cancel}
-            </Button>
-            <Button disabled={saving || !editor.label.trim()} onClick={() => void save()} size="sm">
-              {saving ? s.saving : s.save}
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="mt-4 flex items-center gap-2">
-          <Button
-            onClick={() => {
-              triggerHaptic('selection')
-              openEditor(emptyEditor('remote'))
-            }}
-            size="sm"
-            variant="outline"
-          >
-            <Plus className="size-3.5" /> {s.addConnection}
-          </Button>
-          {bridge?.updateAll && (registry?.connections.length ?? 0) > 1 && (
-            <Button
-              disabled={updatingAll}
-              onClick={() => {
-                triggerHaptic('selection')
-                void updateAll()
-              }}
-              size="sm"
-              variant="outline"
-            >
-              {updatingAll ? (
-                <>
-                  <Loader2 className="animate-spin" /> {s.updateAllRunning}
-                </>
-              ) : (
-                <>
-                  <RefreshCw /> {s.updateAll}
-                </>
-              )}
-            </Button>
-          )}
-        </div>
-      )}
-
-      {/* Not gated on connections.length > 1: a registry that drifted down to
-          local-only is exactly the state where a user needs to see and change
-          the launch behavior, and hiding the control there left hand-editing
-          connections.json as the only recourse (#90174). */}
-      {!loading && registry && (
-        <div className="mt-6 border-t border-border/60 pt-4">
-          <ToggleRow
-            checked={registry.launchMode === 'last-used'}
-            description={s.launchModeDesc}
-            disabled={launchModeBusy || !bridge?.setLaunchMode}
-            label={s.launchModeTitle}
-            onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
-          />
-        </div>
-      )}
-
+  const dialogs = (
+    <>
       <ConfirmDialog
         confirmLabel={s.removeConnection}
         description={removeTarget ? s.removeConfirmDesc(removeTarget.label) : ''}
@@ -963,6 +696,147 @@ export function ConnectionsRegistrySection() {
         open={plainTextConfirm}
         title={t.settings.gateway.plainTextConfirmTitle}
       />
-    </div>
+    </>
+  )
+
+  if (!redesign) {
+    return (
+      <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
+        <SectionHeading icon={Globe} page title={s.title} />
+        <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
+        {/* Source selection lives in Sessions. Primary is the registry fallback,
+            not an immediate workspace switch. */}
+        <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {s.stagedNote}
+        </p>
+
+        {searchField}
+
+        <SettingsCard>{connectionRows}</SettingsCard>
+
+        {editor ? (
+          <div className="mt-4 space-y-3 rounded-lg border border-border/60 p-4">{editorFields}</div>
+        ) : (
+          <div className="mt-4 flex items-center gap-2">
+            <Button
+              onClick={() => {
+                triggerHaptic('selection')
+                openEditor(emptyEditor('remote'))
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Plus className="size-3.5" /> {s.addConnection}
+            </Button>
+            {bridge?.updateAll && (registry?.connections.length ?? 0) > 1 && (
+              <Button
+                disabled={updatingAll}
+                onClick={() => {
+                  triggerHaptic('selection')
+                  void updateAll()
+                }}
+                size="sm"
+                variant="outline"
+              >
+                {updatingAll ? (
+                  <>
+                    <Loader2 className="animate-spin" /> {s.updateAllRunning}
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw /> {s.updateAll}
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {launchPolicy}
+
+        {dialogs}
+      </div>
+    )
+  }
+
+  const updateAllRow = bridge.updateAll && (registry?.connections.length ?? 0) > 1 && (
+    <SettingsAddRow
+      disabled={updatingAll}
+      icon="refresh"
+      onClick={() => {
+        triggerHaptic('selection')
+        void updateAll()
+      }}
+    >
+      {updatingAll ? s.updateAllRunning : s.updateAll}
+    </SettingsAddRow>
+  )
+
+  // Redesign (856:5142): Saved connections as one list card that ends in "+ Add connection", the
+  // editor as its own card under it, and the launch policy plus page extras under Advanced.
+  return (
+    <>
+      <SettingsGroup description={pages.gateway.savedDesc} title={pages.gateway.saved}>
+        {searchField}
+        <SettingsCard className="gateway-connections-card">
+          {connectionRows}
+          {!editor && (
+            <SettingsAddRow
+              onClick={() => {
+                triggerHaptic('selection')
+                openEditor(emptyEditor('remote'))
+              }}
+            >
+              {s.addConnection}
+            </SettingsAddRow>
+          )}
+          {!editor && updateAllRow}
+        </SettingsCard>
+        {editor && <div className="global-settings-card gateway-connection-editor">{editorFields}</div>}
+      </SettingsGroup>
+      <SettingsDisclosure
+        count={advancedCount + 1}
+        description={pages.gateway.advancedDesc}
+        title={t.settings.sections.advanced}
+      >
+        {advanced}
+        {launchPolicy}
+      </SettingsDisclosure>
+      {dialogs}
+    </>
+  )
+}
+
+function ConnectionLaunchPolicy({
+  available,
+  busy,
+  loading,
+  onChange,
+  registry
+}: {
+  available: boolean
+  busy: boolean
+  loading: boolean
+  onChange: (mode: 'last-used' | 'primary') => Promise<void>
+  registry: DesktopConnectionsRegistry | null
+}) {
+  const { t } = useI18n()
+  const s = t.settings.connections
+
+  // A registry reduced to local-only still needs its launch policy editable (#90174).
+  if (loading || !registry) {
+    return null
+  }
+
+  return (
+    <SettingsCard classicClassName="mt-6 border-t border-border/60 pt-4">
+      <ToggleRow
+        checked={registry.launchMode === 'last-used'}
+        description={s.launchModeDesc}
+        disabled={busy || !available}
+        label={s.launchModeTitle}
+        onChange={enabled => void onChange(enabled ? 'last-used' : 'primary')}
+      />
+    </SettingsCard>
   )
 }

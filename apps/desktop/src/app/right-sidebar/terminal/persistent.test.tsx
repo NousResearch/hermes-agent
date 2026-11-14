@@ -144,6 +144,23 @@ describe('PersistentTerminal rect tracking', () => {
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
+  it('hides immediately on close even before the slot geometry catches up, keeping the shell mounted', () => {
+    installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+    $terminalTakeover.set(true)
+    mount.render(<Harness />)
+    const overlay = mount.container!.lastElementChild as HTMLElement
+    const workspace = mount.container!.querySelector('[data-testid="terminal-workspace"]')
+    expect(overlay.style.visibility).toBe('visible')
+    act(() => $terminalTakeover.set(false))
+    expect(overlay.style.visibility).toBe('hidden')
+    expect(overlay.style.pointerEvents).toBe('none')
+    expect(overlay.hasAttribute('inert')).toBe(true)
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
+    act(() => $terminalTakeover.set(true))
+    expect(overlay.style.visibility).toBe('visible')
+  })
+
   it('settles after rect changes instead of polling forever', () => {
     const raf = installRaf()
     let currentRect = rect(10, 20, 200, 100)

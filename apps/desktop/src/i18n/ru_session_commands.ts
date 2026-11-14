@@ -8,6 +8,8 @@ export const ruSessionCommands = {
   retryUnsupported: '/retry: нельзя повторить медиа или неизвестные части содержимого',
   busy: (command: string) =>
     `сеанс занят — Hermes ещё отвечает. Сначала остановите текущий ответ (кнопка «Стоп» или Ctrl+C в терминале), затем выполните /${command}.`,
+  titleSet: (title: string, queued: boolean) => `Название сеанса задано: ${title}${queued ? ' (применится после запуска сеанса)' : ''}`,
+  titleCleared: 'Название сеанса очищено.',
   busyCompressing: (command: string) =>
     `сеанс занят — выполняется /compress; выполните /${command}, когда он завершится.`,
   steerUsage: 'использование: /steer <запрос>',

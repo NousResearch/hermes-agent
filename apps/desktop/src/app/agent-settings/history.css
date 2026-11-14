@@ -1,0 +1,745 @@
+.agent-history {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  color: var(--ui-text-primary);
+  container: agent-history / inline-size;
+}
+.agent-history-heading {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 24px;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+/* Summary (877:5946): the counts, then the empty-chats clean-up link, 12px apart. */
+.agent-history-stats {
+  min-height: 1.4em;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  letter-spacing: var(--portal-tracking-ui);
+}
+.agent-history-stats > button {
+  color: var(--ui-text-secondary);
+  font-weight: 500;
+  letter-spacing: normal;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.agent-history-stats > button:hover {
+  color: var(--ui-text-primary);
+}
+.agent-history-stats > button:focus-visible {
+  border-radius: var(--portal-radius-chip);
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+.agent-history-toolbar,
+.agent-history-selection,
+.agent-history-filter-popover > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-history-toolbar {
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.agent-history-toolbar .agent-history-search {
+  width: 280px;
+  height: 36px;
+  margin-inline-end: auto;
+  padding: 0 12px;
+  border-radius: var(--portal-radius-control);
+}
+.agent-history-toolbar > button {
+  min-height: 36px;
+}
+.agent-history-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.agent-history-filter-chips > button {
+  min-height: 28px;
+  font-size: 12px;
+}
+.agent-history-filter-trigger[data-active] {
+  border-color: var(--portal-brand-ink);
+  background: var(--portal-raw-brand-10);
+}
+.agent-history-filter-count {
+  padding: 0 4px;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-brand-fill);
+  font-size: var(--portal-type-caption-size);
+}
+.agent-history-scope,
+.agent-history-help,
+.agent-history-metadata dt,
+.agent-history-message small,
+.agent-history-delete-list small {
+  font-size: var(--portal-type-meta-size);
+  color: var(--ui-text-tertiary);
+}
+.agent-history-scope {
+  min-height: 1lh;
+  margin-block: 20px;
+}
+/* Selection bar (878:7772): a 10% brand wash with the brand FILL as its hairline (not the lighter
+   focus ink), quiet text actions and the one outlined destructive action. */
+.agent-history-selection {
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-raw-brand-10);
+  /* A true half-pixel hairline (a 0.5px border paints a full device pixel at 1x). */
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-fill);
+  justify-content: flex-start;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.agent-history-selection > span {
+  margin-inline-end: auto;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+.agent-history-selection > button {
+  min-height: 36px;
+  gap: 8px;
+  padding-inline: 8px;
+  font-size: var(--portal-type-body-size);
+}
+.agent-history-selection > button[data-variant='destructiveOutline'] {
+  padding-inline: 12px 16px;
+}
+.agent-history-selection svg,
+.agent-history-selection .codicon {
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+}
+.agent-history-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.agent-history-body,
+.agent-history-list {
+  min-width: 0;
+  width: 100%;
+}
+.agent-history-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  background: var(--ui-bg-card);
+}
+.agent-history-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  text-align: start;
+}
+.agent-history-table th {
+  font-weight: 400;
+  text-align: start;
+}
+/* Column labels (877:5968): 10px uppercase, +0.6px tracking, one line. */
+.agent-history-table thead {
+  height: 36px;
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+  color: var(--ui-text-tertiary);
+}
+.agent-history-table thead th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-table th,
+.agent-history-table td {
+  padding: 12px 8px;
+}
+.agent-history-table thead th {
+  padding-block: 10px;
+}
+.agent-history-table th:first-child,
+.agent-history-table td:first-child {
+  width: 34px;
+  padding-inline-start: 16px;
+}
+.agent-history-table th:nth-child(2) {
+  width: 27%;
+}
+.agent-history-table th:last-child {
+  width: 44px;
+}
+.agent-history-table th:nth-child(5) {
+  width: 13%;
+}
+.agent-history-table th:nth-child(6) {
+  width: 9%;
+}
+.agent-history-table th:nth-child(7) {
+  width: 15%;
+}
+/* Messages, Cost and Last active read as figures: right-aligned like their labels (877:6062). */
+.agent-history-table :is(th, td):is(:nth-child(5), :nth-child(6), :nth-child(7)) {
+  text-align: end;
+}
+/* Group row (877:5991): 2% band, folder at .5, Medium name, quiet count. */
+.agent-history-group {
+  background: var(--ui-bg-card);
+  border-block: 1px solid var(--portal-stroke-divider);
+}
+.agent-history-group th {
+  padding-block: 10px;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+}
+.agent-history-group .codicon {
+  margin-inline-end: 8px;
+  color: var(--ui-text-tertiary);
+}
+.agent-history-group span {
+  margin-inline-start: 8px;
+  color: var(--ui-text-quaternary);
+  font-weight: 400;
+}
+.agent-history-row {
+  height: 48px;
+  border-bottom: 1px solid var(--portal-stroke-divider);
+}
+.agent-history-row td:not(:nth-child(2)) {
+  color: var(--ui-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-history-row:last-child {
+  border-bottom: 0;
+}
+.agent-history-row:hover {
+  background: var(--portal-surface-row-hover);
+}
+.agent-history-row[data-selected='true'] {
+  background: var(--portal-raw-brand-8);
+}
+.agent-history-row-main {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  /* Pin → title 8 and title → chip 8 (877:6056). */
+  gap: 8px;
+  text-align: start;
+  cursor: pointer;
+}
+.agent-history-row-main:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+  border-radius: var(--portal-radius-control);
+}
+/* Data row title (877:5998): 14 Medium, then its state chips on the same line. */
+.agent-history-row-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The pin (877:6057): the app's upright pushpin at 14px, 60% ink, never squeezed by a long title. */
+.agent-history-pin {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  stroke-width: 1.5;
+  color: var(--ui-text-secondary);
+}
+.agent-history-row-main small {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-raw-ink-8);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-chip-size);
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 0.875rem;
+  text-transform: uppercase;
+}
+/* RUNNING wears the DEFAULT chip's brand treatment (877:4260). */
+.agent-history-row-main small[data-tone='running'] {
+  background: var(--portal-surface-brand-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+.agent-history-footer {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+/* An option (878:9906): 14 Medium label, 6px to its control. */
+.agent-history-field {
+  display: grid;
+  min-width: 0;
+}
+.agent-history-field legend {
+  margin-bottom: 6px;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+.agent-history-field [data-slot='segmented-control'] {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.agent-history-filter-popover {
+  display: grid;
+  width: 280px;
+  padding: 0;
+}
+/* Filter menu (878:4140): hairline-separated sections, 10px mono caps legends, 34px option rows. */
+.agent-history-filter-options {
+  display: grid;
+  padding: 8px 12px;
+}
+.agent-history-filter-options + .agent-history-filter-options {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+.agent-history-filter-options legend {
+  float: left;
+  width: 100%;
+  padding-block: 6px 4px;
+  color: var(--ui-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+.agent-history-filter-options .agent-history-checkbox {
+  min-height: 34px;
+  gap: 10px;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-body-size);
+  cursor: pointer;
+}
+.agent-history-filter-options input[type='radio'] {
+  display: grid;
+  width: 14px;
+  height: 14px;
+  margin: 1px;
+  place-content: center;
+  border: 1px solid var(--ui-stroke-primary);
+  border-radius: 50%;
+  appearance: none;
+}
+.agent-history-filter-options input[type='radio']::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--portal-on-brand);
+  content: '';
+  transform: scale(0);
+}
+.agent-history-filter-options input[type='radio']:checked {
+  border-color: var(--portal-brand-fill);
+  background: var(--portal-brand-fill);
+}
+.agent-history-filter-options input[type='radio']:checked::before {
+  transform: scale(1);
+}
+.agent-history-filter-options input[type='radio']:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+.agent-history-filter-popover > footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+/* The page segmented control (856:3444) in a body-portalled dialog: field fill + 1px field stroke,
+   r3, 3px inset; the selection is the same 25% brand wash with its 0.5px brand hairline. */
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] {
+  min-height: 36px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-field-stroke);
+}
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button {
+  min-height: 28px;
+  padding-inline: 12px;
+  border-radius: var(--portal-radius-chip);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+:root[data-shell='portal']
+  .agent-history-cleanup-fields
+  [data-slot='segmented-control']
+  > button:hover:not([aria-pressed='true']) {
+  background-color: var(--portal-control-fill);
+  color: var(--ui-text-primary);
+}
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button[aria-pressed='true'] {
+  background-color: var(--portal-surface-brand-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-fill);
+  color: var(--ui-text-primary);
+}
+:root[data-shell='portal']:not(.dark)
+  .agent-history-cleanup-fields
+  [data-slot='segmented-control']
+  > button[aria-pressed='true'] {
+  background-color: var(--portal-surface-brand-selected);
+}
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+.agent-history-cleanup-fields {
+  display: grid;
+  gap: 14px;
+}
+.agent-history-cleanup-fields:disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.agent-history-archive-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+/* Live dry run (878:9944): hairline, "N items will be deleted" 15 Medium with the quiet note at
+   the end, then the item card. */
+.agent-history-cleanup-preview {
+  display: grid;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--portal-raw-ink-5);
+}
+.agent-history-cleanup-preview > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-history-cleanup-preview h3 {
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-section-size);
+  font-weight: 500;
+  line-height: 1.1;
+}
+.agent-history-cleanup-preview > header > span {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+}
+.agent-history-cleanup-preview[aria-busy='true'] .agent-history-delete-list {
+  opacity: 0.6;
+}
+.agent-history-cleanup-preview .agent-history-delete-list {
+  /* Four items (878:9949) before the card scrolls, so the dialog fits a 700px window. */
+  max-height: 233px;
+}
+/* Delete 480 wide (878:8018), clean-up 560 (878:9901). */
+.agent-history-dialog[data-slot='dialog-content'] {
+  max-width: 480px;
+}
+.agent-history-cleanup-dialog[data-slot='dialog-content'] {
+  max-width: 560px;
+}
+:root[data-shell='portal'] .agent-history-preview[data-slot='dialog-content'] {
+  top: var(--titlebar-height);
+  bottom: 0;
+  inset-inline-end: 0;
+  inset-inline-start: auto;
+  width: min(460px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - var(--titlebar-height));
+  transform: none;
+  border-radius: 0;
+  border-width: 0 0 0 1px;
+}
+/* Preview side panel (1038:7792): docked at the stage's trailing edge under the band. One column at
+   a 24px inset, 24px between blocks; the actions follow the messages and the whole panel scrolls. */
+.agent-history-preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  height: 100%;
+  padding: 24px;
+}
+/* The scrim dims the stage only (1038:7791 starts at the stage's leading edge); the page's list
+   panel stays readable beside it. */
+:root[data-shell='portal'] .agent-history-preview-scrim {
+  inset-inline-start: var(--workspace-left, 0px);
+  top: var(--titlebar-band-height, 0px);
+}
+.agent-history-preview-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.agent-history-preview-header > [data-slot='dialog-header'] {
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+}
+/* Above portal-floating's dialog description size: this one is the panel's 10px eyebrow. */
+:root[data-shell='portal'] .agent-history-preview-header [data-slot='dialog-description'] {
+  order: -1;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+.agent-history-preview-meta {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-preview-header > button {
+  flex-shrink: 0;
+}
+/* Stats (878:7028): three equal cards, 10px uppercase label over a 15 Medium value. */
+.agent-history-metadata {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 8px;
+}
+.agent-history-metadata > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+.agent-history-metadata dt {
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+.agent-history-metadata dd {
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-section-size);
+  font-weight: 500;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Latest messages (878:7038): the user's turns boxed, the agent's bare, 12px apart. */
+.agent-history-messages {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+.agent-history-messages > h3 {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+.agent-history-message {
+  display: grid;
+  gap: 4px;
+  padding-block: 10px;
+}
+.agent-history-message-user {
+  padding-inline: 14px;
+  border: 1px solid var(--portal-raw-ink-10);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-raw-ink-4);
+}
+.agent-history-message p {
+  color: color-mix(in srgb, var(--ui-text-primary) 87%, transparent);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-history-message small {
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+}
+/* Actions (1038:7827): 44px buttons, 12 apart, Delete… pushed to the far end. */
+.agent-history-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.agent-history-preview-actions > button:not(:first-child) {
+  padding-inline: 12px 16px;
+}
+.agent-history-preview-actions > button:last-child {
+  margin-inline-start: auto;
+}
+.agent-history-preview-actions .codicon {
+  font-size: 16px;
+}
+/* Item card (878:8022): the overview card fill/stroke, r4; 57px items, 1px 3% dividers. */
+.agent-history-delete-list {
+  max-height: 35vh;
+  overflow: auto;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+.agent-history-delete-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--portal-stroke-divider);
+}
+.agent-history-delete-list li:last-child {
+  border-bottom: 0;
+}
+.agent-history-delete-list li > span {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+  line-height: 1.4;
+}
+.agent-history-delete-list li > span > span {
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-delete-list small {
+  overflow: hidden;
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-delete-list li[data-skipped] > span > span {
+  color: var(--ui-text-tertiary);
+}
+/* "Running · skipped" (878:9969): the pending orange at 14% under its own ink. */
+.agent-history-delete-list em {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: var(--portal-radius-chip);
+  background: color-mix(in srgb, var(--portal-status-pending) 14%, transparent);
+  color: var(--portal-status-pending);
+  font-size: var(--portal-type-chip-size);
+  font-style: normal;
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 0.875rem;
+  text-transform: uppercase;
+}
+/* Skipped callout (878:8032): pending orange 8% fill, 40% stroke, r4, warn glyph then 13 Medium. */
+.agent-history-skipped {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--portal-status-pending) 40%, transparent);
+  border-radius: var(--portal-radius-card);
+  background: color-mix(in srgb, var(--portal-status-pending) 8%, transparent);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+.agent-history-skipped > svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--portal-status-pending);
+}
+.agent-history-error,
+.agent-history-outcome {
+  margin-block: 12px;
+  padding: 12px;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.agent-history-error {
+  color: var(--dt-destructive);
+}
+.agent-history-error p + p {
+  margin-block: 8px;
+}
+.agent-history-outcome ul {
+  margin-top: 8px;
+}
+
+@container agent-history (max-width: 700px) {
+  .agent-history-project,
+  .agent-history-cost {
+    display: none;
+  }
+  .agent-history-table th:nth-child(2) {
+    width: 34%;
+  }
+  .agent-history-table th:nth-child(7) {
+    width: 18%;
+  }
+}
+@media (max-width: 600px) {
+  :root[data-shell='portal'] .agent-history-preview[data-slot='dialog-content'] {
+    width: 100%;
+  }
+}
+
+@container agent-history (max-width: 480px) {
+  .agent-history-table {
+    min-width: 440px;
+  }
+}
+
+/* Row ⋯ menu (878:6044): 220 wide. */
+.agent-history-row-menu {
+  min-width: 220px;
+}
+
+/* Loading bars sit on the text's line box (9px tall, centred), so a placeholder row is exactly as
+   tall as the row that replaces it. */
+.agent-history-skeleton {
+  display: inline-block;
+  max-width: 100%;
+  height: 9px;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-raw-ink-8);
+  vertical-align: middle;
+}

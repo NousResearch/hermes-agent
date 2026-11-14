@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 
 import {
@@ -31,6 +32,7 @@ import {
   trackArea,
   trackFlow
 } from './desktop-metrics'
+import { $shellChoice, setPortalPreferred } from './shell-variant'
 
 type Call = [string, Record<string, unknown>]
 
@@ -73,6 +75,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(DAY1)
   window.localStorage.clear()
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
   resetDesktopMetricsForTests()
   $workspaceMode.set('sessions')
   bridge = {
@@ -440,15 +443,38 @@ describe('dislike signals', () => {
 })
 
 describe('per profile, per window', () => {
+  it('does not attribute an in-flight renderer crash claim to a newly consenting owner', async () => {
+    const claim = Promise.withResolvers<{ reasons: string[] }>()
+    bridge.takeRendererCrashes.mockReturnValueOnce(claim.promise)
+    const a = requester()
+    const b = requester()
+
+    $apiRequestScope.set({ connectionId: 'local', profile: 'alpha' })
+    bindDesktopMetrics(a.request, 'local|alpha')
+    setDesktopMetricsGate('on')
+    $apiRequestScope.set({ connectionId: 'local', profile: 'beta' })
+    bindDesktopMetrics(b.request, 'local|beta')
+    setDesktopMetricsGate('on')
+    claim.resolve({ reasons: ['oom'] })
+    await claim.promise
+    await Promise.resolve()
+
+    expect(a.calls).toEqual([])
+    expect(b.calls).toEqual([])
+    expect(bridge.ackRendererCrashes).toHaveBeenCalledWith(false)
+  })
+
   it('a profile switch forgets the gate: nothing of A is kept or sent under B, and A keeps its own day', async () => {
     const a = requester()
     const b = requester()
 
+    $apiRequestScope.set({ connectionId: 'local', profile: 'alpha' })
     bindDesktopMetrics(a.request, 'local|alpha')
     setDesktopMetricsGate('on')
     recordFeatureUse('terminal_pane')
     recordAction('view.toggleSidebar', 'shortcut')
 
+    $apiRequestScope.set({ connectionId: 'local', profile: 'beta' })
     bindDesktopMetrics(b.request, 'local|beta') // B's switch not read yet
     vi.setSystemTime(DAY2)
     tickDesktopMetrics()
@@ -461,6 +487,7 @@ describe('per profile, per window', () => {
     await flush()
     expect(b.calls).toEqual([['shared_metrics.desktop_feature_use', { area: 'terminal_pane' }]])
 
+    $apiRequestScope.set({ connectionId: 'local', profile: 'alpha' })
     bindDesktopMetrics(a.request, 'local|alpha')
     setDesktopMetricsGate('on')
     await flush()
@@ -472,12 +499,12 @@ describe('per profile, per window', () => {
   it('two windows of one profile add to one day instead of overwriting each other', async () => {
     const w1 = await import('./desktop-metrics')
 
-    w1.bindDesktopMetrics(null, 'local|default')
+    w1.bindDesktopMetrics(null, '|default')
     w1.setDesktopMetricsGate('on')
     vi.resetModules()
     const w2 = await import('./desktop-metrics')
 
-    w2.bindDesktopMetrics(null, 'local|default')
+    w2.bindDesktopMetrics(null, '|default')
     w2.setDesktopMetricsGate('on')
 
     w1.recordAction('composer.send', 'shortcut')
@@ -538,4 +565,32 @@ describe('per profile, per window', () => {
     await flush()
     expect(later.calls).toEqual([])
   })
+})
+
+it('records explicit shell transitions once without an opt-in offer', async () => {
+  const { calls, request } = requester()
+  setDesktopMetricsGate('on')
+  bindDesktopMetrics(request)
+  $shellChoice.set(null)
+  setPortalPreferred(false)
+  setPortalPreferred(false)
+  setPortalPreferred(true)
+  setPortalPreferred(true)
+  vi.setSystemTime(DAY2)
+  tickDesktopMetrics()
+  await flush()
+  const report = calls.find(([method]) => method === 'shared_metrics.desktop_daily')?.[1]
+  expect(report?.actions).toEqual(
+    expect.arrayContaining([
+
+      { action: 'sidebar.simplified.disable', count: 1, via: 'click' },
+      { action: 'sidebar.simplified.enable_settings', count: 1, via: 'click' }
+    ])
+  )
+  expect(
+    calls.filter(
+      ([method, params]) => method === 'shared_metrics.desktop_dislike' && params.signal === 'feature_disabled'
+    )
+  ).toEqual([['shared_metrics.desktop_dislike', { signal: 'feature_disabled', target: 'simplified_sidebar' }]])
+  $shellChoice.set(null)
 })

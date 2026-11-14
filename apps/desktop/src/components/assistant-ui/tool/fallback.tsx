@@ -1048,6 +1048,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
         aria-hidden={collapsed || undefined}
         className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
         data-slot="tool-block"
+        data-tool-count={count}
         data-tool-group=""
         inert={collapsed}
         initial={currentTurn && approvalActivity && messageRunning && !reduced ? { height: 0 } : false}

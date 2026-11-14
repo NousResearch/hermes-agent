@@ -3,6 +3,9 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+@import './app/chat/stage.css';
+/* The redesign's `ds-` utilities (role tokens; no values of their own). */
+@import './app/redesign/tokens/tailwind.css';
 
 /* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
    unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
@@ -499,6 +502,7 @@
        only ever applied to the windows that don't mount the backdrop. Pinned
        to the value the app actually renders at. */
     --radius-scalar: 0.2;
+    --global-nav-width: 2.75rem;
 
     /* Space under last message vs overlay composer — driven by the measured composer DOCK height (see
        composer/index.tsx), which covers the micro-action strip, the status stack, the composer, and the

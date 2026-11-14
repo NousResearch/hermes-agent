@@ -52,8 +52,7 @@ def _present(beat: str) -> dict | None:
 
 
 def _direct_event(beat: str, args: Mapping[str, Any]) -> flow.Event | None:
-    """An event the call carries in itself (no card): done, a value given in words, or a skip. Only the
-    Skip setup button (onboarding.skip) ends onboarding early; the model never decides the user quit."""
+    """Interpret an in-flight legacy card's answer; the model never decides the user quit."""
     if beat == "done":
         return flow.Done()
     if args.get("skip"):
@@ -146,6 +145,10 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
     record = records.load(db, session_id)
     if record is None:
         return tool_error("Onboarding is not running in this chat.")
+    if record.get("sessionless"):
+        if end_turn is not None:
+            end_turn()
+        return tool_error("Setup now runs outside conversations. This conversation and its history are unchanged.")
     if beat != "next" and (event := _direct_event(beat, args)) is not None:
         return _result(records.advance(db, session_id, event))
     if beat == "next":
@@ -165,8 +168,12 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
     reply = callback({"beat": beat, "question": question, "card": _card(beat, shown, args),
                       "tool_call_id": tool_call_id or None})
     after = records.load(db, session_id)
+    if after is not None and after.get("sessionless"):
+        if end_turn is not None:
+            end_turn()
+        return tool_error("Setup moved outside this conversation; this card is retired.")
     if after is not None and after["phase"] == flow.PHASE_SKIPPED:
-        # Skip setup closed the card (onboarding.skip already wrote the record).
+        # A legacy skip closed the card after its record was written.
         return _result(flow.Step(after, {"skipped_all": True}, "skip_all"))
     event = _reply_event(beat, reply)
     result = _result(records.advance(db, session_id, event), beat)

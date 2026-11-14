@@ -1,4 +1,6 @@
-import type { CronJob } from '@/types/hermes'
+import { translateNow } from '@/i18n'
+import { shellCopy } from '@/lib/shell-copy'
+import type { CronJob } from '@/types/cron'
 
 // Status-pip color per cron job state. Single source for the sidebar section and
 // the Cron page so the two never drift. (Animation/size live at the call site.)
@@ -36,8 +38,33 @@ export function jobTitle(job: CronJob): string {
   const pick = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
   return (
-    pick(job.name) || truncateText(pick(job.prompt), 60) || truncateText(pick(job.script), 60) || job.id || 'Cron job'
+    pick(job.name) ||
+    truncateText(pick(job.prompt), 60) ||
+    truncateText(pick(job.script), 60) ||
+    job.id ||
+    shellCopy({ classic: 'Cron job', redesign: translateNow('cron.count', 1) })
   )
+}
+
+type OutcomeFields = Pick<
+  CronJob,
+  'last_delivery_error' | 'last_error' | 'last_status' | 'latest_execution'
+>
+
+/** The newest attempt failed: the ledger's verdict when it has one, else the legacy last_status. */
+export function jobLastRunFailed(job: OutcomeFields): boolean {
+  const execution = job.latest_execution
+
+  return execution ? execution.status === 'failed' : job.last_status === 'error' || Boolean(job.last_error)
+}
+
+/** The newest attempt ran but its results did not reach their destination. */
+export function jobDeliveryFailed(job: OutcomeFields): boolean {
+  const outcome = job.latest_execution?.delivery_outcome
+
+  return outcome == null
+    ? job.last_status === 'delivery_failed' || Boolean(job.last_delivery_error)
+    : outcome === 'failed'
 }
 
 // Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.

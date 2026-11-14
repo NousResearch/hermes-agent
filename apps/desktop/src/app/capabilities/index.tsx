@@ -1,33 +1,48 @@
 import './ui/page.css'
 
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { $gateway } from '@/store/gateway'
+import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $capabilitiesManagedPerAgent } from '@/store/shell-policy'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PanelEmpty } from '../overlays/panel'
-import { PageSearchShell } from '../page-search-shell'
+import { PageSearchShell, type PageShellTab } from '../page-search-shell'
+import { SETTINGS_ROUTE } from '../routes'
+import { useSettingsOwner } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { type CapabilityCount, useConnectorsCount, usePluginsCount } from './capability-counts'
 import { syncCatalogArcs } from './catalog/catalog-arc'
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
+import { CatalogSkeleton } from './catalog/catalog-skeleton'
 import { ConnectorsTab } from './connectors/connectors-tab'
+import { useCapabilitiesPageDescription } from './page-copy'
 import { PluginsTab } from './plugins/plugins-tab'
-import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
+import { type CapabilityScope, CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SKILLS_QUERY_KEY, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
+import { AgentToolsets } from './toolsets/agent-toolsets'
 import { refreshToolCalls } from './toolsets/tool-calls'
 import { TOOLSETS_QUERY_KEY, toolsetSearchTerms, useToolsetsQuery, visibleToolsetCount } from './toolsets/toolsets-data'
 import { ToolsetsTab } from './toolsets/toolsets-tab'
+import { AgentCapabilitySkeleton } from './ui/agent-capability'
+import { CapabilitySearch } from './ui/capability-search'
 
 // Skills Hub browsing lives inside the Skills tab. Legacy `?tab=hub`
 // links fall back to 'skills' via useRouteEnumParam.
@@ -41,6 +56,8 @@ interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
    *  state lives in local React state instead of the route's `?tab=` param,
    *  so an embedding dialog never fights the page router. */
   embedded?: boolean
+  /** Agent settings owns the navigation when a single capability is embedded. */
+  fixedMode?: CapabilityMode
   /** Pin the WHOLE view to one profile: the scope selector is hidden and
    *  every tab reads/writes THAT profile. This is the plugin door — Bot Mode
    *  renders the real Capabilities surface pinned to a bot. */
@@ -62,25 +79,38 @@ export function CapabilitiesView({
   embedded = false,
   fixedConnection,
   fixedProfile,
+  fixedMode,
   setStatusbarItemGroup: _setStatusbarItemGroup,
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
+  const presentation = capabilitiesPresentation(usePortalShell(), embedded, Boolean(fixedProfile))
+  const pageDescription = useCapabilitiesPageDescription()
+  const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
   const localTab = useState<CapabilityMode>('skills')
-  const [mode, setMode] = embedded ? localTab : routeTab
+  const [selectedMode, setMode] = embedded ? localTab : routeTab
+  const mode = fixedMode ?? selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
+  // `reload.mcp` reloads the window's chat, which is the ACTIVE agent's: an agent page showing
+  // another agent leaves its MCP edits to that agent's next session instead.
+  const owner = useSettingsOwner()
+  const activeProfile = useStore($activeGatewayProfile)
+  const reloadsOwnerChat = !owner || normalizeProfileKey(owner.profile) === normalizeProfileKey(activeProfile)
 
   const [query, setQuery] = useState('')
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
 
+  const { openAgentSettings } = useCapabilityAgentSettings(scope, mode)
+
   // The two installed lists the tab pills count. They are fetched here, as a
   // pair, because the counts stay live for the tab the user is NOT on.
   const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
+  const tabs = useCapabilityTabs({ pageFrame: presentation.pageFrame, scope, skills, toolsets })
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
@@ -112,45 +142,45 @@ export function CapabilitiesView({
   const gated = mode === 'toolsets'
   const pending = gated && !(skills && toolsets)
 
-  const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
-    <PanelEmpty
-      action={
-        <Button onClick={() => void refreshCapabilities()} size="sm">
-          {t.skills.refresh}
-        </Button>
-      }
-      description={skillsError instanceof Error ? skillsError.message : undefined}
-      icon="error"
-      title={t.skills.skillsLoadFailed}
-    />
-  ) : (
-    <PageLoader label={t.skills.loading} />
-  )
-
   const tabContent = {
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
     // ACTIVE gateway's socket — for a scope pinned to a different backend that
     // (config edits still apply on that backend's next session).
     connectors: () => (
       <ConnectorsTab
-        gateway={scope.crossBackend ? null : gateway}
+        agentControls={agentControls}
+        agentLayout={presentation.agentLayout}
+        gateway={scope.crossBackend || !reloadsOwnerChat ? null : gateway}
         key={`connectors-${scope.key}`}
         profile={scope.profile}
       />
     ),
     // Agent plugins for the scoped profile and app-level desktop plugins.
-    plugins: () => (
-      <PluginsTab
-        key={`plugins-${scope.key}`}
-        onQueryChange={setQuery}
-        profile={scope.profile}
-        query={query}
-        scopeLabel={scope.label}
-        scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-      />
-    ),
+    plugins: () =>
+      scope.crossBackend ? (
+        <div className="grid justify-items-start gap-3 p-5">
+          <p>{t.skills.remotePluginHint}</p>
+          <Button onClick={openAgentSettings}>{t.skills.openAgentSettings}</Button>
+        </div>
+      ) : (
+        <PluginsTab
+          agentControls={agentControls}
+          agentLayout={presentation.agentLayout}
+          key={`plugins-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+          scopeLabel={scope.label}
+          // The inventory's header owns the scope; an agent's own Plugins column names it.
+          scopeSelector={
+            agentControls && scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined
+          }
+        />
+      ),
     skills: () => (
       <SkillsTab
+        agentControls={agentControls}
+        agentLayout={presentation.agentLayout}
         installedError={skillsError}
         installedPending={!skills || skillsFailed}
         key={`skills-${scope.key}`}
@@ -161,32 +191,140 @@ export function CapabilitiesView({
         skills={skills ?? []}
       />
     ),
-    toolsets: () => (
-      <ToolsetsTab hints={toolsetHints} key={`toolsets-${scope.key}`} onQueryChange={setQuery} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
-    )
+    toolsets: () =>
+      presentation.agentLayout ? (
+        <AgentToolsets
+          key={`toolsets-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+          toolsets={toolsets ?? []}
+        />
+      ) : (
+        <ToolsetsTab
+          hints={toolsetHints}
+          key={`toolsets-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+          toolsets={toolsets ?? []}
+        />
+      )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
   return (
     <PageSearchShell
       {...props}
       activeTab={mode}
+      data-capabilities-v2={presentation.pageFrame || undefined}
       onTabChange={id => setMode(id as CapabilityMode)}
+      pageDescription={presentation.pageTitle ? pageDescription : undefined}
+      pageTitle={presentation.pageTitle ? t.sidebar.nav.capabilities : undefined}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
-      // The profile picker shares the tab row. Plugins scopes only its Agent
-      // half, so its picker lives in that column instead.
-      searchTrailingAction={mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
-      tabs={[
-        { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
-        { id: 'plugins', label: t.skills.tabPlugins },
-        { id: 'connectors', label: t.connectorsPage.title },
-        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
-      ]}
+      searchTrailingAction={
+        presentation.headerScope
+          ? mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />
+          : !agentControls && <CapabilityInventoryScope onOpenAgentSettings={openAgentSettings} scope={scope} />
+      }
+      tabs={fixedMode ? [] : tabs}
       tabsAlign="start"
     >
-      <div className="flex h-full flex-col">{loadGate ?? tabContent[mode]()}</div>
+      {/* An agent editor scrolls as one page, so its capability list sizes to content. */}
+      <div className={presentation.agentLayout ? 'grid' : 'flex h-full flex-col'}>
+        <div className={presentation.agentLayout ? 'grid' : 'flex min-h-0 flex-1 flex-col'}>
+          <CapabilityLoadGate
+            error={skillsError}
+            failed={skillsFailed || toolsetsFailed}
+            onRefresh={refreshCapabilities}
+            pending={pending}
+            skeleton={
+              presentation.agentLayout || presentation.pageFrame ? (
+                <ToolsetsSkeleton agentLayout={presentation.agentLayout} onQueryChange={setQuery} query={query} />
+              ) : undefined
+            }
+          >
+            {tabContent[mode]()}
+          </CapabilityLoadGate>
+        </div>
+      </div>
     </PageSearchShell>
   )
+}
+
+interface CapabilityTabsInput {
+  pageFrame: boolean
+  scope: CapabilityScope
+  skills?: unknown[]
+  toolsets?: Parameters<typeof visibleToolsetCount>[0]
+}
+
+/** The four tabs with their counts: `null` reserves a count still loading. Plugins and Connectors
+ *  count only in the redesign, whose tabs carry a count each (919:9095). */
+function useCapabilityTabs({ pageFrame, scope, skills, toolsets }: CapabilityTabsInput): PageShellTab[] {
+  const { t } = useI18n()
+  const plugins = usePluginsCount(scope.profile)
+  const connectors = useConnectorsCount(scope.profile)
+  // A count the agent's backend could not answer drops its slot rather than reserving it forever.
+  const redesignCount = (count: CapabilityCount) => (pageFrame && !count.failed ? (count.value ?? null) : undefined)
+
+  return [
+    { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
+    { id: 'plugins', label: t.skills.tabPlugins, meta: redesignCount(plugins) },
+    { id: 'connectors', label: t.connectorsPage.title, meta: redesignCount(connectors) },
+    { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
+  ]
+}
+
+interface ToolsetsSkeletonProps {
+  agentLayout: boolean
+  query: string
+  onQueryChange: (query: string) => void
+}
+
+/** The Tools tab's first paint while its lists load (redesign): an agent's sections, or the library's
+ *  live search over its shelves. */
+function ToolsetsSkeleton({ agentLayout, query, onQueryChange }: ToolsetsSkeletonProps) {
+  const { t } = useI18n()
+
+  if (agentLayout) {
+    return <AgentCapabilitySkeleton />
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="catalog-search-header shrink-0">
+        <CapabilitySearch
+          onChange={onQueryChange}
+          placeholder={t.skills.searchToolsets}
+          scope={t.skills.tabToolsets}
+          value={query}
+        />
+      </header>
+      <CatalogSkeleton />
+    </div>
+  )
+}
+
+interface CapabilitiesPresentation {
+  /** The redesigned page frame (catalog hero art, v2 card layout). */
+  pageFrame: boolean
+  /** A routed page with its own H1 rather than a surface embedded in another page. */
+  pageTitle: boolean
+  /** One agent's enablement editor (agent settings, Bot Mode) rather than the inventory. */
+  agentLayout: boolean
+  /** Classic keeps the scope selector beside the header search. */
+  headerScope: boolean
+}
+
+/** One place derives how this view presents itself from the shell, embedding and pinning. */
+function capabilitiesPresentation(redesign: boolean, embedded: boolean, pinned: boolean): CapabilitiesPresentation {
+  return {
+    pageFrame: redesign && !embedded,
+    pageTitle: !embedded && !(redesign && pinned),
+    agentLayout: redesign && pinned,
+    headerScope: !redesign
+  }
 }
 
 // Feature-detection flag for plugins (Bot Mode): TRUE means this build's
@@ -196,3 +334,85 @@ export function CapabilitiesView({
 // which is exactly the wrong-machine bug the prop exists to prevent. A static
 // property is probe-able without rendering.
 CapabilitiesView.supportsFixedConnection = true as const
+
+interface CapabilityLoadGateProps {
+  /** The redesign's first paint while the lists load: the tab's frame, not a spinner. */
+  skeleton?: React.ReactNode
+  pending: boolean
+  failed: boolean
+  error: unknown
+  onRefresh: () => Promise<void>
+  children: React.ReactNode
+}
+
+function CapabilityLoadGate({ pending, failed, error, onRefresh, skeleton, children }: CapabilityLoadGateProps) {
+  const { t } = useI18n()
+
+  if (!pending) {
+    return children
+  }
+
+  if (!failed) {
+    return skeleton ?? <PageLoader label={t.skills.loading} />
+  }
+
+  return (
+    <PanelEmpty
+      action={
+        <Button onClick={() => void onRefresh()} size="sm">
+          {t.skills.refresh}
+        </Button>
+      }
+      description={error instanceof Error ? error.message : undefined}
+      icon="error"
+      title={t.skills.skillsLoadFailed}
+    />
+  )
+}
+
+/** Keep the inventory's hand-off pinned to the same owner as its queries. */
+function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode) {
+  const navigate = useNavigate()
+
+  const ownerProfile =
+    typeof scope.profile === 'object' ? (scope.profile?.profile ?? 'default') : (scope.profile ?? 'default')
+
+  const ownerConnection =
+    (typeof scope.profile === 'object' ? scope.profile?.connectionId : undefined) ??
+    activeGatewayConnectionId() ??
+    'local'
+
+  const ownerQuery = new URLSearchParams({ agentProfile: ownerProfile, panel: 'capabilities', tab: mode })
+
+  if (ownerConnection) {
+    ownerQuery.set('connection', ownerConnection)
+  }
+
+  return {
+    openAgentSettings: () => navigate(`${SETTINGS_ROUTE}?${ownerQuery}`)
+  }
+}
+
+interface CapabilityInventoryScopeProps {
+  scope: CapabilityScope
+  onOpenAgentSettings: () => void
+}
+
+/** The inventory's owner, in the header's trailing slot where 919:9095 puts its one quiet link: which
+ *  agent and machine the page reads, and the hand-off to that agent's settings, where switches live.
+ *  The header owns the slot's height, so the select resolving its options never moves the page. */
+function CapabilityInventoryScope({ scope, onOpenAgentSettings }: CapabilityInventoryScopeProps) {
+  const { t } = useI18n()
+
+  return (
+    <div className="capability-header-scope" data-slot="capability-scope">
+      <CapabilityScopeSelector quiet scope={scope} />
+      <Tip label={t.skills.inventoryScopeHint}>
+        <Button className="capability-header-link" onClick={onOpenAgentSettings} size="inline" variant="text">
+          {t.skills.openAgentSettings}
+          <Codicon aria-hidden name="arrow-right" size="0.75rem" />
+        </Button>
+      </Tip>
+    </div>
+  )
+}

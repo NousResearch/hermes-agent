@@ -328,6 +328,9 @@ importers:
       pele:
         specifier: 1.13.0
         version: 1.13.0
+      pixelarticons:
+        specifier: 2.4.2
+        version: 2.4.2(react@19.3.0)
       proxy-from-env:
         specifier: 2.1.0
         version: 2.1.0
@@ -5298,6 +5301,12 @@ packages:
   picomatch@4.0.7:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
+
+  pixelarticons@2.4.2:
+    resolution: {integrity: sha512-BZKSU5ckLuioZCzES4fEmdQfnI8XEiQlHljdIVk+N6+KH7vTBQJNtMs+V0LQF7nC7cZbKT0qBXFOsT35sl8uhg==}
+    hasBin: true
+    peerDependencies:
+      react: '>=16'
 
   pkijs@3.4.0:
     resolution: {integrity: sha512-emEcLuomt2j03vxD54giVB4SxTjnsqkU692xZOZXHDVoYyypEm+b3jpiTcc+Cf+myooc+/Ly0z01jqeNHVgJGw==}
@@ -11628,6 +11637,10 @@ snapshots:
   picocolors@1.1.1: {}
 
   picomatch@4.0.7: {}
+
+  pixelarticons@2.4.2(react@19.3.0):
+    dependencies:
+      react: 19.3.0
 
   pkijs@3.4.0:
     dependencies:

@@ -1,0 +1,90 @@
+/* Keep list/detail controls usable when window chrome and the page header take most of the height. */
+@media (max-height: 600px) {
+  [data-page-surface]:has(.master-detail) {
+    overflow-y: auto;
+  }
+
+  [data-page-surface] > .page-search-body:has(.master-detail) {
+    min-height: 24rem;
+    flex-shrink: 0;
+  }
+}
+
+/* Redesigned page frame (Capabilities 919:9281): the shared page column (portal-pages.css) around the
+   one page header (redesign/page-header.tsx). Only the redesign renders these classes. */
+/* An empty page's card sits at the top of the page column (877:3596), not floating mid-canvas. */
+.page-search-empty {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding-inline: var(--page-content-inset);
+}
+
+/* A master-detail page (Messaging) keeps its list and detail in the same column as its heading. */
+.page-redesigned > .page-search-body:has(.master-detail) {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding-inline: var(--page-content-inset);
+}
+
+.page-header {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding: calc(var(--titlebar-height) + var(--portal-page-top)) var(--page-content-inset) 0;
+}
+
+/* A header search (Messaging) keeps its field width at the H1 row's end. */
+.page-header-search {
+  width: 24rem;
+  max-width: 100%;
+}
+
+/* The page column sits at Figma's left inset from the stage edge (919:9281: x 90) rather than
+   centred, so Capabilities and Library land on the same line as every other page; it narrows at
+   the right on a smaller window and keeps its width on a wider one. (A flex item cannot use an
+   auto end margin here: it would shrink to its content.) Only the redesign sets the
+   inset tokens, so classic keeps its centred column. */
+:root[data-shell='portal']
+  [data-page-surface].page-redesigned
+  :is(
+    .page-header,
+    .page-search-empty,
+    .page-search-column,
+    .catalog-search-header,
+    .catalog-filter-bar,
+    .catalog-filtered-results,
+    .catalog-discovery,
+    .capabilities-page
+  ) {
+  --page-column-start: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
+
+  width: calc(100% - var(--page-column-start));
+  margin-inline: var(--page-column-start) 0;
+}
+
+:root[data-shell='portal'] [data-page-surface].page-redesigned > .page-search-body:has(.master-detail) {
+  --page-column-start: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
+
+  width: calc(100% - var(--page-column-start));
+  margin-inline: var(--page-column-start) 0;
+}
+
+/* A header action (Library's refresh): the band's 30px chrome button. */
+.portal-page-header-actions .page-header-chrome-button {
+  width: var(--portal-chrome-button-size);
+  height: var(--portal-chrome-button-size);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-chrome);
+}
+
+.portal-page-header-actions .page-header-chrome-button:hover {
+  background: var(--portal-surface-chrome-hover);
+}
+
+/* A left-anchored column needs no gutter at its start: the scrollbar's reserve stays at the end, so
+   shelves inside a scroller line up with the header above it. */
+:root[data-shell='portal'] [data-page-surface].page-redesigned .capabilities-scroll {
+  scrollbar-gutter: stable;
+}

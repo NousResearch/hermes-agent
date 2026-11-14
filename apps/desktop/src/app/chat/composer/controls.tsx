@@ -59,6 +59,7 @@ export function ComposerControls({
   hasComposerPayload,
   hideModelPill = false,
   minimal = false,
+  redesigned = false,
   state,
   voiceStatus,
   onDictate,
@@ -70,7 +71,7 @@ export function ComposerControls({
   busy: boolean
   busyAction: 'interrupt' | 'steer' | 'queue' | 'stop'
   canSubmit: boolean
-  /** A card parked on the session takes typed text as its answer, so queueing that text would leave the card waiting. */
+  /** A waiting setup card takes typed text as its answer rather than queueing it. */
   cardWaiting?: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
@@ -79,6 +80,7 @@ export function ComposerControls({
   hasComposerPayload: boolean
   hideModelPill?: boolean
   minimal?: boolean
+  redesigned?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -94,14 +96,7 @@ export function ComposerControls({
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
-  const showVoicePrimary = !busy && !hasComposerPayload
-  // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
-  // a waiting card). Stop only when the composer is empty and a turn is running.
-  const showStop = busy && !hasComposerPayload
-
   const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
-
-  // A waiting card takes the draft as its answer through Send, whatever the busy action.
   const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
 
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
@@ -110,7 +105,7 @@ export function ComposerControls({
   // same reason — same controls, same state, different budget. Below that
   // even the menu goes: at `minimal` the row is the send button and nothing
   // else, which is the one thing that must survive every width.
-  const foldedVoice = hudMode || foldVoice
+  const foldedVoice = redesigned || hudMode || foldVoice
 
   const voiceControls = foldedVoice ? (
     <VoiceMenu
@@ -140,18 +135,24 @@ export function ComposerControls({
 
   return (
     <div
-      className={cn('flex min-w-0 shrink items-center gap-(--composer-control-gap)', browserHost && 'justify-end')}
+      className={cn(
+        'flex min-w-0 shrink items-center gap-(--composer-control-gap)',
+        browserHost && 'justify-end',
+        redesigned && 'w-full flex-wrap'
+      )}
+      data-slot={redesigned ? 'composer-footer-controls' : undefined}
       style={{ flexWrap: browserHost && minimal ? 'wrap' : undefined }}
     >
-      {minimal ? null : (
+      {minimal && !redesigned ? null : (
         <>
-          {hideModelPill ? null : (
+          {redesigned || hideModelPill ? null : (
             <>
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
               {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
             </>
           )}
           {voiceControls}
+          {redesigned && <span className="min-w-0 flex-1" />}
         </>
       )}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
@@ -171,35 +172,15 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : null}
-      {showVoicePrimary ? (
-        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
-      ) : (
-        <Tip
-          label={
-            showStop ? (
-              <TipKeybindLabel actionId="composer.send" text={c.stop} />
-            ) : (
-              <TipKeybindLabel actionId="composer.send" text={sendLabel} />
-            )
-          }
-          placement="control"
-        >
-          <Button
-            aria-label={showStop ? c.stop : sendLabel}
-            className={PRIMARY_ICON_BTN}
-            disabled={disabled || !canSubmit}
-            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
-            onMouseDown={keepEditorFocus}
-            type="submit"
-          >
-            {showStop ? (
-              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-            ) : (
-              <Codicon name="arrow-up" size="0.875rem" />
-            )}
-          </Button>
-        </Tip>
-      )}
+      <ComposerPrimaryAction
+        busy={busy}
+        canSubmit={canSubmit}
+        disabled={disabled}
+        hasComposerPayload={hasComposerPayload}
+        onStartConversation={conversation.onStart}
+        redesigned={redesigned}
+        sendLabel={sendLabel}
+      />
       {/* The way out of HUD mode, riding the controls row rather than floating
           above the bar. The old chip lived in a 26px transparent strip reserved
           over the composer (--hud-chip-strip), which under glass is bare
@@ -212,8 +193,82 @@ export function ComposerControls({
   )
 }
 
-// Queue is the secondary mid-turn action: never while the primary button already queues or stops, and
-// never while a card waits (its Send answers the card).
+interface ComposerPrimaryActionProps {
+  busy: boolean
+  canSubmit: boolean
+  disabled: boolean
+  hasComposerPayload: boolean
+  onStartConversation: () => void
+  redesigned: boolean
+  sendLabel: string
+}
+
+/** Empty classic drafts start voice; an active turn stops only with no payload. */
+function ComposerPrimaryAction({
+  busy,
+  canSubmit,
+  disabled,
+  hasComposerPayload,
+  onStartConversation,
+  redesigned,
+  sendLabel
+}: ComposerPrimaryActionProps) {
+  const { t } = useI18n()
+
+  if (!redesigned && !busy && !hasComposerPayload) {
+    return <StartVoiceButton disabled={disabled} label={t.composer.startVoice} onStart={onStartConversation} />
+  }
+
+  const showStop = busy && !hasComposerPayload
+  const label = showStop ? t.composer.stop : sendLabel
+
+  return (
+    <Tip label={<TipKeybindLabel actionId="composer.send" text={label} />} placement="control">
+      <Button
+        aria-label={label}
+        className={redesigned ? 'composer-send-label' : PRIMARY_ICON_BTN}
+        disabled={disabled || !canSubmit}
+        onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+        onMouseDown={keepEditorFocus}
+        size={redesigned ? 'sm' : undefined}
+        type="submit"
+        variant={redesigned ? 'ghost' : undefined}
+      >
+        {redesigned && <span className="min-w-0 truncate">{label}</span>}
+        {showStop ? (
+          <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
+        ) : (
+          <Codicon name={redesigned ? 'newline' : 'arrow-up'} size={redesigned ? '1rem' : '0.875rem'} />
+        )}
+      </Button>
+    </Tip>
+  )
+}
+
+interface ComposerModelRowProps {
+  disabled: boolean
+  model: ChatBarState['model']
+  redesigned: boolean
+}
+
+/** The redesigned composer puts model selection above the editor, not in its footer. */
+export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelRowProps) {
+  if (!redesigned) {
+    return null
+  }
+
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1" data-slot="composer-model-row">
+      <Codicon aria-hidden className="shrink-0 text-(--ui-text-tertiary)" name="comment" size="1.125rem" />
+      <span className="min-w-0 flex-1" />
+      <ModelPill disabled={disabled} model={model} />
+      <ReasoningPill disabled={disabled} model={model} />
+      <Codicon aria-hidden className="shrink-0 text-(--ui-text-secondary)" name="zap" size="0.875rem" />
+    </div>
+  )
+}
+
+// Queue is secondary mid-turn: never while the primary button queues/stops or a setup card waits.
 function queueButtonVisible(
   busy: boolean,
   busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
@@ -314,7 +369,10 @@ function ConversationPill({
             : c.listening
 
   return (
-    <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
+    <div
+      className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)"
+      data-slot="composer-conversation-controls"
+    >
       {/* Keep the ear visible during voice chat — shown paused, since the
           conversation holds the mic (the one time wake must not listen). */}
       <WakeWordButton disabled={disabled} pausedForVoice />

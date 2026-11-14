@@ -18,6 +18,10 @@ import {
 vi.mock('@/store/notifications', () => ({ notify: vi.fn() }))
 
 import { notify } from '@/store/notifications'
+import { $shellChoice } from '@/store/shell-variant'
+
+// These contracts pin the classic shell's layout keys; the redesign keeps its own (`.portal`).
+$shellChoice.set(false)
 
 const disposers: (() => void)[] = []
 

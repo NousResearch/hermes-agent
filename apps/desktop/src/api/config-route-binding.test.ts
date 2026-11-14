@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getHermesConfigRecord,
   peekConfigReadOrigin,
+  retainConfigReadOrigin,
   saveHermesConfig,
   setApiRequestConnection,
   setApiRequestProfile
 } from '@/hermes'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 describe('config read/write route binding', () => {
   let api: ReturnType<typeof vi.fn>
@@ -56,5 +58,45 @@ describe('config read/write route binding', () => {
       })
     )
     expect(puts.filter(call => call[0].connectionId === 'connection-b')).toHaveLength(0)
+  })
+
+  it('keeps delayed reads and derived writes isolated for the same profile on two gateways', async () => {
+    const readA = Promise.withResolvers<HermesConfigRecord>()
+    const readB = Promise.withResolvers<HermesConfigRecord>()
+    api.mockReturnValueOnce(readA.promise)
+    api.mockReturnValueOnce(readB.promise)
+
+    const ownerA = Object.freeze({ connectionId: 'connection-a', profile: 'worker' })
+    const ownerB = Object.freeze({ connectionId: 'connection-b', profile: 'worker' })
+    const pendingA = getHermesConfigRecord(ownerA)
+    const pendingB = getHermesConfigRecord(ownerB)
+    setApiRequestConnection('unrelated-gateway')
+    setApiRequestProfile('unrelated-profile')
+
+    readB.resolve({ model: 'model-b' })
+    const recordB = await pendingB
+    await saveHermesConfig(retainConfigReadOrigin({ ...recordB, model: 'updated-b' }, recordB))
+    readA.resolve({ model: 'model-a' })
+    const recordA = await pendingA
+    await saveHermesConfig(retainConfigReadOrigin({ ...recordA, model: 'updated-a' }, recordA))
+
+    expect(api.mock.calls.map(([request]) => request)).toEqual([
+      { ...ownerA, priority: 'foreground', path: '/api/config' },
+      { ...ownerB, priority: 'foreground', path: '/api/config' },
+      {
+        ...ownerB,
+        priority: 'foreground',
+        path: '/api/config',
+        method: 'PUT',
+        body: { config: { model: 'updated-b' } }
+      },
+      {
+        ...ownerA,
+        priority: 'foreground',
+        path: '/api/config',
+        method: 'PUT',
+        body: { config: { model: 'updated-a' } }
+      }
+    ])
   })
 })

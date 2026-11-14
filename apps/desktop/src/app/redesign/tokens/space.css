@@ -1,0 +1,186 @@
+/* Space and layout (LANGUAGE §3). Spacing itself is Tailwind's 4px scale (`gap-3` = 12px); these are the
+   named geometry every page and the shell share. Root-scoped so route overlays and body-portalled
+   dialogs, menus and popovers see the shell's geometry. */
+:root[data-shell='portal'] {
+  /* The global rail and the developer rail (1036:7202). */
+  --portal-rail-width: 3.75rem;
+  /* What the rail takes from the layout: its width, none on compact, where it rides the sheet. */
+  --portal-rail-reserve: var(--portal-rail-width);
+  /* The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every
+     row), the destinations from 90px down on every host, clear of macOS traffic lights in the column;
+     30px buttons (the chrome row, the touch target on a coarse pointer) with 16px glyphs, 20px apart;
+     the foot's buttons carry 20px glyphs, 40px off the window floor. */
+  --portal-rail-top: 5.625rem;
+  --portal-rail-button: var(--portal-row-chrome);
+  --portal-rail-glyph: 1rem;
+  --portal-rail-glyph-foot: 1.25rem;
+  --portal-rail-gap: 1.25rem;
+  --portal-rail-bottom: 2.5rem;
+  /* A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size
+     (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. */
+  --portal-rail-popover-offset: calc(
+    (var(--portal-rail-width) - var(--portal-rail-button)) / 2 + var(--portal-space-tight)
+  );
+  /* The way back to a folded sidebar or page panel in Simple mode (1061:7816): a 44×40 floating button
+     at the stage's top-leading corner, clear of the band. Advanced keeps it in the band. */
+  --portal-panel-reveal-width: 2.75rem;
+  --portal-panel-reveal-height: 2.5rem;
+  --portal-panel-reveal-inset: 1rem;
+  --portal-panel-reveal-glyph: 1.125rem;
+
+  /* The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the
+     medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a
+     media query, so every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with a
+     comment naming the class; these two document it. */
+  --portal-breakpoint-medium: 640px;
+  --portal-breakpoint-wide: 1024px;
+  /* Below wide the chat sidebar and page panels are sheets over the stage: the sidebar's width, leaving
+     a 56px strip of scrim to tap. */
+  --portal-sheet-width: min(var(--sessions-pane-width), 100vw - 3.5rem);
+  /* The sheet's panel past the rail: the whole sheet on medium (the rail stays in the layout), the
+     sheet less the rail on compact (the rail rides the sheet). */
+  --portal-sheet-panel-width: calc(var(--portal-sheet-width) - var(--portal-rail-width) + var(--portal-rail-reserve));
+  /* The widest a sheet's panel may be: from the rail's edge to the scrim strip. A plugin pane's sheet
+     keeps the width the pane declares, up to this. */
+  --portal-sheet-panel-max-width: calc(100vw - 3.5rem - var(--portal-rail-width));
+  /* The smallest hit area on a coarse pointer (WCAG 2.5.5); a control's visual may stay smaller. */
+  --portal-touch-target: 2.75rem;
+  /* A phone's tighter rhythm (compact and short windows): the composer's padding and gaps, its dock's
+     floor, and on touch its control rows, whose 44px targets overlap the padding. */
+  --portal-space-compact: 0.75rem;
+  --portal-space-tight: 0.5rem;
+  --portal-composer-row-touch: 1.75rem;
+  /* The browser's safe area (notch, home indicator) once the page is laid out under it
+     (viewport-fit=cover, app/redesign/browser-chrome.ts); zero on every other host. The app root is
+     inset by it as a whole (portal-shell.css), so only body-portalled surfaces (dialogs) read these. */
+  --portal-safe-top: env(safe-area-inset-top, 0px);
+  --portal-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --portal-safe-start: env(safe-area-inset-left, 0px);
+  --portal-safe-end: env(safe-area-inset-right, 0px);
+  /* ONE sidebar column for every rail destination: page panels (Agents, Routines, Settings) take the
+     chat sidebar's width — the user's sash width once they size it (published by the pane tree as
+     --portal-sidebar-width), else its default — so switching destinations never moves the panel edge,
+     its divider or the stage's content edge. */
+  --portal-panel-width: var(--portal-sidebar-width, var(--sessions-pane-width));
+  /* The page-frame contract: where a page's content column starts, from the stage edge it shares with
+     the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value
+     for Agents, Settings and Routines alike), and from the stage's own edge on a page with no panel
+     (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching
+     pages never moves the column sideways. */
+  --portal-frame-inset: 1.25rem;
+  --portal-stage-inset: 5.625rem;
+  /* The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window
+     (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer
+     rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to
+     its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. */
+  --portal-workspace-inset-start: 0.3125rem;
+  --portal-workspace-inset-end: 0.9375rem;
+  --portal-workspace-inset-bottom: 0.9375rem;
+  /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
+     tables (919:9281: 980), and the conversation shared by the transcript and the docked composer:
+     both 440 wide, the transcript flush with the composer's edges (chat 16292:16175). */
+  --portal-column-form: 52.5rem;
+  --portal-column-catalog: 61.25rem;
+  --portal-column-conversation: 27.5rem;
+  --portal-column-conversation-inset: 0px;
+  /* The landing's composer before the first message, as wide as a conversation's (16292:14822). */
+  --portal-column-landing: 27.5rem;
+  /* The developer tool panel's default width (Files, Terminal, Review and Browser share one width,
+     redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. */
+  --portal-tool-panel-width: 26.25rem;
+  /* Full-width pages without a panel pad their catalog column by this much on each side. */
+  --page-content-inset: 1.5rem;
+  /* How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). */
+  --portal-scroll-edge-fade: 1.5rem;
+  --page-content-max-width: calc(var(--portal-column-catalog) + 2 * var(--page-content-inset));
+  /* The space a page scroller keeps below its last row, under its bottom fade. */
+  --portal-page-end-space: 2rem;
+  /* The page header (PageHeader, app/redesign/page-header.tsx), one geometry for every routed page so
+     its H1, description and tab bar sit at the same y on all of them: the column's top (856:2827 y 18),
+     a title block that always reserves the agent header's 68 (877:4166: 56 tile, or H1 44 + 6 + one
+     13px line), 24 to the tabs and from the tabs to the content (877:4166 gap 24), 32h tabs
+     (877:4200) and the page rhythm of 32 between sections and after a heading with no tabs
+     (1036:7405). */
+  --portal-page-top: 1.125rem;
+  --portal-page-title-block: 4.25rem;
+  --portal-page-header-gap: 1.5rem;
+  --portal-page-rhythm: 2rem;
+  --portal-page-tab-height: 2rem;
+  --portal-page-tab-inset: 0.75rem;
+  /* A page's list panel (Agents, Routines) shares the chat sidebar's and the Settings column's header
+     (Top 16292:15498, 16292:16360): its title 30px in and 30px down on a 36px line, its first control
+     122px under the panel's top, where New chat and the Settings rows start. */
+  --portal-panel-title-top: 1.875rem;
+  --portal-panel-title-inset: 1.875rem;
+  --portal-panel-title-line: 2.25rem;
+  --portal-panel-first-row: 7.625rem;
+  /* Global Settings ("Prod - Desktop" 06 · Settings/Account, Panel/flexible 16292:16447): a 640px
+     column centred in the stage, its header 104px under the stage's top; the header, section heads
+     and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. */
+  --portal-settings-column: 40rem;
+  --portal-settings-top: 6.5rem;
+  --portal-settings-inset: 2rem;
+  --portal-settings-card-pad: 1rem;
+  --portal-settings-row-pad: 0.75rem;
+  /* The column's panel (Panel 16292:16359): the title on a 30px inset, 30px down, 20px over 40px rows
+     4px apart; the Agent settings card 20px under them (16292:16428). */
+  --portal-settings-nav-inset: 1.875rem;
+  --portal-settings-nav-gap: 0.25rem;
+  --portal-settings-related-gap: 1.25rem;
+  --portal-settings-link-width: 17.125rem;
+  /* Its title is Nous/Identity: 30px on a 36px line (16292:16363). The rows start 122px down: Figma's
+     "// META INFO" caption under the title is placeholder copy and not built, its room is kept. */
+  --portal-settings-nav-title-line: 2.25rem;
+  --portal-settings-nav-head-gap: 3.5rem;
+  /* The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. */
+  --portal-dialog-action-height: 2.75rem;
+  /* The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the
+     stage at 400), after the Back/Forward group. */
+  --portal-session-tab-inset: 1.5625rem;
+  /* The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303):
+     the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. */
+  --portal-band-trail-inset: 0.8125rem;
+  /* Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). */
+  --portal-row-chrome: 1.875rem;
+  --portal-row-panel: 2.5rem;
+
+  /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
+  --page-nav-width: var(--portal-panel-width);
+  --page-panel-inset: var(--portal-frame-inset);
+  --page-stage-inset: var(--portal-stage-inset);
+  --page-form-max-width: var(--portal-column-form);
+  --page-catalog-max-width: var(--portal-column-catalog);
+  --portal-chrome-button-size: var(--portal-row-chrome);
+}
+
+/* Medium (breakpoints.ts: max-width 1023.98px): one column beside no panel, so a page's column starts
+   at the panel inset rather than Figma's 90px stage inset. */
+@media (max-width: 1023.98px) {
+  :root[data-shell='portal'] {
+    --portal-stage-inset: var(--portal-frame-inset);
+    --portal-settings-top: var(--portal-page-top);
+  }
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): no rail column, and every page inset is one 16px
+   gutter. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] {
+    --portal-rail-reserve: 0px;
+    --portal-page-top: 1rem;
+    --portal-frame-inset: 1rem;
+    --portal-stage-inset: 1rem;
+    --page-content-inset: 1rem;
+    --portal-settings-inset: 1rem;
+  }
+}
+
+/* A coarse pointer on the browser host: chrome buttons (band, rails, pane headers) and panel rows take
+   the touch target. Native Desktop keeps its pointer rhythm on any pointer, as classic does. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] {
+    --portal-row-chrome: var(--portal-touch-target);
+    --portal-row-panel: var(--portal-touch-target);
+    --portal-page-tab-height: var(--portal-touch-target);
+  }
+}

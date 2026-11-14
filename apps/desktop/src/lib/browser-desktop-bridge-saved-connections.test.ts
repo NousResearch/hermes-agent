@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { atom } from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { $defaultProfileRoute, setDefaultProfile } from '@/store/default-profile'
 import { $connection, workspaceCwdForNewSession } from '@/store/session'
 import { dropTilesForProfile } from '@/store/session-states'
+import { providePortalPresentation } from '@/store/shell-presentation'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from './browser-profile-prefs'
@@ -141,6 +143,11 @@ function install({ surface = 'webapp' } = {}) {
 
   return win.hermesDesktop!
 }
+
+// Refusal wording below is classic's (`main`'s); shell-copy.test.ts covers the redesign's.
+beforeEach(() => {
+  providePortalPresentation(atom(false))
+})
 
 afterEach(() => {
   delete win.__HERMES_AUTH_REQUIRED__
@@ -413,6 +420,11 @@ describe('a Webapp on a machine with saved gateway connections', () => {
     expect(result.ok).toBe(false)
     expect(result.error).toMatch(/another gateway/)
     expect(open).not.toHaveBeenCalled()
+
+    providePortalPresentation(atom(true))
+    const redesigned = await desktop.openSessionWindow('m1', { connectionId: 'mini', profile: 'research' })
+
+    expect(redesigned.error).toBe('A chat on another machine opens in this tab, not in a new window.')
   })
 
   it('lists the profiles of every saved gateway in the agent roster', async () => {

@@ -98,4 +98,49 @@ describe('notifyBotOpenFailure', () => {
     expect(hostMock.navigate).toHaveBeenCalledWith('/settings?tab=gateway')
     expect(hostMock.notifyError).not.toHaveBeenCalled()
   })
+
+  it('a redesign agent row: names the agent as the row does and says why in one plain line', async () => {
+    const { notifyBotOpenFailure } = await load()
+    const raw = 'Could not check research\'s Bot Chat registry (This machine does not serve agent "research", so this tab cannot open it.) — not starting a new chat'
+
+    // The roster calls this profile "Hermes" (a cloned title); the row reads "research".
+    notifyBotOpenFailure(new Error(raw), { ...BOT, name: 'research' }, 'open', { botName: 'research', explain: true })
+
+    const toast = lastToast()
+    expect(toast.title).toBe('Could not open research’s chat')
+    expect(toast.message).toBe('research isn’t running on this machine right now — try again in a moment.')
+    expect(toast.detail).toBe(raw)
+    expect(`${toast.title} ${toast.message}`).not.toMatch(/gateway|backend|worker|registry|Bot Chat/i)
+  })
+
+  it('a redesign agent row that cannot reach its machine keeps the agent in the title', async () => {
+    const { notifyBotOpenFailure } = await load()
+
+    notifyBotOpenFailure(new Error('WebSocket connect ECONNREFUSED 10.0.0.7:8642'), BOT, 'reach', {
+      botName: 'ops',
+      explain: true
+    })
+
+    const toast = lastToast()
+    expect(toast.title).toBe('Could not open ops’s chat')
+    expect(toast.message).toBe('Couldn’t reach the machine it runs on — check that it’s on and connected.')
+    expect(toast.message).not.toContain('ECONNREFUSED')
+  })
+
+  it('an unrecognised failure keeps the plain next step and the raw text in detail', async () => {
+    const { notifyBotOpenFailure } = await load()
+
+    notifyBotOpenFailure(new Error('RPC -32000: session.create exploded'), BOT, 'open', { botName: 'ops', explain: true })
+
+    expect(lastToast()).toMatchObject({ title: 'Could not open ops’s chat', message: 'Try again.', detail: 'RPC -32000: session.create exploded' })
+  })
+
+  it('a redesign agent row refused for version skew says to update, not just "try again"', async () => {
+    const { notifyBotOpenFailure } = await load()
+    const raw = 'invalid params for session.create: request_id: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both'
+
+    notifyBotOpenFailure(new Error(raw), BOT, 'open', { botName: 'default', explain: true })
+
+    expect(lastToast()).toMatchObject({ title: 'Could not open default’s chat', message: 'Update Studio Mac, then try again.', detail: raw })
+  })
 })

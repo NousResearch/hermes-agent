@@ -69,6 +69,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -133,6 +134,13 @@ function freeTierTrialModel(status: FreeTierStatus | null): string | null {
   return status?.available ? status.model || FREE_TIER_MODEL : null
 }
 
+/** Items the redesign retires: Cron, whose Routines live on the rail (its dot is the alert). */
+const RETIRED_IN_REDESIGN = new Set(['cron'])
+
+function withoutRetiredItems(items: readonly StatusbarItem[], redesign: boolean): readonly StatusbarItem[] {
+  return redesign ? items.filter(item => !RETIRED_IN_REDESIGN.has(item.id)) : items
+}
+
 // health: allow CC FUNC_LINES -- usage-window plans: one status-bar gauge item, hidden for every other account; this hook was over both targets on main
 export function useStatusbarItems({
   agentsOpen,
@@ -161,6 +169,7 @@ export function useStatusbarItems({
   const terminalShowing = useStore($paneVisible('terminal'))
   const sessionsShowing = useStore($paneVisible('sessions'))
   const profileRailVisible = useStore($profileRailVisible)
+  const simplifiedAgents = usePortalShell()
   const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
@@ -506,6 +515,8 @@ export function useStatusbarItems({
     copy
   ])
 
+  const showLegacySelectors = sessionsShowing && !simplifiedAgents
+
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
@@ -521,7 +532,7 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        hidden: !sessionsShowing,
+        hidden: !showLegacySelectors,
         id: 'gateway-switcher',
         lockedVisible: true,
         render: () => <StatusbarGatewaySwitcher />
@@ -529,7 +540,7 @@ export function useStatusbarItems({
       {
         // The rail's stand-in: the profile picker moves down here while the
         // colored strip is hidden, so switching profiles always has a door.
-        hidden: !sessionsShowing || profileRailVisible,
+        hidden: !showLegacySelectors || profileRailVisible,
         id: 'profile-switcher',
         lockedVisible: true,
         render: () => <ProfileSwitcher compact />
@@ -688,8 +699,8 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       profileRailVisible,
+      showLegacySelectors,
       projectName,
-      sessionsShowing,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter
@@ -827,8 +838,8 @@ export function useStatusbarItems({
   )
 
   const leftStatusbarItems = useMemo(
-    () => [...coreLeftStatusbarItems, ...extraLeftItems],
-    [coreLeftStatusbarItems, extraLeftItems]
+    () => [...withoutRetiredItems(coreLeftStatusbarItems, simplifiedAgents), ...extraLeftItems],
+    [coreLeftStatusbarItems, extraLeftItems, simplifiedAgents]
   )
 
   const statusbarItems = useMemo(

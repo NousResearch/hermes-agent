@@ -27,12 +27,14 @@ import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const frOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['fr'],
   gatewayGroupOpen: {
-    opening: "Ouverture de la discussion de groupe…",
+    opening: 'Ouverture de la discussion de groupe…',
     lookupFailed: "Impossible de retrouver ce groupe sur la passerelle. Réessayez.",
-    missing: "Cette discussion de groupe n’existe plus."
+    missing: 'Cette discussion de groupe n’existe plus.'
   },
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
@@ -581,6 +583,8 @@ export const frOverrides = {
       'nav.artifacts': 'Ouvrir les artefacts',
       'nav.cron': 'Ouvrir les tâches planifiées',
       'nav.agents': 'Ouvrir les agents',
+      'nav.back': 'Retour',
+      'nav.forward': 'Suivant',
       'session.new': 'Nouvelle session',
       'session.newTab': 'Nouvel onglet de session',
       'session.newWindow': 'Nouvelle fenêtre',
@@ -664,6 +668,7 @@ export const frOverrides = {
       'profile.prev': 'Profil précédent',
       'profile.toggleAll': 'Basculer la vue tous profils',
       'profile.create': 'Créer un profil',
+      'agents.new': 'Nouveau profil (page Profils)',
       'composer.send': 'Envoyer le message',
       'composer.newline': 'Insérer un saut de ligne',
       'composer.steer': 'Diriger le tour en cours',
@@ -986,6 +991,14 @@ export const frOverrides = {
       }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: "Appels d'outils",
+        toolViewDesc:
+          'Le mode Simple masque les charges utiles brutes des outils ; le mode Technique affiche les entrées/sorties complètes.',
+        product: 'Simple',
+        introSplashTitle: "Écran d'accueil",
+        embedsTitle: 'Aperçus des liens'
+      },
       chatTextScaleTitle: 'Taille du texte du chat',
       chatTextScaleDesc:
         'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
@@ -1804,8 +1817,7 @@ export const frOverrides = {
       saveForRestart: 'Enregistrer pour le prochain redémarrage',
       saveAndReconnect: 'Enregistrer et se reconnecter',
       diagnostics: 'Diagnostiques',
-      diagnosticsDesc:
-        'Afficher desktop.log dans votre gestionnaire de fichiers — utile quand le gateway ne démarre pas.',
+      diagnosticsDesc: 'Afficher desktop.log dans votre gestionnaire de fichiers — utile quand le gateway ne démarre pas.',
       openLogs: 'Ouvrir les journaux',
       incompleteTitle: 'Gateway distant incomplet',
       incompleteSignIn: 'Saisissez une URL distante et connectez-vous avant de passer en distant.',
@@ -2400,18 +2412,20 @@ export const frOverrides = {
       browserRealProfile: {
         label: 'Utiliser mon profil de navigateur réel',
         description:
-          'Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l\'agent utilise pour naviguer, et connecte aussi le navigateur intégré avec eux. Votre profil actif n\'est jamais ouvert directement. S\'applique aux nouvelles sessions.',
+          "Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l'agent utilise pour naviguer, et connecte aussi le navigateur intégré avec eux. Votre profil actif n'est jamais ouvert directement. S'applique aux nouvelles sessions.",
         enabledTitle: 'Navigation avec le profil réel activée',
         enabledMessage: 'Les nouvelles sessions utiliseront un instantané de votre profil de navigateur par défaut.',
         disabledTitle: 'Navigation avec le profil réel désactivée',
         disabledMessage:
-          'L\'instantané du profil sera supprimé et le navigateur intégré en sera déconnecté ; les nouvelles sessions utiliseront un navigateur vierge.',
+          "L'instantané du profil sera supprimé et le navigateur intégré en sera déconnecté ; les nouvelles sessions utiliseront un navigateur vierge.",
         failedSave: "Impossible d'enregistrer le paramètre du profil réel",
         reimportSignins: 'Réimporter les connexions',
         signinsImportedTitle: 'Connexions du navigateur intégré',
-        signinsImported: count => `Navigateur intégré connecté avec ${count} cookie${count === 1 ? '' : 's'} de votre profil de navigateur.`,
-        signinsRemote: 'Ce backend s\'exécute sur une autre machine, son profil de navigateur n\'est donc pas importé dans le navigateur intégré.',
-        signinsFailed: 'Impossible d\'importer les connexions dans le navigateur intégré',
+        signinsImported: count =>
+          `Navigateur intégré connecté avec ${count} cookie${count === 1 ? '' : 's'} de votre profil de navigateur.`,
+        signinsRemote:
+          "Ce backend s'exécute sur une autre machine, son profil de navigateur n'est donc pas importé dans le navigateur intégré.",
+        signinsFailed: "Impossible d'importer les connexions dans le navigateur intégré",
         prompt: {
           title: 'Restez connecté à vos sites',
           body: 'Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s\'ouvrent avec vos sessions déjà connectées, pour l\'agent et dans le navigateur intégré.',
@@ -2426,6 +2440,17 @@ export const frOverrides = {
     }
   },
   skills: {
+    inventoryScopeHint:
+      'Les installations concernent l’agent et l’ordinateur sélectionnés. L’activation des outils et les réglages propres à chaque agent se gèrent dans ses paramètres. Les comptes de connecteurs hébergés sont partagés par les agents utilisant le même compte Nous.',
+    agentScopeHint:
+      'Les modifications s’appliquent uniquement à cet agent. Les conversations existantes conservent leurs outils actuels.',
+    toolSecretsHint:
+      'Clés API, points de terminaison et fournisseurs utilisés par cet agent. Les connexions aux fournisseurs peuvent être partagées entre agents ; les comptes de connecteurs hébergés sont partagés par les agents utilisant le même compte Nous.',
+    openAgentSettings: 'Paramètres du profil',
+    openToolLibrary: 'Parcourir la bibliothèque d’outils',
+    remotePluginHint:
+      'Ouvrez ce profil sur son gateway pour gérer ses plugins. L’installation des plugins utilise le gateway connecté.',
+    showAllToolsets: (count: number) => `Afficher les ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Outils',
     configuringProfile: 'Configuration de :',
@@ -3013,7 +3038,8 @@ export const frOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Aucun jeton de bot requis',
-      intro: (platform: string) => `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
+      intro: (platform: string) =>
+        `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
       link: (platform: string) => `Associer ${platform}`,
       linkAnother: (platform: string) => `Associer un autre compte ${platform}`,
       linkedAccounts: 'Comptes associés',
@@ -3034,7 +3060,8 @@ export const frOverrides = {
       managedNote: (platform: string) => `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
       managedIntro: 'Les comptes de cet agent se lient depuis Nous Portal.',
       openPortal: 'Lier des comptes dans Nous Portal',
-      noNewAccount: (platform: string) => `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
+      noNewAccount: (platform: string) =>
+        `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
     },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',
@@ -3583,6 +3610,7 @@ export const frOverrides = {
     tabFiles: 'Fichiers',
     tabLinks: 'Liens',
     noArtifactsTitle: 'Aucun artefact trouvé',
+    partialIndex: (failed: number, total: number) => `${failed} sessions récentes sur ${total} ignorées lors de l’indexation des artefacts.`,
     noArtifactsDesc:
       'Les images générées et les sorties de fichier apparaîtront ici au fur et à mesure que les sessions les produisent.',
     failedLoad: 'Échec du chargement des artefacts',
@@ -3784,6 +3812,7 @@ export const frOverrides = {
     placeholderStarting: 'Démarrage de Hermes…',
     placeholderReconnecting: 'Reconnexion à Hermes…',
     placeholderFollowUp: 'Envoyer un suivi',
+    browseAllSessions: 'Parcourir toutes les sessions…',
     newSessionPlaceholders: [
       'Sur quoi travaillons-nous ?',
       'Donnez une tâche à Hermes',
@@ -4363,7 +4392,8 @@ export const frOverrides = {
     remoteSetupDesc:
       "Entrez l'URL du gateway. Hermes Desktop détectera s'il a besoin d'un jeton ou d'une connexion par navigateur.",
     remoteUrlTitle: 'URL du gateway',
-    remoteUrlDesc: "Utilisez l'URL de base du gateway Hermes, y compris https:// pour les connexions distantes.",
+    remoteUrlDesc:
+      "Utilisez l'URL de base du gateway Hermes, y compris https:// pour les connexions distantes.",
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: "Détection de l'authentification du gateway...",
     probeError: "Impossible d'atteindre ce gateway Hermes.",
@@ -4569,6 +4599,8 @@ export const frOverrides = {
       daybreakFailed: 'Échec de la mise à jour de Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'Connexion',
+      inferenceLabel: 'Inférence',
       gateway: 'Gateway',
       connected: 'Connecté',
       connecting: 'Connexion',
@@ -4582,7 +4614,14 @@ export const frOverrides = {
       connection: label => `Connexion : ${label}`,
       recentActivity: 'Activité récente',
       viewAllLogs: 'Voir tous les journaux →',
-      messagingPlatforms: 'Plateformes de messagerie'
+      messagingPlatforms: 'Plateformes de messagerie',
+      machineStatus: (machine, status) => `État de ${machine} : ${status}`,
+      checkAgain: 'Vérifier à nouveau',
+      switchToMachine: 'Passer à cette machine',
+      machineSettings: 'Passerelles et machines',
+      restartTitle: 'Redémarrer la passerelle ?',
+      restartBody:
+        'Les réponses en cours sur cette machine s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
     },
     approvalMode: {
       title: "Mode d'approbation",
@@ -5460,6 +5499,7 @@ export const frOverrides = {
   },
   desktop: {
     audioReadFailed: "Impossible de lire l'audio enregistré",
+    sessionOpenFailed: 'Impossible d’ouvrir cette session',
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",

@@ -37,6 +37,7 @@
 import { readStatusCode } from './api-transport'
 import { sharesHostBackend } from './host-backend-singleton'
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
+import { shellMessages } from './shell-wording'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
@@ -45,7 +46,9 @@ const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session
 const GATEWAY_COOKIE_SUFFIX = /_[0-9a-f]{16}$/
 
 function isCookieVariant(name: unknown, variants: string[]): boolean {
-  return typeof name === 'string' && (variants.includes(name) || variants.includes(name.replace(GATEWAY_COOKIE_SUFFIX, '')))
+  return (
+    typeof name === 'string' && (variants.includes(name) || variants.includes(name.replace(GATEWAY_COOKIE_SUFFIX, '')))
+  )
 }
 
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
@@ -287,8 +290,7 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
       // bearer is named inside gatewayTicketFailure.
       throw gatewayTicketFailure(
         error,
-        'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
-          'Open Settings → Gateway and sign in again.',
+        shellMessages.ticketSessionRejected(),
         'Reached the gateway over HTTP, but could not mint a WebSocket ticket. Check the remote gateway connection and try again.'
       )
     }
@@ -1043,8 +1045,10 @@ function pathWithProfileScope(path, profile, method?: string) {
 
   // A path that already names its profile never also carries the ambient one: the two disagree
   // whenever the sidebar is on another profile or "All profiles", and the gateway refuses the pair.
-  if (parsed.searchParams.has('profile')
-      || (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))) {
+  if (
+    parsed.searchParams.has('profile') ||
+    (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))
+  ) {
     return path
   }
 

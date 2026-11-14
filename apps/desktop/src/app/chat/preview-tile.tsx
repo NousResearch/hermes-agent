@@ -12,10 +12,12 @@
 
 import { useStore } from '@nanostores/react'
 
-import { findGroup } from '@/components/pane-shell/tree/model'
+import { DEVELOPER_TOOL_PANEL_WIDTH } from '@/app/redesign/developer-tool-panel'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
   $layoutTree,
+  $narrowViewport,
   closeTabPane,
   revealTreePane,
   treePanesWithPrefix
@@ -44,6 +46,7 @@ import {
   setPreviewTabPinned
 } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { $portalShell } from '@/store/shell-variant'
 import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
@@ -218,6 +221,15 @@ const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
  *  acyclic; adoption places a pane after an anchor arriving with it (store.ts).
  *  `undefined` means this is the first preview — it opens its own zone. */
 function existingPreviewAnchor(tabId: string): string | undefined {
+  if ($portalShell.get() && !$narrowViewport.get() && targetFor(tabId)?.kind === 'url') {
+    const tree = $layoutTree.get()
+    const panel = tree && findGroupOfPane(tree, 'files')
+
+    if (panel && !panel.panes.includes('workspace')) {
+      return 'files'
+    }
+  }
+
   const own = previewPaneId(tabId)
   const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PREFIX}:`).find(id => id !== own)
 
@@ -355,6 +367,9 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   dir: tab => (existingPreviewAnchor(tab.id) ? 'center' : 'right'),
   anchor: tab => existingPreviewAnchor(tab.id),
   minWidth: '22rem',
+  // The redesign's tool panel shares one width across its tools (redesign/developer-tool-panel.ts).
+  width: () => ($portalShell.get() ? DEVELOPER_TOOL_PANEL_WIDTH : undefined),
+  also: [$portalShell],
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,
   tabTitle: tabId => (targetFor(tabId)?.kind === 'url' ? <BrowserTabLabel tabId={tabId} /> : undefined),

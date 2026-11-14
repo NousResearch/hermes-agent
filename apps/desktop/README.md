@@ -86,7 +86,7 @@ Want to hack on the app itself? Install workspace deps from the repo root once, 
 ```bash
 pnpm install         # from repo root — links apps/desktop, web, apps/shared
 cd apps/desktop
-pnpm run dev         # Vite renderer + Electron, which boots the Python backend
+pnpm run dev         # Vite renderer + native Electron, attaching to the canonical gateway
 ```
 
 `just desktop` runs the same dev server from the repository root.
@@ -131,9 +131,10 @@ The app has three boundaries:
   filesystem/git/window capabilities, and exposes a narrow preload bridge.
 - **React** owns the Desktop routes, panes, interaction state, and
   `@assistant-ui/react` transcript.
-- **Hermes Agent** runs as a headless `hermes serve` process and exposes the
-  `tui_gateway` JSON-RPC/WebSocket API. The renderer connects through
-  [`apps/shared`](../shared/), which is also used by the browser dashboard.
+- **Hermes Agent** is owned by the canonical gateway. Local startup runs
+  `hermes gateway ensure --json` and uses private control tickets for its
+  JSON-RPC/WebSocket API. Closing Desktop disconnects the viewer, not the gateway.
+  The renderer connects through [`apps/shared`](../shared/).
 
 A bundled artifact uses its payload. If that payload is unusable, the app
 reports damage rather than installing a second checkout. It does not adopt
@@ -142,9 +143,8 @@ an arbitrary `hermes` command on PATH or a system Python installation.
 Non-bundled builds can use the explicit source-root override, development
 checkout, completed managed install, or `HERMES_DESKTOP_HERMES` deployment
 override before offering bootstrap. Candidates are probed before use.
-A runtime that predates `serve` falls back to headless
-`dashboard --no-open`. This is compatibility for the backend command only and
-does not launch or embed the dashboard UI.
+The runtime must support the canonical gateway protocol. Missing capabilities
+surface as a recovery error, not a parallel `serve` process or relabeled session.
 
 The Electron orchestration entry point is `electron/main.ts`; pure resolution,
 probe, hardening, and platform policies live in focused modules beside it. The

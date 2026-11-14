@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { setEnvVar } from '@/api/config'
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon, codiconIcon } from '@/components/ui/codicon'
 import { $pluginRecords } from '@/contrib/plugins-store'
@@ -27,6 +26,7 @@ import type { IconComponent } from '@/lib/icons'
 import {
   $agentPluginBusy,
   $agentPlugins,
+  $agentPluginsOwnerKey,
   $agentPluginsProfile,
   $agentPluginsStatus,
   isDesktopRelevantPlugin,
@@ -35,6 +35,7 @@ import {
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile, setSettingsScope } from '@/store/settings-scope'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { desktopPackageName } from '../capabilities/plugins/plugin-packages'
 import type { OverlayNavLink } from '../overlays/overlay-split-layout'
@@ -42,7 +43,9 @@ import { CAPABILITIES_ROUTE } from '../routes'
 
 import { PluginSettingsForm } from './plugin-settings-form'
 import { EmptyState, ListRowSkeleton, SectionHeading, SettingsContent } from './primitives'
-import { SettingsProfileScope } from './profile-scope'
+import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsFooter, SettingsPageDescription } from './settings-card'
+import { useSettingsGatewayRequest } from './settings-owner-request'
 
 /** Opens Settings ▸ Plugins at a route; `null` = the overview. */
 export type OpenPluginSettings = (route: null | PluginSettingsRoute) => void
@@ -92,11 +95,17 @@ const ownerKey = (scope: string | undefined): null | string => scope ?? null
 /** The agent plugin rows loaded for `owner`, or none while the shared list
  *  still holds another profile's rows (a switch in flight, or Capabilities
  *  loaded a different profile). */
-function useOwnedAgentPlugins(owner: null | string) {
+function useOwnedAgentPlugins(requestedOwner: null | string) {
+  const pinnedOwner = useSettingsOwner()
+  const owner = pinnedOwner?.profile ?? requestedOwner
+  const loadedOwnerKey = useStore($agentPluginsOwnerKey)
   const rows = useStore($agentPlugins)
   const loadedFor = useStore($agentPluginsProfile)
   const status = useStore($agentPluginsStatus)
-  const owned = loadedFor === owner
+
+  const owned =
+    loadedFor === owner &&
+    loadedOwnerKey === (pinnedOwner ? JSON.stringify([pinnedOwner.connectionId ?? '', pinnedOwner.profile]) : undefined)
 
   return { owned, rows: owned ? rows : [], settled: status === 'error' || (status === 'ready' && owned), status }
 }
@@ -107,13 +116,14 @@ function useOwnedAgentPlugins(owner: null | string) {
  *  is adopted into the Settings scope, then dropped from the URL. `active` =
  *  the Plugins view is showing. */
 export function usePluginSettingsRoute(active: boolean) {
+  const pinnedOwner = useSettingsOwner()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
   const entries = usePluginSettingsEntries()
   const { settled } = useOwnedAgentPlugins(ownerKey(useStore($settingsRequestProfile)))
   const params = new URLSearchParams(search)
   const route = pluginSettingsRouteFrom(params)
-  const handoff = active ? params.get(PLUGIN_SETTINGS_PROFILE_PARAM) : null
+  const handoff = active && !pinnedOwner ? params.get(PLUGIN_SETTINGS_PROFILE_PARAM) : null
   // Until the hand-off is adopted, the current scope is not the one the link
   // asked for: resolve nothing, so no page renders against the wrong profile.
   const target = active && !handoff ? resolvePluginSettingsTarget(entries, route) : null
@@ -168,10 +178,12 @@ export function usePluginSettingsRoute(active: boolean) {
  *  (scoped to the Settings profile selector). */
 export function usePluginSettingsEntries(): PluginSettingsEntry[] {
   const { t } = useI18n()
-  const { requestGateway } = useGatewayRequest()
+  const requestGateway = useSettingsGatewayRequest()
   const contributions = useContributions(SETTINGS_PLUGINS_AREA)
   const records = useStore($pluginRecords)
-  const owner = ownerKey(useStore($settingsRequestProfile))
+  const selectedProfile = useStore($settingsRequestProfile)
+  const pinnedOwner = useSettingsOwner()
+  const owner = pinnedOwner?.profile ?? ownerKey(selectedProfile)
   const { owned, rows, status } = useOwnedAgentPlugins(owner)
 
   // Cheap backend disk scan; the same loader Capabilities ▸ Plugins uses.
@@ -193,15 +205,19 @@ export function usePluginSettingsEntries(): PluginSettingsEntry[] {
     () =>
       pluginSettingsEntries({
         configTitle,
-        contributions,
+        contributions: pinnedOwner ? [] : contributions,
         packageOf: pluginId => {
+          if (pinnedOwner) {
+            return null
+          }
+
           const record = records[pluginId]
 
           return record ? desktopPackageName(record) : null
         },
         rows: rows.filter(isDesktopRelevantPlugin)
       }),
-    [configTitle, contributions, records, rows]
+    [configTitle, contributions, records, rows, pinnedOwner]
   )
 }
 
@@ -253,27 +269,37 @@ function PluginSettingsOverview({
 }) {
   const { t } = useI18n()
   const copy = t.settings.pluginPages
+  const redesign = usePortalShell()
+
+  const manageLabel = (
+    <>
+      {copy.manage}
+      <Codicon name="arrow-right" size="0.75rem" />
+    </>
+  )
 
   return (
     <SettingsContent>
+      <SettingsPageDescription>{copy.blurb}</SettingsPageDescription>
       {/* The agent half of this list is per profile: keep the selector here
           too, or a profile without the plugin strands the user (no way back). */}
       <SettingsProfileScope className="mb-5" />
-      <SectionHeading
-        aside={
-          // Page-level action on the heading row, like Passwords & Logins' Add.
-          <Button asChild className="gap-1.5" size="sm" variant="outline">
-            <a href={MANAGE_PLUGINS_HREF}>
-              {copy.manage}
-              <Codicon name="arrow-right" size="0.75rem" />
-            </a>
-          </Button>
-        }
-        icon={PLUGINS_NAV_ICON}
-        page
-        title={t.settings.nav.plugins}
-      />
-      <p className={BLURB_CLASS}>{copy.blurb}</p>
+      {!redesign && (
+        <>
+          <SectionHeading
+            aside={
+              // Page-level action on the heading row, like Passwords & Logins' Add.
+              <Button asChild className="gap-1.5" size="sm" variant="outline">
+                <a href={MANAGE_PLUGINS_HREF}>{manageLabel}</a>
+              </Button>
+            }
+            icon={PLUGINS_NAV_ICON}
+            page
+            title={t.settings.nav.plugins}
+          />
+          <p className={BLURB_CLASS}>{copy.blurb}</p>
+        </>
+      )}
       {missing && (
         <p
           className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)"
@@ -314,6 +340,14 @@ function PluginSettingsOverview({
           })}
         </div>
       )}
+      {redesign && (
+        // The redesign's page-level link closes the page (856:3477) instead of crowding the H1.
+        <SettingsFooter>
+          <Button asChild className="gap-1" size="inline" variant="textStrong">
+            <a href={MANAGE_PLUGINS_HREF}>{manageLabel}</a>
+          </Button>
+        </SettingsFooter>
+      )}
     </SettingsContent>
   )
 }
@@ -341,7 +375,8 @@ function PluginSettingsLoading() {
 function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner: null | string }) {
   const { t } = useI18n()
   const p = t.skills.plugins
-  const { requestGateway } = useGatewayRequest()
+  const requestGateway = useSettingsGatewayRequest()
+  const pinnedOwner = useSettingsOwner()
   const { rows } = useOwnedAgentPlugins(owner)
   const row = rows.find(candidate => candidate.key === agentKey)
   const busy = useStore($agentPluginBusy) === agentKey
@@ -362,7 +397,11 @@ function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner
           // Belt and braces: the key remount already discards a draft when
           // the scope moves, but a submit must never write a profile other
           // than the one these values were loaded from.
-          if (ownerKey($settingsRequestProfile.get()) !== owner || $agentPluginsProfile.get() !== owner) {
+          if (
+            (!pinnedOwner && ownerKey($settingsRequestProfile.get()) !== owner) ||
+            $agentPluginsProfile.get() !== owner ||
+            $agentPluginsOwnerKey.get() !== requestGateway.ownerKey
+          ) {
             notifyError(null, p.settingsForm.saveFailed(row.name))
 
             return false
@@ -374,7 +413,7 @@ function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner
             profile: owner,
             secrets: changes.secrets,
             values: changes.values,
-            writeSecret: (env, value) => setEnvVar(env, value, owner ?? undefined)
+            writeSecret: (env, value) => setEnvVar(env, value, pinnedOwner ?? owner ?? undefined)
           })
 
           if (ok) {
@@ -407,7 +446,9 @@ export function PluginSettingsPane({
   pending?: boolean
   target: null | PluginSettingsTarget
 }) {
-  const owner = ownerKey(useStore($settingsRequestProfile))
+  const selectedProfile = useStore($settingsRequestProfile)
+  const pinnedOwner = useSettingsOwner()
+  const owner = pinnedOwner?.profile ?? ownerKey(selectedProfile)
 
   if (!target) {
     return pending ? (

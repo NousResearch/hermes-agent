@@ -26,6 +26,7 @@ import {
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $connection } from '@/store/session'
 import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -1077,6 +1078,8 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
 })
 
 describe('useComposerSubmit with a setup card waiting in the onboarding chat', () => {
+  beforeEach(() => $shellChoice.set(false))
+
   // The card is a live setup_beat server request; its answer is that request's response frame.
   const parkCard = (beat: 'layout' | 'name') => {
     const respond = vi.fn()
@@ -1100,6 +1103,7 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     $setupBeatRequests.set({})
     $onboardingSession.set(null)
     $onboardingPhase.set('idle')
+    $shellChoice.set(null)
   })
 
   it('closes the card unanswered and sends the words as the next turn, never into the card turn', () => {
@@ -1206,6 +1210,22 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
       storedId: 'stored-session'
     })
 
+    const { hook, onSubmit } = renderSubmitHook({ text: '/help' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledWith('/help', expect.anything())
+  })
+
+  it('allows normal slash commands in redesigned mode despite cached classic setup metadata', () => {
+    $shellChoice.set(true)
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'runtime-session',
+      storedId: 'stored-session'
+    })
     const { hook, onSubmit } = renderSubmitHook({ text: '/help' })
 
     act(() => hook.result.current.submitDraft())

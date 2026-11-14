@@ -7,6 +7,7 @@ export const arChat = {
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',
     placeholderFollowUp: 'اكتب متابعة...',
+    browseAllSessions: 'تصفح كل الجلسات…',
     newSessionPlaceholders: ['اسأل Hermes عن شيء...', 'اطلب من Hermes تنفيذ مهمة...', 'ابدأ محادثة جديدة...'],
     followUpPlaceholders: ['اكتب متابعة...', 'أضف توجيها...', 'اسأل سؤالا آخر...'],
     startVoice: 'بدء الصوت',
@@ -388,6 +389,7 @@ export const arChat = {
   },
   desktop: {
     audioReadFailed: 'فشلت قراءة الصوت',
+    sessionOpenFailed: 'تعذّر فتح هذه الجلسة',
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
@@ -419,8 +421,7 @@ export const arChat = {
       'لا يوجد بعد خادم متصل يملك هذه المحادثة القديمة، لذا فُتحت كنصّ محفوظ للقراءة فقط. السجل سليم؛ الإرسال معطّل حتى يتبنّاها خادم.',
     readOnlyTranscriptSendBlocked: 'هذه المحادثة مفتوحة كنصّ محفوظ للقراءة فقط — الإرسال معطّل.',
     resumeStrandedTitle: 'تعذّر تحميل هذه الجلسة',
-    resumeStrandedBody:
-      'فشل الاتصال بهذه الجلسة وتوقفت إعادة المحاولة التلقائية. تأكد من تشغيل البوابة، ثم حاول مجددا.',
+    resumeStrandedBody: 'فشل الاتصال بهذه الجلسة وتوقفت إعادة المحاولة التلقائية. تأكد من تشغيل البوابة، ثم حاول مجددا.',
     poolSlotTimeoutBody:
       'جميع خانات الواجهات الخلفية المحلية للملفات الشخصية مشغولة. زد عدد Warm Bot Backends من الإعدادات ← متقدم، أو أعد المحاولة بعد إزالة واجهة خلفية خاملة.',
     poolSlotTimeoutOpenSettings: 'فتح الإعدادات المتقدمة',

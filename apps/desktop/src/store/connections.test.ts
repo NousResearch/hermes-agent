@@ -369,6 +369,33 @@ describe('selectConnection', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
+  it.each([false, true])(
+    'preserves the settings route through a fresh draft and activation rollback (fail=%s)',
+    async fail => {
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+
+      if (fail) {
+        ensureGatewayAgent.mockImplementationOnce(async (_connectionId, _profile, options) => {
+          options?.beforeActivate?.()
+          throw new Error('offline')
+        })
+      }
+
+      const activation = selectConnection('homelab', { profile: 'research', preserveRoute: true })
+
+      if (fail) {
+        await expect(activation).rejects.toThrow('offline')
+      } else {
+        await activation
+      }
+
+      expect(requestFreshSession.mock.calls).toEqual(
+        Array.from({ length: fail ? 2 : 1 }, () => [{ preserveRoute: true }])
+      )
+    }
+  )
+
   it('does not reset or dial when the active source/profile is selected again', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })

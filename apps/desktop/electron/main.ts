@@ -257,7 +257,7 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
-import { resolveFeatureFlags } from './feature-flags'
+import { resolveLaunchFacts } from './feature-flags'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -573,6 +573,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import { adoptShellPreference, shellMessages } from './shell-wording'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
@@ -605,7 +606,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { uiPreferencesRoot } from './ui-preferences'
+import { tryReadUiPreferences, uiPreferencesPath, uiPreferencesRoot } from './ui-preferences'
 import { registerMachineUiPreferences } from './ui-preferences-ipc'
 import {
   UPDATE_HANDOFF_DWELL_MS,
@@ -675,6 +676,8 @@ import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
+import { type WindowChromeKind } from './window-chrome'
+import { createWindowChromeBands } from './window-chrome-bands'
 import { bindWindowChromeEvents } from './window-chrome-events'
 import { appliedPrimaryWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
@@ -1395,13 +1398,17 @@ const BOOT_FAKE_STEP_MS = (() => {
 
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
-const TITLEBAR_HEIGHT = 34
-const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
-const WINDOW_BUTTON_POSITION = {
-  x: 12,
-  y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
-}
+// Native chrome follows the band the renderer draws, from the shell choice in the shared UI
+// preferences read before the first window exists, so it is created at the right height.
+const windowChrome = createWindowChromeBands<BrowserWindow>({
+  isMac: IS_MAC,
+  portal: adoptShellPreference(tryReadUiPreferences(uiPreferencesPath(uiPreferencesRoot(HERMES_HOME)))?.values),
+  relayout: win => {
+    applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
+    sendWindowStateChanged(undefined, win)
+  }
+})
 
 // Right-edge window-control reservation lives in titlebar-overlay-width.ts
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
@@ -1631,11 +1638,11 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 // Electron's own overlay drifts its hit-region under RAIL, so the renderer
 // paints its own min/max/close (wslg-window-controls.tsx) over the
 // hermes:window-control IPC channel. See titleBarOverlayOptions.
-function getTitleBarOverlayOptions(win?) {
+function getTitleBarOverlayOptions(win?, kind: WindowChromeKind = windowChrome.kindOf(win)) {
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
     darwinMajor: DARWIN_MAJOR,
-    titlebarHeight: TITLEBAR_HEIGHT,
+    titlebarHeight: windowChrome.titlebarHeightFor(kind),
     color: TITLEBAR_OVERLAY_COLOR,
     foreground:
       rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
@@ -6030,7 +6037,7 @@ function getWindowButtonPosition(win = mainWindow) {
     return null
   }
 
-  return win?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
+  return win?.getWindowButtonPosition?.() || windowChrome.buttonPositionFor(windowChrome.kindOf(win))
 }
 
 function getNativeOverlayWidth() {
@@ -7640,9 +7647,7 @@ async function discoverCloudAgents(org?: string) {
   const portalBaseUrl = resolvePortalBaseUrl()
 
   if (!(await hasLivePortalSession())) {
-    const err = new Error(
-      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
-    ) as any
+    const err = new Error(shellMessages.cloudNotSignedIn()) as any
 
     err.needsCloudLogin = true
     throw err
@@ -7691,9 +7696,7 @@ async function discoverCloudAgents(org?: string) {
       // A 401 means the portal session lapsed (and silent renewal could not
       // recover it) — surface it as a re-login, not a generic failure.
       if (error && error.statusCode === 401) {
-        const err = new Error(
-          'Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.'
-        ) as any
+        const err = new Error(shellMessages.cloudSessionExpired()) as any
 
         err.needsCloudLogin = true
         err.cause = error
@@ -8933,10 +8936,7 @@ async function buildRemoteConnection(
   }
 
   if (!token) {
-    throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
-        'Open Settings → Gateway and save a token, or switch back to Local.'
-    )
+    throw new Error(shellMessages.remoteTokenMissing())
   }
 
   const wsUrl = buildGatewayWsUrl(baseUrl, token)
@@ -12057,7 +12057,7 @@ function spawnSecondaryWindow({
     title: 'Hermes',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('chat') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
@@ -12076,9 +12076,7 @@ function spawnSecondaryWindow({
   minimizeToTray.registerWindow(win)
   translucencyBackedWindows.add(win)
 
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
+  windowChrome.track(win, 'chat')
 
   wireWindowReveal(win)
 
@@ -12161,19 +12159,16 @@ function spawnBrowserWindow(tabId) {
     minHeight: BROWSER_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
     titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    titleBarOverlay: getTitleBarOverlayOptions(undefined, 'browser'),
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('browser') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     show: false,
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  windowChrome.track(win, 'browser')
   translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
 
   wireWindowReveal(win)
 
@@ -12274,7 +12269,7 @@ function createInstanceWindow(
     title: 'Hermes',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('chat') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     show: false,
@@ -12289,9 +12284,7 @@ function createInstanceWindow(
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(win)
 
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
+  windowChrome.track(win, 'chat')
 
   wireWindowReveal(win)
 
@@ -13365,7 +13358,7 @@ function createWindow() {
     // macOS it just reserves a content inset alongside the traffic lights.
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('chat') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
@@ -13395,9 +13388,9 @@ function createWindow() {
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
 
-  if (IS_MAC) {
-    mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  windowChrome.track(mainWindow, 'chat')
 
+  if (IS_MAC) {
     // Packaged builds keep the bundle icon so macOS can style it (#73195).
     if (icon && shouldOverrideDockIcon({ platform: process.platform, isPackaged: app.isPackaged })) {
       // The window icon is full-bleed for Linux; the Dock wants the mac grid.
@@ -16436,15 +16429,11 @@ ipcMain.on('hermes:translucency:support', event => {
 // flags survive self-relaunches because collectRelaunchArgs only strips
 // internal flags.
 ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
-  event.returnValue = {
-    ...resolveFeatureFlags({
-      argv: process.argv,
-      canary: resolveUpdaterChannelFromStamp() === 'canary'
-    }),
-    // Dev-only: `--fresh-install` makes onboarding treat this launch as a fresh
-    // install. Packaged builds never honour it.
-    assumeFreshInstall: !app.isPackaged && process.argv.includes('--fresh-install')
-  }
+  event.returnValue = resolveLaunchFacts({
+    argv: process.argv,
+    canary: resolveUpdaterChannelFromStamp() === 'canary',
+    packaged: app.isPackaged
+  })
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
@@ -16809,7 +16798,10 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
 // Pre-paint payloads the preload reads synchronously: the local skin, and this
 // machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
 registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
-registerMachineUiPreferences(HERMES_HOME)
+registerMachineUiPreferences(HERMES_HOME, snapshot => {
+  adoptShellPreference(snapshot.values)
+  windowChrome.applyPreferences(snapshot.values)
+})
 // Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
 gatewayConnectionsStore.watch({
   onRegistry: (changes, { after, before }) => {

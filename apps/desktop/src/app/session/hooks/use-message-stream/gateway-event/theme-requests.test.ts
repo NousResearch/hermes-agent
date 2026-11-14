@@ -4,6 +4,7 @@ import { registerLayoutPresets } from '@/app/contrib/layout-presets'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { resetServerRequestsForTests } from '@/store/server-requests'
+import { $shellChoice } from '@/store/shell-variant'
 import { $themePicks, cancelThemePick, pickTheme } from '@/store/theme-pick'
 import { $pendingSkinApply } from '@/themes/backend-sync'
 
@@ -39,10 +40,16 @@ describe('set_theme requests', () => {
   afterEach(() => {
     $themePicks.set({})
     $pendingSkinApply.set(null)
+    $shellChoice.set(null)
     resetServerRequestsForTests()
   })
 
-  it('parks a picker card and answers it with the applied pick', () => {
+  // An unpicked skin resolves to the shell's own default at paint time, so the accent lands on that skin.
+  it.each([
+    { shell: 'classic', choice: false, saved: 'nous-accent-e0218a' },
+    { shell: 'redesign', choice: null, saved: 'portal-accent-e0218a' }
+  ])('parks a picker card and answers it with the applied pick ($shell)', ({ choice, saved }) => {
+    $shellChoice.set(choice)
     const respond = deliver('theme.pick', { picker: 'accent', session_id: 'session-a' })
 
     expect($themePicks.get()['session-a']).toMatchObject({ picker: 'accent', requestId: 'srq-1' })
@@ -50,7 +57,7 @@ describe('set_theme requests', () => {
 
     expect(pickTheme('session-a', { accent: 'pink' })).toBe(true)
     expect(respond).toHaveBeenCalledWith({ picked: { accent: 'pink' } })
-    expect($pendingSkinApply.get()).toBe('nous-accent-e0218a')
+    expect($pendingSkinApply.get()).toBe(saved)
     expect($themePicks.get()['session-a']).toBeUndefined()
   })
 

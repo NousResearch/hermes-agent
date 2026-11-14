@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { createElement, useEffect } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -252,7 +253,7 @@ it('gates hidden side guests without mounting never-activated tabs or disconnect
   )
   setTree(split('row', [group(['workspace']), group(['live', 'background'], { id: 'side' })]))
   $collapsedTreeSides.set(new Set(['right']))
-  render(<LayoutTreeRoot />)
+  render(<LayoutTreeRoot />, { wrapper: MemoryRouter })
   expect(guest()).toBeNull()
   act(() => $collapsedTreeSides.set(new Set()))
   const page = guest()!
@@ -359,7 +360,7 @@ it('uses the same live guest when a collapsible pane moves into the narrow overl
   registerPane('live', true, { collapsible: true, placement: 'right' })
   registerPane('workspace', false, { placement: 'main' })
   setTree(split('row', [group(['workspace']), group(['live'], { id: 'side' })]))
-  render(<LayoutTreeRoot />)
+  render(<LayoutTreeRoot />, { wrapper: MemoryRouter })
   const page = guest()!
   act(() => $narrowViewport.set(true))
   expect(guest()).toBe(page)

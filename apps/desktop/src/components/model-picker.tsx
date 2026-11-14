@@ -46,6 +46,7 @@ import { Skeleton } from './ui/skeleton'
 interface ModelPickerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onCloseAutoFocus?: (event: Event) => void
   gw?: HermesGateway
   sessionId?: string | null
   currentModel: string
@@ -68,6 +69,7 @@ interface ModelPickerDialogProps {
 export function ModelPickerDialog({
   open,
   onOpenChange,
+  onCloseAutoFocus,
   gw,
   sessionId,
   currentModel,
@@ -191,6 +193,7 @@ export function ModelPickerDialog({
       <DialogContent
         bodyClassName="gap-0 overflow-hidden p-0"
         className={cn('max-h-[85vh] max-w-2xl', contentClassName)}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
         <DialogHeader className="border-b border-border px-4 py-3">
           <DialogTitle>{copy.title}</DialogTitle>

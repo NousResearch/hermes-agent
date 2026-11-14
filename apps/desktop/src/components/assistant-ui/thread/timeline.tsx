@@ -26,6 +26,9 @@ import { useTimelineHistory } from './use-timeline-history'
 
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 
+/** How long a wheel or touch scroll keeps the resting-hidden rail visible. */
+const SCROLL_REVEAL_MS = 900
+
 /** A kept-alive neighbor must never receive this rail's navigation. */
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
@@ -300,6 +303,35 @@ const ActiveThreadTimeline: FC = () => {
     }
   }, [cancelJump, railEntries, history.isHistorical])
 
+  // The user moving through the transcript shows the rail for a moment (the redesign keeps it out of
+  // sight at rest; redesign.css). Wheel and touch only: a streaming reply's own follow-scroll is not
+  // the user looking for a turn.
+  useEffect(() => {
+    const viewport = ownViewport(root.current)
+    const rail = root.current
+
+    if (!viewport || !rail) {
+      return
+    }
+
+    let timer = 0
+
+    const reveal = () => {
+      rail.dataset.scrolling = ''
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => delete rail.dataset.scrolling, SCROLL_REVEAL_MS)
+    }
+
+    viewport.addEventListener('wheel', reveal, { passive: true })
+    viewport.addEventListener('touchmove', reveal, { passive: true })
+
+    return () => {
+      window.clearTimeout(timer)
+      viewport.removeEventListener('wheel', reveal)
+      viewport.removeEventListener('touchmove', reveal)
+    }
+  }, [railEntries.length])
+
   if (!railEntries.length) {
     return null
   }
@@ -313,7 +345,7 @@ const ActiveThreadTimeline: FC = () => {
       role="navigation"
       style={{
         position: 'absolute',
-        right: 0,
+        right: 'var(--thread-timeline-inset, 0px)',
         top: '50%',
         transform: 'translateY(-50%)',
         zIndex: 40,

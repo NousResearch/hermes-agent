@@ -39,10 +39,11 @@ import {
  */
 import { useEffect, useRef, useState } from 'react'
 
-import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
+import { avatarColor, blobatarSvg, botAppearance, BotBadge, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
+import { $botsPaneHosted } from './bots-pane-host'
 import { createCanonicalChat } from './canonical-chat'
 import { canonicalMemberName } from './canonical-group-activity'
 import {
@@ -1381,6 +1382,115 @@ function groupPlanProblem(reason: string | undefined, where: string, local: bool
   return words[reason ?? ''] ?? peerSetupText(reason ?? '', place, b.canonical)
 }
 
+/** The roster rows the picker does not offer (never an outage placeholder), matching `query`. */
+function unseatedGroupBots(roster: RosterRow[], selectable: RosterRow[], allMeta: Record<string, BotMeta>, query: string) {
+  return filterBots(roster.filter(bot => !bot?.ghost && !selectable.includes(bot)), allMeta, query)
+}
+
+/** Bots the group chat cannot seat, each named with the capability reason that keeps it out (not
+ *  seated by this connection's gateway, or a computer that isn't connected). */
+function GroupPickerUnseated({
+  allMeta,
+  bots,
+  connectionId,
+  lead
+}: {
+  allMeta: Record<string, BotMeta>
+  bots: RosterRow[]
+  connectionId: null | string
+  lead: string
+}) {
+  const b = useBots()
+
+  return (
+    <div className="grid gap-1 px-1.5 py-3 text-xs text-(--ui-text-tertiary)" data-testid="group-picker-unseated">
+      <p>{lead}</p>
+      <ul className="grid gap-0.5">
+        {bots.map(bot => (
+          <li key={botRosterKey(bot)}>
+            <span className="text-(--ui-text-secondary)">{displayName(bot, botRosterMeta(bot, allMeta))}</span>
+            {' — '}
+            {botOnConnection(bot, connectionId) ? b.group.unseatableHere : b.crossGateway.peerRouteMissing}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** The picker with nothing to offer: no bots at all, no match for the search, or bots the group
+ *  chat cannot seat. The redesign also names the unseatable bots a search matches, so a search for
+ *  an agent the sidebar lists never reads as "no match". */
+function GroupPickerEmpty({
+  allMeta,
+  connectionId,
+  portal,
+  query,
+  roster,
+  selectable
+}: {
+  allMeta: Record<string, BotMeta>
+  connectionId: null | string
+  portal: boolean
+  query: string
+  roster: RosterRow[]
+  selectable: RosterRow[]
+}) {
+  const b = useBots()
+  const unseated = unseatedGroupBots(roster, selectable, allMeta, portal ? query : '')
+
+  if ((query && !portal) || !unseated.length) {
+    return (
+      <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
+        {query ? b.group.noBotsMatch(query) : b.group.createBotFirst}
+      </div>
+    )
+  }
+
+  return <GroupPickerUnseated allMeta={allMeta} bots={unseated} connectionId={connectionId} lead={b.group.noSeatableBots} />
+}
+
+/** The picked bots as removable chips. The redesign keeps the row in place, empty included, so
+ *  the first pick never grows the dialog and moves it under the pointer. */
+function GroupPickedRow({
+  allMeta,
+  onRemove,
+  portal,
+  selected
+}: {
+  allMeta: Record<string, BotMeta>
+  onRemove: (bot: RosterRow) => void
+  portal: boolean
+  selected: RosterRow[]
+}) {
+  const b = useBots()
+
+  if (!selected.length && !portal) {
+    return null
+  }
+
+  return (
+    <div className={cn('flex flex-wrap gap-1', portal && 'min-h-5 items-center')} data-slot="group-picked">
+      {!selected.length && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{b.group.nonePicked}</span>}
+      {selected.map(bot => (
+        <Badge
+          asChild
+          className="rounded-full bg-(--chrome-action-hover) pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
+          key={botRosterKey(bot)}
+          variant="muted"
+        >
+          <Tip label={b.group.removeFromSelection}>
+            <RowButton onClick={() => onRemove(bot)}>
+              {displayName(bot, botRosterMeta(bot, allMeta))}
+              <Codicon className="text-[0.6rem]" name="close" />
+            </RowButton>
+          </Tip>
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 /** Discord-style group chat creation: pick 2+ routable bots via checkboxes
  *  (with search), name the group, create. Every group chat is created on and run
  *  by this connection's gateway, which keeps it running with Desktop closed; bots
@@ -1392,6 +1502,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const [peerCheck, setPeerCheck] = useState(0)
   const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open, peerCheck)
+  // The redesign (Bots live on its Agents page, no pane) names the agents the picker leaves out.
+  const portal = !useValue($botsPaneHosted)
 
   const intent = useRef<GroupCreationIntent>({})
   const [query, setQuery] = useState('')
@@ -1433,6 +1545,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
 
   const spansConnections = selectableRoster.some(bot => !botOnConnection(bot, connectionId))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
+  const unseated = unseatedGroupBots(roster, selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
   const placeholder = selected.length
@@ -1541,27 +1654,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
           placeholder={b.group.searchToAddPlaceholder}
           value={query}
         />
-        {selected.length ? (
-          <div className="flex flex-wrap gap-1">
-            {selected.map(bot => (
-              <Badge
-                asChild
-                className="rounded-full bg-(--chrome-action-hover) pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
-                key={botRosterKey(bot)}
-                variant="muted"
-              >
-                <Tip label={b.group.removeFromSelection}>
-                  <RowButton
-                    onClick={() => select(bot, false)}
-                  >
-                    {displayName(bot, botRosterMeta(bot, allMeta))}
-                    <Codicon className="text-[0.6rem]" name="close" />
-                  </RowButton>
-                </Tip>
-              </Badge>
-            ))}
-          </div>
-        ) : null}
+        <GroupPickedRow allMeta={allMeta} onRemove={bot => select(bot, false)} portal={portal} selected={selected} />
         <div className="max-h-64 min-h-0 overflow-y-auto overscroll-contain">
           <div className="grid gap-0.5 pr-2">
             {visible.length ? (
@@ -1580,7 +1673,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
                     )}
                     key={botRosterKey(bot)}
                   >
-                    <BotFace
+                    <BotBadge
                       color={avatarColor(color, bot.name)}
                       image={image && !isBackfilledFacePng(image) ? image : null}
                       name={bot.name}
@@ -1609,9 +1702,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
                 )
               })
             ) : (
-              <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                {query.trim() ? b.group.noBotsMatch(query.trim()) : b.group.createBotFirst}
-              </div>
+              <GroupPickerEmpty
+                allMeta={allMeta}
+                connectionId={connectionId}
+                portal={portal}
+                query={query.trim()}
+                roster={roster}
+                selectable={selectableRoster}
+              />
+            )}
+            {/* The redesign names the agents it leaves out, so "Pick 2" never hides why only one is offered. */}
+            {portal && visible.length > 0 && unseated.length > 0 && (
+              <GroupPickerUnseated allMeta={allMeta} bots={unseated} connectionId={connectionId} lead={b.group.cannotJoinHere} />
             )}
           </div>
         </div>

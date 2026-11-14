@@ -14,6 +14,7 @@ import { runtimeTranslations } from '@/i18n/runtime'
 import {
   KEYBIND_ACTION_IDS,
   keybindAction,
+  keybindActionAvailable,
   type KeybindCategory,
   PLUGIN_APP_ACTIONS,
   type PluginAppActionId
@@ -36,7 +37,9 @@ export type PluginRunActionResult =
       ok: false
       /** `unknown`: no such action. `denied`: a real action that is not on
        *  the plugin allowlist. `unavailable`: the app shell that owns the
-       *  handlers is not mounted (e.g. during early startup). */
+       *  handlers is not mounted (e.g. during early startup), or the action
+       *  does nothing in this window's interface (the status-bar toggle in the
+       *  redesigned shell, which has no status bar). */
       reason: 'denied' | 'unavailable' | 'unknown'
       error: string
     }
@@ -90,6 +93,12 @@ export function runPluginAppAction(pluginId: string, id: unknown): PluginRunActi
     return known
       ? refuse(pluginId, 'denied', `${label} is not available to plugins. See ctx.listActions() for the allowed ids.`)
       : refuse(pluginId, 'unknown', `${label} is not a Hermes app action. See ctx.listActions() for the allowed ids.`)
+  }
+
+  // The same availability the shortcut map and the palette honour: an action this window's shell
+  // has no surface for would otherwise "run" and change nothing.
+  if (!keybindActionAvailable(id)) {
+    return refuse(pluginId, 'unavailable', `${label} does nothing in this window's interface.`)
   }
 
   if (!runner || !runner(id)) {

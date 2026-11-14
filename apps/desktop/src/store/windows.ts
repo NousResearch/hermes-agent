@@ -1,4 +1,5 @@
 import { notifyError } from './notifications'
+import type { SessionProfileRoute } from './session-request-router'
 
 // Window flag set by the Electron main process when it opens a standalone
 // session window (see electron/main.ts buildSessionWindowUrl). It rides in the
@@ -247,7 +248,7 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // (#82768, #61286).
 export async function openSessionInNewWindow(
   sessionId: string,
-  opts?: { watch?: boolean; parentSessionId?: null | string }
+  opts?: { watch?: boolean; parentSessionId?: null | string; ownerRoute?: SessionProfileRoute }
 ): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
@@ -255,15 +256,14 @@ export async function openSessionInNewWindow(
 
   // Lazy imports: `./profile` subscribes to the API client on load, so a
   // static import here would drag it into every page that opens windows.
-  const [{ $activeGatewayProfile, normalizeProfileKey }, { resolveSessionOwner }, { isSessionOwnerRoute }] =
-    await Promise.all([
-      import('./profile'),
-      import('@/app/session/hooks/use-session-actions/utils'),
-      import('./session-request-router')
-    ])
+  const [{ $activeGatewayProfile, normalizeProfileKey }, { isSessionOwnerRoute }] =
+    await Promise.all([import('./profile'), import('./session-request-router')])
 
   await runWindowOpen(async () => {
-    const owner = await resolveSessionOwner(opts?.parentSessionId || sessionId)
+    // The resolver imports session-states, whose initialization reads this
+    // window store. Keep that cycle lazy; an explicit owner needs no resolver.
+    const owner = opts?.ownerRoute ??
+      await (await import('@/app/session/hooks/use-session-actions/utils')).resolveSessionOwner(opts?.parentSessionId || sessionId)
 
     const profile = normalizeProfileKey(
       isSessionOwnerRoute(owner) ? owner.profile : (owner ?? $activeGatewayProfile.get())

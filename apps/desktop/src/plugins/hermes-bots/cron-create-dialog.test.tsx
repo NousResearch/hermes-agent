@@ -11,10 +11,15 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { translateNow, useI18n } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
+import { displayName } from './labels'
+
+/** The core copy this pane renders: it mounts without an I18nProvider here, so the base catalog. */
+const coreCopy = () => renderHook(() => useI18n()).result.current.t
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -94,7 +99,7 @@ describe('where the run\u2019s output lands', () => {
     render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
     fillRequiredFields()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create cron' }))
+    fireEvent.click(screen.getByRole('button', { name: coreCopy().cron.createAction }))
 
     await waitFor(() => expect(request).toHaveBeenCalled())
 
@@ -108,9 +113,9 @@ describe('where the run\u2019s output lands', () => {
     render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
     fillRequiredFields()
 
-    fireEvent.click(controlUnder('Send results to'))
-    fireEvent.click(screen.getByRole('option', { name: /chat \(bot responds\)/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Create cron' }))
+    fireEvent.click(controlUnder(translateBots('cron.sendResultsTo')))
+    fireEvent.click(screen.getByRole('option', { name: translateBots('cron.botChatTarget', displayName({ name: 'ops' })) }))
+    fireEvent.click(screen.getByRole('button', { name: coreCopy().cron.createAction }))
 
     await waitFor(() => expect(request).toHaveBeenCalled())
 
@@ -127,13 +132,13 @@ describe('where the run\u2019s output lands', () => {
   it('returns the picker to history when the dialog is reopened', async () => {
     const { rerender } = render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
 
-    fireEvent.click(controlUnder('Send results to'))
-    fireEvent.click(screen.getByRole('option', { name: /chat \(bot responds\)/ }))
+    fireEvent.click(controlUnder(translateBots('cron.sendResultsTo')))
+    fireEvent.click(screen.getByRole('option', { name: translateBots('cron.botChatTarget', displayName({ name: 'ops' })) }))
     // Cancel resets; a reopened dialog must never inherit the last target.
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: translateNow('common.cancel') }))
 
     rerender(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
 
-    await waitFor(() => expect(controlUnder('Send results to').textContent).toBe('Run history only'))
+    await waitFor(() => expect(controlUnder(translateBots('cron.sendResultsTo')).textContent).toBe(translateBots('cron.runHistoryOnly')))
   })
 })

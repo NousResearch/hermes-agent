@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AutomationBlueprint, CronJob } from '@/hermes'
+import { TRANSLATIONS } from '@/i18n'
+import { $shellChoice } from '@/store/shell-variant'
 
 const hermes = vi.hoisted(() => ({
   getAutomationBlueprints: vi.fn(),
@@ -72,6 +74,9 @@ function renderView() {
 }
 
 beforeEach(() => {
+  // Classic's Scheduled jobs page lists the blueprints; the redesign offers them in New routine
+  // (src/app/routines/routines.test.tsx).
+  $shellChoice.set(false)
   hermes.getCronJobs.mockResolvedValue([])
   hermes.getAutomationBlueprints.mockResolvedValue({ blueprints: [builtinBlueprint, pluginBlueprint] })
   hermes.instantiateAutomationBlueprint.mockResolvedValue({
@@ -83,6 +88,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  $shellChoice.set(null)
   cleanup()
   vi.clearAllMocks()
 })
@@ -92,18 +98,17 @@ describe('plugin-registered automation blueprints', () => {
     renderView()
 
     const title = await screen.findByText('Team standup digest')
-    const row = title.closest('button') as HTMLElement
-    // PanelListRow renders `meta` (the plugin name) beside the row's button.
-    expect(within(row.parentElement as HTMLElement).getByText('teamtools')).toBeTruthy()
-    const builtinRow = screen.getByText('Morning briefing').closest('button') as HTMLElement
-    expect(within(builtinRow.parentElement as HTMLElement).queryByText('teamtools')).toBeNull()
+    // Each blueprint is a list row that names its plugin.
+    expect(screen.getByText('teamtools')).toBeTruthy()
     // The catalog is per profile (plugins load per profile): fetched for the job's target profile.
     expect(hermes.getAutomationBlueprints).toHaveBeenCalledWith('work')
 
-    fireEvent.click(row)
+    fireEvent.click(title)
     // The dialog's "Start from" select names the plugin next to the title.
     expect(await screen.findByText('· teamtools')).toBeTruthy()
 
+    // The Scheduled jobs page's blueprint dialog keeps main's verb.
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.cron.createAction })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Schedule it' }))
 
     await waitFor(() =>

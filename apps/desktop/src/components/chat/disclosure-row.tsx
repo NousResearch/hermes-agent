@@ -41,6 +41,7 @@ export function DisclosureRow({
           'flex min-w-0 max-w-fit items-start gap-1.5 text-left transition-colors',
           onToggle ? 'hover:text-foreground focus-visible:text-foreground' : 'cursor-default'
         )}
+        data-slot="disclosure-row-toggle"
         disabled={!onToggle}
         onClick={onToggle}
         type="button"

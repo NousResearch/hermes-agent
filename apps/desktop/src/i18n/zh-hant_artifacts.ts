@@ -11,6 +11,7 @@ export const zhHantArtifacts = {
     tabFiles: '檔案',
     tabLinks: '連結',
     noArtifactsTitle: '找不到成品',
+    partialIndex: (failed: number, total: number) => `索引成品時略過了 ${total} 個最近工作階段中的 ${failed} 個。`,
     noArtifactsDesc: '當工作階段產生圖片和檔案輸出時，它們會顯示在這裡。',
     failedLoad: '成品載入失敗',
     openFailed: '開啟失敗',

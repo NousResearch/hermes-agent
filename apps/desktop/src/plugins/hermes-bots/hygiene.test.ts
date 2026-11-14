@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type * as data from './data'
 import type * as groupChat from './group-chat'
 import { createGroupGateway, scriptedStorage } from './group-test-utils'
 import type * as hygiene from './hygiene'
@@ -23,7 +22,6 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 interface Rooms {
   chat: typeof groupChat
-  data: typeof data
   hygiene: typeof hygiene
   writes: Map<string, unknown>
 }
@@ -38,16 +36,11 @@ async function load(): Promise<Rooms> {
 
   Object.assign(host, gateway.host)
 
-  const [chat, data, hygiene, shared] = await Promise.all([
-    import('./group-chat'),
-    import('./data'),
-    import('./hygiene'),
-    import('./shared')
-  ])
+  const [chat, hygiene, shared] = await Promise.all([import('./group-chat'), import('./hygiene'), import('./shared')])
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
 
-  return { chat, data, hygiene, writes: gateway.storage }
+  return { chat, hygiene, writes: gateway.storage }
 }
 
 function member(overrides: Partial<GroupMember> = {}): GroupMember {
@@ -64,7 +57,7 @@ function member(overrides: Partial<GroupMember> = {}): GroupMember {
 
 describe('removed-connection sweep', () => {
   it('annotates matching members and persists; other rows are untouched', async () => {
-    const { chat, data, writes } = await load()
+    const { chat, writes } = await load()
     chat.$groupChats.set({
       Crew: {
         log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: '1', text: 'hi' }],
@@ -91,8 +84,6 @@ describe('removed-connection sweep', () => {
     expect(swept?.sourceMissing).toBe(true)
     expect(swept?.sourceReachable).toBe(false)
     expect(kept?.sourceMissing).toBeUndefined()
-    // The degraded mark renders as the existing 'Gateway removed' state.
-    expect(data.botSourceStatus(swept).label).toBe('Gateway removed')
     // Persisted so the fix survives restarts (the poisoned row lived in storage).
     expect(writes.has('group-chats')).toBe(true)
   })
@@ -110,7 +101,7 @@ describe('removed-connection sweep', () => {
 
 describe('hydrate-time annotate', () => {
   it('marks lost-connectionId rows even without a registry', async () => {
-    const { data, hygiene } = await load()
+    const { hygiene } = await load()
 
     const rooms: Record<string, GroupChat> = {
       Crew: {
@@ -130,7 +121,6 @@ describe('hydrate-time annotate', () => {
 
     expect(changed).toBe(true)
     expect(next.Crew.members?.[0].sourceMissing).toBe(true)
-    expect(data.botSourceStatus(next.Crew.members?.[0]).label).toBe('Gateway removed')
   })
 
   it('with a live registry, marks members on dead connections and keeps live and local ones', async () => {

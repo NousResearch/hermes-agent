@@ -1,5 +1,6 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { createElement, useEffect } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
@@ -80,7 +81,11 @@ it("keeps a hidden session's live Browser body alive and shows the same one on r
   act(() => openPreview({ kind: 'url', label: 'A', source: 'https://a.example', url: 'https://a.example' }))
   const aTab = $previewTabs.get()[0]!.id
 
-  const { container } = render(createElement(LayoutTreeRoot))
+  const { container } = render(
+    <MemoryRouter>
+      <LayoutTreeRoot />
+    </MemoryRouter>
+  )
 
   const guestFor = (tabId: string) => container.querySelector<HTMLElement>(`preview-live-guest[data-tab="${tabId}"]`)
 

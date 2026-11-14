@@ -36,6 +36,8 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { $sessionListSpansProfiles } from './shell-policy'
+
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
 export function normalizeProfileKey(name: string | null | undefined): string {
@@ -450,8 +452,10 @@ export function resolveActiveSourceOwnerRoute(profile: string): AgentProfileRout
 // currently-open session (store/projects). The chat controller subscribes and
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
+export const $freshSessionRequestOptions = atom<{ preserveRoute?: boolean }>({})
 
-export function requestFreshSession(): void {
+export function requestFreshSession(options: { preserveRoute?: boolean } = {}): void {
+  $freshSessionRequestOptions.set(options)
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
@@ -969,6 +973,12 @@ persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFI
 // in sync.
 export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
   showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+)
+
+// Browsing every agent must not change the owner of project or settings operations.
+export const $sessionListProfileScope = computed(
+  [$showAllProfiles, $activeGatewayProfile, $sessionListSpansProfiles],
+  (showAll, gateway, simplified) => (showAll || simplified ? ALL_PROFILES : normalizeProfileKey(gateway))
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new

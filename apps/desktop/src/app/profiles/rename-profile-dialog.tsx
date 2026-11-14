@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
@@ -17,8 +17,10 @@ import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
+import { migrateAgentSidebarPreferences } from '@/store/agent-sidebar-preferences'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -29,6 +31,7 @@ const identity = (raw: string) => raw
 // reacts via onRenamed. Unchanged name is a no-op close.
 export function RenameProfileDialog({
   currentName,
+  displayName,
   isDefault = false,
   onClose,
   onRenamed,
@@ -36,19 +39,31 @@ export function RenameProfileDialog({
   scope
 }: {
   currentName: string
+  /** The name the app shows for this agent today (its display name, else its id). */
+  displayName?: string
   /** Default profile: sets a presentation-only display name (Unicode ok);
    *  the canonical id stays "default" and no backend teardown is needed. */
   isDefault?: boolean
   onClose: () => void
   onRenamed?: (name: string) => Promise<void> | void
   open: boolean
-  /** Explicit (connection, profile) owner for a remote-gateway profile: the
-   *  rename executes there and no local backend is retired. */
+  /** Explicit (connection, profile) owner. Only a local rename retires local
+   *  gateways and migrates local ownership state. */
   scope?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const [name, setName] = useState(currentName)
+  const redesign = usePortalShell()
+  const input = useRef<HTMLInputElement>(null)
+  // The success state shows briefly before the dialog closes; a dialog that unmounts first must not
+  // call back into a page that is gone.
+  const closing = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(closing.current), [])
+
+  // The redesign edits the name in place: the field opens holding the name you see, selected, so
+  // typing replaces it. Classic starts the default agent's display name blank.
+  const initial = isDefault && !redesign ? '' : isDefault ? displayName || currentName : currentName
+  const [name, setName] = useState(initial)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
 
@@ -57,14 +72,19 @@ export function RenameProfileDialog({
       return
     }
 
-    // Display-name mode starts blank — "default" is the id, not a name.
-    setName(isDefault ? '' : currentName)
+    setName(initial)
     setError(null)
     setStatus('idle')
-  }, [currentName, isDefault, open])
+
+    if (redesign) {
+      const frame = requestAnimationFrame(() => input.current?.select())
+
+      return () => cancelAnimationFrame(frame)
+    }
+  }, [initial, open, redesign])
 
   const trimmed = name.trim()
-  const unchanged = !isDefault && trimmed === currentName
+  const unchanged = (!isDefault || redesign) && trimmed === initial
   const invalid = trimmed !== '' && !unchanged && !isDefault && !isValidProfileName(trimmed)
   const busy = status === 'saving' || status === 'done'
 
@@ -85,13 +105,14 @@ export function RenameProfileDialog({
 
     setStatus('saving')
     setError(null)
+    const local = scope == null || (typeof scope === 'object' && scope.connectionId === 'local')
 
     try {
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
+      if (!isDefault && local) {
         retireLocalProfileGateways(currentName)
       }
 
@@ -100,13 +121,15 @@ export function RenameProfileDialog({
       // The sessions moved with the directory; the tabs, cached tails and
       // remembered ids keyed by the old name must follow, or every open
       // dials a backend that no longer exists (#111868).
-      if (!isDefault && scope == null) {
+      if (!isDefault && local) {
         migrateTilesForProfile(currentName, trimmed)
+      } else if (!isDefault && scope && typeof scope === 'object') {
+        migrateAgentSidebarPreferences({ connectionId: scope.connectionId ?? null, profile: currentName }, trimmed)
       }
 
       await onRenamed?.(trimmed)
       setStatus('done')
-      window.setTimeout(onClose, 800)
+      closing.current = window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedRename)
@@ -138,6 +161,7 @@ export function RenameProfileDialog({
               autoFocus
               id="rename-profile-name"
               onValueChange={setName}
+              ref={input}
               sanitize={isDefault ? identity : slug}
               value={name}
             />

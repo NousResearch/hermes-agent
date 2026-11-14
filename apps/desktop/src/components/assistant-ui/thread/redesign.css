@@ -1,0 +1,485 @@
+/* Redesigned transcript (Figma 491:40346 / 491:40652): the shared conversation
+   column (app/chat/stage.css), 20px inside the composer's edges, 30px between
+   turns and 20px between the blocks of one reply. Type is 14/1.6 before the
+   user's text scale (Figma draws 13; the designer asked for 14 in the app). Figma draws no code, tables, quotes or cards beyond the
+   routine card (491:42439); those take the same fills, radii and ink. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'] {
+  --conversation-text-base-size: 0.875rem;
+  --conversation-tool-base-size: 0.75rem;
+  --conversation-caption-base-size: 0.75rem;
+  --conversation-base-line-height: 1.05rem;
+  --dt-line-height: 1.6;
+  --message-text-indent: 0px;
+  --paragraph-gap: 0.75rem;
+  --turn-block-gap: 1.25rem;
+  --portal-conversation-turn-gap: 1.875rem;
+  --portal-conversation-prompt-clearance: 0.75rem;
+  --portal-conversation-fill: var(--portal-raw-ink-5);
+  /* The tool-steps row takes the same fill under its dashed edge (1089:8401: light/5). Figma draws the
+     dash at light/10 (16292:16175), about 1.3:1 on the navy stage: the row is a control, so its edge
+     takes ink .4 to hold the 3:1 a control's boundary needs, in both modes. Rules and table lines
+     keep the quiet dash. */
+  --portal-conversation-tool-fill: var(--portal-raw-ink-5);
+  --portal-conversation-tool-dash: var(--portal-raw-ink-40);
+  --portal-conversation-dash: var(--portal-raw-ink-10);
+  --portal-conversation-done: color-mix(in srgb, var(--portal-raw-green) 50%, transparent);
+  --dt-user-bubble: var(--portal-conversation-fill);
+  /* The stage header overlays the top row (app/chat/stage.css): the first turn
+     starts below it and a pinned prompt sticks under it. */
+  --sticky-human-top: var(--portal-stage-header-height);
+  max-width: var(--portal-conversation-column);
+  padding-inline: var(--portal-conversation-inset);
+  padding-top: calc(var(--portal-stage-header-height) + 0.75rem);
+}
+
+/* Lines scrolling up fade out beneath the stage header row. A static mask on
+   the scroller: no repaint per scroll frame. */
+:root[data-shell='portal'] [data-chat-surface] [data-slot='aui_thread-viewport'] {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0.75rem,
+    var(--portal-raw-black) var(--portal-stage-header-height)
+  );
+}
+
+:root[data-shell='portal']:not(.dark) [data-slot='aui_thread-content'] {
+  --portal-conversation-fill: var(--portal-raw-ink-2);
+  --portal-conversation-tool-fill: var(--portal-raw-ink-2);
+  --portal-conversation-dash: var(--portal-raw-ink-5);
+}
+
+/* ── Turn rhythm ───────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='aui_turn-pair'] {
+  gap: calc(var(--portal-conversation-turn-gap) - var(--portal-conversation-prompt-clearance));
+}
+
+:root[data-shell='portal'] [data-slot='aui_message-group'] {
+  padding-bottom: var(--portal-conversation-turn-gap);
+}
+
+/* The hover actions under a reply fill the turn gap rather than adding to it. */
+:root[data-shell='portal'] [data-slot='aui_message-group']:has([data-slot='aui_msg-actions']) {
+  padding-bottom: 0;
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_msg-actions'] {
+  min-height: var(--portal-conversation-turn-gap);
+  padding-block: 0;
+}
+
+/* ── Prompt (491:40653) ────────────────────────────────────────────────── */
+
+/* A pinned prompt clips the reply scrolling under it down to its own box, so
+   that box keeps a clearance below the bubble: cut lines stop short of the
+   bubble instead of butting against it. The turn gap absorbs it at rest. */
+:root[data-shell='portal'] [data-slot='aui_user-message-root'] {
+  --human-msg-line-height: 1.6;
+  padding-block: 0 var(--portal-conversation-prompt-clearance);
+}
+
+/* A hard clip at the prompt's edge cut the reply line under it in half. Fade
+   the covered sibling out instead: hidden through the prompt's box, then
+   easing back to full ink over two reply lines: the line straddling the edge
+   is all but gone and the next one is faded, never half a line at full ink. A mask, like the
+   clip it replaces, paints no backing, so the stage (and its art) shows
+   through in either theme. */
+:root[data-shell='portal'] [data-sticky-prompt-clip] {
+  clip-path: none;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent var(--sticky-prompt-clip),
+    color-mix(in srgb, var(--portal-raw-black) 20%, transparent)
+      calc(var(--sticky-prompt-clip) + 0.5 * var(--portal-conversation-prompt-fade)),
+    var(--portal-raw-black) calc(var(--sticky-prompt-clip) + var(--portal-conversation-prompt-fade))
+  );
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] {
+  --portal-conversation-prompt-fade: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size));
+}
+
+:root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] {
+  width: fit-content;
+  max-width: min(100%, 23.75rem);
+  align-self: flex-end;
+}
+
+:root[data-shell='portal'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
+  max-width: 100%;
+  align-self: flex-end;
+}
+
+/* Content-sized, borderless, 6px corners. The padding keeps a one-line prompt
+   at Figma's 32px while longer prompts take the 1.6 leading. */
+:root[data-shell='portal'] .composer-human-message {
+  border-color: transparent;
+  border-radius: var(--portal-radius-surface);
+  padding: calc(0.375rem - 1px) calc(0.625rem - 1px);
+  background-color: var(--portal-conversation-fill);
+  color: var(--ui-text-primary);
+  line-height: var(--human-msg-line-height);
+}
+
+:root[data-shell='portal'] .composer-human-message:hover {
+  border-color: var(--ui-stroke-tertiary);
+}
+
+:root[data-shell='portal'] .composer-human-message:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
+}
+
+:root[data-shell='portal'] [data-slot='aui_edit-composer-root'] .composer-human-message {
+  border-color: var(--ui-stroke-secondary);
+}
+
+:root[data-shell='portal'] .composer-human-message :has(> [data-slot='aui_user-message-text']) {
+  min-height: 0;
+}
+
+/* Time and restore sit beside the bubble, so the bubble keeps its own padding
+   and nothing masks the end of the prompt. */
+:root[data-shell='portal'] [data-slot='aui_user-bubble-tail'] {
+  inset: auto calc(100% + 0.25rem) 0 auto;
+  height: 2rem;
+  padding: 0;
+  background: none;
+}
+
+/* Prompt timestamps sit above the bubble (491:40654), in caption ink. */
+:root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] [data-slot='timeline-timestamp'] {
+  order: -1;
+  margin-bottom: 0.5rem;
+  padding: 0;
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='timeline-timestamp'] {
+  font-size: var(--conversation-caption-font-size);
+  line-height: 1.4;
+  letter-spacing: var(--portal-tracking-ui);
+  color: var(--ui-text-tertiary);
+}
+
+/* ── Reply prose (491:40664) ───────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] {
+  line-height: var(--dt-line-height);
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote) {
+  line-height: inherit;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(ul, ol) {
+  margin-block: 0.25rem;
+  padding-inline-start: 1.125rem;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md li {
+  margin-block: 0.125rem;
+  padding-inline-start: 0.125rem;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md li::marker {
+  color: var(--ui-text-secondary);
+  font-size: 0.85em;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4) {
+  margin-block: 1.25rem 0.5rem;
+  color: var(--ui-text-primary);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2) {
+  font-size: 1.15em;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(h3, h4) {
+  font-size: 1em;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md a:not(.ref) {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--ui-stroke-primary);
+  text-underline-offset: 0.2em;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md a:not(.ref):hover {
+  text-decoration-color: currentColor;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md blockquote {
+  margin-block: var(--paragraph-gap) 0;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 2px solid var(--ui-stroke-secondary);
+  color: var(--ui-text-secondary);
+  font-style: normal;
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md hr {
+  margin-block: 1.25rem;
+  border-color: var(--portal-conversation-dash);
+}
+
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  :where(.aui-md :not(pre) > code, [data-slot='aui_user-inline-code']) {
+  padding: 0.0625rem 0.25rem;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-conversation-fill);
+  font-size: 0.9em;
+}
+
+/* Fenced code, diffs and raw payloads: the reply's own fill, 6px corners. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='code-card'] {
+  --expandable-fade-from: var(--ui-chat-surface-background);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-conversation-fill);
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md table {
+  font-size: var(--conversation-tool-font-size);
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(th, td) {
+  border-color: var(--portal-conversation-dash);
+}
+
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md th {
+  color: var(--ui-text-secondary);
+  font-weight: 500;
+}
+
+/* ── Tool steps summary (491:40658) ────────────────────────────────────── */
+
+/* Single-call runs have no aggregate header, so their collapsed row takes the
+   same frame: 2% / 5% fill, a 1px [2,4] dashed hairline, 6px corners, a 5px
+   pixel dot, 12px tertiary text and the disclosure at the far end. Expanded
+   payloads keep their own review surfaces. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-tool-summary],
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  [data-tool-count='1']
+  [data-tool-row]:not([data-tool-open]) {
+  --conversation-tool-font-size: var(--conversation-caption-font-size);
+  --conversation-line-height: calc(1.05rem * var(--chat-text-scale, 1));
+  --disclosure-caret-rest: 0.6;
+  --dash-x: repeating-linear-gradient(to right, var(--portal-conversation-tool-dash) 0 2px, transparent 2px 6px);
+  --dash-y: repeating-linear-gradient(to bottom, var(--portal-conversation-tool-dash) 0 2px, transparent 2px 6px);
+  padding: 0.5rem 0.625rem;
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background:
+    var(--dash-x) top / 100% 1px no-repeat,
+    var(--dash-x) bottom / 100% 1px no-repeat,
+    var(--dash-y) left / 1px 100% no-repeat,
+    var(--dash-y) right / 1px 100% no-repeat,
+    var(--portal-conversation-tool-fill);
+  color: var(--ui-text-tertiary);
+  letter-spacing: var(--portal-tracking-ui);
+  opacity: 1;
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-tool-summary] > div,
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  [data-tool-count='1']
+  [data-tool-row]:not([data-tool-open])
+  > div {
+  align-items: center;
+  gap: 0.375rem;
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-tool-summary] > div::before,
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  [data-tool-count='1']
+  [data-tool-row]:not([data-tool-open])
+  > div::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  background: var(--portal-conversation-done);
+  clip-path: polygon(
+    1px 0,
+    4px 0,
+    4px 1px,
+    5px 1px,
+    5px 4px,
+    4px 4px,
+    4px 5px,
+    1px 5px,
+    1px 4px,
+    0 4px,
+    0 1px,
+    1px 1px
+  );
+}
+
+:root[data-shell='portal'] [data-tool-summary] > div > button,
+:root[data-shell='portal'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) > div > button {
+  flex: 1;
+  max-width: none;
+}
+
+/* The disclosure chevron, when the row has one, takes the far end. */
+:root[data-shell='portal'] [data-tool-summary] > div > button > span:last-child:not(:first-child),
+:root[data-shell='portal']
+  [data-tool-count='1']
+  [data-tool-row]:not([data-tool-open])
+  > div
+  > button
+  > span:last-child:not(:first-child) {
+  margin-inline-start: auto;
+}
+
+/* ── Cards in the transcript (routine card 491:42439) ──────────────────── */
+
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  :is([data-slot='aui_changed-files'], [data-slot='aui_artifact-card']) {
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-conversation-fill);
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_thinking-disclosure'] {
+  color: var(--ui-text-tertiary);
+  font-size: var(--conversation-caption-font-size);
+}
+
+/* Errors: the card language, with the destructive banner tint (877:4212) only
+   when the turn is blocked. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'] .aui-error-card {
+  border-color: transparent;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-conversation-fill);
+  font-size: var(--conversation-text-font-size);
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] .aui-error-card[data-severity='blocking'] {
+  border-color: color-mix(in srgb, var(--err-alert) 40%, transparent);
+  background: color-mix(in srgb, var(--err-alert) 8%, transparent);
+}
+
+/* Hover actions under a reply: the chrome's 30px plates with 3px corners, on
+   the column's right edge. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_msg-actions'] button {
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-raw-ink-2);
+  color: var(--ui-text-tertiary);
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_msg-actions'] button:hover {
+  background: var(--portal-raw-ink-5);
+  color: var(--ui-text-primary);
+}
+
+/* Streaming / working indicator: the brand pixel beside caption ink. */
+:root[data-shell='portal'] :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading']) .dither {
+  color: var(--portal-brand-ink);
+}
+
+/* Approval and clarify cards (card language of 491:42439): an opaque 6px
+   plate on the full column. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='tool-approval-stack'] {
+  max-width: none;
+}
+
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
+  border-color: transparent;
+  border-radius: var(--portal-radius-surface);
+  background: color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background));
+  box-shadow: none;
+}
+
+:root[data-shell='portal']:not(.dark)
+  [data-slot='aui_thread-content']
+  :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
+  background: color-mix(in srgb, var(--ui-base) 2%, var(--ui-chat-surface-background));
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='tool-approval-card'] {
+  padding: 0.375rem;
+}
+
+/* Fills, hover and the brand primary come from the shared control system
+   (app/redesign/portal-controls.css); cards only take its 36px page scale. */
+:root[data-shell='portal']
+  [data-slot='aui_thread-content']
+  :is([data-slot='tool-approval-actions'], [data-slot='clarify-inline'])
+  :is(button, a)[data-size][data-variant] {
+  height: 2.25rem;
+  padding-inline: 0.75rem;
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+/* Timeline rail (timeline.css): out of sight at rest, so a short thread's one or two ticks never
+   read as a stray dash at the stage edge or on a pane seam. It shows while the pointer is on the
+   transcript's edge, while a tick has focus and for a moment after the user scrolls; inset from the
+   stage edge. The current turn is marked in ink, not the theme accent: quiet chrome. */
+:root[data-shell='portal'] {
+  --thread-timeline-inset: 0.375rem;
+}
+
+:root[data-shell='portal'] [data-slot='thread-timeline'] {
+  opacity: 0;
+}
+
+:root[data-shell='portal'] [data-slot='thread-timeline']:is(:hover, :focus-within, [data-scrolling]) {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] [data-slot='thread-timeline'] {
+    transition: opacity var(--portal-motion-base) var(--portal-ease);
+  }
+}
+
+:root[data-shell='portal'] .thread-timeline-tick [data-slot='timeline-bar'] {
+  background: var(--ui-text-quaternary);
+}
+
+:root[data-shell='portal'] .thread-timeline-tick[aria-current='location'] [data-slot='timeline-bar'] {
+  background: var(--ui-text-secondary);
+}
+
+/* ── Touch (DESIGN.md › Responsive) ──
+   No hover, so a message's actions always show, as one row of 44px ghost targets at the message's
+   end edge: Copy and More under a reply, Edit and then Restore (or Stop) under a prompt. The prompt's
+   Restore leaves its desktop seat beside the bubble for the row's reserved end slot
+   (TouchUserBubble), and the reply's plates drop their fill so both rows read the same. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-slot='aui_user-bubble-tail'] {
+    inset: auto 0 0 auto;
+    height: auto;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    #root
+    [data-slot='aui_thread-content']
+    [data-slot='aui_msg-actions']
+    button[data-size][data-variant] {
+    background: transparent;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    #root
+    [data-slot='aui_thread-content']
+    :is([data-slot='aui_msg-actions'], [data-slot='aui_user-bubble-actions'])
+    button:active {
+    background: var(--portal-surface-chrome-pressed);
+    color: var(--ui-text-primary);
+  }
+}

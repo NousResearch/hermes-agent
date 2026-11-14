@@ -1,14 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { getSkillContent, type ProfileScope, profileScopeKey, setSkillLocked } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Lock, LockOpen } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 import type { SkillInfo } from '@/types/hermes'
 
 import { parseFrontmatter } from './frontmatter'
@@ -19,14 +22,17 @@ export function SkillDetail({
   onArchive,
   onEdit,
   profile,
-  skill
+  skill,
+  agentControls = true
 }: {
   onArchive: () => void
   onEdit: () => void
   profile?: ProfileScope
   skill: SkillInfo
+  agentControls?: boolean
 }) {
   const { t } = useI18n()
+  const redesign = usePortalShell()
   // Origin only, never mutability: external mounts stay editable in place —
   // see ./skill-provenance (commit 8c8fc6c1ec).
   const editable = isEditableProvenance(skill.provenance)
@@ -91,23 +97,36 @@ export function SkillDetail({
               </Button>
             </>
           )}
-          <Button
-            aria-pressed={locked}
-            className={cn(locked && 'text-foreground')}
-            data-slot="skill-lock-toggle"
-            disabled={lockPending}
-            onClick={() => void toggleLock()}
-            size="xs"
-            variant="text"
-          >
-            {locked ? <Lock /> : <LockOpen />}
-            {locked ? t.skills.locked : t.skills.lock}
-          </Button>
+          {agentControls && (
+            <Button
+              aria-pressed={locked}
+              className={cn(locked && 'text-foreground')}
+              data-slot="skill-lock-toggle"
+              disabled={lockPending}
+              onClick={() => void toggleLock()}
+              size="xs"
+              variant="text"
+            >
+              {locked ? <Lock /> : <LockOpen />}
+              {locked ? t.skills.locked : t.skills.lock}
+            </Button>
+          )}
         </div>
-        <p className="text-xs text-(--ui-text-tertiary)">{locked ? t.skills.lockHint : t.skills.unlockedHint}</p>
+        {agentControls && (
+          <p className="text-xs text-(--ui-text-tertiary)">{locked ? t.skills.lockHint : t.skills.unlockedHint}</p>
+        )}
       </div>
       {contentQuery.isLoading ? (
-        <PageLoader className="h-40" label={t.skills.loading} />
+        redesign ? (
+          <SkillBodySkeleton />
+        ) : (
+          <PageLoader className="h-40" label={t.skills.loading} />
+        )
+      ) : parsed && redesign ? (
+        // SKILL.md is markdown: the redesign reads it as a document, in the dialog's own type scale.
+        <div data-selectable-text="true">
+          <CompactMarkdown className="capability-markdown" text={parsed.body.trim() || t.skills.noDescription} />
+        </div>
       ) : parsed ? (
         <pre
           className="overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.68rem] leading-relaxed text-(--ui-text-secondary)"
@@ -117,5 +136,18 @@ export function SkillDetail({
         </pre>
       ) : null}
     </>
+  )
+}
+
+/** Lines a skill body reserves while it loads. */
+const BODY_LINES = [90, 100, 96, 70, 100, 84]
+
+function SkillBodySkeleton() {
+  return (
+    <div aria-busy="true" className="grid gap-2">
+      {BODY_LINES.map((width, index) => (
+        <Skeleton className="h-3.5" key={index} style={{ width: `${width}%` }} />
+      ))}
+    </div>
   )
 }

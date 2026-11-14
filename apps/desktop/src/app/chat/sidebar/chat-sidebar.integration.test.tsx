@@ -7,6 +7,7 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
+import { en } from '@/i18n/en'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import {
   $pinnedSessionIds,
@@ -160,7 +161,7 @@ describe('ChatSidebar navigation activity', () => {
       ['/capabilities', 'capabilities', 'Capabilities'],
       ['/messaging', 'messaging', 'Messaging'],
       ['/artifacts', 'artifacts', 'Artifacts'],
-      ['/cron', 'cron', 'Scheduled jobs']
+      ['/cron', 'cron', en.cron.title]
     ] as const) {
       cleanup()
       focus('workspace-group')
@@ -578,7 +579,7 @@ describe('ChatSidebar messaging owners', () => {
     const row = (title: string) => screen.getByText(title).closest('.group.row-hover') as HTMLElement
 
     expect(telegramGroups()).toHaveLength(0)
-    expect(within(row('work-1')).getByRole('img', { name: 'Profile: work' })).toBeTruthy()
+    expect(within(row('work-1')).getByRole('img', { name: en.sidebar.row.ownedByProfile('work') })).toBeTruthy()
 
     cleanup()
     setSidebarGrouping('profile')
@@ -587,6 +588,6 @@ describe('ChatSidebar messaging owners', () => {
 
     expect(telegramGroups()).toHaveLength(0)
     expect(screen.queryByText('work-1')).toBeNull()
-    expect(within(row('default-1')).queryByRole('img', { name: /^Profile:/ })).toBeNull()
+    expect(within(row('default-1')).queryByRole('img', { name: en.sidebar.row.ownedByProfile('default') })).toBeNull()
   })
 })

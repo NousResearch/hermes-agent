@@ -1,0 +1,366 @@
+/* The redesigned composer (Figma 906:19843 / card 906:19844 / edge 906:19872).
+   A 480 (landing) or 640 (conversation) card: no border, 9px top corners,
+   16px padding and 16px rhythm between a model row, a two-line editor and an
+   action row, then a 2px spectrum edge flush under it. Width and position
+   live in app/chat/stage.css with the shared conversation column. */
+:root[data-shell='portal'] [data-redesigned-composer] {
+  /* 18px rows; controls keep their 24px hit area and overlap the padding. */
+  --portal-composer-row: 1.125rem;
+  --portal-composer-gap: 1rem;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-root'] {
+  /* Opaque: the transcript scrolls underneath the docked card. */
+  --composer-fill: var(--portal-composer-fill);
+}
+
+/* The resting prompt is the card's heading line (16292:15681), not a dim hint. The shared composer
+   pins its hint's ink with !important (styles.css), so the redesign's line must too. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
+  color: var(--portal-composer-prompt-ink) !important;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
+  container: portal-composer / inline-size;
+  --composer-surface-pad-x: 1rem;
+  --composer-surface-pad-y: 1rem;
+  --composer-input-max-height: min(9.375rem, 25dvh);
+  --composer-row-gap: var(--portal-composer-gap);
+  border-width: 0;
+  border-radius: var(--portal-radius-panel) var(--portal-radius-panel) 0 0;
+}
+
+/* The spectrum edge sits under the card, not over its fill. */
+:root[data-shell='portal'] [data-slot='composer-surface']:has(> .portal-composer-edge) {
+  padding-bottom: 2px;
+}
+
+:root[data-shell='portal'] .portal-composer-edge + [aria-hidden] {
+  bottom: 2px;
+}
+
+:root.dark[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
+  box-shadow: var(--portal-shadow-composer);
+}
+
+/* 16 + 18 + 16 + 46 + 16 + 18 + 16 = 146 above the 2px edge. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-fade'] {
+  min-height: 9.125rem;
+}
+
+/* Static spectrum edge. It is the composer's focus signal too: Figma's own
+   strength (906:19872 paints it at .8) while the composer holds focus (its
+   resting landing state), dimmed to half that once focus leaves, so no ring
+   outlines the autofocused card. */
+.portal-composer-edge {
+  position: absolute;
+  z-index: var(--portal-layer-dock);
+  inset: auto 0 0;
+  height: 2px;
+  pointer-events: none;
+  opacity: 0.4;
+  background: linear-gradient(
+    to right,
+    var(--portal-brand-fill),
+    var(--portal-spectrum-red) 84.135%,
+    var(--portal-spectrum-yellow)
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] .portal-composer-edge {
+    transition: opacity var(--portal-motion-fast) var(--portal-ease);
+  }
+}
+
+:root[data-shell='portal'] [data-slot='composer-root']:focus-within .portal-composer-edge {
+  opacity: 0.8;
+}
+
+:root[data-shell='portal'] [data-slot='composer-root'][data-drag-active] .portal-composer-edge {
+  opacity: 1;
+}
+
+/* Model row (906:19845): message glyph, then the model and effort as quiet
+   right-aligned text; the menus stay behind them. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] {
+  min-height: var(--portal-composer-row);
+  flex-wrap: nowrap;
+  gap: 0.3125rem;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button {
+  min-width: 0;
+  max-width: 100%;
+  height: var(--composer-control-size);
+  margin-block: calc((var(--portal-composer-row) - var(--composer-control-size)) / 2);
+  padding-inline: 0.25rem;
+  margin-inline: -0.25rem;
+  gap: 0.25rem;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button:first-of-type {
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The row reads as text, not chips: the open-menu chevrons go. Hover and
+   focus still give each label its own 3px plate. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button > svg:last-child {
+  display: none;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button[data-state='open'] {
+  background: var(--chrome-action-hover);
+  color: var(--ui-text-primary);
+}
+
+/* Editor (906:19854): 14/1.6, two lines tall at rest. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-rich-input'] {
+  --conversation-text-base-size: 0.875rem;
+  min-height: 2lh;
+  padding: 0;
+  line-height: 1.6;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] .composer-input-row {
+  flex: 1;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  grid-template-areas: 'input input' 'menu controls';
+  gap: var(--portal-composer-gap) 0.875rem;
+}
+
+/* Action row (906:19857): plus 20 and mic 18 at a 38px pitch, then Send. */
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  :is([data-slot='composer-leading-actions'], [data-slot='composer-trailing-actions']) {
+  flex-wrap: wrap;
+  align-self: center;
+  min-height: var(--portal-composer-row);
+}
+
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  :is([data-slot='composer-leading-actions'], [data-slot='composer-trailing-actions'])
+  button {
+  margin-block: calc((var(--portal-composer-row) - var(--composer-control-size)) / 2);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-leading-actions'] button {
+  margin-inline-start: -0.125rem;
+  color: var(--ui-text-secondary);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-leading-actions'] .codicon-add {
+  scale: calc(20 / 14);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-trailing-actions'] .codicon-mic {
+  scale: calc(18 / 14);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-footer-controls'] {
+  min-width: 0;
+  flex-shrink: 1;
+  flex-wrap: wrap;
+}
+
+/* Send is a label plus the return glyph, tertiary until there is something
+   to send. */
+:root[data-shell='portal'] [data-redesigned-composer] .composer-send-label {
+  min-width: 0;
+  max-width: 100%;
+  height: var(--composer-control-size);
+  padding-inline: 0.25rem;
+  margin-inline-end: -0.25rem;
+  gap: 0.3125rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] .composer-send-label:disabled {
+  color: var(--ui-text-tertiary);
+  opacity: 1;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] .composer-send-label .codicon {
+  color: var(--ui-text-tertiary);
+}
+
+/* Touch keeps its finger-sized lane, so the rows grow to fit it. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-redesigned-composer] {
+    --portal-composer-row: var(--composer-control-size);
+  }
+}
+
+/* Below two targets, keep every control reachable rather than clipping it. */
+@container portal-composer (max-width: 12rem) {
+  :root[data-shell='portal'] [data-redesigned-composer] .composer-input-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'input' 'menu' 'controls';
+  }
+}
+
+@container portal-composer (max-width: 20rem) {
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-fade'] {
+    --composer-surface-pad-x: 0.5rem;
+  }
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): a tighter card. On touch, there and on a short window,
+   the rows stay short and the 44px controls overlap the padding (their hit area exceeds the visual),
+   so a phone keeps the room. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
+    --composer-surface-pad-x: var(--portal-space-compact);
+    --composer-surface-pad-y: var(--portal-space-compact);
+    --portal-composer-gap: var(--portal-space-compact);
+  }
+
+  /* The card takes its content's height, not Figma's 146px desktop card. */
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-fade'] {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 639.98px) and (hover: none),
+  (max-width: 639.98px) and (pointer: coarse),
+  (max-height: 30rem) and (hover: none),
+  (max-height: 30rem) and (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-redesigned-composer] {
+    --portal-composer-row: var(--portal-composer-row-touch);
+  }
+}
+
+/* Short (landscape phone, or a software keyboard up: max-height 30rem): one row, the attach menu, the
+   editor and the send controls side by side; the model row steps aside until there is room again. */
+@media (max-height: 30rem) {
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
+    --composer-surface-pad-y: var(--portal-space-tight);
+    --portal-composer-gap: var(--portal-space-tight);
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] {
+    display: none;
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] .composer-input-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    grid-template-areas: 'menu input controls';
+    align-items: center;
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-rich-input'] {
+    min-height: 1lh;
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-fade'] {
+    min-height: 0;
+  }
+}
+
+/* The status/queue stack docked above the card shares its fill and corners. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-status-stack'] > div {
+  border-color: transparent;
+  border-radius: var(--portal-radius-panel) var(--portal-radius-panel) 0 0;
+  backdrop-filter: none;
+}
+
+/* Attachments (file chip 491:40665): brand-blue 6px chips with the glyph
+   inline; images keep their thumbnail on the card's neutral fill. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachments'] {
+  gap: 0.375rem;
+  padding: 0;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment'] {
+  gap: 0.375rem;
+  padding: 0.375rem 0.5rem;
+  border-color: transparent;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-raw-ink-5);
+  box-shadow: none;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment']:not([data-kind='image']) {
+  background: var(--portal-brand-fill);
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment'][data-upload-error] {
+  border-color: var(--ui-red);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment']:hover:not(:disabled) {
+  background: var(--portal-raw-ink-10);
+}
+
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  [data-slot='composer-attachment']:not([data-kind='image']):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--portal-brand-fill) 85%, var(--portal-on-brand));
+}
+
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  [data-slot='composer-attachment']:not([data-kind='image'])
+  > span:first-child {
+  width: auto;
+  height: auto;
+  border: 0;
+  background: none;
+  color: inherit;
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment'] > span:last-child > span {
+  color: inherit;
+  font-size: var(--portal-type-meta-size);
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  [data-slot='composer-attachment']
+  > span:last-child
+  > span
+  + span {
+  font-size: var(--portal-type-micro-size);
+  opacity: 0.6;
+}
+
+/* Until the draft's model resolves, the row holds a still bar of label height
+   instead of a braille spinner frame. An effort that is still unknown (a cold
+   resume in flight, or an older runtime that never reports one) shows nothing:
+   there is no effort to show yet. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] [role='status'] {
+  width: 4.5rem;
+  height: 0.5rem;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-raw-ink-10);
+}
+
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] [role='status'] > * {
+  visibility: hidden;
+}
+
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  [data-slot='composer-model-row']
+  [data-testid='reasoning-pill']:has([role='status']) {
+  display: none;
+}

@@ -118,6 +118,7 @@ _GUARDS = {
     "dockerfile-downloads": ["scripts/ci/check_dockerfile_downloads.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
+    "desktop-design-tokens": ["scripts/check_desktop_design_tokens.py"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (the blob-size step of repo-guards.yml).

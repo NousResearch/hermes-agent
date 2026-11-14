@@ -9,6 +9,7 @@ import {
   normalizeSessionSource
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
+import { captureIaPinCounts } from '@/store/ia-pin-metrics'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -28,6 +29,7 @@ import {
   keepFailedProfileMeta,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  type MessagingListServer,
   messagingListServerForFetch,
   setCorruptSessionStores,
   setCronSessions,
@@ -120,13 +122,6 @@ function dropRemovalRaced(sessions: SessionInfo[], snapshot: SessionTombstoneGen
   return kept.length === sessions.length ? sessions : kept
 }
 
-function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): SessionInfo[] {
-  const server = messagingListServerForFetch(scopeProfile, getApiRequestConnection())
-  setMessagingListServer(server)
-
-  return stampMessagingRowsWithListServer(rows, server)
-}
-
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, the
 // actively-viewed chat (its "working" flag clears a beat before the aggregator
@@ -199,10 +194,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       refreshMessagingSessionsRequestRef.current === requestId &&
       sidebarProfileForScope(profileScopeRef.current) === sessionProfile
 
-    const fetchPage = () =>
-      listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
+    let listServer: MessagingListServer | null = null
+
+    const fetchPage = () => {
+      listServer = messagingListServerForFetch(sessionProfile, getApiRequestConnection())
+
+      return listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
+    }
 
     try {
       let activationEpoch = gatewayActivationEpoch()
@@ -221,10 +221,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = publishMessagingRows(
-        dropRemovalRaced(dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source))), removalSnapshot),
-        sessionProfile
-      )
+      const rows = dropRemovalRaced(dropTombstoned(
+        stampMessagingRowsWithListServer(result.sessions.filter(s => isMessagingSource(s.source)), listServer)
+      ), removalSnapshot)
+
+      setMessagingListServer(listServer)
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -262,10 +263,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         loadMoreMessagingRequestRef.current[requestKey] === requestId &&
         sidebarProfileForScope(profileScopeRef.current) === sessionProfile
 
-      const fetchPage = () =>
-        listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
+      let listServer: MessagingListServer | null = null
+
+      const fetchPage = () => {
+        listServer = messagingListServerForFetch(sessionProfile, getApiRequestConnection())
+
+        return listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
           source: platform
         })
+      }
 
       let result
 
@@ -286,10 +292,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         return
       }
 
-      const incoming = publishMessagingRows(
-        dropRemovalRaced(dropTombstoned(result.sessions.filter(inPlatform)), removalSnapshot),
-        sessionProfile
-      )
+      const incoming = dropRemovalRaced(dropTombstoned(
+        stampMessagingRowsWithListServer(result.sessions.filter(inPlatform), listServer)
+      ), removalSnapshot)
+
+      setMessagingListServer(listServer)
 
       setMessagingSessions(prev => [
         ...prev.filter(s => !inPlatform(s)),
@@ -353,6 +360,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // pre-archive-commit can land post-prune, and only the generation
       // delta (not tombstone membership) still names the doomed row then.
       const removalSnapshot = captureSessionTombstoneGenerations()
+      const recordPinCounts = captureIaPinCounts(sessionProfile)
 
       try {
         const limit = $sessionsLimit.get()
@@ -370,8 +378,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Batched: one request opens each profile DB once and returns all three
         // source-scoped slices, instead of three separate listAllProfileSessions
         // calls that each reopened + re-counted every profile DB per refresh.
-        const fetchPage = () =>
-          listSidebarSessions({
+        let listServer: MessagingListServer | null = null
+
+        const fetchPage = () => {
+          listServer = messagingListServerForFetch(sessionProfile, getApiRequestConnection())
+
+          return listSidebarSessions({
             recentsProfile: sessionProfile,
             recentsLimit: limit,
             recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
@@ -379,6 +391,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             messagingLimit: MESSAGING_SECTION_LIMIT,
             messagingExclude: MESSAGING_EXCLUDED_SOURCES
           })
+        }
 
         let activationEpoch = gatewayActivationEpoch()
         let result = await fetchPage()
@@ -397,6 +410,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         }
 
         if (owns()) {
+          recordPinCounts(result)
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
 
@@ -479,19 +493,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // platform in the UI.
           const messagingErrors = result.messaging.errors ?? result.errors
 
-          const messagingRows = publishMessagingRows(
-            dropRemovalRaced(
-              dropTombstoned(
-                carryForwardFailedProfileSessions(
-                  $messagingSessions.get(),
-                  (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
-                  messagingErrors
-                )
-              ),
-              removalSnapshot
+          const messagingRows = dropRemovalRaced(
+            dropTombstoned(
+              carryForwardFailedProfileSessions(
+                $messagingSessions.get(),
+                stampMessagingRowsWithListServer(
+                  (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)), listServer
+                ),
+                messagingErrors
+              )
             ),
-            sessionProfile
+            removalSnapshot
           )
+
+          setMessagingListServer(listServer)
 
           setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
           // Hit the cap → at least one platform may have more on disk than loaded.

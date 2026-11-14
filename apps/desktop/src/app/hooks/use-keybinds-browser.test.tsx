@@ -100,7 +100,11 @@ it('dispatches the Alt defaults and remaps from text fields, leaving browser key
   expect(deps.openNewSessionTab).toHaveBeenCalledOnce()
   expect(closeTab).toHaveBeenCalledOnce()
 
-  act(() => setBinding('session.new', ['mod+shift+f6']))
+  // The Agents page's New agent shares the chord (a passthrough); a full remap moves both.
+  act(() => {
+    setBinding('session.new', ['mod+shift+f6'])
+    setBinding('agents.new', ['mod+shift+f7'])
+  })
   expect(press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false }).defaultPrevented).toBe(false)
   expect(press({ key: 'F6', code: 'F6', shiftKey: true }).defaultPrevented).toBe(true)
   expect(deps.startFreshSession).toHaveBeenCalledTimes(2)
@@ -217,4 +221,51 @@ it('marks only chords an action ran, so the terminal keeps a declined one', asyn
   })
   expect(declined.defaultPrevented).toBe(true)
   expect(keybindHandled(declined)).toBe(false)
+})
+
+it('lets v2 claim New session only while enabled; off retains the original shortcut', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { deps, press } = await mountKeybinds()
+  const { $shellChoice } = await import('@/store/shell-variant')
+  const { claimSimplifiedNewSession } = await import('@/store/simplified-new-session')
+  const claim = vi.fn()
+  const release = claimSimplifiedNewSession(claim)
+
+  try {
+    $shellChoice.set(true)
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect(claim).toHaveBeenCalledOnce()
+    expect(deps.startFreshSession).not.toHaveBeenCalled()
+    $shellChoice.set(false)
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect(claim).toHaveBeenCalledOnce()
+    expect(deps.startFreshSession).toHaveBeenCalledOnce()
+  } finally {
+    $shellChoice.set(false)
+    release()
+  }
+})
+
+it('gives the new-chat chord to New agent only while the Agents page hosts it', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { deps, press } = await mountKeybinds()
+  const { $newAgentRequest, hostNewAgentRequests } = await import('@/store/new-agent-request')
+  const host = Symbol('agents-page')
+
+  press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+  expect(deps.startFreshSession).toHaveBeenCalledOnce()
+  expect($newAgentRequest.get()).toBeNull()
+
+  const unmount = hostNewAgentRequests(host)
+
+  try {
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect($newAgentRequest.get()?.host).toBe(host)
+    expect(deps.startFreshSession).toHaveBeenCalledOnce()
+  } finally {
+    unmount()
+  }
+
+  press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+  expect(deps.startFreshSession).toHaveBeenCalledTimes(2)
 })

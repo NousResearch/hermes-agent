@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { getActionStatus, getComputerUseStatus, grantComputerUsePermissions } from '@/hermes'
+import { getActionStatus, getComputerUseStatus, grantComputerUsePermissions, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw, X } from '@/lib/icons'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -14,6 +14,7 @@ interface ComputerUsePanelProps {
   /** Re-read the parent toolset list after a permission/install change so the
    *  "Configured / Needs keys" pill stays in sync. */
   onConfiguredChange?: () => void
+  profile?: ProfileScope
 }
 
 // Per-OS one-liner shown when there's no TCC grant flow (Windows/Linux). macOS
@@ -61,7 +62,7 @@ function PermissionRow({ granted, label, hint }: { granted: boolean | null; labe
  * Binary install/upgrade stays in the cua-driver provider's post-setup runner
  * below this card (the generic ToolsetConfigPanel).
  */
-export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) {
+export function ComputerUsePanel({ onConfiguredChange, profile }: ComputerUsePanelProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<ComputerUseStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -70,13 +71,13 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await getComputerUseStatus())
+      setStatus(await getComputerUseStatus(profile))
     } catch (err) {
       notifyError(err, 'Could not read Computer Use status')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [profile])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -90,7 +91,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
     setGranting(true)
 
     try {
-      const started = await grantComputerUsePermissions()
+      const started = await grantComputerUsePermissions(profile)
 
       if (!started.ok) {
         notifyError(new Error('spawn failed'), 'Could not request permissions')
@@ -112,7 +113,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
           break
         }
 
-        const polled = await getActionStatus(started.name, 200)
+        const polled = await getActionStatus(started.name, 200, profile)
         upsertDesktopActionTask(polled)
 
         if (!polled.running) {
@@ -133,7 +134,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
         setGranting(false)
       }
     }
-  }, [onConfiguredChange, refresh])
+  }, [onConfiguredChange, profile, refresh])
 
   if (loading) {
     return (

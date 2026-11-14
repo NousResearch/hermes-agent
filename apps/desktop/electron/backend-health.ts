@@ -1,6 +1,8 @@
 // Relative, not `@hermes/shared`: esbuild bundles electron/ without tsconfig paths.
 import { isHermesCloudUrl } from '../../shared/src/hermes-cloud'
 
+import { shellMessages } from './shell-wording'
+
 // A cold backend boot (plugin discovery + route mounting at web_server import
 // time) can take 45-60s on slower hardware. A 45s deadline makes first-boot
 // readiness a coin flip: every lost race tears down a healthy-but-slow backend
@@ -56,13 +58,6 @@ export interface HermesReadyOptions {
 export function isConnectionRefusedError(error: unknown): boolean {
   return (error as { code?: unknown } | null)?.code === 'ECONNREFUSED'
 }
-
-export const REMOTE_SESSION_EXPIRED_MESSAGE =
-  'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
-
-export const REMOTE_UNSIGNED_OAUTH_MESSAGE =
-  'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
-  'Open Settings → Gateway and click "Sign in", or switch back to Local.'
 
 /**
  * True for HTTP 502/503/504 from the backend — a server-side fault, not a
@@ -152,7 +147,7 @@ export function makeNousCloudBackendDownError(baseUrl: string, error: unknown): 
     `Nous Cloud agent ${hostname} is down ` +
       `(HTTP ${serverError.statusCode}: server-side fault). ` +
       'Check https://portal.nousresearch.com for backend status, ' +
-      'or switch to Local mode in Settings → Gateway. ' +
+      shellMessages.switchToLocalMode() +
       'You can also reach out on Discord at discord.gg/NousResearch ' +
       'for immediate assistance. ' +
       `Original detail: ${detail}`
@@ -209,7 +204,7 @@ export function isGatedMissingHealthError(error: unknown): boolean {
 
 /** Tag a terminal reauth failure the main process latches and the overlay keys on. */
 export function makeReauthRequiredError(detail?: string): Error {
-  const error = new Error(REMOTE_SESSION_EXPIRED_MESSAGE) as any
+  const error = new Error(shellMessages.remoteSessionExpired()) as any
   error.needsOauthLogin = true
   error.isReauthRequired = true
 
@@ -228,7 +223,7 @@ export function makeReauthRequiredError(detail?: string): Error {
  * (see gatewayTicketFailure, #95701).
  */
 export function makeUnsignedOauthError(): Error {
-  const error = new Error(REMOTE_UNSIGNED_OAUTH_MESSAGE) as any
+  const error = new Error(shellMessages.remoteUnsignedOauth()) as any
   error.needsOauthLogin = true
   error.isReauthRequired = true
 

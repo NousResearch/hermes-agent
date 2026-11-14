@@ -310,6 +310,8 @@ export const zhHantChrome = {
       daybreakFailed: 'Daybreak 更新失敗'
     },
     gatewayMenu: {
+      connectionLabel: '連線',
+      inferenceLabel: '推論',
       gateway: '閘道',
       connected: '已連線',
       connecting: '連線中',
@@ -323,7 +325,13 @@ export const zhHantChrome = {
       connection: label => `連線：${label}`,
       recentActivity: '最近活動',
       viewAllLogs: '查看全部記錄 →',
-      messagingPlatforms: '訊息平台'
+      messagingPlatforms: '訊息平台',
+      machineStatus: (machine, status) => `${machine} 狀態：${status}`,
+      checkAgain: '重新檢查',
+      switchToMachine: '切換到這台機器',
+      machineSettings: '閘道與機器',
+      restartTitle: '重新啟動閘道？',
+      restartBody: '這台機器上正在執行的回覆會停止。幾秒後它會恢復並自動重新連線。'
     },
     approvalMode: {
       title: '核准模式',
@@ -479,12 +487,9 @@ export const zhHantChrome = {
     terminalCloseAll: '全部關閉',
     terminalNewOn: '新增終端機於…',
     terminalGatewayRemoved: '已移除的閘道',
-    terminalGatewayRemovedBody:
-      '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
-    terminalGatewayNoShellBody:
-      '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
-    terminalDisconnectedBody:
-      '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
+    terminalGatewayRemovedBody: '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody: '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
+    terminalDisconnectedBody: '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
     addToChat: '新增至聊天'
   },
 

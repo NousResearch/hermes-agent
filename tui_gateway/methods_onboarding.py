@@ -10,6 +10,8 @@ method = _registry.method
 # flag live in the root profile's config.yaml whichever profile this backend was launched under.
 @method("onboarding.state")
 def _(rid, params: dict) -> dict:
+    if params.get("sessionless"):
+        return _ok(rid, _sessionless_state(assume_fresh=bool(params.get("assume_fresh"))))
     return _ok(rid, _run_state(assume_fresh=bool(params.get("assume_fresh"))))
 
 
@@ -19,12 +21,25 @@ def _(rid, params: dict) -> dict:
     if not isinstance(params.get("run"), bool):
         return _err(rid, 4002, "onboarding.set_run requires a boolean 'run'")
     try:
-        set_run(params["run"], mark_profile_offered=bool(params.get("mark_profile_offered")))
+        set_run(params["run"], mark_profile_offered=bool(params.get("mark_profile_offered")),
+                **({"step": params.get("step"), "restart": bool(params.get("restart")), "sessionless": True}
+                   if params.get("sessionless") else {}))
     except Exception as e:
         logger.exception("onboarding.set_run failed")
         return _err(rid, 5077, str(e))
-    return _ok(rid, _run_state())
+    return _ok(rid, _sessionless_state(retire=False) if params.get("sessionless") else _run_state())
 
+
+def _sessionless_state(*, assume_fresh=False, retire=True):
+    from hermes_cli.anon_auth import on_local_desktop_backend
+    from hermes_cli.onboarding_run import guide_progress, retire_conversational_runs, should_run
+    if retire:
+        with _profile_db({"profile": "default"}, writer=True) as db:
+            if db is not None:
+                for sid in _live_session_ids(retire_conversational_runs(db)):
+                    _cancel_session_requests(sid, "resolved", method="setup_beat")
+    return {"run": should_run(assume_fresh=assume_fresh), "eligible": on_local_desktop_backend(),
+            **guide_progress()}
 
 def _run_state(*, assume_fresh: bool = False) -> dict:
     """``run``: the root config says so, else this OS user never used Hermes (or the unpackaged

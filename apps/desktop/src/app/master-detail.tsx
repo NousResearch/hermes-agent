@@ -114,7 +114,7 @@ export function MasterDetail({
   const [list, ...rest] = Children.toArray(children)
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="master-detail flex h-full min-h-0 flex-col">
       <div
         className={cn(
           'grid min-h-0 flex-1 grid-cols-1',

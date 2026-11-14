@@ -2,8 +2,15 @@ import { contrastRatio } from '@hermes/shared/color'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $shellChoice } from '@/store/shell-variant'
+
 import type { useTheme } from './context'
 import { skinToDesktopTheme } from './skin'
+
+// These cases pin the CLASSIC shell's default skin (Nous); the redesign's own
+// default (Portal) is covered in shell-default-skin.test.tsx.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => $shellChoice.set(null))
 
 // What the gateway and the Electron bridge report for a STOCK config
 // (`display.skin: default`): the CLI's classic gold skin, by name `default`.
@@ -59,7 +66,11 @@ async function launch(localSkin: typeof stockDefaultSkin | null) {
 }
 
 describe('Classic Hermes is an explicit Desktop pick, never inferred from stock config (#76579)', () => {
-  beforeEach(() => window.localStorage.clear())
+  // Each launch reloads the modules, so the classic shell is pinned in storage.
+  beforeEach(() => {
+    window.localStorage.clear()
+    window.localStorage.setItem('hermes.desktop.agentShell.v1', 'false')
+  })
 
   afterEach(() => {
     cleanup()

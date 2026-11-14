@@ -1,0 +1,1520 @@
+/* Redesigned navigation sidebar (Figma 906:19684). Every class here exists only when the redesign
+   renders it, so element selectors stay ungated; body-portalled surfaces gate on the root. */
+.portal-sidebar {
+  /* The list scrolls inside overflow:hidden panels, so focus rings sit inside each control. */
+  --portal-focus-ring-offset: var(--portal-focus-ring-inset);
+
+  position: relative;
+  height: calc(100% - var(--titlebar-height));
+  margin-top: var(--titlebar-height);
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--sidebar-edge-border);
+  /* Translucent shell token: the window's artwork shows through (Panel 16292:18203). The zone clips the
+     outer corner, so the seam with the stage stays square. */
+  background: var(--artwork-panel-noise), var(--portal-sidebar-panel-background);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+/* ── Content column ─────────────────────────────────────────────────────────────────────────── */
+
+/* The header, then New chat (and the search field while it is out), then the sections, 16px apart
+   (Centre 16292:15509). The column runs on the 20px gutter: New chat and row fills span it, text
+   sits 12px further in. */
+.portal-sidebar-content {
+  min-width: 0;
+  gap: var(--portal-sidebar-actions-gap);
+  padding: 0 var(--portal-sidebar-gutter);
+  overflow: hidden;
+}
+
+/* Blocks that are neither rows nor the New chat slab sit on the text inset. */
+.portal-sidebar-content > :is(.portal-sidebar-empty, p, [role='alert']),
+.portal-sidebar [data-slot='pinned-empty'] {
+  margin-inline: var(--portal-sidebar-bleed);
+}
+
+/* ── Header (Top 16292:15498): the wordmark over its caption, the search button at the end ──── */
+
+.portal-sidebar-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--portal-sidebar-action-gap);
+  margin-inline: calc(var(--portal-sidebar-head-start) - var(--portal-sidebar-gutter))
+    calc(var(--portal-sidebar-head-end) - var(--portal-sidebar-gutter));
+  /* The column's gap supplies 16 of the 20px under the header. */
+  padding-block: var(--portal-sidebar-head-top)
+    calc(var(--portal-sidebar-head-bottom) - var(--portal-sidebar-actions-gap));
+}
+
+.portal-sidebar-brand {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--portal-sidebar-wordmark-gap);
+}
+
+.portal-sidebar-wordmark {
+  color: var(--ui-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-sidebar-wordmark-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-sidebar-wordmark-tracking);
+  line-height: var(--portal-sidebar-wordmark-line);
+}
+
+.portal-sidebar-brand-caption {
+  color: var(--portal-sidebar-meta);
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-sidebar-caption);
+  letter-spacing: var(--portal-sidebar-caption-tracking);
+  line-height: var(--portal-sidebar-label-line);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.portal-sidebar .portal-sidebar-search-toggle {
+  width: var(--portal-sidebar-search-button);
+  height: var(--portal-sidebar-search-button);
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-sidebar-action);
+  color: var(--ui-text-secondary);
+}
+
+.portal-sidebar .portal-sidebar-search-toggle svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.portal-sidebar .portal-sidebar-search-toggle:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-sidebar .portal-sidebar-search-toggle[aria-expanded='true'] {
+  background: var(--portal-sidebar-press);
+  color: var(--ui-text-primary);
+}
+
+.portal-sidebar-sections {
+  display: flex;
+  flex: 1;
+  min-height: 12rem;
+  flex-direction: column;
+  gap: var(--portal-sidebar-section-gap);
+}
+
+.portal-sidebar-sections[hidden] {
+  display: none;
+}
+
+.portal-sidebar-empty {
+  padding-block: 0.75rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+/* The shared ring (portal-controls.css) for the sidebar's own rows; Buttons get it from there. */
+.portal-sidebar :is(button, [data-slot='row-button'], input):focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+  box-shadow: none;
+}
+
+/* ── New chat (16292:15511: 40px, r3, message glyph, label, rimless keycaps), its agent picker kept
+   at the end ─────────────────────────────────────────────────────────────────────────────── */
+
+.portal-new-session {
+  display: flex;
+  flex-shrink: 0;
+  min-height: var(--portal-row-panel);
+  overflow: hidden;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-sidebar-action);
+  container-type: inline-size;
+}
+
+.portal-sidebar .portal-new-session > button {
+  height: auto;
+  line-height: var(--portal-sidebar-row-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: var(--portal-sidebar-action-weight);
+}
+
+.portal-sidebar .portal-new-session > button:hover {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-sidebar .portal-new-session > button:active,
+.portal-sidebar .portal-new-session > button[data-state='open'] {
+  background: var(--portal-sidebar-press);
+}
+
+.portal-sidebar .portal-new-session-main {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+  gap: var(--portal-sidebar-action-gap);
+  padding-inline: var(--portal-sidebar-action-pad);
+}
+
+.portal-sidebar .portal-new-session-main .portal-new-session-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.portal-new-session-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+}
+
+.portal-kbd {
+  gap: 0.25rem;
+}
+
+.portal-sidebar .portal-kbd [data-slot='kbd'] {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding-inline: 0.25rem;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-sidebar-action-key);
+  box-shadow: none;
+  color: var(--portal-sidebar-key-ink);
+  font-family: var(--portal-sidebar-key-font);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 400;
+  text-transform: uppercase;
+}
+
+@container (max-width: 15rem) {
+  .portal-kbd {
+    display: none;
+  }
+}
+
+.portal-sidebar .portal-new-session-picker {
+  gap: 0.25rem;
+  padding-inline: 0.625rem var(--portal-sidebar-action-pad);
+  border-inline-start: 1px solid var(--portal-sidebar-action-rim);
+}
+
+.portal-new-session-picker .portal-section-chevron {
+  color: var(--ui-text-tertiary);
+}
+
+.portal-new-session-picker[data-state='open'] .portal-section-chevron {
+  transform: rotate(180deg);
+}
+
+/* Figma's agent chip (623:1612): identity in three letters instead of a saturated avatar. */
+.new-session-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 0.9375rem;
+  padding-inline: 0.3125rem;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-raw-ink-10);
+  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  font-size: var(--portal-type-chip-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1;
+}
+
+/* Picker rows; the floating surface itself belongs to the shared menu styling. */
+:root[data-shell='portal'] .new-session-picker {
+  min-width: 15rem;
+}
+
+:root[data-shell='portal'] .new-session-picker-label {
+  padding-inline: 0.5rem;
+  color: var(--portal-brand-ink);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] .new-session-option {
+  min-height: 2.625rem;
+  /* Clears the checked indicator pinned to the item's end. */
+  padding-inline-end: 1.75rem;
+  gap: 0.625rem;
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] .new-session-option > span:last-child {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.new-session-option-name {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-option-meta,
+.new-session-option-hint {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-option-meta {
+  max-width: 40%;
+  flex-shrink: 0;
+}
+
+/* The blank option's hint is a sentence, not a label: it wraps under its name instead of losing its
+   end to an ellipsis in the sidebar-wide picker. */
+.new-session-option-hint {
+  overflow: visible;
+  white-space: normal;
+}
+
+.new-session-option-tile {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--portal-radius-card);
+  background: color-mix(in srgb, var(--ui-base) 6%, transparent);
+}
+
+/* ── Search, out while its header button is pressed: New chat's 40px row on a rim instead of a fill,
+   the shortcut's keycaps at the end ──────────────────────────────────────────────────────────── */
+
+.portal-sidebar-search-row {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+}
+
+.portal-sidebar .portal-sidebar-search {
+  min-height: var(--portal-row-panel);
+  gap: var(--portal-sidebar-action-gap);
+  padding-inline: var(--portal-sidebar-action-pad);
+  border: 1px solid var(--portal-sidebar-action-rim);
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-sidebar-label);
+  opacity: 1;
+  container-type: inline-size;
+}
+
+.portal-sidebar .portal-sidebar-search:hover {
+  background: var(--portal-raw-ink-2);
+}
+
+.portal-sidebar .portal-sidebar-search:focus-within {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-secondary);
+}
+
+.portal-sidebar .portal-sidebar-search > svg {
+  width: 1rem;
+  height: 1rem;
+  color: inherit;
+}
+
+.portal-sidebar .portal-sidebar-search input {
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.portal-sidebar .portal-sidebar-search input::placeholder {
+  color: var(--portal-sidebar-label);
+}
+
+.portal-sidebar .portal-sidebar-search input:focus-visible {
+  outline: none;
+}
+
+.portal-sidebar .portal-sidebar-search:has(input:focus-visible) {
+  box-shadow: inset 0 0 0 var(--portal-focus-ring-width) var(--portal-focus-ring-color);
+}
+
+/* ── Sections (Centre 16292:15509) ────────────────────────────────────────────────────────────
+   Each section is a block under a sentence-case mono caption, separated from the next by whitespace
+   only. Rows bleed 12px past the caption's 32px inset so their fills hold the leading dot, which
+   stands on the inset; their titles start 12px after it. */
+
+.portal-section {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.portal-sidebar [data-slot='pinned-section'][data-open='true'] {
+  flex: 0 1 auto;
+  max-height: 45%;
+}
+
+.portal-sidebar [data-slot='agent-section'][data-open='true'] {
+  flex: 1 1 0%;
+  min-height: 6rem;
+}
+
+.portal-section-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.portal-section-body[hidden] {
+  display: none;
+}
+
+/* Caption row: the label on the 32px inset, the chevron right after it, then the count badge and
+   the action at the end; 10px over it, 16px from it to the first row's text. */
+.portal-section-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+  padding-block: var(--portal-sidebar-label-top) var(--portal-sidebar-label-bottom);
+  padding-inline: var(--portal-sidebar-bleed) 0.25rem;
+}
+
+.portal-section-title {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  min-height: var(--portal-sidebar-label-line);
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-sidebar-label);
+}
+
+button.portal-section-title:hover {
+  color: var(--ui-text-secondary);
+}
+
+.portal-section-label {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--portal-sidebar-label-font);
+  font-size: var(--portal-sidebar-label-size);
+  font-weight: 400;
+  line-height: var(--portal-sidebar-label-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 147:6260: a brand-tinted pill, bold brand ink, at the caption's end. */
+.portal-section-count {
+  margin-inline-start: auto;
+  min-width: 1.4375rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--portal-sidebar-count-radius);
+  background: var(--portal-sidebar-count-fill);
+  color: var(--portal-brand-ink);
+  font-size: var(--portal-sidebar-caption);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.portal-section-chevron {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+}
+
+/* Open points down, folded points along the line. */
+.portal-section-title .portal-section-chevron {
+  width: var(--portal-sidebar-label-glyph);
+  height: var(--portal-sidebar-label-glyph);
+}
+
+.portal-section-title[aria-expanded='false'] .portal-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.portal-section-title[aria-expanded='false']:dir(rtl) .portal-section-chevron {
+  transform: rotate(90deg);
+}
+
+.portal-sidebar .portal-section-action {
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-sidebar-label);
+}
+
+.portal-section-action svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.portal-sidebar .portal-section-action:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-sidebar .portal-section-scroll {
+  --scroll-fade-size: min(4rem, 25%);
+
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+.portal-sidebar [data-slot='agent-section'] .portal-section-scroll {
+  flex: 1 1 auto;
+  padding-bottom: 1.25rem;
+  /* Only the bottom edge fades: an open machine's header sticks to the top edge and must stay
+     legible over the agents scrolling under it. */
+  mask-image: linear-gradient(
+    to bottom,
+    var(--portal-raw-black) calc(100% - (var(--scroll-fade-pad) + var(--scroll-fade-size)) * var(--scroll-fade-bottom)),
+    transparent calc(100% - var(--scroll-fade-pad) * var(--scroll-fade-bottom))
+  );
+}
+
+/* ── Rows: pinned chats, group chats and machines (item 16292:15532 / 16292:15572) ────────────── */
+
+.portal-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+}
+
+.portal-session-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.portal-session-row,
+.portal-machine-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--portal-sidebar-pin-row);
+  align-items: center;
+  gap: var(--portal-sidebar-dot-gap);
+  padding-inline: var(--portal-sidebar-bleed);
+  border-radius: var(--portal-sidebar-row-radius);
+  color: var(--portal-sidebar-row-ink);
+  line-height: var(--portal-sidebar-row-line);
+  text-align: start;
+}
+
+.portal-sidebar [data-slot='group-chats-section'] .portal-section-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+}
+
+/* No fill marks the open chat (16292:15602): its title and dot take full ink. A row under the pointer
+   or keyboard focus, or with its menu open, takes the hover fill. */
+.portal-session-row:is(:hover, :focus-visible, :has(.portal-session-open:focus-visible)),
+.portal-session-item:where([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-session-row[aria-current='page'] {
+  color: var(--portal-sidebar-row-selected-ink);
+}
+
+[data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
+  background: var(--portal-sidebar-press);
+}
+
+/* A chat row's title is its button (the row resolves the click); the row wears the focus ring. */
+.portal-session-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  color: inherit;
+  text-align: start;
+}
+
+.portal-sidebar .portal-session-open:focus-visible {
+  outline: none;
+}
+
+.portal-sidebar .portal-session-row:has(.portal-session-open:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+  box-shadow: none;
+}
+
+.portal-session-title,
+.portal-machine-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--portal-sidebar-row-weight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-session-title {
+  flex: 1;
+}
+
+/* Tags, ages and statuses: Nous/Uppercase, the mono signal font (16292:15539). */
+.portal-session-meta,
+.portal-machine-status {
+  display: flex;
+  flex-shrink: 0;
+  max-width: 40%;
+  align-items: center;
+  gap: 0.25rem;
+  margin-inline-start: auto;
+  overflow: hidden;
+  color: var(--portal-sidebar-meta);
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-sidebar-caption);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--portal-sidebar-caption-tracking);
+  line-height: var(--portal-sidebar-label-line);
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* A row's meta is one line of text (an age, an agent name) that ellipsizes as a whole. */
+.portal-session-meta {
+  display: block;
+}
+
+.portal-group-icon {
+  flex-shrink: 0;
+  color: var(--ui-text-tertiary);
+}
+
+/* The 5px leading dot (notif 16292:15533): quiet when settled, full ink for the open chat, brand for
+   unread news, the live tones while a turn runs or waits. */
+.portal-row-mark {
+  display: grid;
+  flex-shrink: 0;
+  width: var(--portal-sidebar-dot);
+  height: var(--portal-sidebar-dot);
+  place-items: center;
+}
+
+.portal-row-mark > span,
+.portal-row-mark > span > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.portal-row-mark[data-state='idle'] > span > span {
+  background: var(--portal-sidebar-dot-ink);
+}
+
+.portal-row-mark[data-state='unread'] > span > span {
+  background: var(--portal-brand-fill);
+}
+
+[aria-current='page'] > .portal-row-mark[data-state='idle'] > span > span {
+  background: var(--portal-sidebar-row-selected-ink);
+}
+
+.portal-row-mark[data-state='working'] > span > span {
+  background: var(--portal-sidebar-green);
+}
+
+.portal-row-mark[data-state='needs-input'] > span > span {
+  background: var(--portal-sidebar-orange);
+}
+
+/* Trailing actions take the meta label's place on hover, keyboard focus or an open menu. */
+.portal-sidebar .portal-row-action {
+  position: absolute;
+  inset-inline-end: 0.375rem;
+  top: 50%;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-tertiary);
+  opacity: 0;
+  transform: translateY(-50%);
+}
+
+.portal-row-action svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.portal-sidebar .portal-row-action:hover,
+.portal-sidebar .portal-row-action[data-state='open'] {
+  background: var(--portal-sidebar-press);
+  color: var(--ui-text-primary);
+}
+
+.portal-session-item:is(:hover, :focus-within, [data-state='open'], :has(.portal-row-action[data-state='open']))
+  > .portal-row-action {
+  opacity: 1;
+}
+
+.portal-session-item[data-actions]:is(
+    :hover,
+    :focus-within,
+    [data-state='open'],
+    :has(.portal-row-action[data-state='open'])
+  )
+  .portal-session-meta {
+  opacity: 0;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .portal-sidebar .portal-row-action {
+    opacity: 1;
+  }
+
+  .portal-session-item[data-actions] .portal-session-row {
+    padding-inline-end: 2.25rem;
+  }
+
+  .portal-session-item[data-actions] .portal-session-meta {
+    opacity: 1;
+  }
+}
+
+/* ── Machines: a row like a pinned chat; an open machine becomes one card (set 16292:15581) ───── */
+
+.portal-sidebar [data-slot='gateway-group'] {
+  --portal-machine-tone: var(--portal-sidebar-meta);
+
+  position: relative;
+}
+
+/* 16px between a machine's text and the next card's edge: the row's own 8px plus this. */
+.portal-sidebar [data-slot='gateway-group'] + [data-slot='gateway-group'] {
+  margin-top: var(--portal-sidebar-section-gap);
+}
+
+.portal-sidebar [data-slot='gateway-group']:has(> [data-tone='online']) {
+  --portal-machine-tone: var(--portal-sidebar-green);
+}
+
+.portal-sidebar [data-slot='gateway-group']:has(> [data-tone='pending']) {
+  --portal-machine-tone: var(--portal-sidebar-orange);
+}
+
+/* A machine row is two hit targets on one bar: the disclosure (dot, name, tag) and, at its end, the
+   status, which opens the machine's health popover. The bar paints the row's states for both. */
+.portal-sidebar [data-slot='gateway-heading'] {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: var(--portal-sidebar-row-radius);
+}
+
+.portal-machine-row {
+  flex: 1;
+  min-height: var(--portal-sidebar-machine-row);
+  padding-inline-end: 0.25rem;
+  color: var(--portal-sidebar-machine-ink);
+}
+
+/* The machine's leading dot (16292:15573) wears its status tone; the status label at the end says it. */
+.portal-machine-row::before {
+  content: '';
+  width: var(--portal-sidebar-dot);
+  height: var(--portal-sidebar-dot);
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-machine-tone);
+}
+
+.portal-sidebar [data-slot='gateway-heading']:hover {
+  background: var(--portal-sidebar-hover);
+}
+
+/* An offline machine recedes (Lab Box, 16292:15657). */
+[data-tone='offline'] > .portal-machine-row {
+  color: var(--portal-sidebar-meta);
+}
+
+.portal-machine-tag {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--portal-sidebar-meta);
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-sidebar-caption);
+  letter-spacing: var(--portal-sidebar-caption-tracking);
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* The status ends on the row's 12px inset. */
+.portal-machine-status {
+  height: 1.5rem;
+  margin-inline: 0 calc(var(--portal-sidebar-bleed) - 0.25rem);
+  padding-inline: 0.25rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-machine-tone);
+}
+
+.portal-machine-status:hover,
+.portal-machine-status[data-state='open'] {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-machine-status:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: -2px;
+}
+
+/* The tone moved to the row's leading dot. */
+.portal-machine-status > .portal-status-dot {
+  display: none;
+}
+
+.portal-status-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+[data-tone='offline'] .portal-machine-status {
+  color: var(--portal-sidebar-meta);
+}
+
+/* The card: 5px wider than the rows on each side, its own padding putting the header's dot back on
+   the inset. */
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] {
+  margin-inline: calc(-1 * var(--portal-sidebar-machine-pad));
+  padding: 0 var(--portal-sidebar-machine-pad) var(--portal-sidebar-machine-pad);
+  border-radius: var(--portal-sidebar-machine-radius);
+  background: var(--portal-sidebar-machine-fill);
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] > .portal-machine-row {
+  min-height: var(--portal-sidebar-machine-head);
+  color: var(--ui-text-primary);
+}
+
+/* The open machine's header stays at the top of the list while its agents scroll under it, until
+   its card ends. Opaque: the card's fill over the panel's solid colour, so rows never show through it. */
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-radius: var(--portal-sidebar-machine-radius) var(--portal-sidebar-machine-radius) 0 0;
+  background:
+    linear-gradient(var(--portal-sidebar-machine-fill), var(--portal-sidebar-machine-fill)),
+    var(--portal-sidebar-background);
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading']:hover {
+  background:
+    linear-gradient(var(--portal-sidebar-hover), var(--portal-sidebar-hover)),
+    linear-gradient(var(--portal-sidebar-machine-fill), var(--portal-sidebar-machine-fill)),
+    var(--portal-sidebar-background);
+}
+
+.portal-machine-agents {
+  display: flex;
+  flex-direction: column;
+  padding-inline: var(--portal-sidebar-agent-inset);
+}
+
+/* ── Agent cards (item 16292:15592): the colour tile, name over a mono second line, the caret ──── */
+
+.portal-sidebar [data-slot='agent-heading'] {
+  --portal-agent-card-fill: var(--portal-sidebar-agent-fill);
+  --portal-agent-card-rule: var(--portal-sidebar-agent-rule);
+  --portal-agent-card-hover: transparent;
+
+  position: relative;
+  display: flex;
+  isolation: isolate;
+  overflow: hidden;
+  align-items: center;
+  gap: 0.125rem;
+  padding: var(--portal-sidebar-agent-pad-block) calc(var(--portal-sidebar-agent-pad-end) - 0.5rem)
+    var(--portal-sidebar-agent-pad-block) var(--portal-sidebar-agent-pad-start);
+  border-radius: var(--portal-sidebar-agent-radius);
+  /* The card's fill is see-through; the texture dodges into it inside this isolated box, and a dodge
+     over a see-through backdrop leaves the raw texture showing (grey metal in light). The sidebar's
+     own opaque colour underneath gives the dodge the backdrop Figma's layers have. */
+  background:
+    linear-gradient(var(--portal-agent-card-hover), var(--portal-agent-card-hover)),
+    linear-gradient(var(--portal-agent-card-fill), var(--portal-agent-card-fill)),
+    var(--portal-sidebar-background);
+  box-shadow:
+    inset 0 0 0 1px var(--portal-agent-card-rule),
+    var(--portal-sidebar-agent-shadow);
+}
+
+/* The CRT texture (Nous / Wallpaper / CRT / Dark, 16292:15600) dodges into the card's fill at
+   Figma's 306px width. */
+.portal-sidebar [data-slot='agent-heading']::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: url('../../../../assets/sidebar-agent-crt.avif') center / 19.125rem auto no-repeat;
+  mix-blend-mode: color-dodge;
+  opacity: var(--portal-sidebar-agent-texture-opacity);
+  pointer-events: none;
+}
+
+.portal-sidebar [data-slot='agent-heading'][data-active-agent] {
+  --portal-agent-card-fill: var(--portal-sidebar-agent-fill-open);
+  --portal-agent-card-rule: var(--portal-sidebar-agent-rule-open);
+}
+
+.portal-sidebar [data-slot='agent-heading']:hover {
+  --portal-agent-card-hover: var(--portal-sidebar-agent-hover);
+}
+
+.portal-sidebar [data-slot='agent-heading']:has(.portal-agent-chat:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.portal-sidebar [data-slot='agent-heading'] .portal-agent-chat:focus-visible {
+  outline: none;
+}
+
+/* Two cards with nothing between them keep 6px apart, as a card keeps from its chats. */
+.portal-sidebar [data-slot='agent-group'] + [data-slot='agent-group'] {
+  margin-top: var(--portal-sidebar-chats-pad);
+}
+
+.portal-sidebar [data-slot='agent-group']:has(> .portal-agent-sessions) + [data-slot='agent-group'] {
+  margin-top: 0;
+}
+
+.portal-agent-chat {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ui-text-primary);
+  text-align: start;
+}
+
+[data-slot='agent-heading'] .portal-agent-chat {
+  gap: var(--portal-sidebar-agent-gap);
+}
+
+.portal-agent-avatar {
+  display: grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: var(--portal-radius-card);
+}
+
+/* On a card the tile fills Figma's 32px avatar slot. */
+[data-slot='agent-heading'] .portal-agent-avatar {
+  width: var(--portal-sidebar-agent-avatar);
+  height: var(--portal-sidebar-agent-avatar);
+  border-radius: var(--portal-sidebar-agent-avatar-radius);
+}
+
+.portal-agent-avatar img {
+  padding: 0.0625rem;
+}
+
+[data-slot='agent-heading'] .portal-agent-avatar img {
+  padding: 0.25rem;
+}
+
+.portal-agent-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+}
+
+[data-slot='agent-heading'] .portal-agent-text {
+  gap: 0.25rem;
+}
+
+.portal-agent-name,
+.portal-agent-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-agent-name {
+  font-weight: 500;
+}
+
+.portal-agent-subtitle {
+  color: var(--portal-sidebar-meta);
+  font-size: var(--portal-sidebar-caption);
+}
+
+/* The card's second line: Nous/Uppercase. */
+[data-slot='agent-heading'] .portal-agent-subtitle {
+  color: var(--portal-sidebar-agent-subtitle);
+  font-family: var(--portal-sidebar-meta-font);
+  letter-spacing: var(--portal-sidebar-caption-tracking);
+  text-transform: uppercase;
+}
+
+[data-slot='agent-heading'][data-active-agent] .portal-agent-subtitle {
+  color: var(--portal-sidebar-agent-subtitle-open);
+}
+
+/* Disclosure and menu at the card's end: the caret stays at rest, as Figma's chevron does
+   (16292:15598); the menu appears on hover or focus. */
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-tertiary);
+  opacity: 0;
+}
+
+.portal-sidebar
+  [data-slot='agent-heading']:is(:hover, :focus-within)
+  :is(.portal-agent-collapse, .portal-agent-menu-trigger),
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger):is([data-state='open'], :focus-visible),
+.portal-sidebar .portal-agent-collapse {
+  opacity: 1;
+}
+
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger):is(:hover, [data-state='open']) {
+  background: transparent;
+  color: var(--ui-text-primary);
+}
+
+.portal-sidebar [data-active-agent] :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+  color: var(--portal-sidebar-agent-subtitle-open);
+}
+
+:is(.portal-agent-collapse, .portal-agent-menu-trigger) svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* Open points up, folded points along the line. */
+.portal-agent-collapse[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.portal-agent-collapse[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+
+.portal-agent-collapse[aria-expanded='false']:dir(rtl) svg {
+  transform: rotate(90deg);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+    opacity: 1;
+  }
+}
+
+/* Plugin chrome for one agent (`sidebar.profileGroup.header`): under the agent's card, on the chats'
+   title inset, so it reads as the first thing under it. Nothing renders without a contribution. */
+.portal-agent-header-slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+  padding-block: 0.25rem;
+  padding-inline: var(--portal-sidebar-chat-title) var(--portal-sidebar-chat-end);
+}
+
+/* An agent's chats (list 16292:15601): 40px rows across the machine card, the dot 30px in, the title
+   22px after it, the age 20px from the card's end; the open chat in full ink, the rest at the floor. */
+.portal-agent-sessions {
+  margin-inline: calc(-1 * var(--portal-sidebar-agent-inset));
+  padding-block: var(--portal-sidebar-chats-pad);
+}
+
+.portal-agent-sessions:not(:has([data-session-key])) {
+  display: none;
+}
+
+.portal-agent-sessions .portal-session-list {
+  gap: 0;
+}
+
+.portal-agent-sessions .portal-session-row {
+  min-height: var(--portal-sidebar-chat-row);
+  gap: var(--portal-sidebar-chat-dot-gap);
+  padding-inline: var(--portal-sidebar-chat-start) var(--portal-sidebar-chat-end);
+  color: var(--portal-sidebar-chat-ink);
+}
+
+.portal-agent-sessions .portal-session-row[aria-current='page'] {
+  color: var(--portal-sidebar-row-selected-ink);
+}
+
+/* "Show all (15)" / "Show less" under an agent's most recent chats: a chat row's pitch and title
+   inset, in the caption ink so it never reads as a chat. */
+.portal-session-more {
+  display: flex;
+  min-height: var(--portal-sidebar-chat-row);
+  align-items: center;
+  padding-inline: var(--portal-sidebar-chat-title) var(--portal-sidebar-chat-end);
+  border-radius: var(--portal-sidebar-row-radius);
+  color: var(--portal-sidebar-meta);
+  font-size: var(--portal-type-meta-size);
+  text-align: start;
+}
+
+.portal-session-more:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-session-more:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.portal-agent-sessions .portal-session-meta {
+  margin-inline-start: 1rem;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .portal-agent-sessions .portal-session-item[data-actions] .portal-session-row {
+    padding-inline-end: 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .portal-sidebar
+    :is(
+      .portal-session-row,
+      [data-slot='gateway-heading'],
+      .portal-machine-status,
+      [data-slot='agent-heading'],
+      .portal-row-action,
+      .portal-session-meta,
+      .portal-section-chevron,
+      .portal-agent-collapse,
+      .portal-agent-menu-trigger,
+      .portal-agent-collapse svg,
+      .portal-new-session > button
+    ) {
+    transition:
+      background-color var(--portal-motion-fast) var(--portal-ease),
+      color var(--portal-motion-fast) var(--portal-ease),
+      opacity var(--portal-motion-fast) var(--portal-ease),
+      transform var(--portal-motion-base) var(--portal-ease);
+  }
+}
+
+/* Agent settings reuses this dot for the owning machine's connection. */
+.portal-machine-state {
+  display: block;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--ui-text-tertiary);
+}
+
+.portal-machine-state[data-connected='true'] {
+  background: var(--portal-status-online);
+}
+
+/* ── Agent menu (body-portalled) ────────────────────────────────────────────────────────────── */
+
+.portal-agent-menu {
+  width: 18rem;
+  max-width: calc(100vw - 1rem);
+}
+
+.portal-agent-menu-icon,
+.portal-agent-menu [data-slot='dropdown-menu-item'] > svg {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.portal-agent-menu-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.portal-agent-menu .portal-hide-info {
+  opacity: 0;
+}
+
+.portal-agent-menu [data-slot='dropdown-menu-item']:is(:hover, :focus) .portal-hide-info {
+  opacity: 1;
+}
+
+.portal-hidden-help {
+  width: 20rem;
+  max-width: calc(100vw - 1rem);
+  padding: 1rem;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: var(--portal-radius-floating);
+  background: var(--ui-bg-elevated);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.tooltip-bubble.portal-hidden-help [data-slot='tooltip-arrow'] {
+  fill: var(--ui-bg-elevated);
+}
+
+.portal-hidden-explanation strong {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+  color: var(--ui-text-primary);
+}
+
+.portal-hidden-explanation ul {
+  display: grid;
+  gap: 0.5rem;
+  margin-block: 0.75rem;
+}
+
+.portal-hidden-explanation li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.portal-hidden-explanation li svg {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  color: var(--portal-status-online);
+}
+
+.portal-hidden-restore {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+  padding-top: 0.75rem;
+  color: var(--ui-text-tertiary);
+}
+
+/* ── Hidden agents tray ─────────────────────────────────────────────────────────────────────── */
+
+.portal-hidden-agents {
+  flex-shrink: 0;
+  max-height: 50%;
+  overflow-y: auto;
+  border-top: 1px solid var(--ui-stroke-tertiary);
+  padding-block: 0.5rem;
+}
+
+.portal-hidden-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  min-height: var(--portal-sidebar-row);
+  align-items: center;
+  gap: 0.5rem;
+  padding-inline: calc(var(--portal-sidebar-bleed) + 0.625rem);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-sidebar-background);
+  color: var(--portal-sidebar-label);
+}
+
+.portal-hidden-heading:hover,
+.portal-hidden-heading[aria-expanded='true'] {
+  color: var(--ui-text-secondary);
+}
+
+.portal-hidden-heading > svg {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.portal-hidden-count {
+  color: var(--portal-sidebar-meta);
+  font-size: var(--portal-type-meta-size);
+}
+
+.portal-hidden-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+  margin-top: var(--portal-sidebar-row-gap);
+}
+
+.portal-hidden-row {
+  position: relative;
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding-inline: calc(var(--portal-sidebar-bleed) + 0.6875rem) var(--portal-sidebar-bleed);
+  border-radius: var(--portal-radius-surface);
+}
+
+.portal-hidden-row:hover {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-hidden-row .portal-agent-chat {
+  min-height: 2.5rem;
+  color: var(--ui-text-secondary);
+}
+
+.portal-hidden-row[data-attention] .portal-agent-chat {
+  color: var(--ui-text-primary);
+}
+
+.portal-hidden-row:is([data-attention='approval'], [data-attention='input'], [data-attention='failed']) {
+  background: color-mix(in srgb, var(--portal-sidebar-orange) 9%, transparent);
+}
+
+.portal-hidden-row:is([data-attention='approval'], [data-attention='input'], [data-attention='failed'])
+  .portal-agent-subtitle {
+  color: var(--portal-sidebar-orange);
+}
+
+.portal-hidden-dot {
+  display: block;
+  flex-shrink: 0;
+  width: 0.3125rem;
+  height: 0.3125rem;
+  clip-path: polygon(
+    20% 0,
+    80% 0,
+    80% 20%,
+    100% 20%,
+    100% 80%,
+    80% 80%,
+    80% 100%,
+    20% 100%,
+    20% 80%,
+    0 80%,
+    0 20%,
+    20% 20%
+  );
+  background: var(--portal-sidebar-orange);
+}
+
+.portal-hidden-dot[data-attention='running'] {
+  background: var(--portal-sidebar-green);
+}
+
+.portal-hidden-dot[data-attention='unread'] {
+  background: var(--portal-brand-ink);
+}
+
+.portal-sidebar .portal-hidden-show {
+  min-height: 1.5rem;
+  border: 0.5px solid var(--portal-raw-ink-10);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-sidebar-card);
+  box-shadow: none;
+  font-weight: 400;
+}
+
+.portal-sidebar .portal-hidden-show:hover {
+  background: var(--portal-sidebar-press);
+}
+
+.portal-hidden-row[data-attention] .portal-hidden-show {
+  position: absolute;
+  inset-inline-end: var(--portal-sidebar-bleed);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.portal-hidden-row[data-attention]:is(:hover, :focus-within) .portal-hidden-show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.portal-hidden-row[data-attention]:is(:hover, :focus-within) > .portal-hidden-dot {
+  opacity: 0;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .portal-hidden-row[data-attention] .portal-hidden-show {
+    position: static;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ── Empty pins ─────────────────────────────────────────────────────────────────────────────── */
+
+.portal-pinned-empty {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px dashed var(--portal-raw-ink-10);
+  border-radius: var(--portal-radius-surface);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.portal-pinned-empty-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-sidebar-card);
+  color: var(--ui-text-secondary);
+}
+
+/* ── Touch (DESIGN.md › Responsive) ──────────────────────────────────────────────────────────────
+   A coarse pointer on the browser host: every row and its actions take the 44px target. Rows grow;
+   the end actions (already shown, above) become 44px squares at the row's end; section headings
+   and the agent disclosure grow to the target too. Native Desktop keeps Figma's density. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar {
+    --portal-sidebar-row: var(--portal-touch-target);
+    --portal-sidebar-pin-row: var(--portal-touch-target);
+    --portal-sidebar-machine-row: var(--portal-touch-target);
+    --portal-sidebar-chat-row: var(--portal-touch-target);
+  }
+
+  /* The field's text is 16px on touch (no iOS zoom), and a shortcut is rarely typed there: the
+     placeholder keeps the row. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar .portal-sidebar-search .portal-kbd {
+    display: none;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar .portal-row-action {
+    inset-inline-end: 0;
+    width: var(--portal-touch-target);
+    height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    .portal-sidebar
+    .portal-session-item[data-actions]
+    .portal-session-row {
+    padding-inline-end: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    .portal-sidebar
+    :is(.portal-agent-collapse, .portal-agent-menu-trigger, .portal-section-action) {
+    width: var(--portal-touch-target);
+    min-width: var(--portal-touch-target);
+    height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    .portal-sidebar
+    :is(
+      .portal-section-title,
+      .portal-new-session > button,
+      [data-slot='gateway-heading'],
+      [data-slot='agent-heading']
+    ) {
+    min-height: var(--portal-touch-target);
+  }
+}
+
+/* ── An agent's Routines chip (1100:8452): under its chats, at the chat titles' inset ─────────── */
+.portal-agent-routines {
+  display: flex;
+  min-height: var(--portal-sidebar-chat-row);
+  align-items: center;
+  padding-inline-start: calc(var(--portal-sidebar-chat-title) - var(--portal-sidebar-agent-inset));
+}
+
+.portal-agent-routines-chip {
+  position: relative;
+  display: inline-flex;
+  height: 1.25rem;
+  align-items: center;
+  gap: 0.375rem;
+  padding-inline: 0.375rem 0.25rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-chrome);
+  color: var(--portal-sidebar-meta);
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-type-micro-size);
+  line-height: 1;
+}
+
+.portal-agent-routines-chip:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-agent-routines-chip:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.portal-agent-routines-count {
+  color: var(--ui-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.portal-agent-routines-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-status-error-ink);
+}
+
+.portal-agent-routines-chevron {
+  opacity: 0.6;
+}
+
+.portal-agent-routines-tip {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.portal-agent-routines-tip > span:last-child {
+  opacity: 0.7;
+}
+
+/* A coarse pointer: the chip keeps its look and extends its hit area to the touch target. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'] .portal-agent-routines-chip::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, calc((100% - var(--portal-touch-target)) / 2));
+  }
+}

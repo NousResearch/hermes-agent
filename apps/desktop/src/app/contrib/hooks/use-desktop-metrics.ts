@@ -39,6 +39,7 @@ import {
   type SharedMetricsConsent,
   sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
+import { $portalPreferred } from '@/store/shell-variant'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
 
@@ -139,7 +140,7 @@ export function useDesktopMetrics({
     const refresh = () =>
       void readSharedMetricsConsent(request).then(consent => {
         // An unreadable answer (older backend, flap) keeps the last known gate.
-        if (!cancelled && consent) {
+        if (!cancelled && $apiRequestScope.get() === scope && consent) {
           setDesktopMetricsGate(gateFor(consent), consent.decided)
         }
       })
@@ -152,7 +153,7 @@ export function useDesktopMetrics({
       cancelled = true
       window.removeEventListener('focus', refresh)
     }
-  }, [connectionId, enabled, gatewayOpen, profileKey, request])
+  }, [connectionId, enabled, gatewayOpen, profileKey, request, scope])
 
   // A first-run answer or a Settings change lands in the consent atom.
   useEffect(() => {
@@ -161,11 +162,11 @@ export function useDesktopMetrics({
     }
 
     return $sharedMetricsConsent.listen(consent => {
-      if (consent) {
+      if ($apiRequestScope.get() === scope && consent) {
         setDesktopMetricsGate(gateFor(consent), consent.decided)
       }
     })
-  }, [enabled])
+  }, [enabled, scope])
 
   useEffect(() => {
     const area = enabled
@@ -206,6 +207,7 @@ export function useDesktopMetrics({
         if (now - last >= INTERACTION_THROTTLE_MS) {
           last = now
           noteInteraction(now)
+          recordFeatureUse($portalPreferred.get() ? 'simplified_sidebar' : 'classic_sidebar', now)
         }
       }
     })()

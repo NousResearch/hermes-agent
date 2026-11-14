@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { renameProfile } from '@/hermes'
+import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
 
@@ -16,6 +17,7 @@ import { RenameProfileDialog } from './rename-profile-dialog'
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  $hiddenSidebarAgents.set([])
 })
 
 vi.mock('@/hermes', () => ({
@@ -30,30 +32,31 @@ vi.mock('@/store/session-states', () => ({
   migrateTilesForProfile: vi.fn()
 }))
 
-it('retires the old-name local gateways before issuing the rename', async () => {
-  const order: string[] = []
+it.each([undefined, { connectionId: 'local', profile: 'selena' }])(
+  'retires old local gateways before renaming and migrates ownership (scope: %j)',
+  async scope => {
+    const order: string[] = []
 
-  vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
-    order.push('retire')
-  })
-  vi.mocked(renameProfile).mockImplementationOnce(async () => {
-    order.push('rename')
+    vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
+      order.push('retire')
+    })
+    vi.mocked(renameProfile).mockImplementationOnce(async () => {
+      order.push('rename')
 
-    return { name: 'renamed', ok: true, path: '/x' }
-  })
+      return { name: 'renamed', ok: true, path: '/x' }
+    })
 
-  render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open />)
+    render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open scope={scope} />)
 
-  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
-  fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+    fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
 
-  await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed'))
-  expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
-  expect(order).toEqual(['retire', 'rename'])
-  // The sessions moved with the directory: tabs / cached tails / remembered ids keyed by the
-  // old name follow, else every restored tab 404s against a backend that no longer exists (#111868).
-  expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
-})
+    await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed', ...(scope ? [scope] : [])))
+    expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
+    expect(order).toEqual(['retire', 'rename'])
+    expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
+  }
+)
 
 it('does not retire gateways when validation rejects the submit', async () => {
   render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open />)
@@ -64,4 +67,22 @@ it('does not retire gateways when validation rejects the submit', async () => {
   await waitFor(() => expect(screen.getByText('Name is required.')).toBeTruthy())
   expect(retireLocalProfileGateways).not.toHaveBeenCalled()
   expect(renameProfile).not.toHaveBeenCalled()
+})
+
+it('moves a remote hidden preference without changing the same-named local agent', async () => {
+  const remote = { connectionId: 'remote', profile: 'selena' }
+  const local = { connectionId: null, profile: 'selena' }
+  setSidebarAgentHidden(remote, true)
+  setSidebarAgentHidden(local, true)
+  render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open scope={remote} />)
+  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
+  fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+  await waitFor(() =>
+    expect($hiddenSidebarAgents.get()).toEqual([
+      agentSidebarKey({ ...remote, profile: 'renamed' }),
+      agentSidebarKey(local)
+    ])
+  )
+  expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+  expect(migrateTilesForProfile).not.toHaveBeenCalled()
 })

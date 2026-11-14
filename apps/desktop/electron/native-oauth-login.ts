@@ -37,6 +37,7 @@ import {
   parseLoopbackCallback,
   parseTokenResponse
 } from './native-oauth'
+import { shellMessages } from './shell-wording'
 
 // Loopback login must complete inside this window (user opens browser,
 // authenticates, gets redirected back). Matches the server-side pending TTL.
@@ -189,12 +190,7 @@ export async function runNativeLogin(
       })
 
       timer = setTimeout(() => {
-        fail(
-          new Error(
-            'Native sign-in timed out. The browser window may not have completed ' +
-              'sign-in; open Settings → Gateway and try again.'
-          )
-        )
+        fail(new Error(shellMessages.nativeSignInTimedOut()))
       }, timeoutMs)
 
       log(`[native-oauth] loopback listening on 127.0.0.1:${addr.port}; opening system browser`)

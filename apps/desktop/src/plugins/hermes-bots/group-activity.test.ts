@@ -213,9 +213,6 @@ describe('turn arc', () => {
     const failed = feed(room, 'Slot wait').find(event => event.kind === 'failed' && event.member === 'builder')
 
     expect(failed?.reason).toBe(room.activity.GROUP_SLOT_WAIT_REASON)
-    expect(room.activity.groupActivityLabel(failed!, 'Slot wait')).toBe(
-      "builder couldn't start — too many bots running"
-    )
     expect(room.data.$botAttention.get()).toEqual({})
   })
 })

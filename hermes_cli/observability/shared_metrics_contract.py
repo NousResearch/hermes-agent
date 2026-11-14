@@ -20,6 +20,10 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
+from .shared_metrics_desktop_contract import (
+    DESKTOP_ACTION_IDS, DESKTOP_ACTION_USE_MARK, DESKTOP_ACTION_USE_METRIC, DESKTOP_ACTION_VIAS,
+    DESKTOP_BUTTON_ACTION_IDS, DESKTOP_KEYBIND_ACTION_IDS,
+)
 from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
@@ -683,7 +687,7 @@ DESKTOP_FEATURE_AREAS = DESKTOP_SETTINGS_AREAS | {
     # overlays and pickers
     "command_palette", "find_in_page", "model_picker", "session_picker", "session_switcher",
     # first-class features
-    "bot_mode", "projects", "session_search", "skins", "voice_conversation", "voice_dictation",
+    "bot_mode", "classic_sidebar", "simplified_sidebar", "projects", "session_search", "skins", "voice_conversation", "voice_dictation",
     # full pages (APP_ROUTES in apps/desktop/src/app/routes.ts, plus contributed plugin pages)
     "agents", "artifacts", "capabilities", "command_center", "cron", "extension_page", "kanban", "messaging",
     "profiles", "session_import", "starmap", "webhooks",
@@ -736,30 +740,6 @@ def desktop_active_minutes_bucket(active_ms: Any) -> str:
 # ---- end v5 desktop ----
 
 # ---- v5 desktop actions ----
-# Button presses per day. Action ids are the Desktop keybinding registry (KEYBIND_ACTIONS in
-# apps/desktop/src/lib/keybinds/actions.ts) plus the typed button table DESKTOP_BUTTON_ACTIONS in
-# apps/desktop/src/store/desktop-metrics.ts; contributed/plugin actions collapse to `other`.
-DESKTOP_ACTION_USE_MARK = DESKTOP_ACTION_USE_METRIC = "hermes.desktop.action_use"
-DESKTOP_KEYBIND_ACTION_IDS = frozenset({
-    "appearance.toggleMode", "composer.cancel", "composer.dictate", "composer.focus", "composer.help",
-    "composer.history", "composer.mention", "composer.modelPicker", "composer.newline", "composer.queue",
-    "composer.reasoningDown", "composer.reasoningUp", "composer.send", "composer.sendQueued", "composer.slash",
-    "composer.steer", "composer.voice", "conversation.scrollPageDown", "conversation.scrollPageUp",
-    "hud.snapToPointer", "keybinds.openPanel", "nav.agents", "nav.artifacts", "nav.capabilities",
-    "nav.commandCenter", "nav.commandPalette", "nav.cron", "nav.messaging", "nav.profiles", "nav.settings",
-    "profile.create", "profile.default", "profile.next", "profile.prev", "profile.toggleAll",
-    "session.archive", "session.focusSearch", "session.new", "session.newTab", "session.newWindow",
-    "session.next", "session.prev", "session.togglePin", "view.closeTab", "view.closeTerminal",
-    "view.cycleSidebarGrouping", "view.findInPage", "view.findNext", "view.findPrevious", "view.flipPanes",
-    "view.newTerminal", "view.nextTerminal", "view.prevTerminal", "view.reopenTab", "view.selectionToComposer",
-    "view.showBrowser", "view.showFiles", "view.showTerminal", "view.terminalCopy", "view.terminalPaste",
-    "view.toggleHud", "view.toggleProfileRail", "view.toggleReview", "view.toggleRightSidebar",
-    "view.toggleSidebar", "view.toggleSimpleMode", "view.toggleStatusbar", "view.toggleTabStrip",
-    "workspace.newWorktree", "workspace.openFolder",
-})
-DESKTOP_BUTTON_ACTION_IDS = frozenset({"composer.attach", "message.copy", "message.retry"})
-DESKTOP_ACTION_IDS = DESKTOP_KEYBIND_ACTION_IDS | DESKTOP_BUTTON_ACTION_IDS | {"other"}
-DESKTOP_ACTION_VIAS = frozenset({"click", "menu", "palette", "shortcut"})
 # Dislike signals, each naming its target from a closed set (setting keys are DEFAULT_CONFIG leaf
 # paths, checked against the live schema by shared_metrics_desktop and shape-checked here).
 DESKTOP_DISLIKE_MARK = DESKTOP_DISLIKE_METRIC = "hermes.desktop.dislike"
@@ -769,7 +749,7 @@ DESKTOP_FLOW_IDS = frozenset({
 })
 DESKTOP_FEATURE_TOGGLES = frozenset({
     "backdrop", "bot_activity_toasts", "composer_popout_gestures", "intro_splash", "native_notifications",
-    "notification_kind", "reactions", "thread_timeline", "tips", "tours", "vibe_hearts", "other",
+    "notification_kind", "reactions", "simplified_sidebar", "thread_timeline", "tips", "tours", "vibe_hearts", "other",
 })
 DESKTOP_UNDO_TARGETS = frozenset({"closed_tab", "restored_draft", "other"})
 DESKTOP_DISLIKE_TARGETS: dict[str, frozenset[str]] = {
@@ -778,6 +758,9 @@ DESKTOP_DISLIKE_TARGETS: dict[str, frozenset[str]] = {
     "quick_close": DESKTOP_FEATURE_AREAS,
     "rage_click": DESKTOP_ACTION_IDS,
     "setting_off_default": frozenset({"setting"}),
+    "sidebar_disabled_reason": frozenset({
+        "missing_chats", "hard_to_navigate", "missing_features", "prefer_classic", "performance", "other",
+    }),
     "undo": DESKTOP_UNDO_TARGETS,
 }
 DESKTOP_DISLIKE_SIGNALS = frozenset(DESKTOP_DISLIKE_TARGETS)

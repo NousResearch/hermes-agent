@@ -1,0 +1,63 @@
+/* Shape (LANGUAGE §4): the radius says what a thing is. Explicit px: the root's --radius-scalar would
+   otherwise land Tailwind's rounded-* between Figma's steps. Elevation is flat: only floating things
+   cast a shadow. */
+:root[data-shell='portal'] {
+  /* Chips, counts, segments, tags (877:4186). */
+  --portal-radius-chip: 2px;
+  /* Buttons, inputs, selects, checkboxes, keycaps, chrome buttons, page-panel rows (1036:7409). */
+  --portal-radius-control: 3px;
+  /* Cards, tables, banners, menus (1036:7576, 878:6044). */
+  --portal-radius-card: 4px;
+  /* Media cards and the collections they sit beside (Library 1163:18113: 12px; its table draws 15,
+     held to the card's step). */
+  --portal-radius-tile: 12px;
+  /* Chat content (bubble, tool row, code card) and chat-sidebar rows (491:40655, 147:7470). */
+  --portal-radius-surface: 6px;
+  /* Popovers, dialogs, choice tiles (616:1685). */
+  --portal-radius-floating: 8px;
+  /* The outer top corner of panels, the stage and the composer (906:19804). */
+  --portal-radius-panel: 9px;
+  /* The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit
+     in, inset from the window (Content 16292:14463). Global Settings' cards round the same
+     (Card 16292:16456). */
+  --portal-radius-frame: 15px;
+  --portal-radius-settings-card: var(--portal-radius-frame);
+  /* The Settings column's Agent settings card (16292:16428). */
+  --portal-radius-settings-link: 9px;
+  --portal-shadow-settings-link: 0 1px 4px var(--portal-raw-shadow-20);
+  /* Switch tracks, swatches, dots. */
+  --portal-radius-round: 999px;
+
+  /* The one focus ring: 2px of brand ink as an outline, so it never replaces a control's own stroke
+     shadow. Outset by default; a context whose scroller or overflow would clip an outset ring (sidebar,
+     page nav) sets --portal-focus-ring-offset to the inset value on its container and every control
+     inside follows. */
+  --portal-focus-ring-width: 2px;
+  --portal-focus-ring-outset: 1px;
+  --portal-focus-ring-inset: calc(-1 * var(--portal-focus-ring-width));
+  --portal-focus-ring-offset: var(--portal-focus-ring-outset);
+
+  /* Menus, popovers, dialogs (878:6044): one soft drop shadow. */
+  --portal-shadow-floating: 0 8px 24px var(--portal-raw-shadow-50);
+  /* The composer card casts none (msg 16292:15670). */
+  --portal-shadow-composer: none;
+  /* The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. */
+  --portal-shadow-workspace: 0 -4px 30px var(--portal-raw-shadow-20);
+  /* ...and its inner highlight along the top (inner shadow, 16292:14463): white .05, 1px down, 2px soft. */
+  --portal-shadow-workspace-highlight: inset 0 1px 2px var(--portal-raw-highlight-5);
+
+  /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
+  --portal-control-radius: var(--portal-radius-control);
+  --portal-menu-radius: var(--portal-radius-card);
+  /* The panel row's outer corners are the workspace frame's. */
+  --portal-panel-radius: var(--portal-radius-frame);
+  --portal-floating-shadow: var(--portal-shadow-floating);
+}
+
+/* Light has no Figma frame: a lighter, two-step shadow keeps floating surfaces off #f2f2f2 pages. */
+:root[data-shell='portal']:not(.dark) {
+  --portal-shadow-floating: 0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8);
+  /* Light's frame shadow falls below it (16292:23801). */
+  --portal-shadow-workspace: 0 8px 12px var(--portal-raw-shadow-navy-10);
+  --portal-shadow-workspace-highlight: none;
+}

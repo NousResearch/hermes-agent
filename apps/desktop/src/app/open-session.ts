@@ -19,6 +19,7 @@ import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSes
 import { noteUserSessionOpen } from '@/store/session-open-intent'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
+  canOpenSessionOwner,
   focusedSessionNeedsRoute,
   focusedSessionWorkspaceScope,
   focusOpenSession,
@@ -27,6 +28,7 @@ import {
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
+import { $sessionListSpansProfiles } from '@/store/shell-policy'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
@@ -121,26 +123,38 @@ export function openSession(
     return
   }
 
+  const popOut = intent === 'window' && canOpenSessionWindow()
+
+  // A separate window has its own caches: the redesign's cross-profile list must
+  // not touch a same-ID local row or tile while opening its other-owner twin
+  // there. Classic marks the row read here first, as main does.
+  if (popOut && $sessionListSpansProfiles.get()) {
+    void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+
+    return
+  }
+
+  if (!canOpenSessionOwner(storedSessionId, workspaceScope.ownerRoute)) {
+    return
+  }
+
   // Any explicit open/focus means the user has seen the finished-turn marker.
   // Must run BEFORE the focus short-circuits below: clicking a session that is
   // already on screen (open tile, or the main session) would otherwise return
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
   setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+
+  if (popOut) {
+    void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+
+    return
+  }
+
   const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 
-  let resolved: OpenSessionIntent = intent
-
-  if (resolved === 'window') {
-    if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId)
-
-      return
-    }
-
-    // No pop-out support → treat like a new tab.
-    resolved = 'tab'
-  }
+  // No pop-out support → treat like a new tab.
+  let resolved: OpenSessionIntent = intent === 'window' ? 'tab' : intent
 
   // A chat opened in this window: the launch restore must not close it.
   noteUserSessionOpen()
@@ -191,18 +205,12 @@ export function openSession(
     // stacking a second blank one beside it.
     if (
       spendBlankDraft &&
-      (botWorkspaceScope
-        ? reuseBlankDraftTile(storedSessionId, botWorkspaceScope)
-        : reuseBlankDraftTile(storedSessionId))
+      reuseBlankDraftTile(storedSessionId, workspaceScope)
     ) {
       return
     }
 
-    if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
-    } else {
-      openSessionTile(storedSessionId, 'center')
-    }
+    openSessionTile(storedSessionId, 'center', undefined, undefined, workspaceScope)
 
     focusOpenSession(storedSessionId, workspaceScope)
 

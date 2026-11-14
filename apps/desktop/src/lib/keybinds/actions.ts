@@ -5,7 +5,9 @@
 // like navigate / theme); labels come from i18n (`t.keybinds.actions[id]`). To
 // add a hotkey, add a row here and a handler there — nothing else.
 
-import { registry } from '@/contrib/registry'
+import { atom, computed, onMount, type ReadableAtom } from 'nanostores'
+
+import { $registryVersion, registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { hostHas } from '@/lib/host-capabilities'
 import { isMacPlatform } from '@/lib/platform'
@@ -33,6 +35,14 @@ interface BrowserChords {
   /** Omitted: the native default already reaches the page on macOS. */
   mac?: string
   other: string
+}
+
+function historyAction(id: string, mac: string, other: string): KeybindActionMeta {
+  return {
+    id,
+    category: 'navigation',
+    defaults: hostHas('browserShortcutDefaults') ? [] : [isMacPlatform() ? mac : other]
+  }
 }
 
 // The host and platform are fixed for the page's life; only the window kind
@@ -169,6 +179,13 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'profile.toggleAll', category: 'profiles', defaults: ['mod+shift+0'] },
   { id: 'profile.create', category: 'profiles', defaults: [] },
 
+  // The Agents page's "New agent" takes the new-chat chord there (its row draws the keycaps) and
+  // passes it through to `session.new` everywhere else, so it must stay listed before it.
+  // Assigned, not spread: a browser row's `defaults` is a getter that must keep following the window.
+  Object.assign(hostAction('agents.new', 'profiles', ['mod+n'], { mac: 'mod+ctrl+n', other: 'alt+n' }), {
+    passthrough: true as const
+  }),
+
   // ── Session ──────────────────────────────────────────────────────────────
   // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
   // hijacked normal typing — pressing uppercase N outside an input (or via an
@@ -208,6 +225,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
   { id: 'nav.agents', category: 'navigation', defaults: [] },
+  // The band's Back/Forward. A browser tab already walks the same (hash) history on its own
+  // Back/Forward chords and mouse buttons, so only an app window binds them.
+  historyAction('nav.back', 'mod+[', 'alt+left'),
+  historyAction('nav.forward', 'mod+]', 'alt+right'),
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
@@ -219,6 +240,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
   // gap in their View family) and Hermes has no chord dispatcher, so this
   // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
+  // Offered only where the shell has a strip (store/keybinds.ts declares it).
   { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌥⌘T — "t" for tabs, reaching past ⇧ because ⌘⇧T is reopen-closed-tab
   // everywhere. Ships BOUND, unlike VS Code's settings-only tab-bar switch:
@@ -347,8 +369,9 @@ export function contributedKeybinds(
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))
 }
 
-/** Built-ins + contributed, one metadata list (panel, bindings, conflicts). */
-export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
+/** Built-ins + contributed, offered here or not: one metadata list for bindings, dispatch and
+ *  conflicts, which must not change when a shell flip makes an action unavailable. */
+export function keybindActionCatalog(contributions?: readonly Contribution[]): KeybindActionMeta[] {
   return [
     ...KEYBIND_ACTIONS,
     ...contributedKeybinds(contributions).map(k => ({
@@ -360,8 +383,59 @@ export function allKeybindActions(contributions?: readonly Contribution[]): Keyb
   ]
 }
 
+const availability = new Map<string, ReadableAtom<boolean>>()
+
+// Bumped whenever a declared availability changes, so `$offeredKeybindActions` recomputes. It
+// watches the declared stores only while something watches it: a declaration made at import never
+// evaluates window state (the window kind) before the app reads it.
+const $keybindAvailability = atom(0)
+const availabilityWatches = new Map<string, () => void>()
+
+const bumpAvailability = () => $keybindAvailability.set($keybindAvailability.get() + 1)
+
+const watchAvailability = (id: string, $available: ReadableAtom<boolean>) => {
+  availabilityWatches.get(id)?.()
+  availabilityWatches.set(id, $available.listen(bumpAvailability))
+}
+
+onMount($keybindAvailability, () => {
+  availability.forEach(($available, id) => watchAvailability(id, $available))
+
+  return () => {
+    availabilityWatches.forEach(stop => stop())
+    availabilityWatches.clear()
+  }
+})
+
+/** A window-dependent command declares when it does anything here, as a store, so this table stays
+ *  free of app state (store/keybinds.ts makes the declarations). An unavailable action keeps its
+ *  bindings and conflicts (a shell flip brings its context back) but leaves the shortcut map, and
+ *  the dispatcher lets its chord through instead of swallowing it. */
+export function declareKeybindAvailability(id: string, $available: ReadableAtom<boolean>): void {
+  availability.set(id, $available)
+
+  if ($keybindAvailability.lc > 0) {
+    watchAvailability(id, $available)
+    bumpAvailability()
+  }
+}
+
+export function keybindActionAvailable(id: string): boolean {
+  return availability.get(id)?.get() ?? true
+}
+
+/** The actions this window offers right now: what the shortcut map lists. */
+export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
+  return keybindActionCatalog(contributions).filter(action => keybindActionAvailable(action.id))
+}
+
+/** `allKeybindActions` as a store for a list that must stay live: it follows late plugin
+ *  registrations and a runtime shell flip, which a memoized `allKeybindActions(contributions)`
+ *  call (React Compiler keys it on `contributions` alone) would miss. */
+export const $offeredKeybindActions = computed([$registryVersion, $keybindAvailability], () => allKeybindActions())
+
 export function keybindAction(id: string): KeybindActionMeta | undefined {
-  return ACTION_BY_ID.get(id) ?? allKeybindActions().find(action => action.id === id)
+  return ACTION_BY_ID.get(id) ?? keybindActionCatalog().find(action => action.id === id)
 }
 
 /** True when `combo` carries a modifier beyond Shift (mod, ctrl, or alt). */
@@ -387,7 +461,7 @@ export function contributedKeybindHandler(id: string): (() => void) | undefined 
 export type KeybindBindings = Record<string, string[]>
 
 export function defaultBindings(): KeybindBindings {
-  return Object.fromEntries(allKeybindActions().map(action => [action.id, [...action.defaults]]))
+  return Object.fromEntries(keybindActionCatalog().map(action => [action.id, [...action.defaults]]))
 }
 
 // Fixed, non-rebindable shortcuts surfaced read-only in the panel so the map is

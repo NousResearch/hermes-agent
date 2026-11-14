@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 // Ctrl chords before the page sees them. A Chrome app window reserves none of
 // them, so off macOS it ships the same Ctrl chords native Desktop does.
 const shortcuts = [
+  { id: 'agents.new', native: ['mod+n'], mac: 'mod+ctrl+n', tab: 'alt+n' },
   { id: 'session.new', native: ['mod+n'], mac: 'mod+ctrl+n', tab: 'alt+n' },
   { id: 'session.newTab', native: ['mod+t'], mac: 'mod+ctrl+t', tab: 'alt+t' },
   { id: 'session.newWindow', native: ['mod+shift+n'], mac: 'mod+ctrl+shift+n', tab: 'alt+shift+n' },
@@ -71,7 +72,8 @@ it.each(['standalone', 'minimal-ui', 'window-controls-overlay'])(
     }
 
     const ctrlN = new KeyboardEvent('keydown', { code: 'KeyN', ctrlKey: true, key: 'n' })
-    expect($comboIndex.get().get(comboFromEvent(ctrlN)!)).toEqual(['session.new'])
+    // The Agents page's New agent layers over new chat on the same chord (it passes through elsewhere).
+    expect($comboIndex.get().get(comboFromEvent(ctrlN)!)).toEqual(['agents.new', 'session.new'])
     expect($comboIndex.get().has('alt+n')).toBe(false)
   }
 )
@@ -134,7 +136,8 @@ it('skips a default move onto a chord the user gave another action', async () =>
   setBinding('session.focusSearch', ['alt+n'])
   moveTo('browser')
 
-  expect($comboIndex.get().get('alt+n')).toEqual(['session.focusSearch'])
+  // agents.new layers over it (a passthrough that answers only on the Agents page); new chat moves off.
+  expect($comboIndex.get().get('alt+n')).toEqual(['agents.new', 'session.focusSearch'])
   expect(bindingsFor('session.new')).toEqual(['mod+n'])
   expect(conflictsFor('session.focusSearch', 'alt+n')).toEqual([])
   expect(bindingsFor('session.next')).toEqual(['alt+]'])
@@ -142,7 +145,7 @@ it('skips a default move onto a chord the user gave another action', async () =>
   vi.resetModules()
   const reloaded = await import('@/store/keybinds')
 
-  expect(reloaded.$comboIndex.get().get('alt+n')).toEqual(['session.focusSearch'])
+  expect(reloaded.$comboIndex.get().get('alt+n')).toEqual(['agents.new', 'session.focusSearch'])
 })
 
 it('a non-Chromium web-app window keeps the browser-tab defaults', async () => {

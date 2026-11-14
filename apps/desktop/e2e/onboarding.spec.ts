@@ -1,21 +1,12 @@
 /**
- * E2E onboarding tests — verify the provider picker appears when no
- * inference provider is configured.
- *
- * Launches the app with an empty config.yaml (no providers). The renderer
- * should detect the unconfigured state and show the DesktopOnboardingOverlay
- * with provider options / API key form.
+ * E2E onboarding tests — the deterministic guide renders without an inference provider.
+ * Provider setup remains an explicit choice from the model step.
  *
  * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
-import { test } from './test'
-
-import {
-  type NoProviderFixture,
-  setupNoProvider,
-  waitForOnboarding,
-} from './fixtures'
+import { type NoProviderFixture, setupNoProvider } from './fixtures'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: NoProviderFixture | null = null
@@ -29,10 +20,12 @@ test.describe('onboarding with no provider configured', () => {
   test('onboarding overlay appears on first boot', async () => {
     fixture = await setupNoProvider()
 
-    // The app should boot (hermes serve starts fine even without a provider),
-    // but the renderer should show the onboarding overlay because no
-    // provider is configured.
-    await waitForOnboarding(fixture.page, 90_000)
+    const guide = fixture.page.getByRole('dialog')
+    await expect(guide.getByRole('heading', { name: 'Set up Hermes' })).toBeVisible({ timeout: 90_000 })
+    await guide.getByRole('button', { name: 'Continue', exact: true }).click()
+    await expect(guide.getByRole('heading', { name: 'Choose a model', exact: true })).toBeVisible()
+    await expect(guide.getByRole('button', { name: 'Finish setup', exact: true })).toBeDisabled()
+    await expect(guide.getByRole('button', { name: 'Connect a provider', exact: true })).toBeEnabled()
   })
 
   test('screenshot of onboarding overlay', async () => {

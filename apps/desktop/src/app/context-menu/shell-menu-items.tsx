@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -8,6 +9,7 @@ import { cloudOwnsUpdates } from '@/store/cloud-updates'
 import { openCommandPalette } from '@/store/command-palette'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarStripAvailable } from '@/store/statusbar-strip'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 
@@ -18,7 +20,8 @@ function shellSections(
   kit: MenuKit,
   navigate: ReturnType<typeof useNavigate>,
   t: Translations,
-  primaryOnly: boolean
+  primaryOnly: boolean,
+  statusbarStrip: boolean
 ): ReactNode[][] {
   const newChat = renderActionItem(kit, {
     icon: 'add',
@@ -70,12 +73,14 @@ function shellSections(
       })
     ].filter(Boolean),
     [
-      renderActionItem(kit, {
-        icon: 'layout-statusbar',
-        key: 'shell-statusbar',
-        label: t.keybinds.actions['view.toggleStatusbar'],
-        onSelect: toggleStatusbarVisible
-      }),
+      statusbarStrip
+        ? renderActionItem(kit, {
+            icon: 'layout-statusbar',
+            key: 'shell-statusbar',
+            label: t.keybinds.actions['view.toggleStatusbar'],
+            onSelect: toggleStatusbarVisible
+          })
+        : null,
       renderActionItem(kit, {
         icon: 'organization',
         key: 'shell-profile-rail',
@@ -101,8 +106,9 @@ function shellSections(
 export function ShellMenuItems({ kit, primaryOnly = false }: { kit: MenuKit; primaryOnly?: boolean }) {
   const navigate = useNavigate()
   const { t } = useI18n()
+  const statusbarStrip = useStore($statusbarStripAvailable)
 
-  return shellSections(kit, navigate, t, primaryOnly).map((section, index) => (
+  return shellSections(kit, navigate, t, primaryOnly, statusbarStrip).map((section, index) => (
     <div className="contents" key={index}>
       {index > 0 && <kit.Separator />}
       {section}

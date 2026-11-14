@@ -1,7 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { $shellChoice } from '@/store/shell-variant'
 
 import { modePref, skinPref } from './context'
 import { DEFAULT_SKIN_NAME } from './presets'
+
+// These cases pin the CLASSIC shell's default skin (Nous); the redesign's own
+// default (Portal) is covered in shell-default-skin.test.tsx.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => $shellChoice.set(null))
 
 // Skin and mode share one per-profile contract, so assert it once over both.
 interface Pref {

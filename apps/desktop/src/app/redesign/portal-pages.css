@@ -1,0 +1,521 @@
+/* Routed pages in the redesign (Settings 856:*, Agents 877:*, Capabilities 919:*): the page heading
+   and the page navigation column. Route overlays render outside the chat shell, so every rule gates
+   on the root and scopes to [data-page-surface]. */
+
+/* List pages without a panel (Webhooks, Spawn tree) take the catalog column at the stage inset,
+   left-anchored like Capabilities and Library rather than centred in the stage. Agents and
+   Schedules lay out their own panel frame. The margin comes out of the column's width, never on top
+   of it, so a narrow stage never scrolls sideways. */
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel:not(.agent-management, .routines-page, .page-frame-fallback) {
+  --management-panel-lead: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
+  width: calc(100% - var(--management-panel-lead));
+  margin-inline: var(--management-panel-lead) 0;
+}
+
+/* ── A page while its code loads (overlays/page-frame-fallback.tsx) ──
+   The frame every page shares: the form column at the stage inset, or past the page's sidebar panel
+   at the frame inset (as Agents, Settings and Schedules lay theirs), so the loaded page's header
+   lands exactly where the placeholder's stood. */
+[data-page-surface] .management-panel.page-frame-fallback {
+  width: 100%;
+  max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  margin-inline: 0;
+  padding: var(--portal-page-top) var(--page-panel-inset) 0 var(--page-stage-inset);
+}
+
+@media (min-width: 1024px) {
+  /* Wide (breakpoints.ts): below it the panel is a sheet over the page, not a column beside it. */
+  [data-page-surface] .management-panel.page-frame-fallback:has(> .page-sidebar-panel) {
+    position: relative;
+    max-width: calc(
+      var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset)
+    );
+    padding-inline-start: calc(var(--page-nav-width) + var(--page-panel-inset));
+  }
+}
+
+/* Loading placeholders, on every redesigned surface: the token block, never the classic accent. */
+:root[data-shell='portal'] [data-slot='skeleton'],
+.page-frame-skeleton-title,
+.page-frame-skeleton-line,
+.page-frame-skeleton-tile {
+  border-radius: var(--portal-radius-chip);
+  background-color: var(--portal-surface-skeleton);
+}
+
+.page-frame-skeleton-title {
+  width: 12rem;
+  max-width: 100%;
+  height: 1.75rem;
+  translate: none;
+  vertical-align: middle;
+}
+
+.page-frame-skeleton-line {
+  width: 20rem;
+  max-width: 100%;
+  height: 0.625rem;
+  translate: none;
+}
+
+/* The agent avatar's 56px tile (agent-management-avatar). */
+.page-frame-skeleton-tile {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: var(--portal-radius-card);
+}
+
+/* The tab bar's rail at its loaded height, tabs still to come. */
+.page-frame-skeleton-tabs {
+  height: var(--portal-page-tab-height);
+}
+
+/* ── Settings page heading (856:3405) ──
+   The H1 is the route frame's PageHeader; a settings page renders its own description line under it,
+   so the header gives up its rhythm to the description's 6px and the line carries the rhythm on. */
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='page-heading']:has(+ [data-slot='settings-content'] [data-slot='page-description']) {
+  margin-bottom: 0.375rem;
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='page-description'] {
+  margin-top: 0;
+  margin-bottom: var(--portal-page-rhythm);
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+/* ── Page sidebar panel (856:2740 Settings, 895:8991 Agents) ──
+   The chat sidebar's panel on every page that has secondary navigation: the same veil over the
+   artwork (portal-artwork.css), the same 9px outer top corner, a hairline to the stage, and a title
+   row. It folds from its rail destination, as the chat sidebar does. */
+:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
+  border-start-start-radius: var(--portal-panel-radius);
+}
+
+/* Both page navs end in the same light/5 hairline to the stage (895:17703 x 380). */
+:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
+  border-inline-end: 1px solid var(--portal-panel-divider);
+}
+
+.page-sidebar-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1.875rem;
+}
+
+.page-sidebar-head .page-nav-title {
+  min-width: 0;
+  margin: 0;
+}
+
+/* A title with a status line under it, then the row's own control at the end (Library 1163:17697). */
+.page-sidebar-titles {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.page-sidebar-head:has(> .page-sidebar-titles) {
+  align-items: flex-start;
+}
+
+/* "// 799 ITEMS · UPDATED 2:24 PM": the caption voice, mono. */
+.page-sidebar-summary {
+  margin: 0;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  line-height: 1.6;
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+.page-sidebar-summary::before {
+  content: '// ';
+}
+
+/* ── List panel (Agents 895:8991, Schedules) ──
+   A list→detail destination's list rides the panel at the stage's leading edge; the page (its
+   management panel, full width and positioned) starts its stage past it. Below wide the panel is a
+   sheet (below) and a page that needs its list on screen shows it in the stage. */
+
+.page-sidebar-panel {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: flex;
+  width: var(--page-nav-width);
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: var(--portal-panel-title-top) var(--page-panel-inset) 1.5rem;
+}
+
+/* The chat sidebar's header: the title on its 30px inset and 36px line, the start row under it where
+   New chat starts (--portal-panel-first-row). */
+.page-sidebar-panel .page-sidebar-head {
+  margin: 0 0 calc(var(--portal-panel-first-row) - var(--portal-panel-title-top) - var(--portal-panel-title-line) - 1.5rem)
+    calc(var(--portal-panel-title-inset) - var(--page-panel-inset));
+}
+
+.page-sidebar-panel .page-sidebar-head .page-nav-title {
+  line-height: var(--portal-panel-title-line);
+}
+
+/* The start row (New agent, New routine): New chat's slab (16292:15511), 40px, radius 3, no rim,
+   12px sides, 10px gap, a 16px glyph, Medium label. A secondary button reads its fill and rim from
+   the control tokens (portal-controls.css), so the row restyles it through them. */
+.page-sidebar-panel > button {
+  --portal-control-fill: var(--portal-panel-action);
+  --portal-control-fill-hover: var(--portal-panel-action-hover);
+  --portal-control-stroke: transparent;
+
+  height: 2.5rem;
+  min-height: 2.5rem;
+  justify-content: flex-start;
+  gap: 0.625rem;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+}
+
+/* The 16px chrome glyph, as New chat's. */
+.page-sidebar-panel > button > :is(svg, .codicon) {
+  width: var(--titlebar-icon-size);
+  height: var(--titlebar-icon-size);
+  font-size: var(--titlebar-icon-size);
+}
+
+/* The label grows so the row's shortcut keycaps sit at its end (895:9447: ⌘ N). */
+.page-sidebar-panel > .new-agent-row .new-agent-row-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+}
+
+/* New chat's keycaps (16292:15520): rimless light/5, the mono font at 11px, 60% ink. */
+.new-agent-row .portal-kbd [data-slot='kbd'] {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding-inline: 0.25rem;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-raw-ink-5);
+  box-shadow: none;
+  color: var(--ui-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 400;
+  text-transform: uppercase;
+}
+
+.page-sidebar-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Group caption (895:9473): 10px uppercase, +0.6px tracking. */
+.page-sidebar-caption {
+  margin: 0 0.625rem 0.5rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  line-height: 1.4;
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+.page-sidebar-list + .page-sidebar-list {
+  margin-top: 1.25rem;
+}
+
+.page-sidebar-row {
+  display: flex;
+  width: 100%;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-control);
+  text-align: start;
+  font-size: var(--portal-type-ui-size);
+  color: var(--ui-text-secondary);
+}
+
+.page-sidebar-row:hover {
+  background: var(--portal-surface-row-hover);
+  color: var(--ui-text-primary);
+}
+
+.page-sidebar-row:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+/* The open item: the Settings column's selection (16292:16373), a light/5 fill with no stroke. */
+.page-sidebar-row[aria-current] {
+  border-color: transparent;
+  background: var(--portal-neutral-selection-background);
+  box-shadow: none;
+  color: var(--ui-text-primary);
+  font-weight: 500;
+}
+
+/* Rows with their own actions: the row keeps its full width and the end glyph sits over its end. */
+.page-sidebar-item {
+  position: relative;
+}
+
+.page-sidebar-item > .page-sidebar-row {
+  padding-inline-end: 2rem;
+}
+
+.page-sidebar-item-menu {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0.375rem;
+  display: flex;
+  align-items: center;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .page-sidebar-item-menu button {
+    opacity: 1;
+  }
+}
+
+/* The chat sidebar's 7px leading dot. */
+.page-sidebar-dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-round);
+}
+
+/* Trailing meta (a blueprint's plugin): the caption ink. */
+.page-sidebar-meta {
+  flex-shrink: 0;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-micro-size);
+}
+
+/* 16px leading glyphs at .4 (856:2764). */
+.page-sidebar-glyph {
+  flex-shrink: 0;
+  opacity: 0.4;
+}
+
+.page-sidebar-search {
+  margin-bottom: 1.25rem;
+}
+
+/* ── Page panels as sheets: below wide (breakpoints.ts: max-width 1023.98px) ──
+   A page's panel (Agents, Schedules, an agent's settings menu, the Settings column) leaves the page
+   frame and opens from the band's menu as a sheet past the rail, the chat sidebar's kind
+   (portal-shell.css): opaque, from the band down, scrolling on its own. */
+@media (max-width: 1023.98px) {
+  :root[data-shell='portal'] [data-page-surface] :is(.page-sidebar-panel, [data-tour='overlay-nav']) {
+    position: fixed;
+    z-index: var(--portal-layer-sheet);
+    inset-block: 0;
+    inset-inline-start: var(--portal-rail-width);
+    width: var(--portal-sheet-panel-width);
+    padding-top: calc(var(--titlebar-band-height) + 1.4375rem);
+    padding-bottom: 1.5rem;
+    border-start-start-radius: 0;
+    background: var(--portal-sidebar-background);
+    box-shadow: var(--portal-shadow-floating);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* The Settings column is classic's split layout: under the sheet it shows only while open (its
+     narrow utility would hide it), and the page keeps one column with the section menu leading it. */
+  :root[data-shell='portal'][data-portal-sheet='page'] [data-page-surface] [data-tour='overlay-nav'] {
+    display: flex;
+  }
+
+  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-split'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-nav-bar'] {
+    display: flex;
+  }
+
+  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-split'] > [data-slot='overlay-main'] {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+}
+
+/* A sheet's rows take the touch target on a coarse pointer. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .page-sidebar-row {
+    min-height: var(--portal-touch-target);
+  }
+}
+
+/* ── Page navigation column (856:2764): 40px rows, 13px +1% labels, 16px icons at .4 ── */
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] {
+  /* Settings' column (Panel 16292:16359): the title 30px in and down, the rows on the 20px inset,
+     4px apart. */
+  padding: var(--portal-settings-nav-inset) var(--page-panel-inset) 1rem;
+  gap: var(--portal-settings-nav-gap);
+}
+
+/* The title on its 30px inset with the search button at the panel's end (Top 16292:16360). */
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head {
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 calc(var(--portal-settings-nav-head-gap) - var(--portal-settings-nav-gap))
+    calc(var(--portal-settings-nav-inset) - var(--page-panel-inset));
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head .page-nav-title {
+  line-height: var(--portal-settings-nav-title-line);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-tour='overlay-nav']
+  button[data-tour^='nav-']:not([data-tour^='nav-toggle-'], [data-tour='nav-agent-settings']) {
+  gap: 0.75rem;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-'] > svg {
+  opacity: 0.5;
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-']:not([data-tour='nav-agent-settings']):hover {
+  background: var(--portal-surface-row-hover);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-']:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+/* Selected (16292:16373): a light/5 fill, no stroke, full-strength icon. */
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [aria-current='page'] {
+  background: var(--portal-neutral-selection-background);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [aria-current='page'] > svg {
+  opacity: 1;
+}
+
+/* Sub-pages reveal under their active destination (the row itself is the disclosure); the design has
+   no per-row chevrons, so the separate caret toggle is dropped from the redesigned column. */
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [data-tour^='nav-toggle-'] {
+  display: none;
+}
+
+/* Top-level destinations read at full ink with icons at .4 (856:3186); nested sub-pages stay quieter. */
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] > .relative > button[data-tour^='nav-'] {
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] > .relative > button[data-tour^='nav-'] > svg {
+  color: currentColor;
+  opacity: 0.4;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-tour='overlay-nav']
+  > .relative
+  > button[data-tour^='nav-'][aria-current='page']
+  > svg {
+  opacity: 1;
+}
+
+/* ── Empty state (877:3596): one card for every empty page, list and search ──
+   A 2% card with a 5% hairline, r4: 14px Medium title, 13px tertiary line, then a 36px action.
+   Inside a list card it is that card's flush first row instead of a card in a card. */
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='empty-state'] {
+  min-height: 0;
+  padding: 1.5rem 1rem;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  background: var(--ui-bg-card);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(.global-settings-card, .agent-settings-card)
+  [data-slot='empty-state'] {
+  padding-block: 1.25rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='empty-state-title'] {
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='empty-state-description'] {
+  max-width: 28rem;
+  margin: 0.375rem auto 0;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='empty-state-action'] {
+  margin-top: 1rem;
+}
+
+/* ── Sideways scrollers: an edge fade says more follows ──
+   A tab row or chip row wider than its box scrolls sideways; with no cue the last item just looked cut
+   (Capabilities on a phone). The fade is driven by the row's own scroll: it shows at the trailing
+   edge while there is more to reach and is gone at the end, and a row that fits has no scroll
+   timeline, so it never fades. */
+@property --portal-scroll-fade-end {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes portal-scroll-fade-x {
+  /* No "to": the scroll's end falls back to the property's initial value, no fade. */
+  from {
+    --portal-scroll-fade-end: var(--portal-scroll-edge-fade);
+  }
+}
+
+:root[data-shell='portal'] :is([data-page-surface] [role='tablist'], .catalog-filter-chips) {
+  animation: portal-scroll-fade-x linear both;
+  animation-timeline: scroll(self inline);
+  mask-image: linear-gradient(
+    to right,
+    var(--portal-raw-black) calc(100% - var(--portal-scroll-fade-end)),
+    transparent
+  );
+}

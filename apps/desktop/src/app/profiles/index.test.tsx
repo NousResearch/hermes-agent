@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
+import { en } from '@/i18n/en'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -42,6 +44,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  activeGatewayConnectionId: () => 'local',
   retireLocalProfileGateways: vi.fn()
 }))
 
@@ -103,7 +106,11 @@ function realClick(el: HTMLElement) {
 // mount setState isn't left unwrapped.
 async function renderProfilesView() {
   await act(async () => {
-    render(<ProfilesView onClose={vi.fn()} />)
+    render(
+      <MemoryRouter initialEntries={['/profiles?manage=true']}>
+        <ProfilesView onClose={vi.fn()} />
+      </MemoryRouter>
+    )
   })
 }
 
@@ -135,7 +142,7 @@ describe('ProfilesView', () => {
 
     await renderProfilesView()
 
-    const missing = /No SOUL\.md file exists for this profile/
+    const missing = en.profiles.soulMissing
     expect(screen.getByText(missing)).toBeTruthy()
     fireEvent.change(screen.getByLabelText('SOUL.md'), { target: { value: '# My instructions' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
@@ -166,7 +173,7 @@ describe('ProfilesView', () => {
 
     await renderProfilesView()
 
-    realClick(await screen.findByRole('button', { name: 'New profile' }))
+    realClick(await screen.findByRole('button', { name: en.profiles.newProfile }))
 
     const soul = await screen.findByLabelText(/SOUL\.md/i)
 

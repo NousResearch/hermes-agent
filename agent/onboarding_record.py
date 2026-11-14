@@ -44,7 +44,7 @@ def _announce(run_id: str | None, session_id: str, outcome: str) -> None:
         listener(ended)
 
 
-def _transition(db, session_id: str, event: Event) -> Step | None:
+def _transition(db, session_id: str, event: Event, *, sessionless: bool = False) -> Step | None:
     """Apply *event* and write the result in one database transaction at the compression tip, so Skip
     setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
     read before a rotation published still lands on the copy the chat reads. An ended run then closes the
@@ -58,6 +58,8 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
             return current
         holder["was_active"] = is_active(current)
         holder["step"] = apply(current, event, Facts.from_stored(current["facts"]), now=time.time())
+        if sessionless:
+            holder["step"].record["sessionless"] = True
         return holder["step"].record
 
     db.update_conversation_model_config_value(session_id, KEY, update)
@@ -65,7 +67,8 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
     # Told before the flag write, which can fail: the record already says the run ended.
     if step is not None and holder["was_active"] and not is_active(step.record):
         _announce(step.record.get("run_id"), session_id, step.record["ended_by"])
-    if step is not None and not is_active(step.record) and active_session_id(db) is None:
+    if (step is not None and not step.record.get("sessionless")
+            and not is_active(step.record) and active_session_id(db) is None):
         _close_install_flag()
     return step
 
@@ -85,9 +88,8 @@ def _close_install_flag() -> None:
 
 
 def start(db, session_id: str, facts: Facts) -> dict:
-    """Write a fresh run record (the row must exist) and mark the install as mid-onboarding, so a
-    crash or a quit before the end runs onboarding again on the next launch (which starts over:
-    ``onboarding.start`` with ``fresh_launch``)."""
+    """Write a classic conversational run record and mark the install mid-onboarding.
+    The redesigned guide never creates these records."""
     from hermes_cli.onboarding_run import set_run
 
     record = new_record(facts, now=time.time(), run_id=uuid.uuid4().hex)
@@ -96,9 +98,9 @@ def start(db, session_id: str, facts: Facts) -> dict:
     return record
 
 
-def advance(db, session_id: str, event: Event) -> Step:
-    """Apply one event to the stored run; LookupError when this session has no run."""
-    step = _transition(db, session_id, event) if db is not None and session_id else None
+def advance(db, session_id: str, event: Event, *, sessionless: bool = False) -> Step:
+    """Apply one event; sessionless retirement relinquishes the legacy install flag atomically."""
+    step = _transition(db, session_id, event, sessionless=sessionless) if db is not None and session_id else None
     if step is None:
         raise LookupError(f"session {session_id} has no onboarding run")
     return step

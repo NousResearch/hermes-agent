@@ -1,11 +1,12 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ChatRoutesSurface } from './surfaces'
 import type { WiringActions } from './types'
@@ -14,6 +15,9 @@ vi.mock('@/contrib/react/use-contributions', () => ({ useContributions: vi.fn() 
 vi.mock('@/store/connections', () => ({ $activeConnectionId: atom('local') }))
 vi.mock('@/store/gateway', () => ({ $gateway: atom<unknown>(null) }))
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
+// The sidebar surface reads whether a chat tile has focus (store/session-focus derives it from the
+// session store mocked below).
+vi.mock('@/store/session-focus', () => ({ $focusedSessionIsTile: atom(false) }))
 vi.mock('@/store/session', () => ({
   $freshDraftReady: atom(false),
   $gatewayState: atom('open')
@@ -22,6 +26,7 @@ vi.mock('../chat', () => ({
   ChatView: ({ gateway }: { gateway: { id?: string } | null }) => <div data-testid="gateway">{gateway?.id}</div>
 }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
+vi.mock('../chat/sidebar/portal/portal-sidebar', () => ({ PortalSidebar: () => null }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))
 vi.mock('../shell/hooks/use-statusbar-items', () => ({
@@ -38,6 +43,10 @@ vi.mock('./latest-actions', () => ({ latestChatActions: () => ({}), latestSideba
 vi.mock('./panes', () => ({ setStatusbarItemGroup: vi.fn(), useStatusbarContributions: () => [] }))
 vi.mock('../shell/model-menu-panel', () => ({ ModelMenuPanel: () => null }))
 vi.mock('../shell/reasoning-menu-panel', () => ({ ReasoningMenuPanel: () => null }))
+
+// These routes are the classic shell's; the redesign has its own surface tests.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => $shellChoice.set(null))
 
 afterEach(() => {
   cleanup()

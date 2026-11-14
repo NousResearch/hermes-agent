@@ -24,7 +24,7 @@ describe('keybinds store persist vs late-registered contributed actions', () => 
 
   it('keeps stored overrides for plugin actions that register after boot', async () => {
     // A plugin-action rebind saved by an earlier session. The plugin has not
-    // registered yet at boot, so the id is unknown to `allKeybindActions()`.
+    // registered yet at boot, so the id is unknown to `keybindActionCatalog()`.
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ 'demo.late': ['mod+alt+l'] }))
 
     const { bindingsFor } = await import('./keybinds')

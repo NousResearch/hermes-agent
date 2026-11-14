@@ -2,13 +2,14 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerLayoutPresets } from '@/app/contrib/layout-presets'
 import { group } from '@/components/pane-shell/tree/model'
-import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
+import { applyLayoutPreset, snapshotChatLayout } from '@/components/pane-shell/tree/presets'
 import { $activePresetId, $layoutTree } from '@/components/pane-shell/tree/store'
 import { applyAppearance } from '@/store/appearance-apply'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
+import { $shellChoice } from '@/store/shell-variant'
 
-import { openDemoLayout, snapshotChatLayout } from './assembly'
+import { openDemoLayout } from './assembly'
 import { openIntro, skipIntro } from './intro'
 
 const size = vi.fn()
@@ -18,6 +19,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  $shellChoice.set(false)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { chatOnboarding: { size } }

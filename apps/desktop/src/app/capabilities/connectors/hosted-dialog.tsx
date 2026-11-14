@@ -45,10 +45,11 @@ export interface HostedConnectorDialogProps {
   onInstall: (env: Record<string, string>) => void
   onReconnect: () => void
   onRemoveServer: () => void
-  onToggleForMe: (next: boolean) => void
+  onToggleForMe?: (next: boolean) => void
   onVerb: () => void
   profile: ProfileScope
   togglePending: boolean
+  agentControls?: boolean
 }
 
 export interface PendingRename {
@@ -102,7 +103,8 @@ export function HostedConnectorDialog({
   onToggleForMe,
   onVerb,
   profile,
-  togglePending
+  togglePending,
+  agentControls = true
 }: HostedConnectorDialogProps) {
   const tools = useConnectorTools(profile, card.slug, hosted.listSlugs.has(card.slug))
   const operation = accountOperationFor(useStore($accountOperations), card.slug, profile)
@@ -137,7 +139,7 @@ export function HostedConnectorDialog({
       onRetryRules={hosted.retryRules}
       onSignIn={() => openFreeTierSignIn()}
       policy={hosted.policy}
-      readOnly={hosted.rulesFailed}
+      readOnly={!agentControls || hosted.rulesFailed}
       rulesSignedOut={hosted.rulesSignedOut}
       scope={profile}
       tools={tools}
@@ -187,7 +189,7 @@ export function HostedConnectorDialog({
         }
       }}
       onReconnect={onReconnect}
-      onServerToggle={next => void controller.setServerEnabled(serverName, next)}
+      onServerToggle={agentControls ? next => void controller.setServerEnabled(serverName, next) : undefined}
       onToggleForMe={onToggleForMe}
       onVerb={onVerb}
       onWayChange={local ? setWay : undefined}
@@ -197,7 +199,7 @@ export function HostedConnectorDialog({
       togglePending={togglePending}
       tools={
         way === 'local' && local?.installed === true ? (
-          <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} />
+          <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} readOnly={!agentControls} />
         ) : (
           hostedPanel
         )

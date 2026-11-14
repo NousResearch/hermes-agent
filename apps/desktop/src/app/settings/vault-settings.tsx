@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -13,14 +13,12 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
+import { KeyRound } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -28,8 +26,8 @@ import { $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
-import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
-import { SettingsProfileScope } from './profile-scope'
+import { useSettingsOwner } from './profile-scope'
+import { VaultCredentialRow, VaultLayout, VaultSourceRow } from './vault-rows'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
@@ -54,7 +52,7 @@ const VAULT_KINDS: readonly VaultKind[] = ['login', 'payment', 'address']
 const IDENTIFIER_TYPES = ['email', 'phone', 'username'] as const
 type IdentifierType = (typeof IDENTIFIER_TYPES)[number]
 
-interface VaultItem {
+export interface VaultItem {
   id: string
   kind: string
   label: string
@@ -153,22 +151,19 @@ function buildSecret(form: VaultForm): Record<string, string> {
 
 interface VaultSettingsProps {
   subpage?: string
+  /** Shown after the vault's own sections once both reads have settled (the agent page's Advanced
+   *  disclosure), so the sections loading in never push it down. */
+  after?: ReactNode
 }
 
-export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
-  const { t } = useI18n()
-  const v = t.settings.vault
-  const gatewayState = useStore($gatewayState)
-  const queryClient = useQueryClient()
-  // The owner this panel edits: every RPC below goes through the owner's socket with an explicit
-  // (connection, profile) — never the ambient foreground gateway, and never a bare profile name:
-  // a bare name equal to the primary profile resolves onto the PRIMARY socket, so two connections
-  // both serving `default` would have this device's panel answered by the other machine (#94811).
-  // The mount site keys the panel by this same owner, so a profile switch / connection swap
-  // remounts it: dialogs close and drafts (including a typed master password) are gone by
-  // construction rather than by cleanup code.
-  const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
+function useVaultOwnerRequest() {
+  // Every RPC uses the owner's socket and explicit profile: a bare profile name can
+  // resolve onto the wrong machine when two connections both serve `default` (#94811).
+  const settingsProfile = useStore($settingsScopeProfile)
+  const activeConnection = useStore($activeConnectionId)
+  const pinnedOwner = useSettingsOwner()
+  const scopeProfile = pinnedOwner?.profile ?? settingsProfile
+  const connectionId = pinnedOwner ? (pinnedOwner.connectionId ?? null) : activeConnection
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
   const requestGateway = useCallback(
@@ -178,6 +173,18 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       }),
     [connectionId, scopeProfile]
   )
+
+  return { owner, requestGateway }
+}
+
+export function VaultSettings({ after, subpage }: VaultSettingsProps = {}) {
+  const { t } = useI18n()
+  const v = t.settings.vault
+  const gatewayState = useStore($gatewayState)
+  const queryClient = useQueryClient()
+  // The mount site keys the panel by this owner, so profile/connection switches
+  // remount it and discard dialogs and secret drafts rather than relying on cleanup.
+  const { owner, requestGateway } = useVaultOwnerRequest()
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
   const VAULT_SOURCES_QUERY_KEY = useMemo(() => vaultSourcesQueryKey(owner), [owner])
@@ -195,7 +202,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const pendingMasterPassword = useRef('')
   const pendingSecret = useRef<null | Record<string, string>>(null)
 
-  const { data: sourcesData } = useQuery({
+  const { data: sourcesData, isPending: sourcesPending } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
     // Manager detection can change while this settings page is closed. Mark this
@@ -214,7 +221,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const invalidateVault = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: VAULT_SOURCES_QUERY_KEY })
-  }, [queryClient])
+  }, [queryClient, VAULT_QUERY_KEY, VAULT_SOURCES_QUERY_KEY])
 
   const setSourceEnabled = useMutation({
     mutationFn: ({ name, enabled }: { name: VaultSourceName; enabled: boolean }) =>
@@ -314,7 +321,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     setSearchParams(next, { replace: true })
   }, [openAdd, searchParams, setSearchParams])
 
-  const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
+  const invalidate = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }),
+    [queryClient, VAULT_QUERY_KEY]
+  )
 
   const addMutation = useMutation({
     mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {
@@ -375,176 +385,24 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     [invalidate, requestGateway]
   )
 
-  const kindLabel = useCallback((kind: string) => v.kinds[kind as VaultKind] ?? kind, [v.kinds])
+  const credentialRows = items.map(item => (
+    <VaultCredentialRow item={item} key={item.id} onDelete={() => setPendingDelete(item)} sources={externalSources} />
+  ))
 
-  const sourceLabel = useCallback(
-    (name: VaultSourceName) => externalSources.find(s => s.name === name)?.display_name ?? name,
-    [externalSources]
-  )
+  const sourceRows = externalSources.map(source => (
+    <VaultSourceRow
+      key={source.name}
+      lockPending={lockSource.isPending}
+      onLock={() => lockSource.mutate(source.name)}
+      onToggle={enabled => setSourceEnabled.mutate({ name: source.name, enabled })}
+      onUnlock={() => setUnlockTarget(source)}
+      source={source}
+      togglePending={setSourceEnabled.isPending}
+    />
+  ))
 
-  const formatCreated = useCallback((iso: string) => {
-    const parsed = new Date(iso)
-
-    return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleDateString()
-  }, [])
-
-  return (
-    <SettingsContent>
-      {/* The vault is per profile (its RPCs ride the (connection, profile) owner above), so the
-          page must SAY which profile it is showing — without the chip a non-default selection
-          looked like the default vault with entries missing (#121966). */}
-      <SettingsProfileScope className="mb-5" />
-      {(subpage === undefined || subpage === 'credentials') && (
-        <>
-          <SectionHeading
-            aside={
-              <Button className="gap-1.5" onClick={() => openAdd()} size="sm" type="button" variant="outline">
-                <Plus className="size-3.5" />
-                {v.add}
-              </Button>
-            }
-            icon={ShieldLock}
-            meta={items.length > 0 ? v.count(items.length) : undefined}
-            page
-            title={v.title}
-          />
-          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {v.blurb}
-          </p>
-
-          {!isPending && items.length === 0 && <EmptyState description={v.emptyDesc} title={v.empty} />}
-
-          {items.map(item => (
-            <ListRow
-              action={
-                item.backend && item.backend !== 'local' ? (
-                  <Pill tone="muted">{sourceLabel(item.backend)}</Pill>
-                ) : (
-                  <Button
-                    aria-label={v.deleteAction}
-                    className="text-(--ui-text-tertiary) hover:text-destructive"
-                    onClick={() => setPendingDelete(item)}
-                    size="icon-sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                )
-              }
-              description={
-                // identifier · origin · date, separated so the row scans as three facts; the origin is
-                // omitted when the label already IS the host (save-on-page items are labelled by host).
-                <span className="flex flex-wrap items-center gap-x-2">
-                  {item.identifier && <span className="truncate">{v.identifierShown(item.identifier)}</span>}
-                  {item.origin && item.origin.replace(/^https?:\/\//, '') !== item.label && (
-                    <>
-                      {item.identifier && (
-                        <span aria-hidden className="text-(--ui-text-tertiary)">
-                          ·
-                        </span>
-                      )}
-                      <span className="truncate">{item.origin}</span>
-                    </>
-                  )}
-                  <span aria-hidden className="text-(--ui-text-tertiary)">
-                    ·
-                  </span>
-                  <span>{v.createdOn(formatCreated(item.created_at))}</span>
-                </span>
-              }
-              key={item.id}
-              title={
-                <span className="flex items-center gap-2">
-                  <span className="truncate">{item.label}</span>
-                  <Pill tone={item.kind === 'login' ? 'primary' : 'muted'}>{kindLabel(item.kind)}</Pill>
-                  {item.has_otp && <Pill tone="muted">{v.twoFactorBadge}</Pill>}
-                </span>
-              }
-            />
-          ))}
-        </>
-      )}
-
-      {(subpage === undefined || subpage === 'sources') && (
-        <>
-          <div className={subpage === undefined ? 'mt-6' : undefined}>
-            <SectionHeading icon={KeyRound} page title={v.sources.title} />
-          </div>
-          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {v.sources.blurb}
-          </p>
-          {externalSources.map(source => (
-            <ListRow
-              action={
-                <span className="flex items-center justify-end gap-2">
-                  {source.enabled &&
-                    (source.unlocked ? (
-                      <Button
-                        className="gap-1.5"
-                        disabled={lockSource.isPending}
-                        onClick={() => lockSource.mutate(source.name)}
-                        size="sm"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Lock className="size-3.5" />
-                        {v.sources.lock}
-                      </Button>
-                    ) : (
-                      <Button
-                        className="gap-1.5"
-                        onClick={() => setUnlockTarget(source)}
-                        size="sm"
-                        type="button"
-                        variant="outline"
-                      >
-                        <KeyRound className="size-3.5" />
-                        {v.sources.unlock}
-                      </Button>
-                    ))}
-                  {source.installed && (
-                    <Switch
-                      aria-label={source.display_name}
-                      checked={source.enabled}
-                      disabled={setSourceEnabled.isPending}
-                      onCheckedChange={enabled => {
-                        triggerHaptic('selection')
-                        setSourceEnabled.mutate({ name: source.name, enabled })
-                      }}
-                    />
-                  )}
-                </span>
-              }
-              description={
-                !source.installed
-                  ? v.sources.notInstalled(source.display_name)
-                  : source.enabled
-                    ? source.unlocked
-                      ? v.sources.unlockedDesc
-                      : v.sources.lockedDesc
-                    : v.sources.disabledDesc
-              }
-              key={source.name}
-              title={
-                <span className="flex items-center gap-2">
-                  <span>{source.display_name}</span>
-                  <Pill tone={source.enabled && source.unlocked ? 'primary' : 'muted'}>
-                    {!source.installed
-                      ? v.sources.statusNotDetected
-                      : !source.enabled
-                        ? v.sources.statusOff
-                        : source.unlocked
-                          ? v.sources.statusUnlocked
-                          : v.sources.statusLocked}
-                  </Pill>
-                </span>
-              }
-            />
-          ))}
-        </>
-      )}
-
+  const dialogs = (
+    <>
       {/* Unlock dialog */}
       <Dialog onOpenChange={open => !open && closeUnlock()} open={unlockTarget !== null}>
         <DialogContent className="max-w-md">
@@ -831,6 +689,19 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
         open={pendingDelete !== null}
         title={v.deleteTitle}
       />
-    </SettingsContent>
+    </>
+  )
+
+  return (
+    <VaultLayout
+      after={after}
+      credentialRows={credentialRows}
+      dialogs={dialogs}
+      itemCount={isPending ? null : items.length}
+      onAdd={() => openAdd()}
+      sourceCount={sourcesPending ? null : externalSources.length}
+      sourceRows={sourceRows}
+      subpage={subpage}
+    />
   )
 }

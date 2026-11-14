@@ -193,6 +193,10 @@ export type BotsMessages = {
     openUnreachableMessage: string
     openChatFailedTitle: (botName: string) => string
     openChatFailedMessage: string
+    /** One-line reasons a redesign agent row's failed open states in the toast body. */
+    openReasonParked: (botName: string) => string
+    openReasonUnreachable: string
+    openReasonTimeout: (botName: string) => string
     openGateways: string
     /** Stands under the bot's name in a chat it has not spoken in yet. */
     chatEmpty: string

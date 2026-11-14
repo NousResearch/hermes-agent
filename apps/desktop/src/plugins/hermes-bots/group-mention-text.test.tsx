@@ -77,13 +77,13 @@ function TranslatedMentions() {
 it('updates mention tooltips in both transcript renderers when the locale changes', () => {
   const view = render(<TranslatedMentions />)
 
-  expect(screen.getAllByTitle('Bot in this group chat')).toHaveLength(2)
+  expect(screen.getAllByTitle(GROUP_CHAT_LOCALES.en.mentionBot)).toHaveLength(2)
   selectedLocale.value = 'ja'
   view.rerender(<TranslatedMentions />)
 
-  for (const title of ['このグループチャットのボット', 'グループチャットの全員', 'あなた — グループチャットは人による対応を待っています']) {
+  for (const title of [GROUP_CHAT_LOCALES.ja.mentionBot, GROUP_CHAT_LOCALES.ja.mentionEveryone, GROUP_CHAT_LOCALES.ja.mentionUser]) {
     expect(screen.getAllByTitle(title)).toHaveLength(2)
   }
 
-  expect(screen.queryByTitle('Bot in this group chat')).toBeNull()
+  expect(screen.queryByTitle(GROUP_CHAT_LOCALES.en.mentionBot)).toBeNull()
 })

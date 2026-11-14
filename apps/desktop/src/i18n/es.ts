@@ -27,12 +27,14 @@ import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const esOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['es'],
   gatewayGroupOpen: {
-    opening: "Abriendo el chat de grupo…",
+    opening: 'Abriendo el chat de grupo…',
     lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
-    missing: "Este chat de grupo ya no existe."
+    missing: 'Este chat de grupo ya no existe.'
   },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
@@ -584,6 +586,8 @@ export const esOverrides = {
       'nav.artifacts': 'Abrir artefactos',
       'nav.cron': 'Abrir tareas programadas',
       'nav.agents': 'Abrir agentes',
+      'nav.back': 'Atrás',
+      'nav.forward': 'Adelante',
       'session.new': 'Nueva sesión',
       'session.newTab': 'Nueva pestaña de sesión',
       'session.newWindow': 'Nueva ventana',
@@ -667,6 +671,7 @@ export const esOverrides = {
       'profile.prev': 'Perfil anterior',
       'profile.toggleAll': 'Alternar vista de todos los perfiles',
       'profile.create': 'Crear perfil',
+      'agents.new': 'Nuevo perfil (página Perfiles)',
       'composer.send': 'Enviar mensaje',
       'composer.newline': 'Insertar salto de línea',
       'composer.steer': 'Guiar el turno en ejecución',
@@ -987,6 +992,14 @@ export const esOverrides = {
       }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: 'Llamadas a herramientas',
+        toolViewDesc:
+          'Simple oculta los datos sin procesar de las herramientas; Técnico muestra la entrada y salida completas.',
+        product: 'Simple',
+        introSplashTitle: 'Pantalla de bienvenida',
+        embedsTitle: 'Vistas previas de enlaces'
+      },
       chatTextScaleTitle: 'Tamaño del texto del chat',
       chatTextScaleDesc:
         'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',
@@ -2387,12 +2400,15 @@ export const esOverrides = {
         enabledTitle: 'Navegación con perfil real activada',
         enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
         disabledTitle: 'Navegación con perfil real desactivada',
-        disabledMessage: 'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
+        disabledMessage:
+          'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
         failedSave: 'No se pudo guardar el ajuste del perfil real',
         reimportSignins: 'Volver a importar inicios de sesión',
         signinsImportedTitle: 'Inicios de sesión del navegador integrado',
-        signinsImported: count => `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
-        signinsRemote: 'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
+        signinsImported: count =>
+          `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
+        signinsRemote:
+          'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
         signinsFailed: 'No se pudieron importar los inicios de sesión al navegador integrado',
         prompt: {
           title: 'Mantén la sesión iniciada en tus sitios',
@@ -2408,6 +2424,17 @@ export const esOverrides = {
     }
   },
   skills: {
+    inventoryScopeHint:
+      'Las instalaciones corresponden al agente y a la máquina seleccionados. La activación de herramientas y las personalizaciones específicas de cada agente se gestionan en sus ajustes. Las cuentas de conectores alojados se comparten entre los agentes que usan la misma cuenta de Nous.',
+    agentScopeHint:
+      'Los cambios solo se aplican a este agente. Las conversaciones existentes conservan sus herramientas actuales.',
+    toolSecretsHint:
+      'Claves API, endpoints y proveedores que usa este agente. Los inicios de sesión de proveedores pueden compartirse entre agentes; las cuentas de conectores alojados se comparten entre los agentes que usan la misma cuenta de Nous.',
+    openAgentSettings: 'Ajustes del perfil',
+    openToolLibrary: 'Explorar la biblioteca de herramientas',
+    remotePluginHint:
+      'Abre este perfil en su gateway para gestionar sus plugins. La instalación de plugins usa el gateway conectado.',
+    showAllToolsets: (count: number) => `Mostrar los ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Conjuntos de herramientas',
     configuringProfile: 'Configurando:',
@@ -2471,8 +2498,7 @@ export const esOverrides = {
     tabPlugins: 'Plugins',
     plugins: {
       agentTitle: 'Plugins del agente',
-      agentBlurb:
-        'Amplían el agente del perfil seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',
+      agentBlurb: 'Amplían el agente del perfil seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',
       pageBlurb: 'Un plugin puede ampliar esta app, el agente o ambos; cada mitad tiene su propio interruptor.',
       halfDesktop: 'Escritorio',
       halfDesktopHint: 'esta app, igual para todos los perfiles',
@@ -2994,7 +3020,8 @@ export const esOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Sin token de bot',
-      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      intro: (platform: string) =>
+        `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
       link: (platform: string) => `Vincular ${platform}`,
       linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
       linkedAccounts: 'Cuentas vinculadas',
@@ -3015,7 +3042,8 @@ export const esOverrides = {
       managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
       managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
       openPortal: 'Vincular cuentas en Nous Portal',
-      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+      noNewAccount: (platform: string) =>
+        `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
     },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
@@ -3510,7 +3538,8 @@ export const esOverrides = {
     failedSave: 'No se pudo guardar la tarea cron',
     editTitle: 'Editar tarea cron',
     createTitle: 'Nueva tarea cron',
-    editDesc: 'Actualiza la programación, el prompt o el destino. Los cambios se aplican en la próxima ejecución.',
+    editDesc:
+      'Actualiza la programación, el prompt o el destino. Los cambios se aplican en la próxima ejecución.',
     createDesc:
       'Programa un prompt para ejecutarlo automáticamente. Usa sintaxis cron o una frase como "cada 15 minutos".',
     nameLabel: 'Nombre',
@@ -3563,6 +3592,7 @@ export const esOverrides = {
     tabFiles: 'Archivos',
     tabLinks: 'Enlaces',
     noArtifactsTitle: 'No se encontraron artefactos',
+    partialIndex: (failed: number, total: number) => `Se omitieron ${failed} de ${total} sesiones recientes al indexar los artefactos.`,
     noArtifactsDesc:
       'Las imágenes generadas y las salidas de archivo aparecerán aquí cuando las sesiones las produzcan.',
     failedLoad: 'No se pudieron cargar los artefactos',
@@ -3765,6 +3795,7 @@ export const esOverrides = {
     placeholderStarting: 'Iniciando Hermes...',
     placeholderReconnecting: 'Reconectando con Hermes…',
     placeholderFollowUp: 'Enviar seguimiento',
+    browseAllSessions: 'Ver todas las sesiones…',
     newSessionPlaceholders: [
       '¿Qué vamos a construir?',
       'Dale una tarea a Hermes',
@@ -4544,6 +4575,8 @@ export const esOverrides = {
       daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'Conexión',
+      inferenceLabel: 'Inferencia',
       gateway: 'Gateway',
       connected: 'Conectado',
       connecting: 'Conectando',
@@ -4557,7 +4590,13 @@ export const esOverrides = {
       connection: label => `Conexión: ${label}`,
       recentActivity: 'Actividad reciente',
       viewAllLogs: 'Ver todos los registros →',
-      messagingPlatforms: 'Plataformas de mensajería'
+      messagingPlatforms: 'Plataformas de mensajería',
+      machineStatus: (machine, status) => `Estado de ${machine}: ${status}`,
+      checkAgain: 'Comprobar de nuevo',
+      switchToMachine: 'Cambiar a esta máquina',
+      machineSettings: 'Gateways y máquinas',
+      restartTitle: '¿Reiniciar el gateway?',
+      restartBody: 'Las respuestas en curso en esta máquina se detendrán. Vuelve en unos segundos y se reconecta sola.'
     },
     approvalMode: {
       title: 'Modo de aprobación',
@@ -5435,6 +5474,7 @@ export const esOverrides = {
   },
   desktop: {
     audioReadFailed: 'No se pudo leer el audio grabado',
+    sessionOpenFailed: 'No se pudo abrir esta sesión',
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',

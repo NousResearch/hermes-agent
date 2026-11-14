@@ -1,0 +1,39 @@
+/* Global Settings' column (Panel/flexible 16292:16447): 640px centred in the stage, its header
+   --portal-settings-top under the stage's top; a stage narrower than the column keeps the panel
+   inset on both sides. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
+  max-width: none;
+  margin-inline: 0;
+  padding: var(--portal-settings-top) max(var(--page-panel-inset), (100% - var(--portal-settings-column)) / 2) 0;
+}
+
+/* The column's two flows, its header and its scroller, pad their content to the TEXT column,
+   --portal-settings-inset inside the 640: the H1, descriptions, section heads, forms and every page's
+   own content start there. Only the card primitives (SettingsCard, SettingsDisclosure, the empty
+   block) bleed back out over that padding to the column's edges, their rows keeping the inset
+   (global-overviews.css). The bleed stays inside the scroller's padding box, so it is never clipped. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > :not([data-slot='settings-content']),
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > [data-slot='settings-content'] > div {
+  padding-inline: var(--portal-settings-inset);
+}
+
+/* Navigation folded away: the column centres in the whole stage, not the empty nav track. */
+@media (min-width: 47.5rem) {
+  :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'].hidden ~ [data-slot='overlay-main'] {
+    grid-column: 1 / -1;
+  }
+}
+
+.page-nav-title {
+  margin: 0 0 1.875rem;
+  color: var(--ui-text-primary);
+  font: 300 var(--portal-type-display-lg-size)/1.1 var(--portal-font-display);
+  letter-spacing: var(--portal-tracking-display);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='button'][data-variant='default'] {
+  background: var(--portal-brand-fill);
+  color: var(--portal-on-brand);
+}

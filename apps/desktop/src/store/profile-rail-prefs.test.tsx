@@ -13,7 +13,7 @@ import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-// Switching profiles has exactly one door at a time: the rail at the sidebar
+// In the classic shell, switching profiles has exactly one door at a time: the rail at the sidebar
 // foot, or the statusbar picker beside the gateway switcher when the user hides
 // the rail. The Webapp (browser-hosted Desktop) always draws the rail as its
 // dropdown, never the squares; native Desktop keeps the squares until the
@@ -47,6 +47,10 @@ async function importHost(webapp: boolean) {
       import('@/components/pane-shell/tree/store'),
       import('@/store/profile-rail-prefs')
     ])
+
+  // Static imports would bind the pre-reset store, not this host's fresh module graph.
+  const { $shellChoice } = await import('@/store/shell-variant')
+  $shellChoice.set(false)
 
   return { $layoutTree, ChatSidebar, group, prefs, SidebarProvider, useStatusbarItems }
 }

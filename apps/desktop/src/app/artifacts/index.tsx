@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
@@ -18,7 +18,6 @@ import {
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -34,10 +33,12 @@ import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { notify, notifyError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { LibraryPage } from '../library/library-page'
 import { openSessionFromPicker } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -47,8 +48,9 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
-  loadArtifactsForSessions
+  paginationItems
 } from './artifact-utils'
+import { useArtifactIndex } from './artifacts-index'
 
 function formatArtifactTime(timestamp: number): string {
   return fmtDayTime.format(new Date(timestamp))
@@ -63,32 +65,6 @@ function pageRangeLabel(total: number, page: number, pageSize: number, a: Transl
   const end = Math.min(total, page * pageSize)
 
   return a.rangeOf(start, end, total)
-}
-
-function paginationItems(page: number, pageCount: number): Array<number | 'ellipsis'> {
-  if (pageCount <= 7) {
-    return Array.from({ length: pageCount }, (_, index) => index + 1)
-  }
-
-  const pages: Array<number | 'ellipsis'> = [1]
-  const start = Math.max(2, page - 1)
-  const end = Math.min(pageCount - 1, page + 1)
-
-  if (start > 2) {
-    pages.push('ellipsis')
-  }
-
-  for (let nextPage = start; nextPage <= end; nextPage += 1) {
-    pages.push(nextPage)
-  }
-
-  if (end < pageCount - 1) {
-    pages.push('ellipsis')
-  }
-
-  pages.push(pageCount)
-
-  return pages
 }
 
 type CellCtx = {
@@ -111,80 +87,25 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
+/** The Library route: the redesign's page (app/library), or classic's Artifacts page as on main. */
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
+  return usePortalShell() ? <LibraryPage {...props} /> : <ClassicArtifactsView {...props} />
+}
+
+function ClassicArtifactsView(props: React.ComponentProps<'section'>) {
   const { t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
-  const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
-
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
 
-  const [refreshing, setRefreshing] = useState(false)
-  const refreshInFlightRef = useRef(false)
-
-  const refreshArtifacts = useCallback(async () => {
-    if (refreshInFlightRef.current) {
-      return
-    }
-
-    refreshInFlightRef.current = true
-    setRefreshing(true)
-
-    try {
-      const sessions = (await listAllProfileSessions(30, 1)).sessions
-
-      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(sessions, (session, page) =>
-        getSessionMessages(session.id, session.profile, {
-          ...page,
-          includeCompacted: true,
-          order: 'oldest'
-        })
-      )
-
-      if (failures.length > 0) {
-        const safeLimitFailures = failures.filter(({ error }) =>
-          String(error instanceof Error ? error.message : error).includes('safe-load limit')
-        ).length
-
-        const otherFailures = failures.length - safeLimitFailures
-
-        const detail = [
-          safeLimitFailures ? `${safeLimitFailures} exceeded the safe transcript load limit.` : '',
-          otherFailures ? `${otherFailures} could not be read.` : ''
-        ]
-          .filter(Boolean)
-          .join(' ')
-
-        notify({
-          id: 'artifacts-partial-load',
-          kind: 'warning',
-          title: a.failedLoad,
-          message: `Skipped ${failures.length} of ${sessions.length} recent sessions while indexing artifacts.`,
-          detail,
-          durationMs: 10_000
-        })
-      }
-
-      setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
-    } catch (err) {
-      notifyError(err, a.failedLoad)
-      setArtifacts([])
-    } finally {
-      refreshInFlightRef.current = false
-      setRefreshing(false)
-    }
-  }, [a])
+  const { artifacts, refreshing, refresh: refreshArtifacts } = useArtifactIndex()
 
   useRefreshHotkey(refreshArtifacts)
-
-  useEffect(() => {
-    void refreshArtifacts()
-  }, [refreshArtifacts])
 
   useEffect(() => {
     setImagePage(1)
@@ -355,15 +276,15 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         <div className="grid h-full place-items-center px-6 text-center">
           <div>
             <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
+            {counts.all === 0 && <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>}
           </div>
         </div>
       ) : (
-        <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
-          <div className="flex flex-col gap-3 px-3 pb-2">
+        <div className="page-search-column mx-auto h-full w-full max-w-[var(--page-content-max-width,none)] overflow-y-auto [scrollbar-gutter:stable]">
+          <div className="flex flex-col gap-3 px-[var(--page-content-inset,0.75rem)] pb-2">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div className="sticky top-0 z-10 mx-[calc(-1*var(--page-content-inset,0.75rem))] flex h-7 items-center gap-3 overflow-x-auto bg-background px-[var(--page-content-inset,0.75rem)]">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={a.itemsImage}
@@ -380,7 +301,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
-                      onOpenChat={sessionId => openSessionFromPicker(sessionId, navigate)}
+                      onOpenChat={openChat}
                     />
                   ))}
                 </div>
@@ -389,7 +310,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
             {visibleFileArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div className="sticky top-0 z-10 mx-[calc(-1*var(--page-content-inset,0.75rem))] flex h-7 items-center gap-3 overflow-x-auto bg-background px-[var(--page-content-inset,0.75rem)]">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter, a)}

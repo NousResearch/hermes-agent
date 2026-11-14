@@ -19,6 +19,7 @@ import {
   dismissNotification,
   type NotificationKind
 } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 type ToneVariant = 'default' | 'destructive' | 'warning' | 'success'
 
@@ -40,7 +41,9 @@ const tone: Record<NotificationKind, { icon: IconComponent; iconClass: string; v
   success: { icon: CheckCircle2, iconClass: 'text-primary', variant: 'success' }
 }
 
-const STACK_SURFACE = 'pointer-events-auto border border-(--stroke-nous) bg-popover/95 shadow-nous backdrop-blur-md'
+// `hermes-toast-surface` is a hook for the redesign's floating language (portal-floating.css).
+const STACK_SURFACE =
+  'hermes-toast-surface pointer-events-auto border border-(--stroke-nous) bg-popover/95 shadow-nous backdrop-blur-md'
 
 function partitionNotifications(notifications: AppNotification[]) {
   const defaultStack: AppNotification[] = []
@@ -64,6 +67,7 @@ export function NotificationStack() {
   const lastNotificationIdRef = useRef<string | null>(null)
   const [expanded, setExpanded] = useState(false)
   const copy = t.notifications
+  const redesign = usePortalShell()
 
   useEffect(() => {
     if (defaultStack.length <= 1) {
@@ -90,6 +94,12 @@ export function NotificationStack() {
     }
   }, [notifications])
 
+  // The redesign has one place for every kind (portal-shell.css): the stage's end corner, clear of
+  // page headers and resting above a docked composer.
+  if (redesign) {
+    return <BottomRightStack anchored copy={copy} notifications={notifications} />
+  }
+
   return (
     <>
       <TopCenterStack
@@ -111,7 +121,8 @@ const REGION_BASE = 'pointer-events-none fixed z-(--z-over-modal) flex gap-2'
 // expander + clear-all — the noisy/important surface (errors, warnings,
 // action toasts). Without the portal it lives inside the React root subtree,
 // which any body-level dialog/overlay portal paints over — so a toast fired
-// while a dialog is open was invisible.
+// while a dialog is open was invisible. It sits under the root band height;
+// no-drag keeps its buttons clickable over any drag strip it overlaps.
 function TopCenterStack({
   copy,
   expanded,
@@ -130,14 +141,14 @@ function TopCenterStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 flex-col p-1',
+        'left-1/2 top-[calc(var(--titlebar-band-height)+0.75rem)] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 flex-col p-1 [-webkit-app-region:no-drag]',
         expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
       )}
       role="region"
     >
       <NotificationDeck expanded={expanded} notifications={notifications} />
       {older.length > 0 && (
-        <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
+        <div className="hermes-toast-controls pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
           <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>
@@ -165,9 +176,12 @@ function TopCenterStack({
 
 // Ambient confirmations use the same bounded depth, rising from the corner.
 function BottomRightStack({
+  anchored = false,
   copy,
   notifications
 }: {
+  /** Placed by the redesign's stylesheet (`hermes-toast-region`) instead of the corner utilities. */
+  anchored?: boolean
   copy: ReturnType<typeof useI18n>['t']['notifications']
   notifications: AppNotification[]
 }) {
@@ -185,13 +199,14 @@ function BottomRightStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse p-1',
+        anchored ? 'hermes-toast-region' : 'right-4 bottom-4',
+        'w-[min(24rem,calc(100%-2rem))] flex-col-reverse p-1',
         expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
       )}
       role="region"
     >
       {older.length > 0 && (
-        <div className="pointer-events-auto flex items-center justify-between px-2 text-xs">
+        <div className="hermes-toast-controls pointer-events-auto flex items-center justify-between px-2 text-xs">
           <Button onClick={() => setExpanded(value => !value)} size="xs" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>

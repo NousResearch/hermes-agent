@@ -44,16 +44,25 @@ export type TitlebarFixedToolId = keyof typeof TITLEBAR_FIXED_TOOLS
 const APP_ACTION_IDS: readonly TitlebarFixedToolId[] = ['settings', 'layout', 'hud']
 const RIGHT_FIXED_IDS: readonly TitlebarFixedToolId[] = ['flip-panes', 'right-sidebar']
 
-/** Button counts for the two titlebar clusters, for the mode that is rendering them. */
+/** Button counts for the two titlebar clusters, for the mode that is rendering them. `wide` is the
+ *  redesign's width class: a wide Simple window brings a folded sidebar back with a floating button
+ *  instead of the band's (app/shell/panel-reveal.tsx), so its band holds only Back and Forward. */
 export function titlebarAppActionsClusterCounts(
   side: TitlebarAppActionsSide,
   leftExtras = 0,
   rightExtras = 0,
-  mode: InterfaceMode = DEFAULT_INTERFACE_MODE
+  mode: InterfaceMode = DEFAULT_INTERFACE_MODE,
+  portal = false,
+  wide = true
 ): { left: number; right: number } {
   const shown = shownInMode(mode)
-  const sidebar = 1
-  const appActions = APP_ACTION_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length
+  // The redesign's band leads with Back and Forward on every screen (titlebar-controls.tsx).
+  const sidebar = portal ? (mode === 'simple' && wide ? 2 : 3) : 1
+
+  const appActions = APP_ACTION_IDS.filter(
+    id => shown(TITLEBAR_FIXED_TOOLS[id]) && !(portal && (id === 'settings' || (id === 'layout' && mode === 'simple')))
+  ).length
+
   const rightFixed = RIGHT_FIXED_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length
 
   if (side === 'left') {

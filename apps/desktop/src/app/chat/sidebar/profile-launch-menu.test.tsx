@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { en } from '@/i18n/en'
 import { $defaultProfileRoute } from '@/store/default-profile'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -55,7 +56,7 @@ it('opens the clicked canonical route without selecting it and saves only that r
   expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
 
   fireEvent.contextMenu(screen.getByRole('button', { name: 'Design studio' }))
-  expect(screen.getByRole('menuitem', { name: 'Default profile' }).getAttribute('aria-disabled')).toBe('true')
+  expect(screen.getByRole('menuitem', { name: en.profiles.defaultProfile }).getAttribute('aria-disabled')).toBe('true')
 })
 
 it('distinguishes the same profile on another source and reports a rejected default write without success', async () => {

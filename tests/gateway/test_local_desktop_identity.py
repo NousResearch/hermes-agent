@@ -56,7 +56,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
     if native:
         identity["native_bootstrap"] = True
     transport = _Transport(identity)
-    connection = AuthorityConnection(authority, transport, identity)
+    connection = AuthorityConnection(authority, transport, identity, operator=True)
     from gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
     return SimpleNamespace(authority=authority, connection=connection, transport=transport, runner=runner, home=home)
@@ -161,29 +161,22 @@ async def test_a_trial_users_desktop_chat_runs_on_the_free_model(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_a_fresh_launch_claims_the_trial_and_opens_onboarding_on_it(tmp_path, monkeypatch):
-    """The whole first launch: the claim mints the guest, and the chat it opens runs on the free model."""
-    from hermes_cli import anon_auth, welcome_trial
-    state = {}
+async def test_a_trial_users_desktop_chat_can_be_created_and_resumed(tmp_path, monkeypatch):
+    """An explicitly claimed trial supplies the model for a normal resumable Desktop chat."""
+    from hermes_cli import anon_auth
     guest = {"auth_method": anon_auth.ANON_AUTH_METHOD, anon_auth.WELCOME_CLAIM_FLAG: True}
-
-    def claim(**kwargs):
-        if welcome_trial.claim_blocker(assume_fresh=kwargs.get("assume_fresh", False)):
-            return None
-        state.update(guest)
-        return dict(guest)
-
-    monkeypatch.setattr(anon_auth, "current_nous_state", lambda *a, **k: dict(state) if state else None)
-    monkeypatch.setattr(welcome_trial, "claim_desktop_free_tier", claim)
-    monkeypatch.setattr(welcome_trial, "_has_nous_identity", lambda: bool(state))
+    monkeypatch.setattr(anon_auth, "current_nous_state", lambda *a, **k: guest)
     conn = await _connect(tmp_path, monkeypatch)
     try:
         await _request(conn, 1, "client.capabilities", {"desktop_local": True})
-        started = await _request(conn, 2, "onboarding.start",
-                                 {"fresh_launch": True, "assume_fresh": True, "facts_source": "local", "locale": "en"})
-        assert "result" in started, started
-        resumed = await _request(conn, 3, "session.resume", {"session_id": started["result"]["stored_session_id"]})
-        assert "error" not in resumed, resumed
+        created = await _request(conn, 2, "session.create", {"source": "gui", "request_id": "trial-chat"})
+        assert "result" in created, created
+        stored = created["result"]["stored_session_id"]
+        resumed = await _request(conn, 3, "session.resume", {"session_id": stored})
+        assert "result" in resumed, resumed
+        assert resumed["result"]["session_id"] == stored
+        from hermes_state_local import local_receipt
+        assert local_receipt(conn.authority.db, stored)["policy"]["model"] == anon_auth.GUEST_MODEL
     finally:
         await conn.connection.close()
 

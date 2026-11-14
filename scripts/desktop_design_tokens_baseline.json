@@ -1,0 +1,16 @@
+{
+  "files": {
+    "app/agent-settings/agent-settings.css": 10,
+    "app/agent-settings/history.css": 7,
+    "app/agent-settings/settings-editor.css": 11,
+    "app/chat/sidebar/portal/portal-sidebar.css": 3,
+    "app/chat/stage.css": 4,
+    "app/redesign/portal-composer.css": 3,
+    "app/redesign/portal-controls.css": 6,
+    "app/redesign/portal-floating.css": 1,
+    "app/redesign/portal-shell.css": 5,
+    "app/settings/appearance-overview.css": 1,
+    "app/settings/global-overviews.css": 2,
+    "components/assistant-ui/thread/redesign.css": 4
+  }
+}

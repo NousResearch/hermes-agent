@@ -112,7 +112,7 @@ function looksLikeArtifact(value: string, explicit = false): boolean {
   return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
 }
 
-function artifactSessionTitle(session: SessionInfo): string {
+export function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
 
@@ -584,4 +584,32 @@ export async function loadArtifactsForSessions(
   }
 
   return { artifacts, failures }
+}
+
+/** Page numbers to show for `page` of `pageCount`: all of them up to seven, else the first, the
+ *  last and the current one's neighbours, with gaps between. */
+export function paginationItems(page: number, pageCount: number): Array<number | 'ellipsis'> {
+  if (pageCount <= 7) {
+    return Array.from({ length: pageCount }, (_, index) => index + 1)
+  }
+
+  const pages: Array<number | 'ellipsis'> = [1]
+  const start = Math.max(2, page - 1)
+  const end = Math.min(pageCount - 1, page + 1)
+
+  if (start > 2) {
+    pages.push('ellipsis')
+  }
+
+  for (let nextPage = start; nextPage <= end; nextPage += 1) {
+    pages.push(nextPage)
+  }
+
+  if (end < pageCount - 1) {
+    pages.push('ellipsis')
+  }
+
+  pages.push(pageCount)
+
+  return pages
 }

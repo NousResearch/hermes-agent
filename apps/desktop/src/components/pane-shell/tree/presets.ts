@@ -11,10 +11,20 @@
 import { registry } from '@/contrib/registry'
 import { readJson, writeJson, writeKey } from '@/lib/storage'
 import { asLayoutIntent, type Tiered } from '@/store/interface-mode'
+import { $paneStates } from '@/store/panes'
 
 import { allPaneIds, findGroupOfPane, isLayoutNode, type LayoutNode } from './model'
 import { stripPresetLivePanes, stripPresetResting } from './preset-tree'
-import { $dismissedPanes, $hiddenTreePanes, $layoutTree, applyTree, markActivePreset } from './store'
+import {
+  $activePresetId,
+  $dismissedPanes,
+  $hiddenTreePanes,
+  $layoutTree,
+  $userPlacedPanes,
+  applyTree,
+  markActivePreset,
+  persistTree
+} from './store'
 
 export const LAYOUTS_AREA = 'layouts'
 
@@ -224,4 +234,40 @@ export function applyLayoutPreset(id: string, tree: LayoutNode) {
   }
 
   asLayoutIntent(() => applyTree(geometry, id, specs.get(id)?.resting))
+}
+
+/** Keep a preview through `send` (true once the pick is applied), or restore the prior layout. */
+export interface PreviewUndo {
+  keep: (send: () => boolean) => boolean
+  revert: () => void
+}
+
+/** A preview changes only the arrangement, never the current Simple/Advanced mode. */
+export function snapshotChatLayout(): PreviewUndo {
+  const snapshot = {
+    id: $activePresetId.get(),
+    panes: $paneStates.get(),
+    placed: $userPlacedPanes.get(),
+    tree: $layoutTree.get()
+  }
+
+  const restore = () => {
+    if (snapshot.tree) {
+      $layoutTree.set(snapshot.tree)
+      $paneStates.set(snapshot.panes)
+      $userPlacedPanes.set(snapshot.placed)
+      markActivePreset(snapshot.id)
+      persistTree()
+    }
+  }
+
+  return {
+    // Restore before switching modes so the outgoing mode remembers the user's layout, not the preview.
+    keep: send => {
+      restore()
+
+      return send()
+    },
+    revert: restore
+  }
 }

@@ -5,9 +5,9 @@
    "undecided": 345
   },
   "rpc": {
-   "authority": 111,
+   "authority": 113,
    "keep-host-wide": 1,
-   "undecided": 179
+   "undecided": 177
   },
   "websocket": {
    "undecided": 10
@@ -503,10 +503,10 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "model.disconnect", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "model.options", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "model.save_key", "kind": "rpc", "ref": "D3"},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "onboarding.set_run", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "onboarding.set_run", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "onboarding.skip", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "onboarding.start", "kind": "rpc", "ref": ""},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "onboarding.state", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "onboarding.state", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "paste.collapse", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "pdf.attach", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "pet.cancel", "kind": "rpc", "ref": "D3"},

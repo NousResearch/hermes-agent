@@ -1,0 +1,128 @@
+/* The redesigned chat stage (Figma 906:19804, conversation 16292:16175).
+   The transcript and the docked composer share ONE centred column, both its
+   full width (440). Both resolve 100cqw against this container, so they
+   measure the same box even though one lives in the scroller and the other
+   overlays it. */
+:root[data-shell='portal'] [data-chat-surface] {
+  --portal-conversation-width: var(--portal-column-conversation);
+  --portal-conversation-inset: var(--portal-column-conversation-inset);
+  --portal-conversation-gutter: 1rem;
+  --portal-conversation-column: min(var(--portal-conversation-width), 100cqw - 2 * var(--portal-conversation-gutter));
+  --portal-landing-composer-width: var(--portal-column-landing);
+  /* Figma's sizes are the Default text-size preset; other presets scale from it. */
+  --chat-text-scale: var(--chat-text-scale-relative, 1);
+  container: chat-stage / inline-size;
+}
+
+/* The landing also needs the stage height to decide whether the composer can
+   float in the middle. Decoration only; the editor keeps its stable host
+   through the first response. */
+:root[data-shell='portal'] [data-chat-surface][data-chat-landing='true'] {
+  container: chat-stage / size;
+}
+
+/* Docked 30px above the stage floor (491:40634). The band under the card is the stage itself
+   (its veiled art, portal-artwork.css) so the transcript never shows through beneath the edge, and it
+   fades in over a short run above the card's top edge, so a line scrolling under the composer
+   dissolves instead of being cut mid-glyph (short windows show it most). */
+:root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  --portal-composer-dock-floor: 1.875rem;
+  --portal-composer-dock-fade: 1rem;
+  isolation: isolate;
+  width: calc(var(--portal-conversation-column) + 10px);
+  padding-top: var(--portal-composer-dock-fade);
+  padding-bottom: var(--portal-composer-dock-floor);
+}
+
+:root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  mask-image: linear-gradient(to bottom, transparent, var(--portal-raw-black) var(--portal-composer-dock-fade));
+  pointer-events: none;
+}
+
+:root[data-shell='portal']
+  [data-chat-landing='true']
+  [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  width: calc(min(var(--portal-landing-composer-width), var(--portal-conversation-column)) + 10px);
+}
+
+/* Figma centres the composer in the stage above a 30px bottom pad. A short
+   pane or a software keyboard needs the ordinary bottom dock instead. */
+@container chat-stage (min-height: 34rem) {
+  :root[data-shell='portal']
+    [data-chat-landing='true']
+    [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+    top: calc(50% - 0.9375rem);
+    bottom: auto;
+    translate: -50% -50%;
+    padding-block: 0;
+  }
+
+  :root[data-shell='portal']
+    [data-chat-landing='true']
+    [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before {
+    content: none;
+  }
+}
+
+/* Profile wake / sync notices over the stage: flat 6px plates in body type. */
+:root[data-shell='portal'] :is([data-slot='chat-swap-pill'], [data-slot='chat-sync-badge']) {
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background: var(--ui-bg-elevated);
+  box-shadow: none;
+  font-family: var(--portal-font-body);
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] [data-slot='chat-swap-pill'] {
+  padding: 0.5rem 0.75rem;
+  font-size: var(--portal-type-meta-size);
+}
+
+/* The stage header (the machine // agent line, and an extra tile's Agent settings) is a transparent row
+   over the stage's top edge, out of flow: the photo and the transcript start
+   at the panel's top under its rounded corner. Only its controls take the
+   pointer; the transcript reserves the row and fades beneath it. */
+:root[data-shell='portal'] {
+  --portal-stage-header-height: 3rem;
+}
+
+:root[data-shell='portal'] [data-slot='portal-conversation-header'] {
+  position: absolute;
+  z-index: var(--portal-layer-stage-overlay);
+  inset-inline: 0;
+  top: var(--zone-band-height, 0px);
+  display: flex;
+  height: var(--portal-stage-header-height);
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-inline: 1.25rem 0.75rem;
+  pointer-events: none;
+}
+
+:root[data-shell='portal'] [data-slot='portal-conversation-header'] > * {
+  pointer-events: auto;
+}
+
+/* The machine // agent line: kept where Figma has none, in the signal font of the sidebar's tags. */
+:root[data-shell='portal'] .portal-conversation-agent {
+  color: var(--ui-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+/* Compact and short windows (breakpoints.ts: max-width 639.98px; max-height 30rem) dock the composer
+   closer to the floor: a phone's height is the transcript's. */
+@media (max-width: 639.98px), (max-height: 30rem) {
+  :root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+    --portal-composer-dock-floor: var(--portal-space-compact);
+    --portal-composer-dock-fade: var(--portal-space-tight);
+  }
+}

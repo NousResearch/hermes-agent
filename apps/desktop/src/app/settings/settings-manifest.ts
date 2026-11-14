@@ -79,6 +79,11 @@ export const SETTINGS_MANIFEST = {
       ['font', 'monospace', 'nerd font', 'glyphs', 'shell'],
       'terminalFont'
     ),
+    simplifiedAgents: {
+      subpage: 'window-layout',
+      keywords: ['redesign', 'interface', 'classic', 'layout', 'agents', 'sidebar', 'bots'],
+      copy: t => ({ label: t.simplifiedAgents.title, description: t.simplifiedAgents.description })
+    },
     interfaceMode: {
       subpage: 'window-layout',
       keywords: ['simple', 'advanced', 'mode', 'interface', 'chrome', 'minimal', 'focus'],
@@ -248,7 +253,20 @@ export const SETTINGS_MANIFEST = {
     connectionMode: {
       available: nativeHostOnly,
       subpage: 'connection',
-      keywords: ['gateway', 'connection', 'local', 'cloud', 'remote', 'ssh', 'url', 'token', 'host', 'port', 'key'],
+      keywords: [
+        'machine',
+        'machines',
+        'connection',
+        'local',
+        'cloud',
+        'remote',
+        'ssh',
+        'url',
+        'token',
+        'host',
+        'port',
+        'key'
+      ],
       copy: t => ({ label: t.settings.gateway.modeTitle, description: t.settings.gateway.intro })
     },
     keychainEncryption: {

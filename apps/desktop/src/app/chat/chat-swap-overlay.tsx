@@ -1,15 +1,18 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 // Shown over the conversation while the live gateway swaps to another profile's
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   const { t } = useI18n()
+  const setupGuide = useStore($setupGuideOnboarding)
   const onboarding = useOnboardingChatActive()
   const [label, setLabel] = useState<null | string>(profile)
 
@@ -19,9 +22,8 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
     }
   }, [profile])
 
-  // The first run may swap into the default profile, which the user did not ask for.
-  // "Waking up default…" over the greeting reads as a stall in the moment that has to feel instant.
-  if (onboarding) {
+  // Classic setup owns its greeting while the default profile wakes.
+  if (!setupGuide && onboarding) {
     return null
   }
 
@@ -33,7 +35,10 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
         profile ? 'opacity-100' : 'opacity-0'
       )}
     >
-      <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
+      <div
+        className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer"
+        data-slot="chat-swap-pill"
+      >
         {/* Was a local 80ms setInterval + setState braille ticker — the same
             mechanism class (per-tick DOM mutation scheduling style recalc)
             that GlyphSpinner was rewritten to remove. `braille` is exactly the
@@ -64,6 +69,7 @@ export function ChatSyncBadge({ profile }: { profile: string | null }) {
     <div
       aria-live="polite"
       className="pointer-events-none absolute right-3 top-2 z-30 flex items-center gap-1.5 rounded-full border border-border/50 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-2 py-0.5 font-mono text-[0.6875rem] text-muted-foreground shadow-composer"
+      data-slot="chat-sync-badge"
     >
       <GlyphSpinner className="w-3 justify-start text-(--ui-accent)" spinner="braille" />
       {t.desktop.hydrationSyncing(profile)}

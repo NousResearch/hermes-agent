@@ -165,7 +165,12 @@ export function _resetConnectionsForTests(): void {
 // exactly, never a bare profile string. An older explicit agent route must not
 // override the selected source. The silent boot restore is not a user choice,
 // so it keeps a route the user pinned (gateway-group +) while it was in flight.
-function rehomeNewChatDraft(profile: string, keepExplicitRoute = false, connectionId?: string): void {
+function rehomeNewChatDraft(
+  profile: string,
+  keepExplicitRoute = false,
+  connectionId?: string,
+  preserveRoute = false
+): void {
   $newChatProfile.set(profile)
 
   if (!keepExplicitRoute) {
@@ -173,7 +178,7 @@ function rehomeNewChatDraft(profile: string, keepExplicitRoute = false, connecti
   }
 
   captureNewChatSource(connectionId)
-  requestFreshSession()
+  requestFreshSession({ preserveRoute })
 }
 
 // Returns what puts the current draft back (an explicit agent route and a
@@ -206,6 +211,7 @@ interface DraftRehome {
   restore: () => void
   revision: number
   undoneAs: null | number
+  preserveRoute: boolean
 }
 
 // The re-home of the latest pick that reached its turn and whose pick has not
@@ -253,7 +259,7 @@ function undoDraftRehome(rehome: DraftRehome): void {
   }
 
   rehome.restore()
-  requestFreshSession()
+  requestFreshSession({ preserveRoute: rehome.preserveRoute })
   rehome.undoneAs = currentNewChatIntent()
 }
 
@@ -588,6 +594,8 @@ export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
+  /** Reset the chat behind a settings page without navigating away from it. */
+  preserveRoute?: boolean
   /** This call restores the source the window launched on; it is not a switch
    *  the user asked for, so the persisted "All profiles" browse mode must be
    *  left alone. The boot path passes it explicitly: the old inference
@@ -625,9 +633,9 @@ function abandonPick(): void {
   $pendingConnectionId.set(null)
 }
 
-function rollbackRehome(rehomed: boolean, profile: string, landed: () => boolean): void {
+function rollbackRehome(rehomed: boolean, profile: string, landed: () => boolean, preserveRoute = false): void {
   if (rehomed && !landed()) {
-    rehomeNewChatDraft(profile)
+    rehomeNewChatDraft(profile, false, undefined, preserveRoute)
   }
 }
 
@@ -645,12 +653,17 @@ function isBootRestore(options: SelectConnectionOptions): boolean {
  *  only reaches this with `switching` true because "All profiles" is on. A user
  *  pick collapses the browse view; a boot restore leaves it alone, since
  *  collapsing it here dropped the user back to a single profile at every launch. */
-async function settleLivePair(connectionId: string, targetProfile: string, restoreOnBoot: boolean): Promise<void> {
+async function settleLivePair(
+  connectionId: string,
+  targetProfile: string,
+  restoreOnBoot: boolean,
+  preserveRoute = false
+): Promise<void> {
   if (!restoreOnBoot) {
     $showAllProfiles.set(false)
   }
 
-  rehomeNewChatDraft(targetProfile)
+  rehomeNewChatDraft(targetProfile, false, undefined, preserveRoute)
   await rememberConnection(connectionId)
 }
 
@@ -714,7 +727,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
-    await settleLivePair(connectionId, targetProfile, restoreOnBoot)
+    await settleLivePair(connectionId, targetProfile, restoreOnBoot, options.preserveRoute)
 
     return
   }
@@ -731,7 +744,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   abandonInFlight = () => {
     activation.abort()
-    rollbackRehome(rehomed, currentProfile, targetIsActive)
+    rollbackRehome(rehomed, currentProfile, targetIsActive, options.preserveRoute)
   }
 
   $pendingConnectionId.set(connectionId)
@@ -770,14 +783,15 @@ export async function selectConnection(connectionId: string, options: SelectConn
       setActiveSessionId(null)
       setSelectedStoredSessionId(null)
       const restore = draftBeforePick(ahead)
-      rehomeNewChatDraft(targetProfile, restoreOnBoot, connectionId)
+      rehomeNewChatDraft(targetProfile, restoreOnBoot, connectionId, options.preserveRoute)
 
       const rehome: DraftRehome = {
         intent: currentNewChatIntent(),
         landed: targetIsActive,
         restore,
         revision,
-        undoneAs: null
+        undoneAs: null,
+        preserveRoute: options.preserveRoute ?? false
       }
 
       tentativeRehome = rehome

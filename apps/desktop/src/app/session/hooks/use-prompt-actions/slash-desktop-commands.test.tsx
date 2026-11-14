@@ -1,8 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { en } from '@/i18n/en'
-import { fr } from '@/i18n/fr'
+import { resolveTranslations } from '@/i18n/registry'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 import { toChatMessages } from '@/lib/chat-messages'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
@@ -34,7 +33,8 @@ vi.mock('@/store/gateway', async importOriginal => ({
   requestGatewayForAgent: vi.fn()
 }))
 
-const copy = en.promptNotices.desktopCommands
+// The wording the active shell renders (the redesign by default).
+const copy = resolveTranslations('en').promptNotices.desktopCommands
 
 type Responder = (method: string, params?: Record<string, unknown>) => unknown
 
@@ -373,8 +373,8 @@ describe('/history', () => {
     expect(callsOf(requestGateway, 'session.resume')).toEqual([{ session_id: RUNTIME_SESSION_ID }])
     expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
     const text = renderedText(handle)
-    expect(text).toContain('You: first question')
-    expect(text).toContain('Hermes: first answer')
+    expect(text).toContain(`${copy.historyYou}: first question`)
+    expect(text).toContain(`${copy.historyHermes}: first answer`)
     expect(text).not.toContain('tool noise')
   })
 
@@ -387,10 +387,10 @@ describe('/history', () => {
       { role: 'assistant', content: 'VISIBLE ANSWER', row_id: 5 }
     ] as never)
 
-    expect(history).toContain('You: ARCHIVED QUESTION')
-    expect(history).toContain('Hermes: ARCHIVED ANSWER')
-    expect(history).toContain('You: /skill question')
-    expect(history).toContain('Hermes: VISIBLE ANSWER')
+    expect(history).toContain(`${copy.historyYou}: ARCHIVED QUESTION`)
+    expect(history).toContain(`${copy.historyHermes}: ARCHIVED ANSWER`)
+    expect(history).toContain(`${copy.historyYou}: /skill question`)
+    expect(history).toContain(`${copy.historyHermes}: VISIBLE ANSWER`)
     expect(history).not.toContain('MODEL ONLY')
   })
 })
@@ -558,7 +558,7 @@ describe('desktop command notices follow the app language', () => {
     await handle.submitText('/history')
 
     const text = renderedText(handle)
-    const fr_ = fr.promptNotices.desktopCommands
+    const fr_ = resolveTranslations('fr').promptNotices.desktopCommands
     expect(fr_.timestampsOff).not.toBe(copy.timestampsOff)
     expect(text).toContain(fr_.timestampsOff)
     expect(text).toContain(fr_.rollbackUsage)

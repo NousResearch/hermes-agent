@@ -32,6 +32,10 @@ interface Placement {
   visible: boolean
   overlay?: boolean
   onMouseLeave?: MouseEventHandler<HTMLDivElement>
+  /** The slot fills a window-top zone at the window's inline start/end edge, so
+   *  the host takes that panel's outer corner (redesigned shell). */
+  windowStart?: boolean
+  windowEnd?: boolean
 }
 
 type Placements = ReadonlyMap<string, Placement>
@@ -150,6 +154,8 @@ const KeepAlivePaneHost = memo(function KeepAlivePaneHost({ pane, placement, epo
       data-pane-host={pane.id}
       data-pane-overlay={placement.overlay || undefined}
       data-tree-group={placement.groupId}
+      data-window-end={placement.windowEnd || undefined}
+      data-window-start={placement.windowStart || undefined}
       data-zone-header={placement.headerVisible || undefined}
       inert={!placement.visible || undefined}
       onMouseLeave={placement.onMouseLeave}
@@ -190,7 +196,9 @@ export function KeepAlivePaneSlot({
   headerVisible,
   visible,
   overlay,
-  onMouseLeave
+  onMouseLeave,
+  windowStart,
+  windowEnd
 }: KeepAlivePaneSlotProps) {
   const place = useContext(PlacementContext)
   const sides = useStore($collapsedTreeSides)
@@ -201,8 +209,18 @@ export function KeepAlivePaneSlot({
   const anchor = `--pane-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 
   useLayoutEffect(
-    () => place?.(paneId, { anchor, groupId, headerVisible, visible: shown, overlay, onMouseLeave }),
-    [place, paneId, anchor, groupId, headerVisible, shown, overlay, onMouseLeave]
+    () =>
+      place?.(paneId, {
+        anchor,
+        groupId,
+        headerVisible,
+        visible: shown,
+        overlay,
+        onMouseLeave,
+        windowStart,
+        windowEnd
+      }),
+    [place, paneId, anchor, groupId, headerVisible, shown, overlay, onMouseLeave, windowStart, windowEnd]
   )
 
   return (

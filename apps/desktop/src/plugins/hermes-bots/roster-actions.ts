@@ -229,9 +229,15 @@ export interface OpenRosterBotOptions {
    *  (⌘/⌃-click, "Open in new tab") instead of loading it into main. An
    *  already-open Bot Chat is fronted either way. */
   intent?: BotChatOpenIntent
+  /** The name the clicked row shows (the redesign's agent rows read the profile name). A failure
+   *  toast names the agent with it and says why in its body, so it never names another agent. */
+  label?: string
 }
 
-export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: OpenRosterBotOptions = {}): Promise<boolean> {
+export async function openRosterBot(
+  bot: RosterRow,
+  { intent = 'in-place', label }: OpenRosterBotOptions = {}
+): Promise<boolean> {
   const generation = bumpBotOpenGeneration()
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
@@ -317,7 +323,7 @@ export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: Ope
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, 'reach')
+      notifyBotOpenFailure(error, bot, 'reach', label ? { botName: label, explain: true } : undefined)
     }
 
     settlePendingBotOpen(generation)
@@ -364,7 +370,7 @@ export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: Ope
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
+      notifyBotOpenFailure(error, bot, 'open', { botName: label || displayName(bot, meta), explain: Boolean(label) })
     }
 
     settlePendingBotOpen(generation)

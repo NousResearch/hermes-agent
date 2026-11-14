@@ -28,8 +28,12 @@ export function getConnectionServedProfiles(connectionId: string): Promise<{ gat
   })
 }
 
-export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
+export function createProfile(
+  body: ProfileCreatePayload,
+  scope?: ProfileScope
+): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
   return hermesApi<{ name: string; ok: boolean; path: string; soul_set?: boolean }>({
+    ...(scope === undefined ? {} : capabilityScoped(scope)),
     path: '/api/profiles',
     method: 'POST',
     body

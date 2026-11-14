@@ -8,8 +8,12 @@ import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
+import { settingsPagesCopy } from './settings-pages-copy'
 
-vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
+vi.mock('@/i18n', () => ({
+  isBundledLocale: (locale: string) => locale === 'en',
+  useI18n: () => ({ locale: 'en', t: en })
+}))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -63,6 +67,7 @@ afterEach(() => {
 describe('SessionsSettings unarchive', () => {
   it('restores a messaging-source session into $messagingSessions, not $sessions', async () => {
     render(<SessionsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: settingsPagesCopy('en').archiveChats.view }))
     const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
 
     await act(async () => fireEvent.click(button))

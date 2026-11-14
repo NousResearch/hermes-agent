@@ -125,6 +125,13 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only agents-md
 
+      # The desktop redesign keeps its design values in apps/desktop/src/app/redesign/tokens/:
+      # redesign CSS that restates one may only shrink per file, an undefined --portal-* token or
+      # stale DESIGN.md token tables fail. Frontend-only change, so not gated on inputs.python.
+      - name: Desktop redesign design tokens
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just check --only desktop-design-tokens
+
       # Files at old module paths that shipped updaters still reach after a move are generated from
       # hermes_agent/compat/{moves,required_names}.py and must match the generator byte for byte.
       - name: Keep the move shims in sync with their generator

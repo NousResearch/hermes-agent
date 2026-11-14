@@ -207,9 +207,16 @@ export async function launchCoreApp(env: Record<string, string>): Promise<{ app:
     throw new Error("Desktop dist not built: run 'pnpm run build' in apps/desktop first")
   }
 
+  // Select Ozone before launch; an entrypoint relaunch breaks Playwright's process attachment.
+  const args = [DESKTOP_ROOT, '--disable-gpu', '--no-sandbox']
+
+  if (process.platform === 'linux' && (env.WAYLAND_DISPLAY || env.XDG_SESSION_TYPE === 'wayland')) {
+    args.push(`--ozone-platform=${env.ELECTRON_OZONE_PLATFORM_HINT === 'x11' ? 'x11' : 'wayland'}`)
+  }
+
   const app = await _electron.launch({
     executablePath: resolveElectronBinary([DESKTOP_ROOT, REPO_ROOT]),
-    args: [DESKTOP_ROOT, '--disable-gpu', '--no-sandbox'],
+    args,
     env,
     cwd: DESKTOP_ROOT
   })

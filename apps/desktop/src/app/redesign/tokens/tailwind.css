@@ -1,0 +1,60 @@
+/* Tailwind utilities for the redesign's roles, under a `ds-` namespace (`text-ds-caption`,
+   `rounded-ds-card`, `bg-ds-card`, `text-ds-text-3`). Imported by styles.css, the Tailwind entry, so
+   the utilities compile with the rest; it holds no values of its own, only reads of the role tokens,
+   which exist only under <html data-shell="portal">. Use them in redesign-only markup; mixed markup
+   keeps Tailwind's own scale on its classic branch. Tailwind's rounded-* and text-* are not remapped:
+   classic primitives rendered inside the redesign depend on them. */
+@theme inline {
+  --text-ds-caption: var(--portal-type-caption-size);
+  --text-ds-caption--line-height: 1.4;
+  --text-ds-caption--letter-spacing: var(--portal-tracking-caption);
+  --text-ds-chip: var(--portal-type-chip-size);
+  --text-ds-chip--line-height: 1.4;
+  --text-ds-chip--letter-spacing: var(--portal-tracking-chip);
+  --text-ds-micro: var(--portal-type-micro-size);
+  --text-ds-micro--line-height: 1.4;
+  --text-ds-micro--letter-spacing: var(--portal-tracking-ui);
+  --text-ds-meta: var(--portal-type-meta-size);
+  --text-ds-meta--line-height: 1.4;
+  --text-ds-meta--letter-spacing: var(--portal-tracking-ui);
+  --text-ds-ui: var(--portal-type-ui-size);
+  --text-ds-ui--line-height: 1.4;
+  --text-ds-ui--letter-spacing: var(--portal-tracking-ui);
+  --text-ds-body: var(--portal-type-body-size);
+  --text-ds-body--line-height: 1.4;
+  --text-ds-section: var(--portal-type-section-size);
+  --text-ds-section--line-height: 1.1;
+  --text-ds-display-lg: var(--portal-type-display-lg-size);
+  --text-ds-display-lg--line-height: 1.1;
+  --text-ds-display-lg--letter-spacing: var(--portal-tracking-display);
+  --text-ds-display-xl: var(--portal-type-display-xl-size);
+  --text-ds-display-xl--line-height: 1.1;
+  --text-ds-display-xl--letter-spacing: var(--portal-tracking-display);
+
+  --radius-ds-chip: var(--portal-radius-chip);
+  --radius-ds-control: var(--portal-radius-control);
+  --radius-ds-card: var(--portal-radius-card);
+  --radius-ds-surface: var(--portal-radius-surface);
+  --radius-ds-floating: var(--portal-radius-floating);
+  --radius-ds-panel: var(--portal-radius-panel);
+
+  --color-ds-card: var(--portal-surface-card);
+  --color-ds-row-hover: var(--portal-surface-row-hover);
+  --color-ds-selected: var(--portal-surface-selected);
+  --color-ds-control: var(--portal-surface-control);
+  --color-ds-field: var(--portal-surface-field);
+  --color-ds-chrome: var(--portal-surface-chrome);
+  --color-ds-elevated: var(--portal-surface-elevated);
+  --color-ds-brand: var(--portal-surface-brand);
+  --color-ds-brand-selected: var(--portal-surface-brand-selected);
+  --color-ds-hairline: var(--portal-stroke-hairline);
+  --color-ds-divider: var(--portal-stroke-divider);
+  --color-ds-stroke-control: var(--portal-stroke-control);
+  --color-ds-stroke-field: var(--portal-stroke-field);
+  --color-ds-text: var(--portal-text-primary);
+  --color-ds-text-2: var(--portal-text-secondary);
+  --color-ds-text-3: var(--portal-text-tertiary);
+  --color-ds-text-4: var(--portal-text-quaternary);
+  --color-ds-brand-ink: var(--portal-text-brand);
+  --color-ds-on-brand: var(--portal-text-on-brand);
+}

@@ -1,5 +1,6 @@
 import type { HermesApiRequest } from '@/global'
 import { browserLaunchProfileOrDefault } from '@/lib/platform'
+import { shellCopy } from '@/lib/shell-copy'
 import { isSignedOutStatus } from '@/lib/signed-out-status'
 
 // The multiplexer applies a park, unpark or standalone change on its 30 s profile rescan, and none
@@ -19,7 +20,12 @@ const profileKey = (profile?: null | string) => profile?.trim() || 'default'
  */
 export class UnservedProfileError extends Error {
   constructor(readonly profile: string) {
-    super(`This gateway does not serve profile "${profile}", so this tab cannot open it.`)
+    super(
+      shellCopy({
+        classic: `This gateway does not serve profile "${profile}", so this tab cannot open it.`,
+        redesign: `This machine does not serve agent "${profile}", so this tab cannot open it.`
+      })
+    )
     this.name = 'UnservedProfileError'
   }
 }

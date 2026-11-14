@@ -14,6 +14,7 @@ export function SidebarPanelLabel({ children, className, dotClassName, meta, ...
         'flex min-w-0 items-center gap-2 pl-2 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--theme-primary)',
         className
       )}
+      data-slot="panel-label"
       {...props}
     >
       <span aria-hidden="true" className={cn('dither inline-block size-2 shrink-0 rounded-[1px]', dotClassName)} />

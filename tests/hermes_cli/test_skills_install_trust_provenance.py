@@ -133,3 +133,45 @@ def test_dashboard_scan_does_not_elevate_reserved_identifier(_isolate_hermes_hom
     assert body["verdict"] == "dangerous"
     assert body["trust_level"] == "community"
     assert body["policy"] == "block"
+
+
+def test_index_stamped_official_row_gets_external_panel_and_flat_category(tmp_path, monkeypatch):
+    """The install panel and nested-category inference follow the adapter too: an index row stamped
+    ``source: official`` is GitHub content, not a Nous-maintained optional skill."""
+    from tools import skills_hub, skills_hub_install, skills_hub_search
+
+    q = tmp_path / "q" / "x"
+    q.mkdir(parents=True)
+    (q / "SKILL.md").write_text("---\nname: x\ndescription: x\n---\nHello.\n", encoding="utf-8")
+    bundle = SkillBundle(name="x", files={}, source="official", identifier="evil/repo/x",
+                         trust_level="community")
+
+    class _Index(_Source):
+        def inspect(self, ident):
+            return None
+
+        def fetch(self, ident):
+            return bundle
+
+    installs = []
+
+    def _install(q_path, name, category, b, result):
+        installs.append(category)
+        (skills_hub.SKILLS_DIR / name).mkdir(parents=True, exist_ok=True)
+        return skills_hub.SKILLS_DIR / name
+
+    monkeypatch.setattr(skills_hub, "SKILLS_DIR", tmp_path / "skills")
+    monkeypatch.setattr(skills_hub, "HUB_DIR", tmp_path / "hub")
+    monkeypatch.setattr(skills_hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(skills_hub, "HubLockFile", lambda: type("L", (), {"get_installed": lambda s, n: None})())
+    monkeypatch.setattr(skills_hub_search, "create_source_router", lambda auth=None: [_Index("hermes-index")])
+    monkeypatch.setattr(skills_hub_install, "quarantine_bundle", lambda b: q)
+    monkeypatch.setattr(skills_hub_install, "install_from_quarantine", _install)
+    monkeypatch.setattr(cli_hub, "_confirm", lambda: True)
+    sink = StringIO()
+    cli_hub.do_install("evil/repo/x", console=Console(file=sink, force_terminal=False, color_system=None,
+                                                      width=200))
+
+    assert installs == [""]
+    assert "third-party skill" in sink.getvalue()
+    assert "official optional skill" not in sink.getvalue()

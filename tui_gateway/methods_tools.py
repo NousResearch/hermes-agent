@@ -1682,18 +1682,14 @@ _plugin_activation_subscribed: dict = {}
 _plugin_activation_lock = threading.RLock()
 
 
-def _ensure_plugin_activation_listener() -> None:
+def _ensure_plugin_activation_listener(manager=None) -> None:
     from hermes_cli.plugins import get_plugin_manager, subscribe_plugin_loaded_for_home
-    manager = get_plugin_manager()
+    manager = manager or get_plugin_manager()
     scope = manager.scope_key
     with _plugin_activation_lock:
         previous = _plugin_activation_subscribed.get(scope)
         if previous is not None and previous.manager is manager and not manager._retired:
             return
-        if previous is not None:
-            previous()
-            _plugin_activation_subscribed.pop(scope, None)
-        _plugin_activations.pop(scope, None)
 
     def _on_loaded(source, summaries) -> None:
         with _plugin_activation_lock:
@@ -1707,9 +1703,15 @@ def _ensure_plugin_activation_listener() -> None:
                 cached[1][entry["key"]] = entry
     unsubscribe = subscribe_plugin_loaded_for_home(manager, _on_loaded)
     with _plugin_activation_lock:
-        existing = _plugin_activation_subscribed.setdefault(scope, unsubscribe)
-    if existing is not unsubscribe:
-        unsubscribe()
+        existing = _plugin_activation_subscribed.get(scope)
+        if manager._retired or (existing is not None and not existing.manager._retired):
+            unsubscribe()
+        else:
+            if existing is not None:
+                existing()
+            _plugin_activation_subscribed[scope] = unsubscribe
+    if manager._retired:
+        raise RuntimeError("cannot subscribe a retired manager")
 
 
 def _with_activation(result: dict, name: str) -> dict:

@@ -45,8 +45,6 @@ class GatewayPluginRewireMixin:
             previous = subs.get(scope)
             if previous is not None and previous.manager is manager and not manager._retired:
                 return
-            if previous is not None:
-                previous()
         active = [True]
 
         def _on_loaded(source, _names) -> None:
@@ -68,9 +66,15 @@ class GatewayPluginRewireMixin:
 
         unsubscribe.manager = cancel.manager
         with _subscription_lock:
-            existing = subs.setdefault(scope, unsubscribe)
-        if existing is not unsubscribe:
-            unsubscribe()
+            existing = subs.get(scope)
+            if manager._retired or (existing is not None and not existing.manager._retired):
+                unsubscribe()
+            else:
+                if existing is not None:
+                    existing()
+                subs[scope] = unsubscribe
+        if manager._retired:
+            raise RuntimeError("cannot subscribe a retired manager")
 
     def _rewire_plugin_handlers(self, profile_name: Optional[str] = None,
                                 profile_home: Optional[Path] = None) -> int:
@@ -110,7 +114,8 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
 
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugins import get_plugin_manager
+        from hermes_cli.plugins_discovery import join_background_discovery
         from hermes_cli.plugins_activation import activation_summaries, dependency_blocked_summaries
         from gateway.run import _profile_runtime_scope
         params = params or {}
@@ -128,10 +133,13 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         scope = (_profile_runtime_scope(requested, hydrate_secrets=False) if profile_name
                  else contextlib.nullcontext())
         with scope:
-            runner._subscribe_plugin_rewire(get_plugin_manager(), profile_name,
-                                            requested if profile_name else None, loop=loop)
-            discover_plugins(force=True)
+            join_background_discovery()
             manager = get_plugin_manager()
+            runner._subscribe_plugin_rewire(manager, profile_name,
+                                            requested if profile_name else None, loop=loop)
+            manager.discover_and_load(force=True)
+            if manager._retired:
+                return {"reloaded": False, "error": "plugin manager retired", "home": str(requested)}
             # A plugin that failed on a dependency this gateway booted without rides along, so the
             # enabling caller asks for the restart that loads it.
             names = sorted(manager._plugins)

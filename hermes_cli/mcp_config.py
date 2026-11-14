@@ -1,6 +1,7 @@
 """MCP Server Management CLI — ``hermes mcp`` subcommand."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ from hermes_cli.config import (
     save_config,
     get_env_value,
     save_env_value,
-    get_hermes_home,  # noqa: F401 — used by test mocks
+    get_hermes_home,
 )
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
@@ -43,16 +44,16 @@ _DIGEST_PARAM = (
     rf"(?:{_DIGEST_PARAM_NAMES})\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,]+)"
 )
 _DIGEST_PARAMS = rf"{_DIGEST_PARAM}(?:\s*,\s*{_DIGEST_PARAM})*"
-_PROBE_REDACTION_RES: Optional[Tuple[re.Pattern[str], ...]] = None
+_PROBE_REDACTION_RES: Optional[tuple[re.Pattern[str], ...]] = None
 
 
 def _credential_header_names() -> str:
-    from agent.redact import _SECRET_HEADER_NAMES
+    from agent.redact_headers import _SECRET_HEADER_NAMES
 
     return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
 
 
-def _probe_redaction_res() -> Tuple[re.Pattern[str], ...]:
+def _probe_redaction_res() -> tuple[re.Pattern[str], ...]:
     global _PROBE_REDACTION_RES
     if _PROBE_REDACTION_RES is not None:
         return _PROBE_REDACTION_RES
@@ -121,7 +122,7 @@ def redact_mcp_probe_text(text: object) -> str:
     """Fully redact MCP probe/display strings before they leave the process.
 
     Recognized credential header fields (Authorization / Proxy-Authorization
-    and ``agent.redact._SECRET_HEADER_NAMES``) have their complete associated
+    and ``agent.redact_headers._SECRET_HEADER_NAMES``) have their complete associated
     value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
     covered the same way. The generic secret redactor then runs with
     ``force=True`` as defense in depth.
@@ -179,7 +180,7 @@ def _redact_probe_exception(exc: BaseException) -> Exception:
     return RuntimeError(safe)
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+_MCP_PRESETS: dict[str, dict[str, Any]] = {
     "codex": {"command": "codex", "args": ["mcp-server"]},
 }
 
@@ -200,13 +201,13 @@ def _confirm(question: str, default: bool = True) -> bool:
     return val in {"y", "yes"} if val else default
 
 
-def _print_tools(tools: List[Tuple[str, str]], width: int, desc_max: int) -> None:
+def _print_tools(tools: list[tuple[str, str]], width: int, desc_max: int) -> None:
     for tool_name, desc in tools:
         short = desc[:desc_max] + "..." if len(desc) > desc_max else desc
         print(f"    {color(tool_name, Colors.GREEN):{width}s} {short}")
 
 
-def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
+def _get_mcp_servers(config: Optional[dict] = None) -> dict[str, dict]:
     """Return the ``mcp_servers`` dict from config, or empty dict."""
     if config is None:
         config = load_config()
@@ -214,7 +215,7 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers if servers and isinstance(servers, dict) else {}
 
 
-def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
+def _tool_filters(cfg: dict) -> tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
 
     An explicit ``include: []`` is a real (block-all) whitelist — the runtime registers nothing
@@ -254,7 +255,7 @@ def _validate_or_warn(name: str, server_config: dict) -> bool:
 
 
 def _lookup_server(
-    name: str, servers: Dict[str, dict], available_label: str = "Available servers"
+    name: str, servers: dict[str, dict], available_label: str = "Available servers"
 ) -> Optional[dict]:
     """Return the named server config, or print the not-found hint and return None."""
     if name in servers:
@@ -278,13 +279,13 @@ def _remove_mcp_server(name: str) -> bool:
     return True
 
 
-def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
+def _replace_mcp_servers(servers: dict[str, dict]) -> tuple[bool, list[str]]:
     """Replace the WHOLE ``mcp_servers`` map in config.yaml.
 
     Every entry is validated up front; any suspicious entry rejects the whole save (``(False,
     issues)``) so a bad paste can't be partially applied. An empty map removes the key entirely.
     """
-    issues: List[str] = []
+    issues: list[str] = []
     for name, cfg in servers.items():
         if not isinstance(cfg, dict):
             issues.append(f"Server '{name}': expected an object")
@@ -323,7 +324,7 @@ def _strip_bearer_prefix(token: str) -> str:
     return stripped
 
 
-def _bearer_auth_headers(name: str) -> Dict[str, str]:
+def _bearer_auth_headers(name: str) -> dict[str, str]:
     """Build the persisted Authorization header template for a named MCP server.
 
     The secret lives in the profile's ``.env``; CLI and Dashboard share this so they produce
@@ -332,7 +333,7 @@ def _bearer_auth_headers(name: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer ${{{_env_key_for_server(name)}}}"}
 
 
-def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
+def _save_bearer_auth_token(name: str, token: str) -> dict[str, str]:
     """Persist a normalized Bearer token to ``.env`` and return the header template for config.yaml."""
     normalized = _strip_bearer_prefix(token)
     if not normalized or normalized.lower() == "bearer":
@@ -341,9 +342,9 @@ def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
     return _bearer_auth_headers(name)
 
 
-def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
+def _parse_env_assignments(raw_env: Optional[list[str]]) -> dict[str, str]:
     """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
-    parsed: Dict[str, str] = {}
+    parsed: dict[str, str] = {}
     for item in raw_env or []:
         text = str(item or "").strip()
         if not text:
@@ -366,8 +367,8 @@ def _apply_mcp_preset(
     preset_name: Optional[str],
     url: Optional[str],
     command: Optional[str],
-    cmd_args: List[str],
-    server_config: Dict[str, Any]) -> tuple[Optional[str], Optional[str], List[str], bool]:
+    cmd_args: list[str],
+    server_config: dict[str, Any]) -> tuple[Optional[str], Optional[str], list[str], bool]:
     """Apply a known MCP preset when transport details were omitted."""
     if not preset_name:
         return url, command, cmd_args, False
@@ -413,7 +414,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 def _probe_single_server(
     name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
     Returns ``(tool_name, description)`` tuples; raises on connection failure. ``details`` is an
@@ -421,7 +422,9 @@ def _probe_single_server(
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
-        raise ValueError("; ".join(issues))
+        rejected = ValueError("; ".join(issues))
+        rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
+        raise rejected
 
     from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
     from tools.mcp_tool_discovery import _connect_server
@@ -443,7 +446,7 @@ def _probe_single_server(
     config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
-    tools_found: List[Tuple[str, str]] = []
+    tools_found: list[tuple[str, str]] = []
 
     async def _probe():
         from tools import mcp_tool as _core
@@ -454,7 +457,7 @@ def _probe_single_server(
             details["initialized"] = False
         try:
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
             raise TimeoutError(
                 f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
@@ -512,7 +515,11 @@ def _probe_single_server(
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
-        raise _redact_probe_exception(exc) from None
+        redacted = _redact_probe_exception(exc)
+        # Classified from the ORIGINAL exception: redaction may rebuild it as a RuntimeError.
+        with contextlib.suppress(Exception):
+            redacted.failure_class = probe_failure_class(exc)  # type: ignore[attr-defined]
+        raise redacted from None
     finally:
         _stop_mcp_loop_if_idle()
     return tools_found
@@ -536,7 +543,7 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
 
 
 def _configure_http_auth(
-    name: str, url: str, auth_type: Optional[str], server_config: Dict[str, Any]
+    name: str, url: str, auth_type: Optional[str], server_config: dict[str, Any]
 ) -> bool:
     """OAuth or Bearer-token setup for an HTTP server. False when the user cancelled."""
     print()
@@ -576,7 +583,7 @@ def _configure_http_auth(
     return True
 
 
-def _choose_tools(name: str, tools: List[Tuple[str, str]], server_config: Dict[str, Any]) -> Optional[int]:
+def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[str, Any]) -> Optional[int]:
     """Ask enable-all / select / cancel; returns the enabled-tool count or None when cancelled."""
     print()
     _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
@@ -608,6 +615,22 @@ def _choose_tools(name: str, tools: List[Tuple[str, str]], server_config: Dict[s
     return len(chosen_names)
 
 
+def _add_probe_timeout(server_config: dict) -> Optional[float]:
+    """Connect bound for the probe ``hermes mcp add`` runs; None keeps the server's connect_timeout.
+
+    An OAuth server's first connect IS the browser sign-in: the probe waits on the callback while the user
+    reads and approves the consent page. It gets the ``hermes mcp login`` window (login_connect_timeout:
+    oauth.timeout + exchange headroom), not the 30 s connect_timeout default, which closed the loopback
+    listener under people still on the consent page — the provider's redirect then hit
+    ERR_CONNECTION_REFUSED, the code was lost, and "Save config anyway?" defaulted to No (#49759).
+    """
+    if server_config.get("auth") != "oauth":
+        return None
+    from tools.mcp_oauth import login_connect_timeout
+
+    return login_connect_timeout(server_config)
+
+
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
@@ -620,7 +643,7 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
 
-    server_config: Dict[str, Any] = {}
+    server_config: dict[str, Any] = {}
     try:
         explicit_env = _parse_env_assignments(getattr(args, "env", None))
         url, command, cmd_args, _preset_applied = _apply_mcp_preset(
@@ -641,11 +664,21 @@ def cmd_mcp_add(args):
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
-    if name in _get_mcp_servers() and not _confirm(
+    # Overwriting an existing server is a re-add, not an install; cancels are not recorded either.
+    fresh = name not in _get_mcp_servers()
+    if not fresh and not _confirm(
         f"Server '{name}' already exists. Overwrite?", default=False
     ):
         _info("Cancelled.")
         return
+
+    def _record(saved: bool, failure_class: str = "config_rejected") -> None:
+        # A save only fails on a suspicious configuration (_save_mcp_server returns False).
+        if fresh:
+            from hermes_cli.mcp_catalog import record_mcp_install
+
+            record_mcp_install("url" if url else "local", None, "success" if saved else "failed",
+                               failure_class=None if saved else failure_class)
 
     if url:
         server_config["url"] = url
@@ -659,6 +692,7 @@ def cmd_mcp_add(args):
         server_config["connect_timeout"] = raw_connect_timeout
 
     if not _validate_or_warn(name, server_config):
+        _record(False)
         return
     if url and not _configure_http_auth(name, url, auth_type, server_config):
         return
@@ -666,28 +700,36 @@ def cmd_mcp_add(args):
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=_add_probe_timeout(server_config))
     except Exception as exc:
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
+        saved = False
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
+            saved = _save_mcp_server(name, server_config)
+            if saved:
                 _success(f"Saved '{name}' to config (disabled)")
                 _info("Fix the issue, then: hermes mcp test " + name)
+        _record(saved, probe_failure_class(exc))
         return
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True) and _save_mcp_server(name, server_config):
-            _success(f"Saved '{name}' to config")
+        if _confirm("Save config anyway?", default=True):
+            saved = _save_mcp_server(name, server_config)
+            _record(saved)
+            if saved:
+                _success(f"Saved '{name}' to config")
         return
 
     tool_count = _choose_tools(name, tools, server_config)
     if tool_count is None:
         return
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
+    saved = _save_mcp_server(name, server_config)
+    _record(saved)
+    if saved:
         print()
         _success(
             f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
@@ -757,6 +799,10 @@ def cmd_mcp_list(args=None):
 
         enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        if not enabled and mcp_server_enabled({k: v for k, v in cfg.items() if k != "disabled"}):
+            escaped = str(name).replace(".", "\\.")
+            status += color(f" (legacy `disabled` key; `hermes config set mcp_servers.{escaped}.enabled true` "
+                            "clears it)", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
 
@@ -768,12 +814,39 @@ def _probe_failure_reason(exc: BaseException) -> str:
     return redact_mcp_probe_text(_format_connect_error(exc))
 
 
+def probe_failure_class(exc: BaseException) -> str:
+    """Extension-install class for a failed MCP probe, from the exception TYPE (the same tests
+    :func:`_probe_failure_next_step` uses), never its message. Never raises: an exception whose own
+    attribute hooks raise reads ``connect_failed`` instead of replacing the user's error."""
+    from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
+    if tagged := tagged_failure_class(exc):
+        return tagged
+    from tools.mcp_tool_errors import InvalidMcpUrlError, _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
+    from tools.mcp_tool_node_abi import NodeAbiMismatchError
+    try:
+        root = _unwrap_exception_group(exc)
+        if isinstance(root, InvalidMcpUrlError):  # the configured URL is not http(s)://host
+            return "config_invalid"
+        if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
+            return "auth_required"
+        # A missing stdio command (FileNotFoundError) or a native module built for another Node.
+        if any(isinstance(node, (FileNotFoundError, NodeAbiMismatchError)) for node in _iter_exception_nodes(exc)):
+            return "server_start_failed"
+    except Exception:  # a hook on the exception raised; the type tests could not finish
+        logger.debug("MCP probe failure not classified", exc_info=True)
+    return "connect_failed"
+
+
 def _probe_failure_next_step(name: str, exc: BaseException) -> str:
     """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
     from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
+    from tools.mcp_tool_node_abi import NodeAbiMismatchError
     root = _unwrap_exception_group(exc)
     if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
         return f"The server rejected the sign-in. Run: hermes mcp login {name}"
+    if isinstance(root, NodeAbiMismatchError):
+        return f"After rebuilding it under Hermes's Node as above, run: hermes mcp test {name}"
     if "missing executable" in _format_connect_error(exc):
         return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
                 "to its full path.")
@@ -959,8 +1032,8 @@ def cmd_mcp_reauth(args):
 
 
 def _rebuild_exclude_list(
-    name: str, exclude: list, tool_names: List[str], chosen: set, matches_name_filter
-) -> List[str]:
+    name: str, exclude: list, tool_names: list[str], chosen: set, matches_name_filter
+) -> list[str]:
     """New ``tools.exclude`` for an exclude-mode entry after a checklist edit.
 
     Stays in exclude mode rather than demoting the user's dynamic filter to a frozen include list:
@@ -1071,7 +1144,6 @@ _MCP_USAGE = (
     "hermes mcp                                    Open the catalog picker (default)",
     "hermes mcp catalog                            List Nous-approved MCPs",
     "hermes mcp install <name>                     Install a catalog MCP",
-    "hermes mcp serve                              Run as MCP server",
     "hermes mcp add <name> --url <endpoint>        Add a custom MCP server",
     "hermes mcp add <name> --command <cmd>         Add a stdio server",
     "hermes mcp add <name> --preset <preset>       Add from a known preset",
@@ -1087,10 +1159,6 @@ _MCP_USAGE = (
 def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
-    if action == "serve":
-        from mcp_serve import run_mcp_server
-        run_mcp_server(verbose=getattr(args, "verbose", False))
-        return
     if action in ("picker", "catalog", "install"):
         # Catalog subcommands live in mcp_picker / mcp_catalog; import lazily to keep this module cheap.
         from hermes_cli import mcp_picker

@@ -8,6 +8,7 @@ imported late here, never at module level).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -123,7 +124,8 @@ def _git_or_raise(
     """Run git in *repo*; on a non-zero exit raise PluginOperationError(prefix + scrubbed error)."""
     result = _pc()._run_plugin_git(git_exe, repo, *args, timeout=timeout, auth_url=auth_url)
     if result.returncode != 0:
-        raise _pc().PluginOperationError(failure_prefix + _safe_git_error(result, source_url))
+        raise _pc().PluginOperationError(failure_prefix + _safe_git_error(result, source_url),
+                                         failure_class="clone_failed")
     return result
 
 
@@ -169,11 +171,13 @@ def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url
                           auth_url=source_url, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise _pc().PluginOperationError(
-                f"Git {verb} of commit '{revision}' timed out after {timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}") from exc
+                f"Git {verb} of commit '{revision}' timed out after {timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}",
+                failure_class="clone_failed") from exc
     actual = _pc()._git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise _pc().PluginOperationError(
-            f"Checked-out revision '{actual}' does not match requested commit '{revision}'.")
+            f"Checked-out revision '{actual}' does not match requested commit '{revision}'.",
+            failure_class="clone_failed")
 
 
 def _scrub_git_url(git_url: str) -> str:
@@ -222,7 +226,7 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
     downloads every file in the repository, which times out on slow connections."""
     git_exe = _pc()._resolve_git_executable()
     if not git_exe:
-        raise _pc().PluginOperationError("git is not installed or not in PATH.")
+        raise _pc().PluginOperationError("git is not installed or not in PATH.", failure_class="git_missing")
     clone_timeout = _pc()._clone_timeout_seconds()
     partial = ["--filter=blob:none"] if subdir else []
     no_checkout = ["--no-checkout"] if revision or subdir else []
@@ -231,11 +235,13 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
         result = _pc()._run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url,
                                  timeout=clone_timeout)
     except FileNotFoundError as e:
-        raise _pc().PluginOperationError("git is not installed or not in PATH.") from e
+        raise _pc().PluginOperationError("git is not installed or not in PATH.", failure_class="git_missing") from e
     except subprocess.TimeoutExpired as e:
-        raise _pc().PluginOperationError(f"Git clone timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}") from e
+        raise _pc().PluginOperationError(f"Git clone timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}",
+                                         failure_class="clone_failed") from e
     if result.returncode != 0:
-        raise _pc().PluginOperationError(_pc()._clone_failure_message(git_url, _safe_git_error(result, git_url)))
+        raise _pc().PluginOperationError(_pc()._clone_failure_message(git_url, _safe_git_error(result, git_url)),
+                                         failure_class="clone_failed")
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
     if subdir:
         _restrict_checkout_to_subdir(tmp_clone, git_exe, subdir)
@@ -247,7 +253,8 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
                           auth_url=git_url, failure_prefix="Git checkout of the plugin subdirectory failed:\n")
         except subprocess.TimeoutExpired as e:
             raise _pc().PluginOperationError(
-                f"Git checkout timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}") from e
+                f"Git checkout timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}",
+                failure_class="clone_failed") from e
     return _pc()._git_head_revision(tmp_clone, git_exe)
 
 
@@ -318,6 +325,26 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[str, str]:
     return post_stash, ""
 
 
+def _foreign_checkout_error(git_exe: str, target: Path) -> str:
+    """Why *target* is not its own git checkout, or "" when git resolves it to itself.
+
+    A damaged plugin .git makes git walk up to an enclosing repo (a git-managed home); stashing,
+    resetting or checking out there would act on the user's files, not the plugin (#146032)."""
+    top = _pc()._run_plugin_git(git_exe, target, "rev-parse", "--show-toplevel")
+    if top.returncode == 0 and os.path.normcase(os.path.realpath(top.stdout.strip())) == os.path.normcase(
+            os.path.realpath(target)):
+        return ""
+    return (f"{target} is not its own git checkout (git resolves it to "
+            f"{top.stdout.strip() or 'no repository'}); reinstall the plugin from its source.")
+
+
+def _refuse_foreign_checkout(git_exe: str, target: Path) -> None:
+    """Raise PluginOperationError unless git resolves *target* to itself."""
+    foreign = _foreign_checkout_error(git_exe, target)
+    if foreign:
+        raise _pc().PluginOperationError(foreign)
+
+
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     """``git pull --ff-only`` a plugin checkout, autostashing local edits (users patch installed
     plugins in place, and a plain ff-only pull would then refuse forever).
@@ -332,6 +359,9 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     if not git_exe:
         return False, "git is not installed or not in PATH."
     try:
+        foreign = _foreign_checkout_error(git_exe, target)
+        if foreign:
+            return False, foreign
         stash_sha, err = _autostash_dirty_tree(git_exe, target)
         if err:
             return False, err

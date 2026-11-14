@@ -348,7 +348,7 @@ Look at the CLI startup line — it shows the detected context length (e.g., `�
 
 **Local servers (llama.cpp, Ollama) that go silent instead of erroring:** when a provider rejects a request as too large, Hermes compacts the conversation and rebuilds the request. Hermes re-measures the *complete* rebuilt request (system prompt + tool schemas + messages) before retrying, and runs further bounded compaction passes if it is still over the threshold. If the request still cannot fit, the turn ends with `Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` rather than sending an oversized request that llama.cpp would silently truncate (`stop processing: n_tokens = 65535, truncated = 1` in the server log). If you hit that message, the fix is almost always the configured `context_length` above: make it match the server's actual `-c` / `--ctx-size`.
 
-**"The model server rejected this request as too large, but this conversation is only about N tokens…":** a local server (localhost, LAN, Tailscale) said "context exceeded" without quoting any measurement, while Hermes's own estimate of the request is far below the window it knows for the model — so it does **not** compress or blame the conversation, and the turn stays retryable. On single-slot local servers (LM Studio, Ollama) this is almost always another request holding the server's context at that moment — typically a background memory review from an earlier session (`thread=bg-review` in `logs/agent.log`). Wait a moment and `/retry`. If it recurs with no other Hermes process running, the server is loading the model with a smaller window than Hermes assumes: raise the server's context setting or lower `model.context_length` to match it. Hosted providers never get this message: they have no shared slot to wait out, so the same rejection there means the route's real window is smaller than Hermes assumes, and Hermes compresses and retries instead.
+**"The model server rejected this request as too large, but this conversation is only about N tokens…":** a local server (localhost, LAN, Tailscale) said "context exceeded" without quoting any measurement, while Hermes's own estimate of the request is far below the window it knows for the model — so it does **not** compress or blame the conversation, and the turn stays retryable. On single-slot local servers (LM Studio, Ollama) this is almost always another request holding the server's context at that moment — typically a background memory review from an earlier session (`thread=bg-review` in `logs/agent.log`). Wait a moment and `/retry`. If it recurs with no other Hermes process running, the server is loading the model with a smaller window than Hermes assumes: raise the server's context setting or lower `model.context_length` to match it. Hosted providers never get this message, including external-process providers such as the Claude subscription DirectSDK plugin: they have no shared slot to wait out, so the same rejection there means the route's real window is smaller than Hermes assumes, and Hermes compresses and retries instead.
 
 To fix context detection, set it explicitly:
 
@@ -646,6 +646,16 @@ See also:
 :::warning
 If an MCP server crashes mid-request, Hermes will report a timeout. Check the server's own logs (not just Hermes logs) to diagnose the root cause.
 :::
+
+---
+
+### Skills Issues
+
+#### The Skills Hub page won't load in the desktop app (403 / blocked)
+
+**Cause:** The docs site (`hermes-agent.nousresearch.com`) is served through Vercel, whose WAF denies some residential IP ranges it considers flagged. If your network is on such a range, every request to the domain returns a 403 block page.
+
+**Solution:** The Skills Hub picker probes the primary domain and automatically falls back to the equivalent GitHub Pages deployment (`nousresearch.github.io/hermes-agent`), which serves the same catalog. If the page still fails on both origins, check whether a proxy, DNS filter, or firewall is blocking both hosts — and report the affected range to the maintainers so it can be reviewed on the deployment side.
 
 ---
 

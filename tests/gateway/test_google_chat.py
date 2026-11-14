@@ -12,6 +12,7 @@ We shim the imports at module load so collection doesn't fail.
 """
 
 import asyncio
+import html
 import json
 import os
 import sys
@@ -19,6 +20,8 @@ import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from agent.i18n import t
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -125,12 +128,12 @@ _ensure_google_mocks()
 # (which targets bare ``import adapter`` / ``from adapter import …`` and
 # ``sys.path.insert`` into ``plugins/platforms/``) does not flag this
 # fully-qualified form.
-import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
+import plugins.platforms.google_chat.adapter as _gc_mod
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
-from plugins.platforms.google_chat.adapter import (  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.google_chat.adapter import (
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
@@ -715,6 +718,36 @@ class TestBuildMessageEvent:
         assert event.source.chat_type == "group"
         assert event.source.thread_id == "spaces/G/threads/T1"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict, fetched", [(True, 1), (False, 0), (None, 0)])
+    async def test_attachments_are_downloaded_only_for_authorized_senders(self, adapter, verdict, fetched):
+        adapter.set_authorization_check(None if verdict is None else (lambda *args, **kwargs: verdict))
+        adapter._download_attachment = AsyncMock(return_value=("/tmp/cached.pdf", "application/pdf"))
+        env = _make_chat_envelope(text="see attached", attachments=[{"contentName": "x.pdf"}])
+        msg = env["chat"]["messagePayload"]["message"]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert adapter._download_attachment.await_count == fetched
+        assert len(event.media_urls) == fetched  # still built so the runner can deny/pair
+
+    @pytest.mark.asyncio
+    async def test_attachment_check_carries_the_dispatched_thread(self, adapter):
+        """A thread-scoped multiplex route must resolve the same profile for the attachment gate as for
+        dispatch, so the check sees the source's thread_id."""
+        seen = []
+        adapter.set_authorization_check(lambda *args, **kwargs: seen.append(kwargs.get("thread_id")) or True)
+        adapter._download_attachment = AsyncMock(return_value=("/tmp/cached.pdf", "application/pdf"))
+        env = _make_chat_envelope(text="see attached", thread_name="spaces/G/threads/T1",
+                                  attachments=[{"contentName": "x.pdf"}])
+        env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        msg = env["chat"]["messagePayload"]["message"]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert seen == [event.source.thread_id] == ["spaces/G/threads/T1"]
+
 
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling
@@ -815,8 +848,22 @@ class TestSend:
         assert buttons[0]["text"] == "Simple"
         assert buttons[0]["onClick"]["action"]["function"] == "hermes_clarify"
         assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
-        assert buttons[-1]["text"] == "Other / type answer"
+        assert buttons[-1]["text"] == t("platform.google_chat.clarify.other_button")
         assert adapter._clarify_state["clarify123"] == "session-key"
+
+        long_choice = "Wrap the output in <b>bold</b> tags & a <br> after every paragraph"
+        await adapter.send_clarify("spaces/S", "Format?", [long_choice, "Plain"], "clarify124", "sk")
+        widgets = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"]
+        text = widgets[0]["textParagraph"]["text"]
+        assert "1. Wrap the output in &lt;b&gt;bold&lt;/b&gt; tags &amp; a &lt;br&gt; after" in text
+        assert [b["text"] for b in widgets[1]["buttonList"]["buttons"]][:2] == ["1", "2"]
+        # The card's Markdown pass must not fold a literal ``**bold**`` option into ``*bold*``.
+        pair = [f"Write the markdown token {tok} literally in the output file" for tok in ("**bold**", "*bold*")]
+        await adapter.send_clarify("spaces/S", "Format?", pair, "clarify125", "sk")
+        text = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"][0][
+            "textParagraph"]["text"]
+        listed = [html.unescape(ln.split(". ", 1)[1]) for ln in text.splitlines() if ln[:2] in ("1.", "2.")]
+        assert listed == pair
 
 
 # ===========================================================================
@@ -970,7 +1017,7 @@ class TestTypingLifecycle:
         await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
         adapter._patch_message.assert_awaited_once()
         # Patched with a final-state label, not deleted.
-        args, kwargs = adapter._patch_message.call_args
+        args, _kwargs = adapter._patch_message.call_args
         assert "interrupted" in args[1]["text"].lower()
         assert "spaces/S" not in adapter._typing_messages
 
@@ -1057,6 +1104,7 @@ class TestSetupFilesSlashCommand:
     async def test_slash_command_intercepted_before_agent(self, adapter):
         """/setup-files is bot-side admin, not agent input. The dispatch
         path must short-circuit and not call handle_message."""
+        adapter.set_authorization_check(lambda *_args, **_kwargs: True)
         adapter._handle_setup_files_command = AsyncMock(return_value=True)
         adapter._build_message_event = AsyncMock(
             return_value=MessageEvent(

@@ -7,7 +7,7 @@ import re
 import shlex
 import subprocess
 import tomllib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 WORKFLOW = "desktop-bundled-release.yml"
@@ -87,7 +87,7 @@ def receipt_tag(kind: str, version: str, created_at: str, run_id: str) -> str:
     if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id):
         raise ValueError("Build receipt run ID is invalid")
     try:
-        instant = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+        instant = datetime.fromisoformat(created_at).astimezone(UTC)
     except (AttributeError, ValueError) as error:
         raise ValueError("Build receipt creation time is invalid") from error
     if instant.microsecond or created_at != instant.strftime("%Y-%m-%dT%H:%M:%SZ"):
@@ -96,10 +96,15 @@ def receipt_tag(kind: str, version: str, created_at: str, run_id: str) -> str:
 
 
 def _verify_receipt(tag: str, commit: str, record: dict, *, run, repo: Path | None) -> None:
+    # Imported here, not at module level: this module's import surface stays
+    # stdlib-only so the isolated checkout-admission step can run it from a copy
+    # of scripts/releases alone, without the application package.
+    from scripts.releases.versioning import tag_record
+
     tag_object = run(["git", "rev-parse", f"refs/tags/{tag}"], repo)
     if (run(["git", "cat-file", "-t", tag_object], repo) != "tag"
             or run(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], repo) != commit
-            or json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"], repo)) != record):
+            or tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"], repo)) != record):
         raise ValueError("Build receipt tag differs from this run")
 
 

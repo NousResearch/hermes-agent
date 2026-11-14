@@ -13,6 +13,7 @@ import time
 from collections import Counter
 from typing import Any, Dict, Optional
 
+from gateway.run_auto_resume import GatewayAutoResumeMixin
 from gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
@@ -34,8 +35,9 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
         await asyncio.sleep(1)
 
 
-class GatewaySessionWatchersMixin:
-    """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner."""
+class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
+    """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner (and, through
+    ``GatewayAutoResumeMixin``, the ``delegation.auto_resume`` scheduler)."""
 
     async def _session_housekeeping_watcher(self, interval: int = 300):
         """Reclaim resources without ending durable conversations."""
@@ -94,10 +96,10 @@ class GatewaySessionWatchersMixin:
             return None
         return summary if isinstance(summary, dict) else None
 
-    def _stall_candidates(self) -> Dict[str, tuple[Any, Any]]:
+    def _stall_candidates(self) -> dict[str, tuple[Any, Any]]:
         """session_key -> (adapter, pending event) from every live adapter's pending slot (default
         + multiplex profiles, deduped by identity), then the overflow queues; first one wins."""
-        candidates: Dict[str, tuple[Any, Any]] = {}
+        candidates: dict[str, tuple[Any, Any]] = {}
         maps = (getattr(self, "adapters", {}), *getattr(self, "_profile_adapters", {}).values())
         adapters = {id(a): a for m in maps for a in list(m.values()) if a is not None}
         for adapter in adapters.values():
@@ -105,7 +107,8 @@ class GatewaySessionWatchersMixin:
             for session_key, event in list(pending.items()):
                 if session_key and session_key not in candidates and event is not None:
                     candidates[session_key] = (adapter, event)
-        for session_key, overflow in list((getattr(self, "_queued_events", None) or {}).items()):
+        for session_key, state in list((self.__dict__.get("_sessions") or {}).items()):
+            overflow = state.conversation.queued_events
             if not session_key or session_key in candidates or not overflow:
                 continue
             source = getattr(overflow[0], "source", None)
@@ -167,7 +170,8 @@ class GatewaySessionWatchersMixin:
         # See #76354.
         still_pending = (
             (getattr(adapter, "_pending_messages", None) or {}).get(session_key) is not None
-            or bool((getattr(self, "_queued_events", None) or {}).get(session_key))
+            or bool((_queued_state := self._peek_session_state(session_key))
+                    and _queued_state.conversation.queued_events)
         )
         fresh_idle = resolve_session_idle_seconds_from_activity(
             self._session_activity_for_stall(session_key), now=time.time()
@@ -199,7 +203,7 @@ class GatewaySessionWatchersMixin:
             # Adapters often return SendResult(success=False) instead of raising.
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", "send returned success=False"))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session stall notify send timed out after %.0fs for %s; will retry next tick",
                 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS, session_key,

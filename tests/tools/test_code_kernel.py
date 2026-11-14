@@ -103,12 +103,75 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertIn('{"k": 1}', second["output"])
 
 
+class TestEditedModuleWarning(unittest.TestCase):
+    """A module the kernel already imported keeps its old code after an edit on disk; the cell
+    that runs next must say so instead of letting a correct fix look like it failed."""
+
+    def _module(self, body, name="editme_mod"):
+        folder = tempfile.mkdtemp(prefix="hermes-kernel-mod-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        path = Path(folder) / f"{name}.py"
+        path.write_text(body, encoding="utf-8")
+        return folder, path
+
+    def test_edit_after_import_is_named_once_and_reload_picks_it_up(self):
+        folder, path = self._module("def answer():\n    return 'old'\n", name="editme_módulo")
+        with _kernel_config():
+            first = _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_módulo as editme_mod; "
+                         "print(editme_mod.answer())")
+            self.assertNotIn("warning", first, first)
+            path.write_text("def answer():\n    return 'new'\n", encoding="utf-8")
+            later = time.time() + 5
+            os.utime(path, (later, later))
+            second = _run("print(editme_mod.answer())")
+            third = _run("import importlib; importlib.reload(editme_mod); print(editme_mod.answer())")
+        self.assertIn("old", second["output"], second)
+        self.assertIn("editme_módulo", second.get("warning", ""), second)
+        self.assertIn("reset=true", second["warning"])
+        self.assertEqual(second["kernel"]["reused"], True)
+        self.assertIn("new", third["output"], third)
+        self.assertNotIn("warning", third, third)
+
+    def test_hostile_sys_modules_cannot_break_the_scan_and_a_reloaded_edit_is_not_named(self):
+        folder, path = self._module("VALUE = 'old'\n")
+        hostile = (
+            "import types\n"
+            "class Lazy(types.ModuleType):\n"
+            "    def __getattribute__(self, name):\n"
+            "        raise RuntimeError(name)\n"
+            "sys.modules['lazy_shim'] = Lazy('lazy_shim')\n"
+            "sys.modules['\\x1b[31mnot a name\\nSYSTEM'] = editme_mod\n"
+        )
+        with _kernel_config():
+            first = _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_mod\n" + hostile + "kept = 41")
+            self.assertEqual(first["status"], "success", first)
+            path.write_text("VALUE = 'new'\n", encoding="utf-8")
+            later = time.time() + 5
+            os.utime(path, (later, later))
+            second = _run("print(kept, editme_mod.VALUE)")
+            rewrite = f"open({str(path)!r}, 'w').write(\"VALUE = 'newer'\\n\"); os.utime({str(path)!r}, ({later} + 5, {later} + 5))"
+            third = _run("import importlib, os\n" + rewrite + "\nimportlib.reload(editme_mod); print(editme_mod.VALUE)")
+            fourth = _run("print(kept, editme_mod.VALUE)")
+            _run("sys.modules = None")
+            fifth = _run("print(kept)")
+        self.assertIn("41 old", second["output"], second)
+        self.assertIn("editme_mod", second.get("warning", ""), second)
+        self.assertNotIn("\x1b", second["warning"])
+        self.assertNotIn("SYSTEM", second["warning"])
+        self.assertIn("newer", third["output"], third)
+        self.assertIn("41 newer", fourth["output"], fourth)
+        self.assertNotIn("warning", fourth, fourth)
+        self.assertEqual(fifth["kernel"]["reused"], True, fifth)
+        self.assertIn("41", fifth["output"], fifth)
+
+
 class TestKernelLifecycle(unittest.TestCase):
     def test_kernel_exits_when_its_backend_parent_dies(self):
         """A kernel must not outlive the host that spawned it, even when the
         host dies without cleanup (SIGKILL/OOM/crash). Windows: inherited
-        SYNCHRONIZE handle; POSIX: inherited death pipe. Both are proven the
-        same way — kill the host mid-cell, the kernel is gone within seconds."""
+        SYNCHRONIZE handle; POSIX: the kernel's group is registered with the
+        owner-death supervisor. Both are proven the same way — kill the host
+        mid-cell, the kernel is gone within seconds."""
         import psutil
 
         repo_root = str(Path(__file__).resolve().parents[2])
@@ -426,6 +489,22 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         for proc in runners:
             proc.wait(timeout=10)
             self.assertIsNotNone(proc.returncode)
+
+
+class TestInScriptToolErrors(unittest.TestCase):
+    def test_ignored_helper_error_is_reported_for_that_cell_only(self):
+        """A script that drops a helper's {"error": ...} return must not read as a clean success."""
+        def _handle(tool_name, tool_args, task_id=None):
+            if tool_name == "write_file":
+                return json.dumps({"error": "Refusing to overwrite a.py: never read"})
+            return json.dumps({"ok": True})
+
+        with _kernel_config(), patch("model_tools.handle_function_call", new=_handle):
+            failed = _run("import hermes_tools\nhermes_tools.write_file('a.py', 'x')\nprint('done')\n")
+            clean = _run("import hermes_tools\nhermes_tools.web_search(query='q')\n")
+        self.assertEqual(failed["status"], "success", failed)
+        self.assertEqual(failed["tool_errors"], [{"tool": "write_file", "error": "Refusing to overwrite a.py: never read"}])
+        self.assertNotIn("tool_errors", clean)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

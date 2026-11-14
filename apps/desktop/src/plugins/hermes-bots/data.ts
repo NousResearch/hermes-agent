@@ -22,6 +22,7 @@ import {
   resolveBotConnectionRoute,
   setBotsWorkspaceOwner
 } from './routing'
+import { rpcMethodMissing } from './rpc-errors'
 import { getPluginCtx, ID } from './shared'
 import type {
   AttentionClass,
@@ -191,6 +192,15 @@ interface BotMetaStorage {
  *  { [botName]: { shape, color, title } } */
 export const $botMeta = atom<BotMetaSnapshot>({})
 
+// One desktop.log line per route key whose title changes, from any writer
+// (hydrate, server merge, save): a title that jumps between scoped keys names
+// the moment, the window and the key it landed on.
+$botMeta.listen(snapshot => {
+  for (const [key, meta] of Object.entries(snapshot)) {
+    host.traceIdentityChange?.('bot-meta', key, `title=${JSON.stringify(meta?.title ?? null)}`)
+  }
+})
+
 export function commitBotMetaV2(storage: BotMetaStorage | undefined, snapshot: BotMetaSnapshot) {
   const commit = botMetaV2Commit.then(async () => {
     if (typeof storage?.remove !== 'function' || typeof storage?.set !== 'function') {
@@ -298,7 +308,7 @@ export function noteBotMetaWrite(key: string) {
 
 /** Three-way outcome of the server half of a save — see the block comment on
  *  `serverOutcome` below for what separates 'unsupported' from 'failed'. */
-type BotMetaServerOutcome = 'failed' | 'persisted' | 'unsupported'
+type BotMetaServerOutcome = 'failed' | 'persisted' | 'unreachable' | 'unsupported'
 
 interface BotMetaSaveResult {
   serverOutcome: BotMetaServerOutcome
@@ -308,17 +318,142 @@ interface BotMetaSaveResult {
 /** `profiles.configure` reply. Older gateways answer without `applied` at all,
  *  which is what makes the field optional rather than the contract. */
 interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
+  applied?: {
+    ui_meta?: boolean
+    ui_meta_conflicts?: Record<string, unknown>
+  }
 }
 
-export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
-  const { bot, key, name, route } = botOwner(owner)
-  const prevMeta = $botMeta.get()[key] || {}
+/** The bot's `hermes-bots` namespace as its OWN backend holds it right now. */
+interface ServerBotMeta {
+  meta: StoredBotMeta
+  /** Per-key CAS revision; null on gateways that predate `ui_meta_revisions`. */
+  revision: null | number
+}
 
+/** How many times a save re-reads the server after losing a CAS race. */
+const BOT_META_CAS_ATTEMPTS = 3
+
+async function readServerBotMeta(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute
+): Promise<null | ServerBotMeta> {
+  const params = { include_sessions: false }
+
+  // The read is the first half of a user's save: it dials foreground like the write.
+  const result = (await (route
+    ? requestForBot(bot, 'profiles.list', params, { spawnPriority: 'foreground' })
+    : host.request('profiles.list', params))) as {
+    profiles?: RosterRow[]
+  }
+
+  const target = route?.targetProfile || name
+  const row = (Array.isArray(result?.profiles) ? result.profiles : []).find(profile => profile?.name === target)
+
+  if (!row) {
+    return null
+  }
+
+  const meta = row.ui_meta?.['hermes-bots']
+  const revisions = row.ui_meta_revisions
+
+  return {
+    meta: meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as StoredBotMeta) : {},
+    revision: revisions && typeof revisions === 'object' ? Math.max(0, Number(revisions['hermes-bots'] || 0)) : null
+  }
+}
+
+/** Write ONE save's patch onto the server's current namespace. The local cache is never the
+ *  write base: it can hold another bot's fields (a restored or name-keyed record, a window that
+ *  missed a rename) and a whole-cache write publishes them as this bot's identity — to every
+ *  Desktop, every relay roster, and every group prompt. CAS turns a concurrent writer's newer
+ *  value into a re-read instead of a silent overwrite. */
+async function persistBotMetaPatch(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute,
+  patch: StoredBotMeta,
+  progress: { reached: boolean },
+  rebase?: BotMetaRebase
+): Promise<null | ProfilesConfigureResult> {
+  for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
+    const server = await readServerBotMeta(bot, name, route)
+    progress.reached = true
+
+    if (!server) {
+      return null
+    }
+
+    const { chat: _chat, ...base } = server.meta
+    const { image: _image, pet: _pet, ...fields } = rebase ? rebase(server.meta) : patch
+
+    const params: Record<string, unknown> = {
+      name,
+      ui_meta: {
+        'hermes-bots': {
+          ...base,
+          ...fields
+        }
+      }
+    }
+
+    if (server.revision !== null) {
+      params.ui_meta_expected_revisions = {
+        'hermes-bots': server.revision
+      }
+    }
+
+    const result = (await (route
+      ? requestForBot(bot, 'profiles.configure', params)
+      : host.request('profiles.configure', params))) as ProfilesConfigureResult
+
+    if (!result?.applied?.ui_meta_conflicts) {
+      return result
+    }
+  }
+
+  return {
+    applied: {
+      ui_meta: false
+    }
+  }
+}
+
+/** Read a save's server reply as the three-way outcome documented in saveBotMeta. */
+async function settleServerOutcome(
+  request: Promise<null | ProfilesConfigureResult>,
+  routed: boolean,
+  progress: { reached: boolean }
+): Promise<BotMetaServerOutcome> {
+  try {
+    const result = await request
+
+    if (result?.applied?.ui_meta === true) {
+      return 'persisted'
+    }
+
+    return result && typeof result === 'object' && result.applied && typeof result.applied === 'object' ? 'failed' : 'unsupported'
+  } catch (error) {
+    // The pooled local backend keeps the documented fallback: its local copy is the save.
+    if (!routed || rpcMethodMissing(error)) {
+      return 'unsupported'
+    }
+
+    // A routed row that never answered is offline. One that answered the read
+    // and then dropped or refused the write did not take it: only a missing
+    // method is an older gateway.
+    return progress.reached ? 'failed' : 'unreachable'
+  }
+}
+
+/** Rewrite this window's copy of one bot's metadata (and its plugin storage) without touching
+ *  the bot's backend: the local half of a save, and how a caller mirrors a server value it read. */
+function writeLocalBotMeta(key: string, route: null | ProfileRoute, patch: StoredBotMeta): Promise<void> {
   const next = {
     ...$botMeta.get(),
     [key]: {
-      ...prevMeta,
+      ...($botMeta.get()[key] || {}),
       ...patch
     }
   }
@@ -327,18 +462,53 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   $botMeta.set(next)
 
   // Local plugin storage: instant, and the fallback for older gateways.
-  let localPersistence = Promise.resolve()
-
   try {
     const persisted =
       route || botMetaV2Active
         ? commitBotMetaV2(getPluginCtx()?.storage, next)
         : Promise.resolve(getPluginCtx()?.storage?.set?.(BOT_META_V1_KEY, next))
 
-    localPersistence = persisted.catch(() => undefined)
+    return persisted.then(
+      () => undefined,
+      () => undefined
+    )
   } catch {
     /* storage unavailable — look persists for this window only */
+    return Promise.resolve()
   }
+}
+
+/** Mirror a value the bot's own backend reported into this window only. */
+export function setLocalBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<void> {
+  const { key, route } = botOwner(owner)
+
+  return writeLocalBotMeta(key, route, patch)
+}
+
+/** The bot's `hermes-bots` metadata as its own backend holds it now; null when it does not answer. */
+export async function readBotMetaFromServer(owner: RosterRow | string): Promise<null | StoredBotMeta> {
+  const { bot, name, route } = botOwner(owner)
+
+  try {
+    return (await readServerBotMeta(bot, name, route))?.meta ?? null
+  } catch {
+    return null
+  }
+}
+
+/** `saveBotMeta`'s optional server-side form of a patch: computed from the bot's
+ *  metadata as its backend holds it at write time (re-run on every CAS retry), so
+ *  a delta such as "drop this one room" never writes back another edit's stale list. */
+export type BotMetaRebase = (server: StoredBotMeta) => StoredBotMeta
+
+export async function saveBotMeta(
+  owner: RosterRow | string,
+  patch: StoredBotMeta,
+  rebase?: BotMetaRebase
+): Promise<BotMetaSaveResult> {
+  const { bot, key, name, route } = botOwner(owner)
+  const prevMeta = $botMeta.get()[key] || {}
+  const localPersistence = writeLocalBotMeta(key, route, patch)
 
   // Server-side (source of truth when supported): profile.yaml ui_meta,
   // namespaced under this plugin's id — every client machine sees the same
@@ -348,26 +518,11 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // rides every profiles.list); the avatar IMAGE goes to the profile asset
   // store instead (profiles.set_asset), which is server-side and uncapped by
   // the list call — so pfps follow the profile across machines too.
-  let serverRequest: null | Promise<ProfilesConfigureResult> = null
+  let serverRequest: null | Promise<null | ProfilesConfigureResult> = null
+  const progress = { reached: false }
 
   try {
-    const { image, pet, ...rest } = next[key] || {}
-
-    const request = route
-      ? requestForBot(bot, 'profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-      : host.request('profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    serverRequest = persistBotMetaPatch(bot, name, route, patch, progress, rebase)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -419,21 +574,14 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   //                   an error toast here would fire on EVERY save forever.
   //   'failed'      — gateway speaks the contract and explicitly reported
   //                   the ui_meta write did NOT apply.
-  let serverOutcome: BotMetaServerOutcome = 'unsupported'
+  //   'unreachable' — a routed (other-machine) row whose gateway never
+  //                   answered the read: nothing landed there, and its
+  //                   unchanged ui_meta wins again on reconnect.
+  // A routed row that answered the read but whose write then failed for any
+  // reason other than a missing method is 'failed', never 'unsupported'.
+  const serverOutcome = serverRequest ? await settleServerOutcome(serverRequest, Boolean(route), progress) : 'unsupported'
 
   if (serverRequest) {
-    try {
-      const result = await serverRequest
-
-      if (result?.applied?.ui_meta === true) {
-        serverOutcome = 'persisted'
-      } else if (result && typeof result === 'object' && result.applied && typeof result.applied === 'object') {
-        serverOutcome = 'failed'
-      }
-    } catch {
-      /* older/unavailable gateway — the local fallback remains saved */
-    }
-
     // Re-stamp now that the server write settled: a roster snapshot fetched
     // while profiles.configure was still in flight predates the new ui_meta
     // just as surely as one fetched before the local write.
@@ -632,8 +780,16 @@ interface UnionAgentRow {
   /** Credential-free metadata Electron enumerates alongside the name — the
    *  only source of a REMOTE row's title, since profiles.list is asked of the
    *  active gateway alone. */
-  profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  profileMetadata?: Pick<RosterRow, 'description' | 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  /** False when the source lists the profile but does not serve it. */
+  reachable?: boolean
   targetProfile?: string
+}
+
+/** A source can be up and still not serve a profile it lists. Only an explicit
+ *  `reachable: false` says so: a native roster never sets the field. */
+function unservedFlag(agent: UnionAgentRow): Pick<RosterRow, 'unserved'> {
+  return agent.reachable === false ? { unserved: true } : {}
 }
 
 /** The union roster payload. `primaryConnectionId` is served by Electron but
@@ -642,6 +798,29 @@ interface UnionRoster {
   agents?: UnionAgentRow[]
   primaryConnectionId?: string
   sources?: GatewaySource[]
+}
+
+/** The rich rows come from the AMBIENT socket and are stamped with
+ *  `activeConnectionId`; when the install that answered is not that
+ *  connection's install, every title on the active source is another
+ *  machine's, so say so in desktop.log. */
+function traceRosterSnapshot(
+  local: RosterSnapshot | null | undefined,
+  sources: GatewaySource[],
+  activeConnectionId: null | string | undefined,
+  rows: RosterRow[]
+): void {
+  const answered = String((local as { install_id?: string } | null | undefined)?.install_id || '')
+  const active = activeConnectionId || 'local'
+  const expected = String(sources.find(source => source.connectionId === active)?.installId || '')
+  const flag = answered && expected && answered !== expected ? 'MISROUTED ' : ''
+  const shown = rows.map(row => `${row.connectionId ?? '-'}/${row.name}=${JSON.stringify(row.display_name ?? '')}`)
+
+  host.traceIdentityChange?.(
+    'bot-roster',
+    'snapshot',
+    `${flag}active=${active} answered=${answered.slice(0, 8) || '-'} expected=${expected.slice(0, 8) || '-'} rows=[${shown.join(' ')}]`
+  )
 }
 
 /** One roster snapshot for `activeConnectionId` — the pane's query and the
@@ -663,23 +842,43 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
   // keep its configured friendly identity after activation (#89131).
   // Best-effort and feature-detected — a failed read keeps the last
   // good index rather than dropping identities mid-session.
+  let routes: ProfileRoute[] = []
+
   if (typeof host.profileRoutes === 'function') {
     const epoch = beginAliasRouteIndex()
 
     try {
-      indexAliasRoutes(await host.profileRoutes(), epoch)
+      routes = await host.profileRoutes()
+      indexAliasRoutes(routes, epoch)
     } catch {
       /* keep the previous alias index */
     }
   }
 
-  // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-  // resolves the active owner itself, no captured route needed here.
+  // The rows are cached under `activeConnectionId`, so they must come from
+  // that connection. A retry or late run of a query keyed to the connection
+  // the window just switched away from would otherwise be answered by the
+  // one it switched to and cached under the old key — the cross-machine
+  // swap that relabelled a VPS bot with the local bot's title.
+  if ((host.state.connectionId?.get?.() || null) !== (activeConnectionId || null)) {
+    throw new Error('Bot roster query outlived its connection')
+  }
+
   const activeBot = {
     name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
   }
 
-  const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+  // Ask the keyed connection by name rather than the ambient socket, which
+  // can sit on another machine (a secondary foregrounded across a connection
+  // apply). No exact route (older Desktop host) → the ambient owner.
+  const route = Array.isArray(routes)
+    ? routes.find(r => r?.connectionId === activeConnectionId && r?.profile === activeBot.name)
+    : undefined
+
+  const local = route
+    ? await host.requestProfile<RosterSnapshot>(route, 'profiles.list', {})
+    : await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+
   // Newer backends inject the teammate-messaging protocol into every
   // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
   // carry a second copy. Older gateways lack the flag: keep appending.
@@ -696,10 +895,13 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
       const sources = Array.isArray(union?.sources) ? union.sources : []
+      traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
+      const profiles = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
+      await reconcileBotMeta(profiles, issuedAt)
 
       return {
         ...merged,
-        profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+        profiles,
         sources,
         fetchedAt: issuedAt
       }
@@ -712,18 +914,42 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
 
+      const profiles = (merged?.profiles || []).map(row =>
+        row?.remoteSource ? { ...row, sourceReachable: false } : row
+      )
+
+      await reconcileBotMeta(profiles, issuedAt)
+
       return {
         ...merged,
-        profiles: (merged?.profiles || []).map(row => (row?.remoteSource ? { ...row, sourceReachable: false } : row)),
+        profiles,
         fetchedAt: issuedAt
       }
     }
   }
 
+  const profiles = claimDefaultHandles(Array.isArray(local?.profiles) ? local.profiles : [])
+  await reconcileBotMeta(profiles, issuedAt)
+
   return {
     ...(local && typeof local === 'object' ? local : {}),
+    ...(Array.isArray(local?.profiles) ? { profiles } : {}),
     fetchedAt: issuedAt
   }
+}
+
+/** Every fresh snapshot corrects the cached names before anyone reads them —
+ *  the Bots pane's query and the composer's cold `primeRoster` alike. Run only
+ *  from the pane's effect, a launch that never opened Bots kept a stale cached
+ *  title ahead of the backend's own in mentions and group prompts. Late import:
+ *  profile-ops imports this module. */
+async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number): Promise<void> {
+  const { mergeServerMeta } = await import('./profile-ops')
+
+  mergeServerMeta(
+    rows.filter(row => !row?.ghost),
+    fetchedAt
+  )
 }
 
 export function useRoster() {
@@ -812,7 +1038,7 @@ export function cachedUnionRoster(): RosterSnapshot | null {
  *  source label so BotRow can badge them, warm the captured agent, and route
  *  every open directly through that descriptor. Pure — exercised directly by
  *  the tests. */
-function mergeMultiSourceRoster(
+export function mergeMultiSourceRoster(
   local: RosterSnapshot | null | undefined,
   union: UnionRoster | null | undefined,
   activeConnectionId?: null | string,
@@ -921,6 +1147,7 @@ function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       }
       row.sourceScoped = true
+      Object.assign(row, unservedFlag(agent))
 
       continue
     }
@@ -949,7 +1176,8 @@ function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       },
       remoteSource: true,
-      sourceScoped: true
+      sourceScoped: true,
+      ...unservedFlag(agent)
     })
   }
 
@@ -990,6 +1218,7 @@ function mergeMultiSourceRoster(
         profiles.push({
           ...row,
           remoteSource: true,
+          retained: true,
           sourceScoped: true
         })
         present.add(key)
@@ -999,7 +1228,7 @@ function mergeMultiSourceRoster(
 
   return {
     ...local,
-    profiles
+    profiles: claimDefaultHandles(profiles)
   }
 }
 
@@ -1007,13 +1236,37 @@ function mergeMultiSourceRoster(
  *  handle (bare name, or name-device when the profile exists on several
  *  registered sources) — prefer it when present. The primary profile's
  *  callable alias is 'hermes' — the mention middleware resolves it back to
- *  'default' — so the word 'default' never surfaces in the UI. */
+ *  'default' — so the word 'default' never surfaces in the UI, unless a real
+ *  `hermes` profile on the same source holds that handle (`claimDefaultHandles`). */
 export function botHandle(name: string, bot?: Partial<RosterRow> | null): string {
-  if (bot?.handle && bot.handle !== name) {
+  if (bot?.handle && bot.handle !== name && !(bot.hermesHandleTaken && bot.handle === 'hermes')) {
     return bot.handle
   }
 
-  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+  return (name || '').trim().toLowerCase() === 'default' && !bot?.hermesHandleTaken ? 'hermes' : name
+}
+
+/** The row's own `handle` as a mention form, lowercased. A stale 'hermes'
+ *  handle on a default row whose source has a real 'hermes' profile is that
+ *  profile's tag, not this row's (same rule as `botHandle`). */
+function claimableRowHandle(bot: Partial<RosterRow>): string {
+  return bot.handle && !(bot.hermesHandleTaken && bot.handle === 'hermes') ? String(bot.handle).toLowerCase() : ''
+}
+
+/** Mark each default row whose source also lists a real `hermes` profile, so
+ *  that profile keeps @hermes and the roster never shows two (the backend's
+ *  `tools/bot_mode_probe._handle` applies the same rule). Rows group by
+ *  connection; rows without one are the active source. */
+export function claimDefaultHandles<T extends Partial<RosterRow>>(rows: T[]): T[] {
+  const taken = new Set(
+    rows.filter(row => String(row?.name || '').trim() === 'hermes').map(row => String(row?.connectionId || ''))
+  )
+
+  return rows.map(row =>
+    String(row?.name || '').trim() === 'default' && taken.has(String(row?.connectionId || ''))
+      ? { ...row, hermesHandleTaken: true }
+      : row
+  )
 }
 
 /** Taggable @-forms derived from a bot's friendly names — the core profile
@@ -1042,13 +1295,17 @@ export function mentionNameForms(value: null | string | undefined): string[] {
 /** Every friendly (renameable) name a roster row carries: the Bot Mode title
  *  (server-synced via ui_meta, locally stored, or persisted on a durable
  *  group descriptor) and the core profile display_name — in displayName's
- *  precedence order. Remote rows never borrow local meta (two `default`s
- *  must not share a title) — EXCEPT the connection-exact alias identity
- *  (#89131): a backend row claimed by a configured alias route carries the
- *  alias's friendly names, so @moxie keeps resolving after handoff. */
+ *  precedence order. Local meta is read under the row's OWN key only: a bare
+ *  name key belongs to whichever single-source gateway wrote it, so reading it
+ *  for a scoped row hands one machine's `default` title to another's — and the
+ *  group prompt then tells that bot it is someone else. The one cross-key read
+ *  is the connection-exact alias identity (#89131): a backend row claimed by a
+ *  configured alias route carries the alias's friendly names, so @moxie keeps
+ *  resolving after handoff. */
 export function botFriendlyNames(bot: Partial<RosterRow> | null | undefined): Array<null | string | undefined> {
   const metaByName: Record<string, BotMeta | undefined> | null = typeof $botMeta !== 'undefined' ? $botMeta.get() : null
-  const localTitle = !bot?.remoteSource ? metaByName?.[bot?.name!]?.title : null
+  const ownKey = bot ? botMetaKey(bot) : undefined
+  const localTitle = ownKey ? metaByName?.[ownKey]?.title : null
   const alias = aliasIdentityFor(bot)
 
   const aliasTitle = alias
@@ -1136,7 +1393,7 @@ export function newBotChat(bot: RosterRow) {
     host.notify?.({
       kind: 'error',
       message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
     })
 
     return
@@ -1148,7 +1405,7 @@ export function newBotChat(bot: RosterRow) {
     host.notify?.({
       kind: 'error',
       message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
     })
 
     return
@@ -1188,8 +1445,10 @@ export function resolveRosterMentions(
     const name = String(bot.name || '').toLowerCase()
     const forms = new Set([handle, name])
 
-    if (bot.handle) {
-      forms.add(String(bot.handle).toLowerCase())
+    const rowHandle = claimableRowHandle(bot)
+
+    if (rowHandle) {
+      forms.add(rowHandle)
     }
 
     // Renamed bots are taggable by their friendly names too — the core
@@ -1327,7 +1586,9 @@ export function sourceByConnection(sources: GatewaySource[] | null | undefined):
   )
 }
 
-/** Copy current source health onto a row without changing its owner. */
+/** Copy current source health onto a row without changing its owner. A row
+ *  its source lists but does not serve stays unreachable while the source is
+ *  up: the pane re-annotates rows before seating a first selection. */
 export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | null | undefined): RosterRow {
   const id = String(bot?.connectionId || '').trim()
 
@@ -1355,7 +1616,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
-    sourceReachable: source.reachable
+    sourceReachable: source.reachable && !bot.unserved
   }
 }
 

@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import collections
+import errno
 import math
 import os
+import stat
+import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -20,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
-from utils import atomic_json_write
+from utils import atomic_json_write, default_new_file_mode
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +125,15 @@ class ActiveSessionRefusal(str):
 
     reason: str
 
-    def __new__(cls, message: str, reason: str) -> "ActiveSessionRefusal":
+    def __new__(cls, message: str, reason: str) -> ActiveSessionRefusal:
         obj = super().__new__(cls, message)
         obj.reason = reason
         return obj
+
+    def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
+        # copy/pickle rebuild via __new__: without the reason, publishing a refused turn's
+        # message.complete (deepcopy of the payload) raises and the viewer hangs.
+        return (str(self), self.reason), {}
 
 
 def format_refusal_stderr(message: str) -> str:
@@ -181,7 +189,7 @@ def _lock_path(registry_home: str | Path | None = None) -> Path:
 
 
 def _lease_paths(
-    lease: Optional["ActiveSessionLease"] = None, registry_home: str | Path | None = None
+    lease: Optional[ActiveSessionLease] = None, registry_home: str | Path | None = None
 ) -> tuple[Path, Path]:
     if lease is not None and lease.state_path is not None and lease.lock_path is not None:
         return lease.state_path, lease.lock_path
@@ -189,8 +197,15 @@ def _lease_paths(
     return home / "runtime" / "active_sessions.json", home / "runtime" / "active_sessions.lock"
 
 
-def _flock(fh, *, lock: bool) -> None:
-    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows)."""
+def _flock(fh, *, lock: bool, timeout: Optional[float] = None) -> None:
+    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows). With ``timeout``
+    the lock is retried only while another holder has it, then BlockingIOError is raised, so a holder
+    stopped mid-write (SIGSTOP, a debugger) cannot stall the caller; other errors raise at once."""
+    if lock and timeout is not None:
+        from pm.filesystem import lock_fd
+        if not lock_fd(fh.fileno(), wait=True, timeout=timeout):
+            raise BlockingIOError(errno.EWOULDBLOCK, f"file lock still held after {timeout}s")
+        return
     if os.name == "nt":
         import msvcrt
         fh.seek(0)
@@ -201,19 +216,20 @@ def _flock(fh, *, lock: bool) -> None:
 
 
 class _FileLock:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, timeout: Optional[float] = None):
         self.path = path
+        self.timeout = timeout
         self._fh = None
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a+b")
         try:
-            _flock(self._fh, lock=True)
+            _flock(self._fh, lock=True, timeout=self.timeout)
         except Exception as exc:
             self._fh.close()
             self._fh = None
-            raise RuntimeError("active session file lock unavailable") from exc
+            raise RuntimeError(f"file lock unavailable: {self.path}") from exc
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -238,6 +254,10 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
             raise invalid("unreadable") from exc
         logger.warning("Ignoring corrupt active session registry at %s", path)
         return []
+    # A registry an older build wrote world-readable is closed on the first read, not left
+    # exposed until the next write (read-only callers like attach discovery never write).
+    _strip_other_access(path)
+    _strip_other_access(path.parent)
     entries = data.get("entries") if isinstance(data, dict) else data
     if not isinstance(entries, list):
         if strict:
@@ -245,7 +265,7 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
         return []
     valid = [entry for entry in entries if isinstance(entry, dict)]
     if not strict:
-        return valid
+        return _without_queued_releases(path, valid)
     if len(valid) != len(entries):
         raise invalid("contains invalid entries")
     seen_leases: set[str] = set()
@@ -266,7 +286,50 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
             if bad():
                 raise invalid(f"contains {what}")
         seen_leases.add(lease_id)
-    return valid
+    return _without_queued_releases(path, valid)
+
+
+# Leases this process has queued for release (gateway/active_lease_io.py) whose durable drop has not
+# landed yet, keyed by registry file. Every in-process read hides them, so a claim, count or
+# ownership check made right after a turn end sees the registry as if the release had already run
+# (a slot freed, the session unowned); the next locked write persists the drop. Other processes
+# still see the entry until the release worker rewrites the file.
+_queued_releases: dict[str, set[str]] = {}
+_queued_releases_lock = threading.Lock()
+
+
+def _registry_key(path: Path) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def mark_release_queued(lease: ActiveSessionLease) -> None:
+    """Retire ``lease`` from this process's view of the registry now; its file write comes later."""
+    if not isinstance(lease, ActiveSessionLease) or not lease.enabled or lease.released:
+        return
+    state_path, _ = _lease_paths(lease)
+    with _queued_releases_lock:
+        _queued_releases.setdefault(_registry_key(state_path), set()).add(lease.lease_id)
+
+
+def _unmark_release_queued(state_path: Path, lease_id: str) -> None:
+    """Make ``lease_id`` visible again to the caller holding the registry lock, which drops it."""
+    key = _registry_key(state_path)
+    with _queued_releases_lock:
+        queued = _queued_releases.get(key)
+        if queued is not None:
+            queued.discard(lease_id)
+            if not queued:
+                del _queued_releases[key]
+
+
+def _without_queued_releases(path: Path, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not _queued_releases:
+        return entries
+    with _queued_releases_lock:
+        queued = set(_queued_releases.get(_registry_key(path), ()))
+    if not queued:
+        return entries
+    return [e for e in entries if str(e.get("lease_id") or "") not in queued]
 
 
 def _nonblank_str(v: Any) -> bool:
@@ -295,7 +358,33 @@ def _valid_process_start(v: Any) -> bool:
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True)
+    # The registry carries the lease ids that key the session-attach MACs, so other users must
+    # never read it. Only the "other" bits are stripped: a shared-group HERMES_HOME (the NixOS
+    # module's setgid 2770 home, UMask 0007) needs group rw for cross-user session fencing. The
+    # mode is applied to the temp file before the replace, so the payload never lands world-readable.
+    try:
+        base = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        base = default_new_file_mode() or 0o600
+    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True, mode=base & 0o770)
+    _strip_other_access(path.parent)
+
+
+def _strip_other_access(target: Path) -> None:
+    """Best effort: clear the 'other' permission bits of *target*, keeping owner, group and setgid.
+
+    Applied to the registry directory on every write and to a registry an older build left
+    world-readable when it is read. Never raises: a non-owner, a shared mount or a filesystem
+    without POSIX modes may refuse the chmod, and registry I/O must not fail because of that.
+    """
+    if os.name != "posix":
+        return
+    try:
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+        if mode & 0o007:
+            os.chmod(target, mode & ~0o007)
+    except OSError:
+        pass
 
 
 def _process_start_time(pid: int) -> Optional[float]:
@@ -580,6 +669,7 @@ def release_active_session(lease: ActiveSessionLease) -> None:
     # See #85431.
     state_path, lock_path = _lease_paths(lease)
     with _FileLock(lock_path):
+        _unmark_release_queued(state_path, lease.lease_id)
         if lease.released:
             return
         loaded = _read_live_entries(
@@ -775,6 +865,7 @@ def release_active_session_liveness_guard(
 
     state_path, lock_path = _lease_paths(lease)
     with _FileLock(lock_path):
+        _unmark_release_queued(state_path, lease.lease_id)
         entries = _prune_dead(
             _read_entries(state_path, strict=True), strict=True, target_session_id=session_id,
         )

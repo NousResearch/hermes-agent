@@ -1,13 +1,13 @@
 name: jev-effort-router
 repo: https://github.com/AlphaPerseii3000/jev-effort-router
-sha: e16f2162c7a9947e9606888a0f507eb856f4e62e
-description: "Per-turn model AND reasoning-effort routing, decided by TypeSafe Jev, which rewrites the outgoing Ollama:Cloud provider request itself via the llm_request middleware. Every other catalog router picks a model and stops, and the two entries that touch reasoning effort move it by hand; this one decides both per turn. Ollama:Cloud only — no other provider is routed, and every failure path leaves the request byte-identical to a plugin-disabled run. Disclosure — sends the current user message and up to 4 previous turns to OpenRouter's Decisions API (typesafe/jev, billed to your OpenRouter key) on every routed turn."
+sha: 7a7bd042c0e2c7209eae1fdf0e6efba3b1a6afc1
+description: "Per-turn model AND reasoning-effort routing, decided by TypeSafe Jev, which rewrites the outgoing chat_completions provider request itself via the llm_request middleware. The six measured criteria are capability slots; a built-in Ollama:Cloud profile ships, and provider_profiles maps the slots to another active provider's models. Most catalog routers decide one half — a model or an effort level; this one decides both per turn, with a measured grid, a confidence guard, per-surface policy and an audit trail that reports what was applied. Ollama:Cloud is the shipped profile; another chat_completions provider is routed only when the operator declares a profile, and the router never switches providers. Every failure path leaves the request byte-identical to a plugin-disabled run. Disclosure — sends the current user message and up to 4 previous turns to the Decisions surface selected by the key present (Requesty /v1/systemone with typesafe/jev-1.14.0, or OpenRouter /api/alpha/decisions with typesafe/jev-1.13), billed to that account; credentials are read through Hermes' profile secret scope; the local audit file keeps decisions and turn identifiers, message text only when explicitly enabled; no telemetry."
 maintainer: AlphaPerseii3000
 tier: community
 category: models
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/AlphaPerseii3000/jev-effort-router
-version: "0.2.1"
+version: "0.4.1"
 platforms: []
 capabilities:
   provides_tools:
@@ -18,5 +18,7 @@ capabilities:
     - post_llm_call
   provides_middleware:
     - llm_request
-  requires_env:
-    - OPENROUTER_API_KEY
+  # Neither key is universally required: Requesty is used when its key is present, OpenRouter
+  # otherwise, and the plugin stays inert with neither. Both are declared as optional_env in the
+  # plugin manifest, so the catalog should not tell users they must set both.
+  requires_env: []

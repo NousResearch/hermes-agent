@@ -92,9 +92,18 @@ export const tr: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Etkin bellek sağlayıcısı",
+    noProvider: "yok — yalnızca yerleşik",
+    builtinLayer: "Yerleşik katman",
+    builtinNote: "MEMORY.md ve USER.md, herhangi bir harici sağlayıcıdan bağımsız olarak Hermes'in kendi belleğidir. Varsayılan olarak ikisi de oturumlara yüklenir; (memory.memory_enabled / memory.user_profile_enabled) yapılandırma anahtarları her birini kapatır. Bir sağlayıcı bunlara ekleme yapar; asla yerlerini almaz.",
+  },
+
   status: {
     actionFailed: "İşlem başarısız",
     actionFinished: "Tamamlandı",
+    actionFinishedOwed: "Güncellendi, ancak bekleyen adımlar var (bitirmek için `hermes update` komutunu yeniden çalıştırın)",
     actions: "İşlemler",
     agent: "Agent",
     activeSessions: "Aktif Oturumlar",
@@ -162,6 +171,7 @@ export const tr: Translations = {
     deleteSelectedConfirmMessage:
       "Bu, seçilen {count} oturumu ve tüm mesajlarını kalıcı olarak siler. Bu işlem geri alınamaz.",
     selectedSessionsDeleted: "{count} oturum silindi",
+    selectedSessionsSkippedActive: "{deleted} silindi; bir tur çalıştığı için {count} tutuldu",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
@@ -360,6 +370,13 @@ export const tr: Translations = {
     authRequired: "Kimlik doğrulama gerekli",
     authRequiredHint: "Kimlik doğrulamak için bu komutu çalıştırın:",
     updateGit: "Git pull",
+    updateAll: "Tümünü güncelle",
+    updatingAll: "Eklentiler güncelleniyor…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Güncellendi ${updated}, inceleme gerekli ${needsReview}, başarısız ${failed}`,
+    autoUpdate: "Otomatik güncelleme",
+    autoUpdateDesc: (hours: number) =>
+      `Ağ geçidi denetlediğinde (her ${hours} saatte) eklenti güncellemelerini otomatik uygula. Güncellenen kod yeni oturumlarda yüklenir.`,
     versionBadge: "Sürüm",
     showInSidebar: "Kenar çubuğunda göster",
     hideFromSidebar: "Kenar çubuğundan gizle",

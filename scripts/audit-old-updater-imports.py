@@ -99,6 +99,8 @@ from io import BytesIO
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(REPO_ROOT))
+from hermes_agent.compat.paths import tree_moves
 
 # Known entrypoint seeds, not a history path filter. Discovery also scans
 # every reachable Python blob for entrypoint definitions at other addresses.
@@ -257,6 +259,18 @@ def _string_constants(tree: ast.AST) -> dict[str, list[str]]:
     return out
 
 
+def _suppresses(expr: ast.expr, caught_by: set[str]) -> bool:
+    """``suppress(...)`` / ``contextlib.suppress(...)`` naming an exception in *caught_by*."""
+    if not isinstance(expr, ast.Call):
+        return False
+    func = expr.func
+    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+    return name == "suppress" and any(
+        (arg.id if isinstance(arg, ast.Name) else arg.attr if isinstance(arg, ast.Attribute) else None) in caught_by
+        for arg in expr.args
+    )
+
+
 def _guarded_spans(func: _AnyFunc, failure: str = "ImportError") -> list[tuple[int, int]]:
     """Try bodies whose first matching handler swallows this load failure.
 
@@ -269,6 +283,11 @@ def _guarded_spans(func: _AnyFunc, failure: str = "ImportError") -> list[tuple[i
         caught_by.add("ImportError")
     spans: list[tuple[int, int]] = []
     for node in ast.walk(func):
+        # ``with contextlib.suppress(Exception):`` swallows the failure exactly like a
+        # non-raising ``except`` arm does.
+        if isinstance(node, ast.With) and node.body and any(_suppresses(item.context_expr, caught_by) for item in node.items):
+            spans.append((node.body[0].lineno, max(stmt.end_lineno or stmt.lineno for stmt in node.body)))
+            continue
         if not isinstance(node, ast.Try):
             continue
         for handler in node.handlers:
@@ -377,7 +396,7 @@ def _requirements_in(
                     if not resolved:
                         try:
                             text = ast.unparse(child)
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             text = f"{fname}(...)"
                         unresolved.append(f"{source_file}:{func.name}: {text[:90]}")
 
@@ -1051,8 +1070,10 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
 
     Static resolution against the FILES, deliberately: importing would
     RUN the module, and the question is what an updater finds on disk,
-    not what this interpreter can execute.
+    not what this interpreter can execute. A module the tree's ``MOVES``
+    names is read where it lives now; the file at its old path forwards there.
     """
+    module = tree_moves(root).module(module)
     rel = Path(module.replace(".", "/"))
     for candidate in (root / f"{rel}.py", root / rel / "__init__.py"):
         if candidate.is_file():

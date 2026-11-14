@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Self-contained TUI compiler. Dependencies must already be prepared.
-import { cpSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { cpSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -67,13 +67,19 @@ export async function buildTui(options) {
     if (body.startsWith('#!')) {
       writeFileSync(out, body.slice(body.indexOf('\n') + 1))
     }
+    // Packaged Python code and the TUI can live in separate store paths.
+    const helpers = join(product, 'dist/scripts')
+    mkdirSync(helpers)
+    for (const name of ['gateway_bootstrap.py', 'clipboard_image.py']) {
+      cpSync(join(root, 'scripts', name), join(helpers, name))
+    }
     writeFileSync(join(product, 'package.json'), JSON.stringify({ type: 'module' }) + '\n')
     recordProduct({ source, product: 'tui', out: join(product, 'dist'), inputs })
   })
   return { out: destination, entry: join(destination, 'dist/entry.js') }
 }
 
-// npm's existing developer entrypoint retains ui-tui/dist without replacing
+// The workspace's existing developer entrypoint retains ui-tui/dist without replacing
 // the source workspace (a product includes its own package.json).
 async function buildDeveloperTui() {
   const scratch = mkdtempSync(join(tmpdir(), 'hermes-tui-'))

@@ -38,10 +38,11 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useQuery } = await import('@tanstack/react-query')
-  const { useI18n } = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
+  const { catalogProviderMatches, useI18n } = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
 
   return {
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
+    catalogProviderMatches,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
@@ -209,5 +210,21 @@ describe('the manual-entry form vs the dropdowns (#121875)', () => {
     // form — it is the user's choice, not the catalog's.
     fireEvent.click(screen.getByRole('button'))
     await waitFor(() => expect(isFreeText(container)).toBe(false))
+  })
+})
+
+describe('a saved custom provider', () => {
+  it('matches its catalog row through the custom:<key> alias', async () => {
+    // model.options reports a user-defined provider as `custom:<key>`, while
+    // the catalog row carries the bare key as its slug plus the alias list.
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [{ aliases: ['custom:lab', 'lab'], models: ['lab-small', 'lab-large'], name: 'Lab', slug: 'lab' }]
+    })
+
+    const { container } = mountWithSelection(remoteBot, { model: 'lab-large', provider: 'custom:lab' })
+
+    await waitFor(() => expect(container.querySelector('[data-testid="spinner"]')).toBeNull())
+    expect(isFreeText(container)).toBe(false)
+    expect(screen.getByText('lab-small')).toBeTruthy()
   })
 })

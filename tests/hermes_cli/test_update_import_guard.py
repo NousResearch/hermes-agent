@@ -1,6 +1,6 @@
 """Tests for the post-update *import* guard in ``hermes update``.
 
-``_validate_critical_files_syntax`` only parses files, so it cannot detect a
+``tree_syntax_error`` only parses files, so it cannot detect a
 partially-updated tree: when one package is refreshed and a sibling is not,
 every file still parses but importing them together raises ``ImportError``.
 
@@ -43,16 +43,10 @@ def test_syntax_guard_passes_but_import_guard_catches_skew(monkeypatch, probe_ro
     _write_skewed_tree(probe_root, skewed=True)
 
     # Both files are valid Python -- the syntax guard sees nothing wrong.
-    # NOTE: patch update_cmd's global, not hermes_main's. Both modules expose
-    # the name, but _validate_critical_files_syntax reads the one in its own
-    # module. Patching the re-export leaves the real list in place, the stub
-    # files are never looked at, and the guard returns a vacuous (True, None,
-    # None) that would make this test pass no matter what the code did.
-    monkeypatch.setattr(
-        update_cmd, "_UPDATE_CRITICAL_FILES", ("consumer.py", "provider/thing.py")
-    )
-    syntax_ok, _, _ = update_cmd._validate_critical_files_syntax(probe_root)
-    assert syntax_ok, "sanity: the skewed tree must parse cleanly"
+    from hermes_cli import update_cmd_commit
+
+    assert update_cmd_commit.tree_syntax_error(probe_root, ("consumer.py", "provider/thing.py")) is None, (
+        "sanity: the skewed tree must parse cleanly")
 
     # The import guard catches it.
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
@@ -196,7 +190,7 @@ def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(secrets, "token_hex", lambda _length: "fixed")
     monkeypatch.setattr(update_cmd_validation.subprocess, "run", malformed)
 
-    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    ok, module, _error = update_cmd._validate_critical_modules_import(tmp_path)
 
     assert ok is False
     assert module == "critical-module probe"
@@ -208,7 +202,7 @@ def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
 
     monkeypatch.setattr(update_cmd_validation.subprocess, "run", timeout)
 
-    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    ok, module, _error = update_cmd._validate_critical_modules_import(tmp_path)
 
     assert ok is False
     assert module == "critical-module probe"

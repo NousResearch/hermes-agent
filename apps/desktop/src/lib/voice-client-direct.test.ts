@@ -6,6 +6,7 @@ import {
   clearVoiceClientConfigCache,
   type DirectTtsConfig,
   fetchVoiceClientConfig,
+  isSttSilenceHallucination,
   synthesizeSpeechClientDirect,
   transcribeAudioClientDirect,
   transcriptFromOpenAiMultipartBody
@@ -156,6 +157,84 @@ describe('transcribeAudioClientDirect', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('treats a Whisper silence hallucination like the relay path: silence, not a turn (#126708)', async () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you', 'the end'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\s])+$'
+    }
+
+    mockDesktopApi({ ok: true, stt: { ...directStt, hallucination_filter: filter }, tts: relay })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Thank you.', { status: 200 }))
+    )
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('OK. OK. OK.', { status: 200 }))
+    )
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('The end', { status: 200 }))
+    )
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('')
+
+    // A real utterance passes through untouched, and an older backend without
+    // the filter never drops a transcript.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Thanks, that fixed it', { status: 200 }))
+    )
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('Thanks, that fixed it')
+
+    // Older backend: no hallucination_filter on the config → pass-through.
+    clearVoiceClientConfigCache()
+    mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Thank you.', { status: 200 }))
+    )
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('Thank you.')
+  })
+
+  it('isSttSilenceHallucination mirrors the relay contract', () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\s])+$'
+    }
+
+    // Known hallucination, case/punctuation-insensitive.
+    expect(isSttSilenceHallucination('Thank you!', filter)).toBe(true)
+    // Repetitive filler.
+    expect(isSttSilenceHallucination('ok ok ok', filter)).toBe(true)
+    // Empty = silence.
+    expect(isSttSilenceHallucination('   ', filter)).toBe(true)
+    // A genuine short utterance is NOT a hallucination.
+    expect(isSttSilenceHallucination('OK, do it', filter)).toBe(false)
+    // No filter (older backend) → never drop.
+    expect(isSttSilenceHallucination('Thank you.', null)).toBe(false)
+  })
+
+  it('strips only trailing .! like the relay rstrip — internal punctuation is a real turn', () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you', 'the end'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\\\s])+$'
+    }
+
+    // Internal punctuation survives the strip, so `thank. you` is not the
+    // phrase `thank you` — the relay keeps it as a real turn, and the
+    // client-direct path must agree (wire parity).
+    expect(isSttSilenceHallucination('thank. you', filter)).toBe(false)
+    expect(isSttSilenceHallucination('Than-k you. thank! you', filter)).toBe(false)
+
+    // Trailing punctuation is still stripped the way `rstrip('.!')` does.
+    expect(isSttSilenceHallucination('Thank you.!', filter)).toBe(true)
+    expect(isSttSilenceHallucination('The end...', filter)).toBe(true)
+  })
+
   it('surfaces provider rejections instead of silently relaying', async () => {
     mockDesktopApi({ ok: true, stt: directStt, tts: relay })
     vi.stubGlobal(
@@ -169,7 +248,13 @@ describe('transcribeAudioClientDirect', () => {
   it('speaks the xai wire shape', async () => {
     mockDesktopApi({
       ok: true,
-      stt: { ...directStt, wire: 'xai-stt', provider: 'xai', base_url: 'https://api.x.ai/v1', model: null },
+      stt: {
+        ...directStt,
+        wire: 'xai-stt',
+        provider: 'xai',
+        base_url: 'https://api.x.ai/v1',
+        model: 'grok-voice-transcribe-2.0'
+      },
       tts: relay
     })
 
@@ -181,6 +266,31 @@ describe('transcribeAudioClientDirect', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.x.ai/v1/stt')
     expect((init.body as FormData).get('format')).toBe('true')
+    expect((init.body as FormData).get('model')).toBe('grok-voice-transcribe-2.0')
+  })
+
+  it('drops format=true on the xai wire when no language is set (xAI answers HTTP 400 otherwise)', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        wire: 'xai-stt',
+        provider: 'xai',
+        base_url: 'https://api.x.ai/v1',
+        model: 'grok-voice-transcribe-2.0',
+        language: ''
+      },
+      tts: relay
+    })
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: 'auto detected' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('auto detected')
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.body as FormData).has('format')).toBe(false)
+    expect((init.body as FormData).has('language')).toBe(false)
   })
 
   it('speaks the elevenlabs wire shape with xi-api-key auth', async () => {

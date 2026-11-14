@@ -41,7 +41,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Signal | — | ✅ | ✅ | — | — | ✅ | — |
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
-| Home Assistant | — | — | — | — | — | — | — |
+| Home Assistant (plugin) | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
@@ -52,7 +52,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
-| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Yuanbao (Labs plugin) | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -91,7 +91,7 @@ flowchart TB
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
-    yb[Yuanbao]
+    yb["Yuanbao (plugin)"]
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
@@ -154,7 +154,7 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
-On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel. Telegram reports it for [group messages not addressed to the bot](telegram.md#letting-the-bot-stay-silent-in-a-group). Other platforms always get the notice.
 
 ## Quick Setup
 
@@ -232,6 +232,12 @@ process when they stop. The default `0` keeps the existing `Type=simple`
 behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
 
+Under `Type=notify` the gateway reports ready only after every served profile's
+adapters connect, one profile at a time. Before each secondary profile's
+connect it sends systemd `EXTEND_TIMEOUT_USEC` for that connect's budget plus
+a margin. A large multi-profile boot can therefore run past systemd's default
+90 s start timeout, while a boot that stops making progress is still killed.
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |
@@ -275,7 +281,7 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 ### Persistent `/model` Overrides
 
-A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` (or `/reset`) clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
+A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/model reset` clears the override and keeps the conversation, `/new` (or `/reset`) clears it with a fresh conversation, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
 
 ### Delivery Reliability
 
@@ -314,8 +320,11 @@ old behavior: in-flight responses are lost on crash).
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
 or `/reset` for an explicit new conversation; context compression remains automatic.
-Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
-variables are ignored. Cached agents may be released to reclaim resources without
+Core ignores legacy `session_reset` settings, reset-policy overrides and reset-timer
+environment variables. If your config still sets `session_reset.mode` to `idle`, `daily`
+or `both`, gateway startup and `hermes doctor` warn about it. To keep time-based resets,
+install the catalog plugin that reads the same block unchanged:
+`hermes plugins install hermes-session-reset-policy`. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
@@ -339,10 +348,72 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also set intentional silence with `allow_silence`, which overrides the platform's own `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+
+## Per-Platform and Per-Room Intentional Silence
+
+In shared chats, a model may choose to end its turn with an explicit silence marker such as
+`NO_REPLY` or `[SILENT]` when a message is not meant for it. To let a successful marker-only turn
+stay silent even when Hermes was mentioned, directly addressed, or the adapter cannot tell (for
+example an unmentioned follow-up in a Slack thread, or WhatsApp group chatter), enable
+`allow_silence` in the serving profile's `config.yaml`, either for a whole platform or for one room:
+
+```yaml
+platforms:
+  slack:
+    allow_silence: true            # every Slack chat this profile serves
+    channel_overrides:
+      "C0123456789":
+        allow_silence: false       # except this channel: keep the visible notice
+  whatsapp:
+    allow_silence: true            # every WhatsApp group and DM
+  matrix:
+    channel_overrides:
+      "!exampleTeamRoom:example.org":
+        allow_silence: true        # only this room
+```
+
+The top-level `slack:` / `whatsapp:` block form works the same way. A relay-fronted chat uses the
+block of its underlying platform (`platforms.slack` for Slack through the relay), as its
+`channel_overrides` do.
+
+The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
+when a human message needs a reply (or the adapter cannot tell). Internal notifications,
+scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
+even with `allow_silence: false`.
+
+A room's `allow_silence` overrides the platform's. Hermes looks the room up chat ID → thread ID →
+parent ID, as for other channel overrides, and the first matching entry is the room's, including
+an explicit `false`. An entry that sets only other keys (say a thread with just `model:`) also
+matches first, so it takes the platform's value, not its parent channel's: repeat `allow_silence`
+there to keep a parent's room opt-in. A quoted `"false"` counts as `false`; opting in takes a real
+`true`. With nothing set anywhere, the default reply policy applies. Room IDs must match the chat ID exactly: a WhatsApp group is
+`<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
+
+With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is
+hidden in group chats, channels, threads and webhook sources, so a healthy marker-only turn there stays silent where
+`allow_silence` is unset (see
+[Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)). An
+explicit `allow_silence: false`, on the room or the platform, still keeps the notice there.
+Suppression never silences a direct message: there the notice is the only answer a question gets,
+so a DM stays silent only where `allow_silence: true` is set for it or its platform.
+
+The platform setting covers direct messages too. There, a question the model answers with only a
+marker gets no reply at all, so set `allow_silence: false` on any DM or channel that must always
+get an answer.
+
+Restart the gateway after editing configuration so all serving profiles use the updated settings.
+The setting affects final delivery only: it does not undo tool actions, retract progress already
+sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
+not gain permission to disappear. Ordinary replies and conversation history stay unchanged. When
+the model wrote a reply beside a housekeeping-only tool call (memory, todo list, skill management
+or session search) and then ended a complete turn on a bare marker, that reply is delivered as the
+final answer, in opted-in platforms and rooms too.
+Crash recovery honors a suppression decision only after it was saved for that exact final reply;
+a crash before that point keeps the human-turn safeguard.
 
 ## Security
 
@@ -386,6 +457,17 @@ hermes pairing revoke telegram 123456789  # Remove access
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
 
+### Other bots in a chat
+
+Hermes treats a sender as a bot when the platform says so (Discord, Slack, Telegram, Feishu, QQ guild, Mattermost bot accounts). On a platform whose events carry no bot flag (Matrix, Signal, IRC, Mattermost personal-access-token bots, …), list the peer's user ids under that platform's `bot_users` in `config.yaml`:
+
+```yaml
+mattermost:
+  bot_users: ["peer_bot_user_id"]
+```
+
+A bot sender is admitted only through that platform's `*_ALLOW_BOTS` setting. Hermes never sends it runtime notices (busy and interrupt acknowledgements, progress, the "not processed" and retry hints, model-fallback and inactivity warnings, failed-delegation notices), only the model's reply, and a bot it is addressed by may still be answered with silence. `gateway.bot_loop_guard` ends the exchange: `max_hops` (default 4) bot messages after your last message, a repeated message counted once, and no answer to a bot answering a reply Hermes delivered to it unless `bot_replies_expect_reply: true`; `enabled: false` turns the rules off.
+
 ### Admins vs Regular Users
 
 Allowlists answer "can this person reach the bot at all?" The **admin / user split** answers "now that they're in, what are they allowed to do?"
@@ -418,6 +500,8 @@ gateway:
 
 **Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
 
+**Answering prompts counts as running the command.** Answering a dangerous-command approval is `/approve` or `/deny`, and answering a slash-command confirmation (`/reset`, `/reload-mcp`, …) runs that command. So in a gated scope a non-admin cannot answer them any other way either: typing a bare `yes` / `always`, a typed confirm reply, or tapping a native button (Telegram, Discord, Slack, Matrix, Feishu, Teams, WhatsApp Cloud, QQ Bot, relay) gets the same *⛔ /approve is admin-only here* note and the prompt stays pending for an admin. Adding `approve` (or `deny`, or the confirmed command) to `user_allowed_commands` lets members answer, exactly as it lets them type it. Clarify questions are not commands and are unaffected. A narrowed [`approvals.approvers`](../security.md#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers) takes precedence over this: then the requester, the listed ids and the admins answer.
+
 #### Inspecting your access
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. When an admin list is configured, `/help` and `/commands` show a non-admin only the commands they can actually run (`/help`, `/whoami`, plus `user_allowed_commands`); admins see the full catalog. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.
@@ -437,6 +521,10 @@ By default, messaging a busy agent redirects its active turn (a running foregrou
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+
+A steer carries text only, so a message with an attachment (a photo, file or video, including one captioned `/steer ...`) is queued with its attachment as the next turn instead. With no agent running, `/queue` or `/steer` as an attachment's caption (bare, or with text) sends the attachment as a normal message.
+
+A small text file is normally inlined into the message. When its caption is a slash command (`/goal summarize this`), the file is attached without its text inlined so the command still runs, and the agent is told to read the saved file.
 
 Gateway steers (including explicit `/steer`) and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. With `privacy.redact_pii: true`, identifiers in this model-visible context are hashed on supported platforms, including alternate and parent identifiers; the original event identifiers remain internal for routing. Otherwise identifiers are preserved exactly. Neither mode changes the session's system prompt or chooses a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.
 
@@ -477,6 +565,10 @@ display:
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
 ```
+
+An unrecognised `tool_progress` value — a typo, or a mode copied from another tool — is not read as a
+request for more output: the gateway logs it once and keeps the platform's own default, so a Telegram
+chat whose tier is `off` stays quiet.
 
 ### `log` mode — audit file instead of chat messages
 
@@ -643,6 +735,8 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
+An installed unit (or launchd plist) belongs to the `HERMES_HOME` it pins. A gateway started from a different home, such as a test or scratch home that happens to resolve to the same service name, never rewrites it: `gateway run`, `start`, `restart` and `install --force` refuse with a message naming both homes and leave the file alone. To deliberately point an existing service at the current home, run `hermes gateway install --force-unit-path`.
+
 :::note Inside a container, only the system scope is offered
 `hermes gateway install` (and the `hermes gateway setup` wizard) refuse to install a **user** service when Hermes detects it is running inside a container. A user unit lands in `~/.config/systemd/user`, and when that home is bind-mounted from the host (podman/distrobox), the host's own `systemd --user` enables and starts the same unit — a second gateway polling the same bot token. Run the gateway as the container's main process (`hermes gateway run`, with a container restart policy), or in a systemd container (systemd as PID 1) install the isolated system scope: `sudo hermes gateway install --system --run-as-user <user>`.
 :::
@@ -677,13 +771,15 @@ The plist sets `RunAtLoad`, so loading it starts the gateway. `hermes gateway in
 
 :::info Local Network access (LAN devices fail with "No route to host")
 macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript`; a JXA `system()` call starts the gateway without an interactive event-polling loop, and macOS treats its children as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
+
+Without an installed service, the gateway Hermes starts for you (Hermes Desktop, a chat or TUI client, or the restart after `hermes update`) runs the same way, as a one-off launchd job labelled `com.nousresearch.hermes.runtime.<id>`. A plain child process would lose LAN access as soon as the app that started it quits: macOS then holds the gateway itself responsible, and denies it. The one-off job is never installed in `~/Library/LaunchAgents`, never starts at login and is never restarted by launchd. Because osascript is the responsible app, macOS file-access prompts for that gateway (Documents, Downloads, …) name **osascript**, not Hermes.
 :::
 
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`
 Agents run as threads inside the one gateway process; the only child processes are tool subprocesses (terminal commands, browsers), which never hold provider credentials. A running gateway also re-reads the `openai-codex` login it seeded from `auth.json` the next time its pool selects that entry after it had gone `exhausted` or `dead` (entries added with `hermes auth add openai-codex` are independent accounts and are not resynced). When you want every session on the fresh login at once, restart the gateway — but prefer the drain-aware path over a bare kill:
 
 - `hermes gateway restart` asks the gateway (SIGUSR1) to refuse new turns, waits up to `agent.restart_after_turn_timeout` (default 1800 s) for in-flight turns to finish, exits, and lets launchd's `KeepAlive` relaunch it; the new process reads `auth.json` from scratch.
-- `launchctl kickstart -k gui/$UID/ai.hermes.gateway` sends SIGTERM instead: the gateway interrupts in-flight chat turns after `agent.restart_drain_timeout` (default `0` — immediately; the user is told and the turn resumes on their next message), gives cron runs `agent.cron_drain_timeout` (default 30 s), kills tool subprocesses and exits, then launchd relaunches it. Nothing from the old process survives, so a session that still fails with `401` after the relaunch is talking to a different gateway process — check `hermes gateway status` (and `launchctl list | grep hermes`) for a second PID, such as a manually started `hermes gateway run`, and stop that one too.
+- `launchctl kickstart -k gui/$UID/ai.hermes.gateway` sends SIGTERM instead: the gateway interrupts in-flight chat turns after `agent.restart_drain_timeout` (default `0` — immediately; the user is told and the turn resumes on their next message), gives cron runs and api_server (`/v1`) runs `agent.cron_drain_timeout` (default 30 s), kills tool subprocesses and exits, then launchd relaunches it. Nothing from the old process survives, so a session that still fails with `401` after the relaunch is talking to a different gateway process — check `hermes gateway status` (and `launchctl list | grep hermes`) for a second PID, such as a manually started `hermes gateway run`, and stop that one too.
 :::
 
 :::info Multiple installations
@@ -730,7 +826,7 @@ Each platform has its own toolset:
 | Signal | `hermes-signal` | Full tools including terminal |
 | SMS | `hermes-sms` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
-| Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
+| Home Assistant (plugin) | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) from the `homeassistant` catalog plugin |
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
@@ -740,7 +836,7 @@ Each platform has its own toolset:
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
-| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
+| Yuanbao (Labs plugin) | `hermes-yuanbao` | Full tools + the `yb_*` group/DM/sticker tools from the `yuanbao` Hermes Labs plugin |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
@@ -832,14 +928,22 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
+The "shutting down" and "online" home-channel notices come as a pair: once a home chat was told the gateway is going down, the next start says it is back online, whatever stopped it (a `/restart`, `hermes gateway restart`, or the service manager, such as `systemctl restart`). A `--replace` takeover sends neither, because the replacing gateway keeps serving. When the gateway is stopped over and over in a short time (a restart loop), it sends at most `gateway.restart_loop_guard.max_restarts` shutdown notices (default 3, chained while the gaps between them stay under `max_gap_seconds`) and then goes quiet until it stays up. The same settings drive the restart-loop breaker for session auto-resume.
+
+Configure the destination with a `home_channel` object containing both `platform` and `chat_id`:
+
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
+      home_channel:
+        platform: telegram
+        chat_id: "123456789"
       gateway_restart_notification: false   # opt out for this platform
     discord:
-      home_chat_id: "987654321"
+      home_channel:
+        platform: discord
+        chat_id: "987654321"
       # gateway_restart_notification omitted → defaults to true
 ```
 
@@ -922,7 +1026,13 @@ suppression.
 The setting controls automatic engine warnings, retry/fallback diagnostics,
 watchdog and database notices, cron failure notifications, Kanban failure
 notifications, background/delegation diagnostics, and adapter-generated error
-notices. It applies to messaging platforms, CLI/TUI presentation and API
+notices. It also covers the silence-marker notice ("The model returned only a
+silence marker..."): where suppression is on for the chat's platform, a
+successful turn that ends on a bare `[SILENT]`/`NO_REPLY` in a group chat, channel or
+thread stays silent, as if
+[`allow_silence`](#per-platform-and-per-room-intentional-silence) were set, unless that
+room or platform sets `allow_silence: false`. Direct messages keep the notice. Failed,
+partial, interrupted and empty results are presented as before. It applies to messaging platforms, CLI/TUI presentation and API
 notification presentation. Classification belongs to the producer: warning-like
 text in a user request or an ordinary result is not filtered by its wording.
 
@@ -972,7 +1082,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)
-- [Home Assistant Integration](homeassistant.md)
+- [Home Assistant Integration](homeassistant.md) (plugin catalog)
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
@@ -983,7 +1093,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
 - [QQBot Setup](qqbot.md)
-- [Yuanbao Setup](yuanbao.md)
+- [Yuanbao](yuanbao.md) (Hermes Labs plugin)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Microsoft Graph Webhook Listener](msgraph-webhook.md)

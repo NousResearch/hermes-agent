@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.pm import _pm as P
@@ -58,7 +57,7 @@ def _stray_python() -> str:
     """Another Python than PM's: 3.11 when uv can find one (the #123972 shape), else the test's."""
     uv = I.real_uv()
     assert uv is not None
-    cp = subprocess.run([uv, "python", "find", "3.11"], capture_output=True, text=True, timeout=120)
+    cp = subprocess.run([uv, "python", "find", "3.11"], capture_output=True, text=True, timeout=120, check=False)
     return cp.stdout.strip() if cp.returncode == 0 and cp.stdout.strip() else sys.executable
 
 
@@ -70,7 +69,7 @@ def _seed_stray_venvs(sb: I.Sandbox) -> dict[str, Path]:
         venv = sb.checkout / name
         shutil.rmtree(venv, ignore_errors=True)
         cp = subprocess.run([uv, "venv", "-q", "--python", python, str(venv)], capture_output=True, text=True,
-                            timeout=300, env={k: v for k, v in __import__("os").environ.items() if k != "VIRTUAL_ENV"})
+                            timeout=300, env={k: v for k, v in __import__("os").environ.items() if k != "VIRTUAL_ENV"}, check=False)
         assert cp.returncode == 0, f"harness: uv venv {venv} failed:\n{cp.stderr}"
         site = next(venv.glob("lib/python3*/site-packages"))
         log = sb.root / f"stray-{name.strip('.')}-loaded.log"
@@ -163,11 +162,8 @@ def test_execute_code_after_update_imports_third_party_deps(updated, provider):
     result, transcript = _turn_with_tool(sb, provider, "run the dependency probe",
                                          ToolCall("execute_code", {"code": code}))
     assert result, "harness: the execute_code tool never returned a result to the model\n" + transcript
-    with known_failure(r"execute_code on a PM install cannot import third-party deps: "
-                       r".*No module named '(ruamel|httpx|openai|pydantic)",
-                       "gated on #124049: the kernel loses the runtime site-packages"):
-        assert "EXEC-DEPS-OK" in result, (
-            f"execute_code on a PM install cannot import third-party deps: {result[-1500:]}\n" + transcript)
+    assert "EXEC-DEPS-OK" in result, (
+        f"execute_code on a PM install cannot import third-party deps: {result[-1500:]}\n" + transcript)
     hits = _stray_hits(updated["logs"], mark)
     assert not hits, f"execute_code loaded a stray venv: {hits}"
 

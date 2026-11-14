@@ -916,6 +916,7 @@ function KeybindHarness({ deps }: { deps: KeybindRuntimeDeps }) {
 describe('view.findInPage keybind gate', () => {
   function renderKeybinds(pathname: string) {
     const deps: KeybindRuntimeDeps = {
+      requestGateway: vi.fn(),
       toggleCommandCenter: vi.fn(),
       startFreshSession: vi.fn(),
       openNewSessionTab: vi.fn(),

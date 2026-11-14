@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import type { SessionInfo } from '@/types/hermes'
 
+import { completeFlow } from './desktop-metrics'
 import { $selectedStoredSessionId, $sessions } from './session'
 
 // Mac-style session switcher (^Tab). Quick tap jumps on keydown; the HUD opens
@@ -19,6 +20,12 @@ let pendingBrowse = false
 let revealTimer: ReturnType<typeof setTimeout> | null = null
 let tabHeld = false
 let closedAt = 0
+// The physical key (`code`) of the keydown being dispatched, and of the one that
+// stepped the switcher: only the step key's keyup ends the hold, so another key
+// lifting mid-hold can't hide the HUD. A missing code on either side releases on
+// any key, as before.
+let keyDown = ''
+let stepKey = ''
 
 function clearRevealTimer(): void {
   if (revealTimer) {
@@ -43,11 +50,20 @@ function scheduleReveal(): void {
   }, SWITCHER_REVEAL_MS)
 }
 
-export function onSwitcherTabDown(): void {
-  tabHeld = true
+export function noteSwitcherKeyDown(code: string): void {
+  keyDown = code
 }
 
-export function onSwitcherTabUp(): void {
+export function onSwitcherTabDown(): void {
+  tabHeld = true
+  stepKey = keyDown
+}
+
+export function onSwitcherTabUp(code = ''): void {
+  if (code && stepKey && code !== stepKey) {
+    return
+  }
+
   tabHeld = false
 
   if (!$switcherOpen.get()) {
@@ -117,6 +133,11 @@ export function commitOnCtrlUp(): string | null {
   }
 
   const target = highlightedSessionId()
+
+  if (target) {
+    completeFlow('session_switcher')
+  }
+
   closeSwitcher()
 
   return target

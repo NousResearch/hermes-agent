@@ -1,0 +1,315 @@
+---
+title: Gateway local sessions
+description: Local CLI/TUI sessions as canonical gateway admissions
+---
+
+# Gateway-owned fresh local sessions
+
+The composed gateway listener can create fresh local **CLI, TUI, or GUI-policy** sessions without
+starting `tui_gateway`'s separate agent runtime. The existing `GatewayRunner` / `TurnRunner`
+own execution, approval waiters, tool calls, session storage, and canonical event delivery.
+
+A server-authenticated identity with `session:create` can call:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"session.create","params":{"request_id":"stable-client-create-id","source":"cli"}}
+```
+
+The result preserves `session_id`, `stored_session_id`, `messages`, `message_count`, and
+`info`, and includes the authority's normal resume snapshot fields. Both session IDs are
+the same stable persisted **logical** ID. Compression and reset may rotate the private
+physical transcript target without changing either client ID. Creation is lazy with respect
+to the agent, but reserves the real
+SessionDB/SessionStore identity before returning. One canonical SQLite transaction commits
+the session row, route, and private `gateway.local_policy.v1:<stored-id>` creation receipt.
+Repeating the request ID for the same principal and profile reuses that identity and frozen
+policy, including after daemon death. Omit the ID for a new session; clients that need
+lost-ACK retry protection must retain it. A failed transaction publishes no live session.
+
+### Naming the client
+
+A client may say who it is with an optional `client` object on `session.create`, for example
+`"client": {"name": "my-client", "version": "1.2.0"}`. `name` is 1-64 characters of `a-z`, `0-9`,
+`.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64 printable ASCII
+characters without spaces. Anything else is refused with `invalid_params` (field `client`). Send it
+only to an owner whose `runtime.describe` lists `client` in `session_create.parameters` (capability
+`session-client-v1`); an older owner refuses the unknown key.
+
+The name is stored with the frozen creation request, so it is part of the exact-retry identity
+and survives a restart. `session.info` returns it as `client` (absent when none was sent), and
+plugins read it through `hermes_cli.plugin_session.session_client()` and the `client` /
+`client_version` keys of prompt-section session info. It is attribution only: `source` still
+picks the session policy (send `source: "tui"` for terminal-client behaviour), and no toolset,
+approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,
+so any client can claim any name: never grant anything based on it.
+
+Attach another authenticated viewer with `session.resume({session_id})`, and submit
+through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable
+admission, not inference completion. Closing every viewer leaves the execution and its
+pending approval alive. A new viewer can resume the same identity and answer through
+`approval.respond({session_id, execution_generation, prompt_id, choice})`.
+
+## Deliberate behavior change: shared operator access
+
+Verified operators of the same gateway profile may attach to canonical local sessions
+created through another operator authentication path. This replaces the creator-subject-only
+access fence for those operators: the existing dashboard gate already grants operator access,
+so changing from native CLI/TUI to an authenticated dashboard must not create a second runtime
+or prevent attachment solely because the raw identities differ. This is shared access, not
+shared identity: creation receipts keep the original owner, and admissions and retries keep
+the submitting principal.
+
+The server issues `session:operator` only at these existing trusted boundaries:
+
+- Native interactive bootstrap ticket redemption (not worker-adoption tickets).
+- The dashboard WebSocket upgrade gate, including authenticated dashboard login tickets,
+  the process-lifetime internal credential for server-spawned PTY clients, and the verified
+  legacy session token when that authentication path is enabled. With `webapp.enabled`, that
+  session token is the browser-hosted Desktop's credential: the gateway keeps it in its home so
+  Webapp tabs survive a restart, hands it out only through a one-use link minted for a same-user
+  control-socket peer, and replaces it on `hermes webapp --sign-out` and whenever the Webapp's
+  listener fails to start, since its port then belongs to someone else. Behind the sign-in gate a
+  Webapp login is bound to that token by the `hermes_webapp_signin_<gateway>` cookie (HMAC-SHA256 of
+  `webapp-sign-in` keyed with the token), so replacing it ends those logins too; sign-out closes
+  every socket the token or a bound login opened, Bot Desktop viewers included. The Webapp's listener
+  names every sign-in cookie it sets that way (`hermes_session_at_<gateway>` and the rest; `<gateway>`
+  comes from a digest of the gateway home), so two gateways' Webapps on one hostname keep their own
+  logins, whatever their sign-in providers, and leave the standalone dashboard's cookies alone. The provider tokens
+  such a login keeps in its cookies never work there on their own: the Webapp's listener accepts a
+  bearer token or a socket's `?token=`, and renews a refresh token, only when it gave that token to a
+  native app's RFC 8252 sign-in (digests kept in `webapp/native-sign-in-tokens.json` in the gateway home until they
+  expire), so native apps stay signed in across a sign-out and a restart. The deployment session
+  token (`HERMES_DASHBOARD_SESSION_TOKEN`) also works there as a bearer token or `?token=` while the
+  session-token provider is enabled; it has no refresh token.
+- The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
+  or permitted legacy session token has been accepted.
+
+A client cannot request this scope in RPC parameters or an identity capability list.
+Operator scope does not replace profile, instance, per-operation capability, subscription,
+revision, or generation checks. It does not upgrade messaging, room, worker, or service
+credentials, or permit remote first-claim adoption of unowned historical transcripts. If
+restricted dashboard identities are introduced, these issuance gates must reflect that
+restriction rather than treating every accepted dashboard credential as an operator.
+
+Cross-subject local submissions carry a private, server-written profile/session/principal
+binding for queued execution and recovery. It is not exposed in model requests or public
+session snapshots. This change does not implement OpenAI API-to-local session affinity. The gateway
+listener stays on loopback unless `webapp.host` binds a wildcard address. The Webapp's listener engages
+the dashboard sign-in gate on a wildcard bind or when `webapp.public_url` is set, on any bind, and
+one-use launch links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
+gateway's private listener for native clients reads it as main does, so hosted sign-in on that
+listener keeps working.
+
+## Deliberately limited compatibility
+
+- `source` accepts `cli` (default), `tui`, `gui`, `acp`, `tool` and `oneshot`
+  (`gateway.session_policy.SURFACES`). They select the agent platforms `cli`, `tui`,
+  `desktop`, `acp`, `cli` and `cli`; `tool` (third-party integrations) and `oneshot`
+  (finite `chat -q` / `-z` runs) keep their own stored label so human pickers hide them.
+  The native local routing identity remains server-owned `Platform.LOCAL`; source never
+  grants messaging/native trust. Default TUI selection folds in `project`; GUI folds in
+  the client-surface toolsets (`project`, `desktop_ui`, `catalog`). GUI policy is
+  independent of `HERMES_DESKTOP` and of the attaching viewer's identity. Without explicit
+  `toolsets`, the gateway applies the coding posture (`agent.coding_context: focus` in a
+  code workspace, `agent/coding_context.py`) from the `cwd` a `session.create` names,
+  decided once at creation; clients never send it as a pick. Only `session.create` applies
+  it, never for `source: tool`: Kanban workers, cron jobs, A2A, hosted rooms and migrated
+  legacy rows keep the profile's toolsets.
+- Optional flat creation fields: `cwd` (existing absolute gateway-local directory),
+  `model` (nonempty model identifier on the daemon's configured provider), and `toolsets`
+  (explicit array of established toolset names, including an empty array). Unknown or
+  policy-filtered toolsets reject instead of silently disappearing. Explicit toolsets
+  override the default surface additions; CLI/TUI cannot explicitly request `desktop_ui`.
+  `cwd`, model selection, source and effective toolsets are captured at creation; attach
+  cannot change them. A conflicting repeat `request_id` returns `invalid_params`.
+- Further frozen launch fields (`CREATE_FIELDS`): `provider`, `base_url` (http(s), no
+  credentials/query/fragment), `api_key` (held in the owner's memory, never persisted),
+  `reasoning`, `max_turns`, `skills` (rendered once into the frozen prompt; refused with a
+  bypass launch), the booleans `yolo`, `checkpoints`, `accept_hooks`, `pass_session_id`,
+  `ignore_rules`, `safe_mode`, `ignore_user_config` (safe mode implies ignore-user-config
+  and runs turns in an isolated worker), `editor` (ACP only), plus `title` (resolve-or-create)
+  and `hidden`. A malformed value returns `invalid_params`. Any other field, cwd worktree
+  creation, seeded history, profile switching and service-tier selection still return
+  `invalid_params`. No supported launch field mutates daemon-wide configuration or process
+  environment.
+- Fresh creation requires a server-authenticated identity with `session:create`, supplied
+  by the gated dashboard or native bootstrap path. The verified legacy `?token=` route
+  stamps a session-token identity and also supports creation. Callers cannot provide an
+  identity in RPC parameters, and operator scope does not promote resume-only capabilities
+  to `session:create`.
+- `session.list({limit})` returns authorized **live** authority sessions (`scope: "live"`).
+  The native TUI picker also requests `session.list({limit, scope: "stored"})` for pre-authority
+  CLI/TUI/GUI history. This read-only feed uses the native legacy-resume ownership checks,
+  excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
+  by listing it. Explicit resume performs adoption; the default live feed is unchanged.
+  Both scopes take `workspace`: only conversations whose first row is in that folder, by
+  `hermes -c`'s rule (`hermes_state_sessions.workspace_key`): the row's git repo root equals it, or
+  (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
+  With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
+  `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current
+  segment (the compression tip, as the stored listing projects it) `preview` (the first prompt
+  there), `last_reply` (its newest reply, shortened as `preview` is; a pure compaction handoff is no
+  reply, a carrier shows the reply it wraps), `git_branch`, `last_active_at` and `pinned`. Off by
+  default, so the 1.5 s live-list poll pays nothing; on, a page is one batched store read.
+  The stored scope also pages and searches (`gateway/session_listing.py`); runtimes that serve this
+  advertise `session-list-cursor-v1` in `runtime.describe.capabilities`:
+  - `query`: only conversations whose title or id contains this text (case-insensitive; a title
+    also matches with `-`, `_`, `.` and spaces removed, and every segment of a compression chain
+    counts). The same rule as `hermes sessions list --search`. It must be 1 to 200 characters and
+    not only spaces.
+  - Each stored result carries `next_cursor`: an opaque string when more rows may follow, `null` when
+    the listing is exhausted. A last page may be empty. Send it back as `cursor` to read the next
+    page. The live scope is not paged: its result carries no `next_cursor`.
+  - A cursor is valid only with the `workspace`, `query` and `include_hidden` of the call that
+    returned it; `limit` and `picker` may change between pages. Any other cursor, a cursor this
+    method did not issue, or `query` / `cursor` with the live scope or with `title` answers
+    `invalid_params`.
+  - On an unchanged store, following `next_cursor` to `null` lists every conversation once, in the
+    order one unpaged read would. The store can change between calls (a conversation with a new
+    message moves to the front), so a later page may repeat a row an earlier page listed: key rows
+    by `session_id`. The 200 row cap per call stays.
+- `session.transcript({session_id, subagent_id?, cursor?, limit?, order?, inline_images?})` reads a
+  conversation without attaching to it (`gateway/session_stored_reads.py`). It is authorized as
+  `session.resume`'s read (`SessionAuthority.authorize`, `session:read`: profile, owner or operator).
+  Like `session.info` that check publishes the conversation's route entry in `authority.sessions`
+  when it is not there; it builds no agent, subscribes nobody, and an ended local conversation stays
+  out of the live list. An old CLI/TUI/GUI row (no receipt or route) is judged at its compression tip
+  by the stored feed's own rule, whichever lineage id is asked, and never adopted. It runs on the
+  socket's concurrent read lane, so a prompt or interrupt never queues behind it. Runtimes that serve
+  it advertise `session-transcript-v1` (and `session-list-picker-v1` for the `session.list` options
+  above) in `runtime.describe.capabilities`.
+  It returns `{session_id, rows, next_cursor, reset}`: display rows across the compression lineage
+  (live and compaction-archived, each logical message once), oldest first within a page. Every row
+  carries `row_kind` (`gateway/session_transcript_rows.py`): `"message"` is `session.resume`'s
+  `display_messages` row; `"compaction"` is a compaction handoff at its position, with `role:
+  "system"`, `text` the summary a reader sees (without the preamble, end marker, re-quoted user
+  messages, recovery footer and ranking line written for the model), `compacted_messages` (the count
+  the footer named, else null), `timestamp` and the stored `row_id`. A later compaction that carries,
+  re-wraps or unwraps a summary carrier still shows the older handoff, each once, before the first row
+  in the whole transcript that holds it, wherever a page starts.
+  A page holds at most `limit` (1-500, default 100) rows, compaction rows included, plus up to 64 tool
+  results of the call at its edge (a row's handoffs and the row itself can fall on two pages, each sent
+  once), and at most 2 MiB of JSON, cut between tool groups (a tool result whose call sits on another
+  page is still labelled from it); a single larger row keeps only its role, kind, time, ids and the
+  head of its text and carries `truncated: true`. Images read `[image]` unless `inline_images: true`.
+  The cursor is opaque and bound to the session, the child and the order.
+  `order: "oldest"` (the default) is also the poll: `next_cursor` is never null; read until a page is
+  empty, then keep that cursor and pass it again for the rows written since. The cursor holds the
+  segment it read and `SessionDB.transcript_cursor_state` of the rows it covered (the segment's live
+  rows up to the newest row read plus every live row of its earlier segments, the lineage's inactive
+  rows, its summed `transcript_revision`). While both hold only appends happened, and the page
+  continues after the cursor (`reset: false`). Anything else (an in-place compaction, a rotation to a
+  new segment, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row,
+  including rows appended and compacted between two polls) answers `reset: true` from the first page:
+  the caller replaces what it holds. The check, the page and the state the next cursor holds are read
+  in one read transaction (`SessionDB.transcript_read_snapshot`), so a cursor vouches for exactly the
+  rows its page holds. A store without a pooled reader (not WAL, read-only, or at the pool's ceiling)
+  holds no transaction across the reads: there the read counts only when no write landed in the
+  database meanwhile, else it is read once more; when that read also overlaps a write, the reply is
+  `reset: true` from the first page with a cursor whose next poll resets again. A reply without a cursor
+  is `reset: true` too.
+  `order: "latest"` starts at the newest rows and pages older until `next_cursor` is null; its cursor
+  is keyed by each message's first durable row, so a page boundary holds across later compactions.
+  A single-segment conversation is paged in SQL on its display index, in one read transaction, with
+  the resume's conversation normalization (only the page's bodies are read, and a read backfills that
+  index outside the transaction when a row lacks its slot, as REST `/messages` does, then reads again);
+  a rotated lineage is deduplicated whole, and past `sessions.max_resume_messages` only its current
+  segment is paged. A cursor also holds which of the two its page read: when appends take the lineage
+  past that guard, a reply in either order is `reset: true` from its first page. A newest-first cursor
+  of that current segment also holds the segment: once a compaction rotates it to a new one, the next
+  reply is `reset: true` from the newest page.
+  With `subagent_id` it reads a delegated child of `session_id` instead
+  (`gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
+  and `child_session_id`. The session must be live on this owner (else `not_found`) and readable by
+  the caller. A running child must be in the parent's live roster (the `subagent.list` rule, nested
+  children included). A finished child is found through the `_subagent_id` stamped on its row at
+  spawn, and only when its `parent_session_id` chain reaches this conversation through delegate-child
+  or compression-continuation hops; a branch of the conversation does not lend its children. A
+  foreign or unknown child answers `available: false`, `rows: []`, `next_cursor: null`,
+  `reset: true`. A child's lineage is its own (a queued child never shows its delegator's rows), and
+  every read uses the owning profile's own store under `owner_scope`.
+  `session.info({session_id})` is a lightweight,
+  authorized view of source, current model, lazy-agent status, and profile ID.
+- `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,
+  epoch, capabilities, and the creation contract (`session_create.sources` and
+  `session_create.parameters`, which clients check before sending a launch option). It does not claim full runtime
+  protocol readiness, reveal credentials/paths, start an agent, or renew a turn lease.
+- Cold restart restores valid private local policies and server-owned routes before execution.
+  Creation receipts remain bound to their authenticated creating principal and profile;
+  verified operators in that profile may access the canonical session without replacing
+  that binding. Caller source/native context cannot reconstruct or authorize a local route.
+  Missing, malformed, foreign-profile or mismatched policy/identity fails closed, including preclaim checks;
+  historical pre-extension sessions without a receipt are not silently treated as CLI.
+- Never-started queued local inputs resume through the same authority FIFO after bootstrap
+  readiness. Interrupted started inputs become `unknown`, are never replayed, and pause
+  their followers. Reattachment can inspect the unknown snapshot without running it.
+- Compression publication atomically advances the receipt's private `entry.session_id` and
+  route alongside the child transcript. The receipt retains its creation `session_id`, policy,
+  principal/profile binding, and explicit approved `lineage`. Recovery validates compression
+  steps with the existing canonical child selector and reset steps with the existing
+  `_reset_from` boundary; it never adopts arbitrary forks or copied foreign receipts.
+- The canonical SessionStore local reset commits the new row, old-row closure, receipt and
+  route before changing the in-memory entry. Reset deliberately starts empty history while
+  preserving the frozen launch policy and queued admission owner. It does not replay an
+  interrupted execution or cancel later accepted inputs. Creating an independent conversation
+  still uses `session.create` with a new request ID; this is not a new revision-fenced reset RPC
+  or a change to the multi-view `/new` contract.
+- Admission targets, digests, claim generations, subscriber identity and uncertain outcomes
+  remain on the stable logical row. Thus lost-ACK retries keep their existing receipts after
+  either transition, and shared controls/stream callbacks keep the same execution owner.
+  Clients continue resuming the creation ID, not an internal physical continuation ID.
+
+## Verification
+
+`tests/gateway/test_operator_cross_surface.py` exercises native-created/dashboard-attached
+and dashboard-created/native-attached sessions through real bootstrap and dashboard
+login/callback/cookie/ticket paths in a disposable gateway process. The identity provider and
+model endpoint are test fixtures. It verifies client disconnect/reconnect, FIFO admission and
+retry, retained attribution and model context, unchanged system messages, and private
+operator provenance absent from public responses and model requests. It does **not** kill
+and restart the gateway process, directly compare simultaneous live fanout, or exercise
+shared approval/clarify across those two authentication methods.
+
+`tests/gateway/test_session_operator_scope.py` covers queued operator input across a fresh
+authority epoch using a stub executor and a paused scheduler. This is unit-level recovery
+evidence, not real cross-surface cold-process restart certification. The existing recovery
+fixtures described below provide separate coverage; their results must not be presented as
+a new end-to-end cross-authentication gateway-crash test.
+
+`tests/gateway/test_local_session.py` launches a disposable process with temporary HOME
+and HERMES_HOME, the production composed HTTP/WS listener, real single-use authenticated
+tickets, a loopback OpenAI-compatible model, the real TurnRunner/AIAgent, and the real
+terminal tool. It proves persisted identity and same-agent reattachment; closes both
+viewers while approval is pending; reconnects and consents before deleting only an owned
+temporary directory; checks canonical history; and rejects forged authentication/source/
+profile and unsupported launch fields. A second case runs the real clarify tool,
+reattaches after all viewers close, and verifies the answer reaches the next loopback
+model request. No native messaging allow-all credential authorizes the execution; a
+separate negative control enables messaging allow-all only while proving reconstructed
+local source/profile objects still fail closed.
+
+`tests/gateway/test_session_policy.py` adds three simultaneous CLI/TUI/GUI turns against
+an owned loopback model. A barrier holds their first requests concurrently; real terminal
+calls write separate files in three owned working directories. The next requests expose
+the correct cwd results, distinct requested models and surface-specific tool schemas.
+Reconnect preserves each agent; launcher environment carriers and config bytes do not
+change. This is loopback integration evidence, not native launcher or vendor evidence.
+`tests/gateway/test_local_session_recovery.py` proves rollback-before-publication and cold
+receipt reuse, then starts separate ordinary daemons on the same temporary database using
+real control-socket tickets and authenticated WebSockets. A fixture-only scheduler barrier
+kills the first daemon after an input commits but before claim; another model request is
+held after its real claim. Fresh daemons execute only the authorized queued input, preserve
+history/source/model/toolsets despite changed defaults, and refuse unknown, foreign,
+missing and corrupt policy cases. A further restart executes nothing twice. All inference
+is loopback-only; this is not native launcher or compression-transfer evidence.
+
+`tests/gateway/test_local_session_lineage.py` adds rollback and isolation invariants, plus
+three separate ordinary daemon processes. Its first-process fixture invokes the production
+agent rotation publication on the real cached AIAgent and the production SessionStore reset,
+then kills the daemon after a durable queued admission. Cold unmodified daemons preserve
+compressed history, reset's empty-history boundary, policy/cwd, admission identities and
+unknown-state blocking. Unrelated fork work and foreign receipts stay unclaimed. The model
+peer verifies recovered cwd in the actual prompt and frozen model/toolsets; this fixture does
+not execute a post-restart cwd tool effect, generate a compression summary, or exercise a
+native launcher. It proves the production publication/recovery boundary, not those separate
+surfaces.

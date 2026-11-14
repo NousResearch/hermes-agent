@@ -1,10 +1,12 @@
 """Bounded home maintenance after an installed revision changes.
 
-A per-install, per-profile record and lock remain because config migrations
-must not retry a broken migration on every launch, and the full SQLite
+A per-install, per-profile record and lock remain because the full SQLite
 integrity guard is too expensive to run every time. Steps still own their
 idempotence and rollback; failure is recorded until the next revision (or
-an explicit post-update run). PM owns runtime diagnosis, not this record.
+an explicit post-update run). The one exception is a config migration that
+stopped at a failing step: the steps before it are kept, and the rest is
+retried on every start until it succeeds (one warning per start). PM owns
+runtime diagnosis, not this record.
 """
 from __future__ import annotations
 
@@ -73,7 +75,7 @@ def _git_binary() -> str | None:
         installed = installed_package("git")
         if installed is not None and installed.binary is not None:
             return str(installed.binary)
-    except Exception as exc:  # noqa: BLE001 — boot must not die on a lookup
+    except Exception as exc:
         logger.debug("pm git lookup failed: %s", exc)
     import shutil
 
@@ -141,6 +143,13 @@ def needs_bootstrap(project_root: Path) -> str | None:
     if known.get("identity") == identity:
         return None
     return identity
+
+
+def owed_config_migration(known: dict) -> dict | None:
+    """The record's ``migrate_config`` result when that migration stopped at a failing step
+    (``failed_step``; ``failed_warning`` says why), else None. *known*: :func:`read_last_known`."""
+    owed = (known.get("results") or {}).get("migrate_config") or {}
+    return owed if owed.get("failed_step") else None
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +228,13 @@ def run_boot_bootstrap(project_root: Path) -> dict:
     """Bound home maintenance to one attempt per installed revision."""
     from hermes_cli import post_update
 
-    identity = needs_bootstrap(project_root)
+    identity = current_install_identity(project_root)
     if not identity:
         return {"home": "skipped"}
     record = record_path(project_root)
+    known = read_last_known(record)
+    if known.get("identity") == identity:
+        return {"home": _retry_owed_migration(record, identity, known)}
     lock = _RecordLock(record)
     if not lock.acquire():
         return {"home": "lost-race"}
@@ -234,6 +246,49 @@ def run_boot_bootstrap(project_root: Path) -> dict:
         results = post_update.run_steps(post_update.BOOT_HOME_STEPS)
         _write_record(record, identity, results)
         return {"home": results}
+    finally:
+        lock.release()
+
+
+def _owed_steps(known: dict) -> list[str]:
+    """Steps of this revision still owed: a config migration that stopped at a failing step, and any
+    step whose result says ``owed`` (default plugins a failed fetch left uninstalled)."""
+    results = known.get("results") or {}
+    owed = [name for name, result in results.items() if isinstance(result, dict) and result.get("owed")]
+    return owed + (["migrate_config"] if owed_config_migration(known) is not None else [])
+
+
+def _retry_owed_migration(record: Path, identity: str, known: dict):
+    """This revision's maintenance is done, but a step is still owed (:func:`_owed_steps`): rerun those
+    steps on every start until they succeed. A config migration warns once per start; the default-plugin
+    step backs off itself, on one failure stamp for every home and plugin. The other steps stay bounded
+    to one attempt per revision."""
+    from hermes_cli import post_update
+
+    if not _owed_steps(known):
+        return "skipped"
+    lock = _RecordLock(record)
+    if not lock.acquire():
+        return "lost-race"
+    try:
+        known = read_last_known(record)
+        names = _owed_steps(known)
+        if not names or known.get("identity") != identity:
+            return "skipped"
+        owed = owed_config_migration(known)
+        retried = post_update.run_steps([step for step in post_update.BOOT_HOME_STEPS if step[0] in names])
+        outcome = retried.get("migrate_config") or {}
+        if owed is not None and not outcome.get("ok") and not outcome.get("failed_step"):
+            # The retry raised (a full disk, a lock): the step is still owed, so the next start
+            # retries it too. Only a retry that succeeded clears it.
+            retried["migrate_config"] = {**outcome, "failed_step": owed["failed_step"],
+                                         "failed_warning": outcome.get("error") or owed.get("failed_warning")}
+        for name in names:
+            result = retried.get(name)
+            if name != "migrate_config" and isinstance(result, dict) and not result.get("ok"):
+                retried[name] = {**result, "owed": True}  # a retry that raised keeps the step owed
+        _write_record(record, identity, {**known["results"], **retried})
+        return retried
     finally:
         lock.release()
 

@@ -5,8 +5,9 @@ import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
+import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { adoptPendingRuntimeTabs, rekeyPreviewTabsSession } from '@/store/preview'
 import {
   $activeSessionId,
   $messages,
@@ -193,6 +194,14 @@ export function useSessionStateCache({
           if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
 
+            // The journal under the pre-rotation id is keyed by a stored id
+            // nothing will name again (the reverse mapping above is gone and
+            // lineage resolution follows the tip), so a later permanent delete
+            // could not reach it. Re-key it to the new id — copy first, then
+            // delete — so recovery survives the rotation AND the delete
+            // gesture still reaches every copy (#77486).
+            migrateInFlightTurnJournal(existing.storedSessionId, storedSessionId)
+
             // Re-home any open tile keyed on the pre-rotation id (#98622).
             // Ungated on the active runtime: a background tile's conversation
             // rotates here too, and its pane would otherwise keep the stale id
@@ -200,6 +209,7 @@ export function useSessionStateCache({
             // rekey, which this path can skip when the state updater is a no-op.
             if (storedSessionId) {
               rekeySessionTile(existing.storedSessionId, storedSessionId, sessionId)
+              rekeyPreviewTabsSession(existing.storedSessionId, storedSessionId)
             }
 
             // A rotation event needs a real next id — a null/cleared stored id
@@ -219,6 +229,12 @@ export function useSessionStateCache({
 
           if (storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+
+            // The runtime's stored id binding (null → id). Mirrors
+            // handleTransition's hand-over, which a no-op updater skips.
+            if (!existing.storedSessionId) {
+              adoptPendingRuntimeTabs(sessionId, storedSessionId)
+            }
           }
 
           sessionStateCache.set(sessionId, updated)
@@ -354,7 +370,10 @@ export function useSessionStateCache({
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
       // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !viewState.busy || viewState.needsInput
+      // A sealed interim is also a completed reply: auto-speak must receive it
+      // while tools continue, without requiring per-token paint in a hidden window.
+      const isCriticalTransition =
+        !viewState.busy || viewState.needsInput || (viewState.interimBoundaryPending && !viewState.streamId)
 
       if (isCriticalTransition) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {

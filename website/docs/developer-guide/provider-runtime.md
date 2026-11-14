@@ -63,7 +63,6 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic (native)
 - Google / Gemini (`gemini`)
 - Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
@@ -122,7 +121,7 @@ Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
 - `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
-- `OPENAI_API_KEY` is used for custom endpoints and as a fallback
+- `OPENAI_API_KEY` is only sent to OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with
 
 Hermes also distinguishes between:
 
@@ -159,16 +158,14 @@ Codex uses a separate Responses API path:
 
 - `api_mode = codex_responses`
 - dedicated credential resolution and auth store support
-- a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation
+- a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation. Reasoning minted after that strip keeps replaying; only a second rejection in the same session turns replay off
 
 ## Auxiliary model routing
 
 Auxiliary tasks such as:
 
 - vision
-- web extraction summarization
 - context compression summaries
-- skills hub operations
 - MCP helper operations
 - memory flushes
 

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -133,6 +133,36 @@ const session = {
 } as SessionInfo
 
 describe('SidebarSessionRow actions', () => {
+  it.each(['Enter', ' '])('opens the native actions menu with %j and restores focus on Escape', async key => {
+    const onResume = vi.fn()
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+        onPin={vi.fn()}
+        onResume={onResume}
+        onToggleUnread={vi.fn()}
+        session={session}
+        unread={false}
+      />
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key })
+
+    const archive = await screen.findByRole('menuitem', { name: 'Archive' })
+    fireEvent.keyDown(archive, { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('menu')).toBeNull()
+      expect(globalThis.document.activeElement).toBe(trigger)
+    })
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
   it('archives an Inbox card without also resuming it (#85163)', async () => {
     const onArchive = vi.fn()
     const onResume = vi.fn()

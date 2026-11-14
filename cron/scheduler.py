@@ -3744,6 +3744,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # around one handoff disagree.
     deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     while time.monotonic() < deadline:
+        # Sample the exit BEFORE looking for the ack. The worker publishes its ack before it runs
+        # the job, so a worker seen exited here has already made any ack it wrote visible. Checked
+        # the other way round, a fast job could ack, run and exit between the two checks (a stalled
+        # gateway thread widens that window), and a successful run was reported as "exited before
+        # ownership acknowledgement (exit 0)" with a failure incident and notice.
+        returncode = process.poll()
         if ack_path.exists():
             try:
                 acknowledgement = json.loads(ack_path.read_text(encoding="utf-8-sig"))
@@ -3797,7 +3803,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 handoff_files=(payload_path, stderr_path),
                 stderr_path=stderr_path,
             )
-        returncode = process.poll()
         if returncode is not None:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))

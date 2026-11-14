@@ -475,6 +475,54 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._running_worker_pids == {scheduler._inflight_key("job-cold"): 4321}
 
 
+def test_launch_external_worker_fast_job_acked_and_exited_between_checks(tmp_path, monkeypatch):
+    """A fast job acks, runs and exits between the scheduler's ack check and its exit check (a
+    stalled gateway thread widens that window). The ack is on disk, so this is a handed-off run,
+    not a worker that "exited before ownership acknowledgement (exit 0)" with a failure incident."""
+    from cron import scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-fast", "execution_id": "exec-fast", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_kw: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "mark_execution_handoff_pending",
+        lambda _execution_id: {"id": "exec-fast", "handoff_pending": 1},
+    )
+    ack_path = tmp_path / "cron/external-workers/exec-fast.ready"
+
+    class FastWorker:
+        """By the time the scheduler polls, the worker has acked, finished and exited."""
+
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            if self.returncode is None:
+                ack_path.write_text(
+                    json.dumps({"pid": 4321, "execution_id": "exec-fast"}), encoding="utf-8"
+                )
+                self.returncode = 0
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.poll()
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", lambda *_args, **_kwargs: FastWorker())
+    monkeypatch.setattr(
+        scheduler, "get_execution", lambda _execution_id: {"id": "exec-fast", "status": "completed"}
+    )
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(scheduler, "_running_worker_pids", {})
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert scheduler._running_worker_pids == {scheduler._inflight_key("job-fast"): 4321}
+    assert not ack_path.exists()
+
 def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
     """A worker that exits before acknowledging used to report only ``exit 1`` because its stderr
     went to DEVNULL (#112729); the dispatch error must carry the worker's own traceback and the

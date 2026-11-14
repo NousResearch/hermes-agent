@@ -90,13 +90,23 @@ def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     return ''.join(cleaned), sorted(removed)
 
 
+# Remedy appended to a refusal, by rule id: the refusal is all a user or the creating model sees
+# (create/update, API server, dashboard, blueprint import, and the BLOCKED delivery of a stored job).
+_CRON_PATTERN_REMEDIES = {
+    "exfil_curl_auth_header": (
+        " For an authenticated API call, use `gh api ...` for GitHub, or move the request into a"
+        " --script job that gets its token through terminal.env_passthrough (cron docs, Security)."
+    ),
+}
+
+
 def _first_pattern_error(text: str, *pattern_sets) -> str:
     for patterns in pattern_sets:
         for pattern, pid in patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 return (
                     f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not "
-                    "contain injection or exfiltration payloads."
+                    "contain injection or exfiltration payloads." + _CRON_PATTERN_REMEDIES.get(pid, "")
                 )
     return ""
 

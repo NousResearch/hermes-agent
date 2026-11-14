@@ -2302,13 +2302,13 @@ def _prepare_job_prompt(
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"**Status:** BLOCKED\n\n"
-            "The assembled prompt (user prompt + loaded skill content) tripped "
-            "the cron injection scanner and the agent was NOT run.\n\n"
+            "The assembled prompt (job prompt, plus any skill content or run data) "
+            "tripped the cron injection scanner and the agent was NOT run.\n\n"
             f"**Scanner result:** {block_exc}\n\n"
-            "Audit the skill(s) attached to this job for prompt-injection "
-            "payloads or invisible-unicode markers. If the skill is legitimate "
-            "and the match is a false positive, rephrase the content to avoid "
-            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
+            "Edit the job prompt, or audit the skill(s) attached to this job, for "
+            "the pattern named above or invisible-unicode markers. If the content is "
+            "legitimate and the match is a false positive, rephrase it to avoid the "
+            "threat pattern (`tools/cronjob_prompt_scan.py`)."
         )
         return (False, blocked_doc, "", str(block_exc)), None
     if prompt is None:

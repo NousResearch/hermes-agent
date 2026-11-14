@@ -24,6 +24,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from pm.filesystem import is_junction
@@ -43,6 +44,11 @@ _GIT_ORIGIN = re.compile(r'\[remote "origin"\][^[]*?url\s*=\s*(\S+)')
 #: Public: ``desktop_plugin_install`` takes it too, so a clone-publish never interleaves with a
 #: reconcile pass copying the same package's folder.
 ROOT_WRITER = threading.Lock()
+# The two mkdtemp suffixes publishing into this root: Python's eight [a-z0-9_] characters and
+# Node's (libuv) six [A-Za-z0-9]. The hidden prefix is reserved for temporary publishes.
+_STAGING_NAME = re.compile(r"^\..+\.staging-(?:[a-z0-9_]{8}|[A-Za-z0-9]{6})$")
+# Electron publishes into this root too, outside ROOT_WRITER; allow ample time for in-flight copies.
+_ABANDONED_STAGING_AGE_S = 60 * 60
 
 
 def _is_link(path: Path) -> bool:
@@ -179,12 +185,17 @@ def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ig
     staged = staging / target.name
     try:
         shutil.copytree(source_dir, staged, symlinks=True, ignore=ignore)
+        # A read-only source (the Nix store, a deb/rpm install) copies as 0555 folders, which take no marker.
+        for folder, _dirs, _files in os.walk(staged):
+            os.chmod(folder, os.stat(folder).st_mode | stat.S_IWUSR)
         if marker is None:
             # Only an installer writes the marker or the origin: one shipped in the repository would
             # claim another package's agent half, or a catalog entry (Electron drops both too).
             (staged / PACKAGE_MARKER).unlink(missing_ok=True)
             write_install_origin(staged, origin)
         else:
+            # A marker shipped in a read-only package copies as 0444, which takes no overwrite.
+            (staged / PACKAGE_MARKER).unlink(missing_ok=True)
             _write_marker(staged, marker)
         if _is_link(target):
             target.unlink()
@@ -192,7 +203,7 @@ def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ig
             rmtree_readonly(target)
         os.rename(staged, target)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        rmtree_readonly(staging, ignore_errors=True)
 
 
 def _desktop_entry(package_dir: Path, name: str) -> tuple[Path, os.stat_result] | None:
@@ -289,6 +300,26 @@ def _source_gone(name: str, entry: Path) -> bool:
     return False
 
 
+def _prune_abandoned_staging(app_root: Path) -> None:
+    """Reclaim old hidden staging copies from failed reconciles, without touching active publishers."""
+    cutoff = time.time() - _ABANDONED_STAGING_AGE_S
+    try:
+        with os.scandir(app_root) as entries:
+            candidates = [entry for entry in entries if _STAGING_NAME.fullmatch(entry.name)]
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("desktop-plugins: cannot list staging folders in %s: %s", app_root, exc)
+        return
+
+    for entry in candidates:
+        try:
+            if entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime <= cutoff:
+                rmtree_readonly(entry.path)
+        except OSError as exc:
+            logger.warning("desktop-plugins: cannot remove abandoned staging %s: %s", entry.path, exc)
+
+
 def reconcile_desktop_halves(hermes_root: Path, app_root: Path) -> list[str]:
     """Materialize every local home's desktop halves into *app_root* (first home wins for a name in
     several profiles, the default home first) and drop copies whose package is gone. Returns the
@@ -333,4 +364,5 @@ def reconcile_desktop_halves_report(hermes_root: Path, app_root: Path) -> dict:
                 else:
                     shutil.rmtree(folder, ignore_errors=True)
                 touched.append(str(folder))
+        _prune_abandoned_staging(app_root)
         return {"touched": touched, "refused": [entry for entry in refused if entry["name"] not in seen]}

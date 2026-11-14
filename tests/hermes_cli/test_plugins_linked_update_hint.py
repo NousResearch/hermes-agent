@@ -41,7 +41,7 @@ def test_named_verb_on_a_linked_plugin_says_where_to_update_it(tmp_path, monkeyp
     from hermes_cli.plugins_cmd_update import cmd_adopt
 
     home = tmp_path / "home"
-    checkout = _checkout(tmp_path / "src" / "plug")
+    checkout = _checkout(tmp_path / "src[bold]" / "plug")  # brackets in a path are text, not markup
     (home / "plugins").mkdir(parents=True)
     os.symlink(checkout, home / "plugins" / "plug")
     monkeypatch.setenv("HERMES_HOME", str(home))

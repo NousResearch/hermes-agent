@@ -200,8 +200,9 @@ class TestBridgeTokenOffLoop:
 
         patches = _connect_patches(mock_proc, MagicMock())
         patches[6] = patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", side_effect=mint)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+        with ExitStack() as stack:
+            for context in patches:
+                stack.enter_context(context)
             await adapter.connect()
 
         assert len(on_loop) == 2 and not any(on_loop), on_loop  # first use, then the per-spawn rotation
@@ -231,10 +232,11 @@ class TestBridgeTokenOffLoop:
 
         patches = _connect_patches(mock_proc, MagicMock())
         patches[6] = patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", side_effect=mint)
-        with patch.object(adapter, "_acquire_platform_lock", return_value=True), \
-             patch.object(adapter, "_release_platform_lock") as release, \
-             patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+        with ExitStack() as stack:
+            for context in patches:
+                stack.enter_context(context)
+            stack.enter_context(patch.object(adapter, "_acquire_platform_lock", return_value=True))
+            release = stack.enter_context(patch.object(adapter, "_release_platform_lock"))
             task = asyncio.get_running_loop().create_task(adapter.connect())
             try:
                 assert await asyncio.to_thread(rotate_started.wait, 3), "token rotation never started"

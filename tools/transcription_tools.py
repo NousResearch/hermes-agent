@@ -519,7 +519,33 @@ def _dispatch_stt_provider(
         file_path, provider, stt_config, *_resolve_dispatch_hints(file_path, provider, stt_config, model, source))
 
 
+def _normalize_for_echo(text: str) -> str:
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in text.casefold()).split())
+
+
+def _transcript_echoes_prompt(transcript: str, prompt: str) -> bool:
+    """True when a transcript is a near-verbatim copy of the prompt it was decoded with."""
+    from difflib import SequenceMatcher
+
+    heard, hint = _normalize_for_echo(transcript), _normalize_for_echo(prompt)
+    return bool(heard and hint) and SequenceMatcher(None, heard, hint).ratio() >= 0.9
+
+
 def _route_stt_provider(
+    file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str],
+    language: Optional[str], prompt: Optional[str]) -> dict[str, Any]:
+    """Transcribe with *provider*; a transcript that only echoes the prompt is decoded once more without it.
+
+    Whisper reads the prompt as text spoken just before the audio, so on silence or faint speech it
+    can return the prompt itself as a confident transcript (#155798)."""
+    result = _route_stt_provider_once(file_path, provider, stt_config, model, language, prompt)
+    if prompt and result.get("success") and _transcript_echoes_prompt(str(result.get("transcript") or ""), prompt):
+        logger.warning("STT provider %s returned its prompt as the transcript; retrying without the prompt", provider)
+        result = _route_stt_provider_once(file_path, provider, stt_config, model, language, None)
+    return result
+
+
+def _route_stt_provider_once(
     file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str],
     language: Optional[str], prompt: Optional[str]) -> dict[str, Any]:
     if provider in BUILTIN_STT_PROVIDERS:

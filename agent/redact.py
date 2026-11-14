@@ -25,6 +25,7 @@ from agent.redact_headers import (
     redact_header_credentials,
 )
 from agent.redact_pattern_shape import _pattern_structure
+from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
     "code", "signature", "x-amz-signature",
     "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
+    "usertoken",  # Penpot MCP: the key can only travel as ``?userToken=`` (#133713)
 })
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
@@ -321,6 +323,7 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # whitespace AND ``&`` (form bodies go pair-by-pair via _redact_form_body);
 # _CFG_DOTTED_RE needs a NAMESPACED key; _CFG_ANCHORED_RE needs line start
 # (optionally after ``export``). The ``://`` URL guard lives at the call site.
+# The spaced ``key = value`` form is code-shaped too, so it has its own gate: agent/redact_spaced_cfg.py.
 # The uppercase _ENV_ASSIGN_RE above never matched these, so config-file passwords leaked verbatim (issue
 # #16413). These run only in a config-file context, NOT in prose, code, or URLs — three carve-outs preserved
 # from the original design (#4367 + the documented web-URL passthrough below): 1. The value is bounded by
@@ -638,6 +641,10 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
+# Gate for _AUTH_HEADER_RE: the header-name substring in ANY casing. A mixed-case
+# name (aUtHoRiZaTiOn) contains neither the all-lower nor the all-upper run, so
+# plain substring checks would never reach the IGNORECASE regex (issue #108807).
+_AUTH_GATE_RE = re.compile(r"uthorization", re.IGNORECASE)
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. Start at an
 # identifier boundary, never inside a digit run (quadratic retries on dumps).
@@ -737,6 +744,40 @@ _URL_BARE_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Incoming-webhook URLs. The URL IS the credential: anyone holding it can post into the
+# workspace as the app, with no other secret. Web URLs are otherwise passed through on purpose
+# (magic links, OAuth callbacks the agent must follow), so this stays vendor-shaped like
+# _DB_CONNSTR_RE and _URL_BARE_TOKEN_RE: only the fixed host/path forms below match, and
+# only the credential segment is masked, leaving the host and ids readable for diagnosis.
+# Teams "Workflows" webhooks (the Power Automate replacement for Office 365 connectors) are
+# logic.azure.com / api.powerplatform.com trigger URLs whose only secret is the ``sig`` query
+# parameter; Slack workflow triggers live under hooks.slack.com/triggers/.
+# Hermes stores one as ``incoming_webhook_url`` for Teams delivery and ships Slack and Discord
+# adapters, so these land in config dumps, tool output and logs. Telegram's is already covered
+# by _TELEGRAM_RE, which masks the bot token inside its API URL. ``http://`` is matched too: a
+# mistyped scheme still carries the same secret in the path. Slack Workflow Builder URLs carry a
+# numeric id before the secret (workflows/T/A/<id>/<secret>), so that form is tried first; the
+# generic arm skips an all-digit segment followed by ``/`` so a second pass (RedactingFormatter
+# redacts twice) leaves that public id readable.
+# Every repeat in the Teams Workflows arm is capped: it is retried at each URL start, and the
+# uncapped prefix/path runs overlapped, which made repeated URLs cubic (50 KB took ~48 s).
+_WEBHOOK_HOST_END = r"\.?(?::\d+)?/"  # trailing-dot FQDN and explicit port reach the same host
+_WEBHOOK_URL_RE = re.compile(
+    r"(https?://hooks\.slack(?:-gov)?\.com" + _WEBHOOK_HOST_END
+    + r"workflows/[A-Z0-9]+/[A-Z0-9]+/\d+/)([A-Za-z0-9]{8,})"
+    r"|(https?://hooks\.slack(?:-gov)?\.com" + _WEBHOOK_HOST_END
+    + r"(?:services|workflows|triggers)/[A-Z0-9]+/[A-Z0-9]+/)(?!\d+/)([A-Za-z0-9]{8,})"
+    r"|(https?://(?:canary\.|ptb\.|www\.)?discord(?:app)?\.com" + _WEBHOOK_HOST_END
+    + r"api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
+    r"|(https?://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com" + _WEBHOOK_HOST_END
+    + r"webhookb2|outlook\.office\.com" + _WEBHOOK_HOST_END + r"webhook)/)([\w@/%+=-]{8,})"
+    r"|(https?://[A-Za-z0-9.-]+\.(?:logic\.azure\.com|api\.powerplatform\.com)" + _WEBHOOK_HOST_END
+    + r"(?:[^\s?#\"'<>/]{1,128}/){0,8}workflows/[^\s?#\"'<>]{1,512}?\?"
+    r"(?:[^\s#\"'<>]{0,1024}?&)?sig=)([A-Za-z0-9_%-]{8,})",
+    re.IGNORECASE,
+)
+
+
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
@@ -756,8 +797,10 @@ _URL_USERINFO_RE = re.compile(r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@")
 
 # Strict provider-egress URL redaction: delimiters stay in capture groups so the
 # query/fragment layout is preserved byte-for-byte; the key is decoded
-# separately for classification. Values stop at ``&``/``;`` (both valid).
-_STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*)")
+# separately for classification. Values stop at ``&``/``;`` (both valid). An apostrophe
+# followed by a token character is part of the value (``?token=abc'tail``); one followed by
+# anything else closes a quoted URL (``'…?token=abc')``, ``',``, ``'.strip()``) and stays.
+_STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*(?:'[A-Za-z0-9_~+%\-][^#&;\s\"'<>]*)*)")
 
 # Userinfo in absolute and network-path (``//user:pass@host``) references; the
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
@@ -823,8 +866,53 @@ def _is_basic_pair_password(password: str) -> bool:
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
 
+
+def _last_char_class(pattern: str) -> "str | None":
+    """Text of the last ``[...]`` class in ``pattern`` (escape-aware), or None.
+
+    For the built-in shape ``<literal prefix><body class><quantifier>`` this is the
+    pattern's body class.
+    """
+    last = None
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "[":
+            j = i + 1
+            if pattern[j:j + 1] == "^":
+                j += 1
+            if pattern[j:j + 1] == "]":  # a leading "]" is literal
+                j += 1
+            while j < len(pattern) and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            last = pattern[i:j + 1]
+            i = j + 1
+            continue
+        i += 1
+    return last
+
+
+def _trailing_guard(pattern: str) -> str:
+    """Lookahead ending ``pattern``: reject a following alphanumeric (word boundary), and ``_``/``-``
+    only when the pattern's body class admits them. Never stricter than the shared guard, so a
+    plugin pattern whose last class is a delimiter check (``(?=[\\s.,])``) still matches."""
+    body_class = _last_char_class(pattern)
+    try:  # a "[" inside a (?#...) comment is no class: fall back to the shared guard
+        seps = "".join(c for c in "_-" if re.fullmatch(body_class, c)) if body_class else None
+    except re.error:
+        seps = None
+    return r"(?![A-Za-z0-9_-])" if seps is None else f"(?![A-Za-z0-9{seps}])"
+
+
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
-    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
+    # Each branch gets its own guard (_trailing_guard): a following alphanumeric always
+    # blocks, ``_``/``-`` only when the body class admits them. The old shared
+    # ``(?![A-Za-z0-9_-])`` failed ``ghp_…[A-Za-z0-9]{10,}`` at the body's end and at every
+    # backtrack step, so a token followed by ``_``/``-`` was missed and shipped in cleartext
+    # (#142852). A pattern without a ``[...]`` class falls back to the shared class.
+    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(f"(?:{p}){_trailing_guard(p)}" for p in patterns) + r")")
 
 
 def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
@@ -838,9 +926,9 @@ def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
     # Groups are disjoint by first char, so leftmost-first match order is unchanged.
     by_first: dict = {}
     for pattern in patterns:
-        by_first.setdefault(pattern[0], []).append(pattern[1:])
+        by_first.setdefault(pattern[0], []).append(f"(?:{pattern[1:]}){_trailing_guard(pattern)}")
     body = "|".join(f"{re.escape(c)}(?:{'|'.join(rest)})" for c, rest in by_first.items())
-    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")(?![A-Za-z0-9_-])")
+    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")")
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
@@ -1206,6 +1294,21 @@ def _redact_strict_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
+def redact_log_urls(text: str) -> str:
+    """Mask credential-named query params and URL userinfo in log-bound text.
+
+    A log file is a persistence boundary, not a live tool flow: magic-link /
+    OAuth-callback URLs only need their non-secret parts to survive on disk, so
+    the log path opts into the strict URL redactors that
+    ``redact_sensitive_text`` deliberately leaves off for live flows. Without
+    it, a remote MCP server configured as ``https://mcp.example.com/mcp?token=…``
+    lands its API key on every log line that mentions the URL (issue #133713).
+    """
+    if not text or "://" not in text or not _redact_enabled():
+        return text
+    return _redact_strict_url_credentials(text)
+
+
 def redact_cdp_url(value: object) -> str:
     """Mask secrets in a CDP/browser endpoint URL before it is logged.
 
@@ -1323,6 +1426,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
         text = redact_cookie_assignments(text, mask)
+        if "://" not in text and _CFG_SECRET_WORD_RE.search(text):  # before the ENV passes: their ``\S+``
+            text = redact_spaced_cfg_assignments(text, mask)        # value stops at a quoted value's space
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
@@ -1343,6 +1448,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
             text = _CFG_DOTTED_RE.sub(_redact_env, text)
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)
+            text = redact_spaced_cfg_assignments(text, mask)
 
     if ":" in text and '"' in text:
         for pattern in (_SECRET_HEADER_JSON_RE, _COOKIE_HEADER_JSON_RE):
@@ -1417,8 +1523,9 @@ def _redact_userinfo_passwords(text: str) -> str:
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
 
 
-def _redact_url_credentials(text: str, code_file: bool) -> str:
-    """DB connection-string passwords, bare-token and ``user:pass`` URL userinfo (``://`` text only)."""
+def _redact_url_credentials(text: str, code_file: bool, *, file_read: bool = False) -> str:
+    """DB connection-string passwords, incoming-webhook secrets, bare-token and ``user:pass`` URL
+    userinfo (``://`` text only)."""
     def _redact_db(m):
         # code_file: a pure ``{...}`` password is an f-string template reference
         # (f"postgresql://{user}:{pass}@{host}"), not a literal credential.
@@ -1429,7 +1536,18 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
         if m.group(1).endswith("://:") and _DSN_PW_PLACEHOLDER_RE.fullmatch(pw):
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
+    def _redact_webhook(m):
+        # file_read: the non-reusable sentinel, so an agent that reads a stored webhook out of a
+        # config file cannot write a truncated-looking mask back over it (#35519).
+        mask = _mask_token_nonreusable if file_read else _mask_token
+        groups = m.groups()
+        for prefix, secret in zip(groups[::2], groups[1::2]):
+            if prefix:
+                return f"{prefix}{mask(secret)}"
+        return m.group(0)
+
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
+    text = _WEBHOOK_URL_RE.sub(_redact_webhook, text)
     text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
     return _redact_userinfo_passwords(text)
 
@@ -1449,7 +1567,7 @@ def _redact_phone(m):
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
-                          redact_url_credentials: bool = False) -> str:
+                          redact_url_credentials: bool = False, keep_phone_numbers: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
@@ -1542,7 +1660,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
         text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)
 
-    if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
+    if _AUTH_GATE_RE.search(text):  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
@@ -1555,7 +1673,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # in the password group, so a single-line template's group(2) is exactly the brace expression. See issue
     # #33801.
     if "://" in text:
-        text = _redact_url_credentials(text, code_file)
+        text = _redact_url_credentials(text, code_file, file_read=file_read)
     if force and "//" in text:
         text = _NETWORK_PATH_USERINFO_RE.sub(_mask_network_path_userinfo, text)
 
@@ -1588,10 +1706,23 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    if "+" in text:
+    if "+" in text and not keep_phone_numbers:  # opt-out: agent.redact_phone_policy
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+def redact_derived_text(text: object) -> str:
+    """Strictly scrub model-visible text derived from stored conversation data.
+
+    Derived summaries and search metadata can re-enter unrelated prompts, so
+    the user's ordinary redaction opt-out must not expose secrets through them.
+    """
+    return redact_sensitive_text(
+        "" if text is None else str(text),
+        force=True,
+        redact_url_credentials=True,
+    )
 
 
 # Commands whose stdout is an env-var dump: terminal redaction runs the
@@ -1759,17 +1890,18 @@ _BEARER_RESIDUE_RE = re.compile(
 )
 
 
-def redact_for_egress(text: str) -> str:
+def redact_for_egress(text: str, *, keep_phone_numbers: bool = False) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
     telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
     sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
-    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned.
+    ``keep_phone_numbers`` skips only the E.164 pass (``redact_for_chat_egress``'s opt-in)."""
     text = str(text or "")
     try:
-        text = redact_sensitive_text(text, force=True)
+        text = redact_sensitive_text(text, force=True, keep_phone_numbers=keep_phone_numbers)
     except Exception:
         return REDACTION_UNAVAILABLE
-    if "earer" in text:
+    if "earer" in text.lower():  # IGNORECASE regex; the gate must fold case too (#108807)
         text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
     return text
 
@@ -1790,6 +1922,35 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
         redacted = _redact_python_diagnostic_repr_fields(redacted)
     return redacted
 
+
+
+# execute_code output is script stdout, not a command line, so redact_terminal_output's command
+# classifier never sees an env dump there (#95509). A whole line of ``NAME=value`` (optionally
+# ``export``-prefixed, no space around ``=``) is the ``.env`` / ``env`` shape; source assignments
+# (``MAX_TOKENS = 100``, indented or embedded code) do not match and keep the code_file behaviour.
+_ENV_DUMP_LINE_RE = re.compile(r"^((?:export[ \t]+)?)([A-Z][A-Z0-9_]*)=(\S.*)$", re.MULTILINE)
+
+
+def _mask_env_dump_line(m: "re.Match[str]", mask_env) -> str:
+    # The whole line is one assignment, so its value is the rest of the line: ``env`` prints
+    # ``DB_PASSWORD=first second`` raw and a .env quotes it. _ENV_ASSIGN_RE's ``\S+`` would stop at
+    # the first space and leave the remaining words visible.
+    prefix, key, value = m.groups()
+    quote = value[0] if len(value) > 1 and value[0] in "'\"" and value[-1] == value[0] else ""
+    inner = value[1:-1] if quote else value
+    if _should_redact_assignment(key, inner, check_keyword=True):
+        return f"{prefix}{key}={quote}{_mask_token(inner)}{quote}"
+    return _ENV_ASSIGN_RE.sub(mask_env, m.group(0))
+
+
+def redact_code_output(output: str, *, force: bool = False) -> str:
+    """Redaction for execute_code stdout/stderr: code_file=True, plus the ENV-assignment pass on
+    lines shaped like an env dump so opaque prefix-less credentials are masked."""
+    redacted = redact_sensitive_text(output, force=force, code_file=True)
+    if not redacted or "=" not in redacted or not (force or _redact_enabled()):
+        return redacted
+    mask_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{_mask_token(g[2])}{g[1]}", check_keyword=True)
+    return _ENV_DUMP_LINE_RE.sub(lambda m: _mask_env_dump_line(m, mask_env), redacted)
 
 # --- Prefix pre-screen: derived from _PREFIX_PATTERNS so a new prefix can't
 # silently break the gate (every match contains its pattern's literal prefix).
@@ -1920,7 +2081,14 @@ class RedactingFormatter(logging.Formatter):
         safe_record = copy.copy(record)
         safe_record.msg = _LOG_UNSAFE_CHARS.sub(" ", redact_sensitive_text(record.getMessage()))
         safe_record.args = None
-        formatted = redact_sensitive_text(super().format(safe_record))
+        formatted = redact_log_urls(redact_sensitive_text(super().format(safe_record)))
+        # aiohttp's access line carries the raw request target, and webhook platforms that cannot
+        # send headers authenticate in the query string (BlueBubbles ``?password=``). An adapter's
+        # own ``access_log=None`` does not reach the shared listener that serves multiplexed
+        # profiles (#143550), so credential params are masked on every Hermes log handler. Its target
+        # is relative (no ``://``), which redact_log_urls above skips.
+        if record.name == "aiohttp.access":
+            formatted = _redact_strict_url_credentials(formatted)
         first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
         # Traceback lines carry exception text; break their stamps so `hermes logs` keeps them
         # as continuation lines of this record.

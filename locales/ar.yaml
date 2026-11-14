@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} مهارة متاحة"
     added_header: "➕ المهارات المضافة:"
     removed_header: "➖ المهارات المُزالة:"
+  gateway_restart:
+    waiting: "يُعاد تشغيل Hermes لإكمال تحديث أو إعادة تشغيل؛ بانتظار عودته…"
+    timed_out: "لم يعد Hermes من إعادة التشغيل في الوقت المحدد. تحقّق من `hermes gateway status` ثم شغّل `hermes` مجددًا."
+    stopped: "توقّف الانتظار لإعادة تشغيل Hermes؛ لم يبدأ أي شيء."
   session_store:
     unavailable_rich: "[bold yellow]⚠ مخزن الجلسات غير متاح[/bold yellow] — هذه المحادثة [bold]لن تُحفظ[/bold] ولا يمكن استئنافها لاحقًا. البحث في الجلسات السابقة معطّل أيضًا.\n  السبب: {reason}.\n  {action}\n  [dim]التفاصيل: {details}[/dim]"
     unavailable_plain: "تحذير: مخزن الجلسات غير متاح — هذه المحادثة لن تُحفظ ولا يمكن استئنافها لاحقًا. السبب: {reason}. {action}"

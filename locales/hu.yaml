@@ -3345,6 +3345,10 @@ cli:
     total: "📚 {count} skill érhető el"
     added_header: "➕ Hozzáadott skillek:"
     removed_header: "➖ Eltávolított skillek:"
+  gateway_restart:
+    waiting: "A Hermes újraindul egy frissítés vagy újraindítás befejezéséhez; várakozás a visszatérésére…"
+    timed_out: "A Hermes nem tért vissza időben az újraindulásból. Nézd meg: `hermes gateway status`, majd indítsd újra a `hermes` parancsot."
+    stopped: "A Hermes újraindulására való várakozás leállítva; semmi sem indult el."
   session_store:
     unavailable_rich: "[bold yellow]⚠ A munkamenet-tároló nem érhető el[/bold yellow] — ez a beszélgetés [bold]NEM lesz mentve[/bold], és később nem folytatható. A korábbi munkamenetek keresése is le van tiltva.\n  Ok: {reason}.\n  {action}\n  [dim]Részletek: {details}[/dim]"
     unavailable_plain: "FIGYELEM: A munkamenet-tároló nem érhető el — ez a beszélgetés NEM lesz mentve, és később nem folytatható. Ok: {reason}. {action}"

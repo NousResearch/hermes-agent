@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} skill(s) disponível(is)"
     added_header: "➕ Skills Adicionadas:"
     removed_header: "➖ Skills Removidas:"
+  gateway_restart:
+    waiting: "O Hermes está reiniciando para concluir uma atualização ou reinício; aguardando o retorno…"
+    timed_out: "O Hermes não voltou do reinício a tempo. Verifique `hermes gateway status` e inicie `hermes` novamente."
+    stopped: "Espera pelo reinício do Hermes interrompida; nada foi iniciado."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Armazenamento de sessões indisponível[/bold yellow] — esta conversa [bold]NÃO será salva[/bold] e não poderá ser retomada depois. A busca em sessões anteriores também está desativada.\n  Motivo: {reason}.\n  {action}\n  [dim]Detalhes: {details}[/dim]"
     unavailable_plain: "AVISO: Armazenamento de sessões indisponível — esta conversa NÃO será salva e não poderá ser retomada depois. Motivo: {reason}. {action}"

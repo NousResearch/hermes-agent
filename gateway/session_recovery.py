@@ -91,8 +91,10 @@ class SessionRecoveryMixin:
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
         from gateway.session import build_session_key
+        from gateway.session_dm_threads import dm_thread_key_source, session_db_for_source, telegram_extra_for
+        keyed = key_source if key_source is not None else source
         return build_session_key(
-            key_source if key_source is not None else source,
+            dm_thread_key_source(keyed, telegram_extra_for(keyed, self.config), lambda: session_db_for_source(self, keyed)),
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source))

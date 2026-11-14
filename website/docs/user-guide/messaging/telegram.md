@@ -648,7 +648,7 @@ At the moment only the `platforms.<name>.extra` form is deep-merged into the pla
 
 When `base_url` is set, Hermes:
 
-- Builds the python-telegram-bot client against the local server
+- Builds the python-telegram-bot client against the local server. A bare server URL (`http://127.0.0.1:8081`) gets the Bot API's `/bot` path (and `/file/bot` for `base_file_url`) appended; a URL with any path of its own (`…/bot`, a reverse proxy's `/telegram/`) is used as written
 - Auto-lifts its internal document/audio size cap from 20 MB → 2 GB
 - Reports the active limit in the "too large" error message (`Maximum: 2048 MB.`) so it's obvious which mode you're in
 - Sends through the same server outside the gateway too: `hermes send`, the `send_message` tool and cron deliveries that fall back to the standalone sender
@@ -862,6 +862,15 @@ If you work on several long-running projects, topics keep their context separate
 - **Topic "General"** — miscellaneous tasks and quick questions
 
 Each topic gets its own conversation session, history, and context — completely isolated from the others.
+
+With BotFather **Threaded Mode** on, Telegram also stamps a thread id on ordinary DM messages (a reply inside a thread, or a client that opens a new thread per question), and by default each of those threads is its own session too. If one DM keeps fanning out into parallel sessions you didn't ask for, set `platforms.telegram.extra.dm_threads: shared`: the whole DM becomes one session (one history, one turn at a time), and replies still go back to the thread each message came from. Topics declared in `extra.dm_topics` and `/topic` multi-session lanes stay isolated either way. The default, `per_thread`, keeps one session per thread; any other value logs a warning and is treated as `per_thread`.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      dm_threads: shared   # per_thread (default) | shared
+```
 
 ### Configuration
 
@@ -1259,6 +1268,18 @@ gateway:
 
 When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message, including the streaming preview edits and the final edit of a streamed reply (edits that resolve a button prompt, such as an approval card, don't carry it yet), and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
+**Reply anchor on split replies.** With the default `reply_to_mode: first`, the first part of a reply quotes the message it answers. Some Telegram Desktop/TDLib clients render that first part as an unsupported message when the reply is split into several parts. To send split replies without the quote (single-message replies keep it, and DM topics always keep it because the topic is routed by it):
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        anchor_multipart_replies: false   # default: true
+```
+
+This covers split MarkdownV2 replies and split Rich Messages. A streamed reply (`transport: edit`) picks its anchor when the first preview is sent, before its final length is known, and Telegram cannot remove a reply anchor by editing, so a streamed reply that later overflows keeps the quote on its first part.
+
 **Long replies and flood control.** A reply longer than Telegram's 4,096-character limit is sent as numbered parts (`(1/3)`, `(2/3)`, …). A part boundary that falls inside bold, italic, underline, strikethrough or spoiler text closes the style at the end of one part and reopens it at the start of the next, so both parts keep the formatting. Sends to one chat are delivered one reply at a time, so a scheduled report and a DM answer landing together cannot interleave their parts, and a file upload cannot land between two parts of the text it accompanies. If Telegram's flood control refuses a part mid-way, Hermes resumes from the refused part once the penalty passes instead of re-sending the parts already on screen, and while a chat is inside a known penalty window further sends to it fail closed locally (no extra requests that would lengthen the penalty). That window survives a gateway restart: it is saved per bot in the profile home (`telegram_flood_cooldown_<bot id>.json`), so a restart during a ban does not fire straight back into it. A penalty longer than the gateway's inline wait cap is handed to the delivery ledger, which redelivers the reply with a "part of it may already have arrived above" note. File attachments (documents, photos, videos, voice) follow the same rule: a short penalty is waited out and the upload retried; a longer one schedules a single native re-upload once the window has passed, and you only see the "Couldn't deliver the file attachment" notice if that re-upload is refused too. An upload that never reached Telegram (a connect or pool failure) or that Telegram answered with its own 5xx error is retried up to three times with a short backoff. If all three fail, you get the "Couldn't deliver the file attachment" notice. An upload that may already be in the chat (the connection dropped or timed out after the file was sent) is never re-sent and posts no failure notice; it is reported as unconfirmed, so the `send_message` tool and cron delivery do not re-send it either.
 
 ## Group Allowlisting
@@ -1298,7 +1319,7 @@ Behavior:
 - `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
 - A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
 - Use `*` in any of these to allow any sender/chat.
-- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`.
+- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env` or an external secret source still wins over `config.yaml`; one only inherited from the gateway's process environment does not.
 - This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
 
 ### Migration from before PR #17686
@@ -1529,6 +1550,24 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 :::tip
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
+
+## Typing Indicator
+
+While a turn runs, the bot shows "typing…" by calling `sendChatAction` every few seconds. Some
+Telegram clients move the view while that indicator is on, so your last message can appear to
+jump up the chat until the reply arrives ([#40885](https://github.com/NousResearch/hermes-agent/issues/40885)).
+To turn the indicator off for Telegram:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        typing_indicator: false   # default true
+```
+
+With it off, the bot makes no `sendChatAction` calls at all. Replies, progress messages and
+reactions still work as before.
 
 ## Per-Channel Prompts
 

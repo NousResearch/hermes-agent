@@ -3430,6 +3430,10 @@ cli:
     total: "📚 {count} skill(s) available"
     added_header: "➕ Added Skills:"
     removed_header: "➖ Removed Skills:"
+  gateway_restart:
+    waiting: "Hermes is restarting to finish an update or restart; waiting for it to come back…"
+    timed_out: "Hermes did not come back from its restart in time. Check `hermes gateway status`, then start `hermes` again."
+    stopped: "Stopped waiting for Hermes to restart; nothing was started."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Session store unavailable[/bold yellow] — this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. Searching past sessions is also disabled.\n  Reason: {reason}.\n  {action}\n  [dim]Details: {details}[/dim]"
     unavailable_plain: "WARNING: Session store unavailable — this conversation will NOT be saved and cannot be resumed later. Reason: {reason}. {action}"

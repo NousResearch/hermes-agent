@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} vaardigheid(e) beskikbaar"
     added_header: "➕ Bygevoegde Vaardighede:"
     removed_header: "➖ Verwyderde Vaardighede:"
+  gateway_restart:
+    waiting: "Hermes herbegin om 'n opdatering of herbegin te voltooi; wag dat dit terugkom…"
+    timed_out: "Hermes het nie betyds van sy herbegin teruggekom nie. Kyk na `hermes gateway status` en begin `hermes` weer."
+    stopped: "Opgehou wag vir Hermes om te herbegin; niks is begin nie."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Sessiestoor nie beskikbaar nie[/bold yellow] — hierdie gesprek sal [bold]NIE gestoor word NIE[/bold] en kan nie later hervat word nie. Soek in vorige sessies is ook gedeaktiveer.\n  Rede: {reason}.\n  {action}\n  [dim]Besonderhede: {details}[/dim]"
     unavailable_plain: "WAARSKUWING: Sessiestoor nie beskikbaar nie — hierdie gesprek sal NIE gestoor word NIE en kan nie later hervat word nie. Rede: {reason}. {action}"

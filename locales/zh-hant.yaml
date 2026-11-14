@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} 個技能可用"
     added_header: "➕ 已新增的技能："
     removed_header: "➖ 已移除的技能："
+  gateway_restart:
+    waiting: "Hermes 正在重新啟動以完成更新或重新啟動；正在等待它恢復…"
+    timed_out: "Hermes 未能及時完成重新啟動。請檢查 `hermes gateway status`，然後重新啟動 `hermes`。"
+    stopped: "已停止等待 Hermes 重新啟動；未啟動任何內容。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ 工作階段儲存區無法使用[/bold yellow] — 此對話[bold]不會被儲存[/bold]，之後也無法恢復。搜尋過去的工作階段亦已停用。\n  原因：{reason}。\n  {action}\n  [dim]詳細資訊：{details}[/dim]"
     unavailable_plain: "警告：工作階段儲存區無法使用 — 此對話不會被儲存，之後也無法恢復。原因：{reason}。{action}"

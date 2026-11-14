@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} 件のスキルが利用可能"
     added_header: "➕ 追加されたスキル:"
     removed_header: "➖ 削除されたスキル:"
+  gateway_restart:
+    waiting: "Hermes は更新または再起動を完了するため再起動しています。戻るのを待っています…"
+    timed_out: "Hermes が時間内に再起動から戻りませんでした。`hermes gateway status` を確認してから、もう一度 `hermes` を起動してください。"
+    stopped: "Hermes の再起動待ちを中止しました。何も開始されていません。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ セッションストアが利用できません[/bold yellow] — この会話は[bold]保存されず[/bold]、後から再開することもできません。過去のセッション検索も無効です。\n  理由: {reason}。\n  {action}\n  [dim]詳細: {details}[/dim]"
     unavailable_plain: "警告: セッションストアが利用できません — この会話は保存されず、後から再開することもできません。理由: {reason}。{action}"

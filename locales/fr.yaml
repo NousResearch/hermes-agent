@@ -3638,6 +3638,10 @@ cli:
     total: "📚 {count} skill(s) disponible(s)"
     added_header: "➕ Skills ajoutées :"
     removed_header: "➖ Skills supprimées :"
+  gateway_restart:
+    waiting: "Hermes redémarre pour terminer une mise à jour ou un redémarrage ; en attente de son retour…"
+    timed_out: "Hermes n'est pas revenu de son redémarrage à temps. Vérifiez `hermes gateway status`, puis relancez `hermes`."
+    stopped: "Attente du redémarrage de Hermes interrompue ; rien n'a été lancé."
   session_store:
     unavailable_rich: |-
       [bold yellow]⚠ Stockage des sessions indisponible[/bold yellow] — cette conversation ne sera [bold]PAS enregistrée[/bold] et ne pourra pas être reprise plus tard. La recherche dans les sessions passées est aussi désactivée.

@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} 个技能可用"
     added_header: "➕ 新增技能："
     removed_header: "➖ 移除技能："
+  gateway_restart:
+    waiting: "Hermes 正在重启以完成更新或重启；正在等待它恢复…"
+    timed_out: "Hermes 未能在规定时间内完成重启。请检查 `hermes gateway status`，然后重新启动 `hermes`。"
+    stopped: "已停止等待 Hermes 重启；未启动任何内容。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ 会话存储不可用[/bold yellow] — 本次对话将[bold]不会被保存[/bold]，之后也无法恢复。搜索历史会话的功能也已禁用。\n  原因：{reason}。\n  {action}\n  [dim]详情：{details}[/dim]"
     unavailable_plain: "警告：会话存储不可用 — 本次对话将不会被保存，之后也无法恢复。原因：{reason}。{action}"

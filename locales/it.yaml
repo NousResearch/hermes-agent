@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} skill disponibili"
     added_header: "➕ Skill aggiunte:"
     removed_header: "➖ Skill rimosse:"
+  gateway_restart:
+    waiting: "Hermes si sta riavviando per completare un aggiornamento o un riavvio; in attesa che torni…"
+    timed_out: "Hermes non è tornato dal riavvio in tempo. Controlla `hermes gateway status`, poi riavvia `hermes`."
+    stopped: "Attesa del riavvio di Hermes interrotta; non è stato avviato nulla."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Archivio sessioni non disponibile[/bold yellow] — questa conversazione [bold]NON verrà salvata[/bold] e non potrà essere ripresa in seguito. Anche la ricerca nelle sessioni passate è disattivata.\n  Motivo: {reason}.\n  {action}\n  [dim]Dettagli: {details}[/dim]"
     unavailable_plain: "AVVISO: archivio sessioni non disponibile — questa conversazione NON verrà salvata e non potrà essere ripresa in seguito. Motivo: {reason}. {action}"

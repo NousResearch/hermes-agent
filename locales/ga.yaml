@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} scil(eanna) ar fáil"
     added_header: "➕ Scileanna Curtha leis:"
     removed_header: "➖ Scileanna Bainte:"
+  gateway_restart:
+    waiting: "Tá Hermes ag atosú chun nuashonrú nó atosú a chríochnú; ag fanacht go dtiocfaidh sé ar ais…"
+    timed_out: "Níor tháinig Hermes ar ais óna atosú in am. Seiceáil `hermes gateway status`, ansin tosaigh `hermes` arís."
+    stopped: "Stopadh ag fanacht le hatosú Hermes; níor tosaíodh aon rud."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Níl stór na seisiún ar fáil[/bold yellow] — [bold]NÍ shábhálfar[/bold] an comhrá seo agus ní féidir é a atosú níos déanaí. Tá cuardach seisiún roimhe seo díchumasaithe freisin.\n  Cúis: {reason}.\n  {action}\n  [dim]Sonraí: {details}[/dim]"
     unavailable_plain: "RABHADH: Níl stór na seisiún ar fáil — NÍ shábhálfar an comhrá seo agus ní féidir é a atosú níos déanaí. Cúis: {reason}. {action}"

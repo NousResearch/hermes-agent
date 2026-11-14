@@ -16,7 +16,6 @@ import socket
 import shlex
 import subprocess
 import sys
-import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +72,8 @@ from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gat
 # Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
 # import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
 from hermes_cli.gateway_restart_env import restart_watcher_env
+from hermes_cli.gateway_bundled_env import systemd_env_line as _systemd_env_line
+from hermes_cli.gateway_restart_watcher import watcher_source
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1079,88 +1080,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             respawn_cwd = ""
             respawn_env_overlay = {}
 
-    # cwd/env overlay are embedded as JSON literals in the watcher source (no extra argv plumbing).
-    watcher = textwrap.dedent(
-        """
-        import sys
-        if sys.path[:1] == [""]: del sys.path[0]  # -c puts the cwd first: never import from it
-        import os
-        import subprocess
-        import time
-        # Stdlib-only imports: after the package-manager handoff this is the bare store Python;
-        # name the checkout explicitly.
-        sys.path.insert(0, {project_root_literal})
-        from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
-            windows_detach_flags_without_breakaway,
-        )
-        from hermes_cli.gateway_launchd_runtime import start_gateway_job
-
-        pid = int(sys.argv[1])
-        cmd = sys.argv[2:]
-        _respawn_cwd = {respawn_cwd_literal}
-        _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + {watcher_timeout_literal} if sys.platform == "win32" else None
-        while deadline is None or time.monotonic() < deadline:
-            # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            if not pid_exists_stdlib(pid):
-                break
-            time.sleep(0.2)
-
-        # Respawned stdout/stderr go to _spawn_detached's sidecar log: with DEVNULL a gateway killed moments
-        # after respawn (Job Object teardown when breakaway is denied) left ZERO trace. Best-effort.
-        _stdio_target = subprocess.DEVNULL
-        _stdio_fh = None
-        try:
-            from hermes_constants import get_hermes_home
-            from pathlib import Path
-            _log_dir = Path(get_hermes_home()) / "logs"
-            _log_dir.mkdir(parents=True, exist_ok=True)
-            _stdio_fh = open(_log_dir / "gateway-stdio.log", "ab", buffering=0)
-            _stdio_target = _stdio_fh
-        except Exception:
-            pass
-
-        # Detach the respawn: POSIX setsid; Windows needs CREATE_BREAKAWAY_FROM_JOB, since the watcher may sit in a job
-        # object (Electron/Tauri parent) whose teardown would otherwise kill it (_subprocess_compat.windows_detach_flags).
-        _popen_kwargs = {{"stdout": _stdio_target, "stderr": _stdio_target}}
-        # Stable cwd + env overlay (VIRTUAL_ENV/PYTHONPATH/HERMES_HOME) the windowless interpreter needs; empty on POSIX.
-        if _respawn_cwd:
-            _popen_kwargs["cwd"] = _respawn_cwd
-        _base_env = {{**os.environ, **_respawn_env_overlay}}
-        try:
-            if sys.platform == "win32":
-                try:
-                    _popen_kwargs["creationflags"] = windows_detach_flags()
-                    # Stamp the breakaway state exactly like gateway_windows._spawn_detached so the
-                    # respawned gateway's exit-diag / lifecycle records show whether it escaped the
-                    # parent Job Object (a job-teardown kill is otherwise indistinguishable).
-                    _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}}
-                    subprocess.Popen(cmd, **_popen_kwargs)
-                except OSError:
-                    # CREATE_BREAKAWAY_FROM_JOB is rejected with ERROR_ACCESS_DENIED when the parent's
-                    # job object refuses breakaway; retry without it (mirrors _spawn_detached).
-                    _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-                    _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}}
-                    subprocess.Popen(cmd, **_popen_kwargs)
-            elif sys.platform == "darwin" and _stdio_fh and start_gateway_job(
-                    cmd, env=_base_env, cwd=os.getcwd(), log_path=_log_dir / "gateway-stdio.log"):
-                pass  # a launchd job: its LAN access outlives whoever ran this one
-            else:
-                if _respawn_env_overlay:
-                    _popen_kwargs["env"] = _base_env
-                _popen_kwargs["start_new_session"] = True
-                subprocess.Popen(cmd, **_popen_kwargs)
-        finally:
-            if _stdio_fh is not None:
-                try:
-                    _stdio_fh.close()
-                except OSError:
-                    pass
-        """
-    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
-                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
-                     project_root_literal=json.dumps(str(PROJECT_ROOT)))
+    watcher = watcher_source(old_pid, respawn_cwd=respawn_cwd, respawn_env_overlay=respawn_env_overlay,
+                             timeout_s=GATEWAY_RESTART_WATCHER_TIMEOUT_S, project_root=str(PROJECT_ROOT))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -2996,13 +2917,6 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
 
 
-def _systemd_env_line(name: str, value: str) -> str:
-    """One ``Environment="NAME=value"`` line: ``\\`` and ``"`` escaped for systemd's quoting, ``%``
-    doubled so specifier expansion leaves the value alone."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return f'Environment="{name}={escaped}"\n'
-
-
 def _installed_unit_ld_library_path(system: bool) -> str:
     """``LD_LIBRARY_PATH`` baked into the installed unit; ``""`` when absent."""
     return _unit_environment_value(get_systemd_unit_path(system=system), "LD_LIBRARY_PATH") or ""
@@ -3247,6 +3161,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
                               python=python_path, home=hermes_home)
     stop_mark = installation_command(project_root, module="gateway.systemd_stop_mark",
                                 python=python_path, home=hermes_home)
+    from hermes_cli.gateway_bundled_env import systemd_bundled_env_block
+    bundled_env_block = systemd_bundled_env_block(get_systemd_unit_path(system=system))  # #85357
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -3261,7 +3177,7 @@ WorkingDirectory={working_dir}
 
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
-Restart=always
+{bundled_env_block}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -3851,8 +3767,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(f"  Run: {sudo}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
-    status_cmd = ["status", svc, "--no-pager"] + (["-l"] if full else [])
-    _run_systemctl(status_cmd, system=system, capture_output=False, timeout=10)
+    from hermes_cli.gateway_status_notes import print_scrubbed_output
+    print_scrubbed_output(_run_systemctl(["status", svc, "--no-pager"] + (["-l"] if full else []), system=system, timeout=10, **_CAPTURE_TEXT))
     result = _run_systemctl(["is-active", svc], system=system, timeout=10, **_CAPTURE_TEXT)
     if result.stdout.strip() == "active":
         print(f"✓ {scope_label} gateway service is running")

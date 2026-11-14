@@ -423,7 +423,7 @@ async def lock_skill(body: SkillLock, profile: Optional[str] = None):
                 verb = "lock" if body.locked else "unlock"
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Could not {verb} '{key}': skills/.usage.json is not writable.")
+                    detail=f"Could not {verb} '{key}': skills/.usage.json is damaged or not writable.")
         return {"ok": True, "name": body.name, "locked": body.locked}
 
     return await asyncio.to_thread(_run)

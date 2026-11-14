@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} skill kullanılabilir"
     added_header: "➕ Eklenen Skill'ler:"
     removed_header: "➖ Kaldırılan Skill'ler:"
+  gateway_restart:
+    waiting: "Hermes bir güncellemeyi veya yeniden başlatmayı tamamlamak için yeniden başlıyor; geri gelmesi bekleniyor…"
+    timed_out: "Hermes yeniden başlatmadan zamanında dönmedi. `hermes gateway status` komutunu kontrol edip `hermes`'i yeniden başlatın."
+    stopped: "Hermes'in yeniden başlaması beklenmekten vazgeçildi; hiçbir şey başlatılmadı."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Oturum deposu kullanılamıyor[/bold yellow] — bu konuşma [bold]KAYDEDİLMEYECEK[/bold] ve daha sonra sürdürülemeyecek. Geçmiş oturumlarda arama da devre dışı.\n  Neden: {reason}.\n  {action}\n  [dim]Ayrıntılar: {details}[/dim]"
     unavailable_plain: "UYARI: Oturum deposu kullanılamıyor — bu konuşma KAYDEDİLMEYECEK ve daha sonra sürdürülemeyecek. Neden: {reason}. {action}"

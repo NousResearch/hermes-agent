@@ -735,7 +735,7 @@ def _action_create(a: dict[str, Any]) -> str:
             grace_minutes=a["grace_minutes"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
-            catch_up=a["catch_up"],
+            catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -850,6 +850,18 @@ def _pick(updates: dict[str, Any], job: dict[str, Any], key: str) -> Any:
     return updates[key] if key in updates else job.get(key)
 
 
+# Model-facing tri-state for ``wrap_response``: the tool cannot tell an omitted argument from an
+# explicit null, so "inherit" is the spelled-out reset. Real booleans and None (programmatic
+# callers, the CLI and dashboard lanes) pass through for update_job's strict normaliser to check.
+_WRAP_RESPONSE_MODES = {"on": True, "off": False, "inherit": None}
+
+
+def _wrap_response_override(value: Any) -> Any:
+    if isinstance(value, str) and value.strip().lower() in _WRAP_RESPONSE_MODES:
+        return _WRAP_RESPONSE_MODES[value.strip().lower()]
+    return value
+
+
 def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str, Any]) -> Optional[str]:
     """prompt / name / deliver / skills / model pins; returns an error string or None."""
     prompt, deliver, skill, skills = a["prompt"], a["deliver"], a["skill"], a["skills"]
@@ -880,6 +892,8 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
         updates["failure_deliver"] = _norm_fd
     if a["catch_up"] is not None:
         updates["catch_up"] = a["catch_up"]
+    if a["wrap_response"] is not None:
+        updates["wrap_response"] = _wrap_response_override(a["wrap_response"])
     if skills is not None or skill is not None:
         canonical_skills = _canonical_skills(skill, skills)
         updates["skills"] = canonical_skills
@@ -1073,6 +1087,7 @@ def cronjob(
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str | list[str]] = None,
     catch_up: Optional[bool] = None,
+    wrap_response: Optional[bool | str] = None,  # bool, or the tool's on / off / inherit
     task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -1175,6 +1190,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "Runs missed while the machine was off: true = run once on return, false = skip. Omit for the default (recurring run once, one-shots skip)."
             },
+            "wrap_response": {
+                "type": "string",
+                "enum": ["on", "off", "inherit"],
+                "description": "Per-job override for the 'Cronjob Response: <name>' header and 'To stop or manage this job...' footer around delivered output. 'on' wraps; 'off' delivers the raw output verbatim (useful for briefings meant to read clean); 'inherit' removes an override so the job follows the global cron.wrap_response again. Omit to leave it unchanged (a new job inherits)."
+            },
             "script": {
                 "type": "string",
                 "description": _script_description("the profile HERMES_HOME")
@@ -1242,7 +1262,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
 def _cronjob_handler(args, **kw):

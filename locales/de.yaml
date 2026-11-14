@@ -3328,6 +3328,10 @@ cli:
     total: "📚 {count} Skill(s) verfügbar"
     added_header: "➕ Hinzugefügte Skills:"
     removed_header: "➖ Entfernte Skills:"
+  gateway_restart:
+    waiting: "Hermes startet neu, um ein Update oder einen Neustart abzuschließen; warte, bis es zurück ist…"
+    timed_out: "Hermes ist nicht rechtzeitig vom Neustart zurückgekehrt. Prüfe `hermes gateway status` und starte `hermes` erneut."
+    stopped: "Warten auf den Hermes-Neustart abgebrochen; nichts wurde gestartet."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Sitzungsspeicher nicht verfügbar[/bold yellow] — diese Konversation wird [bold]NICHT gespeichert[/bold] und kann später nicht fortgesetzt werden. Die Suche in früheren Sitzungen ist ebenfalls deaktiviert.\n  Grund: {reason}.\n  {action}\n  [dim]Details: {details}[/dim]"
     unavailable_plain: "WARNUNG: Sitzungsspeicher nicht verfügbar — diese Konversation wird NICHT gespeichert und kann später nicht fortgesetzt werden. Grund: {reason}. {action}"

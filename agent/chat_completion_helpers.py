@@ -1562,8 +1562,8 @@ def _assistant_content_for_storage(agent, assistant_message):
     if isinstance(content, str) and content:
         content = agent._strip_think_blocks(content).strip()
         if content:
-            from agent.redact import redact_sensitive_text
-            content = redact_sensitive_text(content)
+            from agent.redact_phone_policy import redact_assistant_reply
+            content = redact_assistant_reply(content)
     return content
 
 

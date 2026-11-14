@@ -1484,10 +1484,12 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
 def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
-    entry = {
+    from agent.trajectory import redact_trajectory_value
+
+    entry = redact_trajectory_value({
         "conversations": agent._convert_to_trajectory_format(result['messages'], user_query, result['completed']),
         "timestamp": datetime.now().isoformat(), "model": model, "completed": result['completed'], "query": user_query,
-    }
+    })
     try:
         with open(sample_filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, indent=2))

@@ -3328,6 +3328,10 @@ cli:
     total: "📚 스킬 {count}개 사용 가능"
     added_header: "➕ 추가된 스킬:"
     removed_header: "➖ 제거된 스킬:"
+  gateway_restart:
+    waiting: "Hermes가 업데이트 또는 재시작을 마치기 위해 재시작 중입니다. 돌아올 때까지 기다리는 중…"
+    timed_out: "Hermes가 제시간에 재시작에서 돌아오지 않았습니다. `hermes gateway status`를 확인한 뒤 `hermes`를 다시 시작하세요."
+    stopped: "Hermes 재시작 대기를 중단했습니다. 아무것도 시작되지 않았습니다."
   session_store:
     unavailable_rich: "[bold yellow]⚠ 세션 저장소를 사용할 수 없어요[/bold yellow] — 이 대화는 [bold]저장되지 않으며[/bold] 나중에 재개할 수 없어요. 과거 세션 검색도 비활성화돼요.\n  이유: {reason}.\n  {action}\n  [dim]세부 정보: {details}[/dim]"
     unavailable_plain: "경고: 세션 저장소를 사용할 수 없어요 — 이 대화는 저장되지 않으며 나중에 재개할 수 없어요. 이유: {reason}. {action}"

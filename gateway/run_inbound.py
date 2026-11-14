@@ -738,7 +738,7 @@ class GatewayInboundMixin(
                 await authority.interrupt(actor, ref, handle.execution_generation)
 
     def _hm_in_telegram_grace(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
-        """A Telegram text follow-up inside the post-start grace window (it waits, never interrupts).
+        """A Telegram text or voice follow-up inside the post-start grace window (it waits, never interrupts).
         Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0 via ``_float_env``."""
         from gateway.run import _float_env
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
@@ -748,7 +748,9 @@ class GatewayInboundMixin(
         _raw = getattr(event, "raw_message", None)
         _sent = (_edit if isinstance(_edit := getattr(_raw, "edit_date", None), type(event.timestamp)) else event.timestamp) if _raw else None
         _arrived = _sent.timestamp() if hasattr(_sent, "timestamp") else time.time()
-        if not (source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
+        # A voice note is a dictated follow-up like text: a second voice sent seconds after the first
+        # must not interrupt, and so drop, the reply being written for it (#31328).
+        if not (source.platform == Platform.TELEGRAM and event.message_type in (MessageType.TEXT, MessageType.VOICE)
                 and _grace > 0 and _started_at and -1 <= (_arrived - _started_at) <= _grace):
             return False
         logger.debug("Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
@@ -822,7 +824,7 @@ class GatewayInboundMixin(
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         if (mode == "interrupt" and not superseded and not getattr(event, "internal", False)
-                and not event.get_command() and self._hm_text_only(event)
+                and not event.get_command() and (self._hm_text_only(event) or event.message_type == MessageType.VOICE)
                 and self._hm_in_telegram_grace(event, source, _quick_key)):
             return False  # leave the just-started turn running; the caller admits this follow-up
         state = self._peek_session_state(_quick_key)
@@ -1421,6 +1423,8 @@ class GatewayInboundMixin(
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            from gateway.session_moa_turn import arm_admitted_moa
+            arm_admitted_moa(self, _quick_key, event)  # restored by the finally below
             # Fail-open plugin consume inside the claimed slot (#129958); once per message.
             if not is_internal:
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)

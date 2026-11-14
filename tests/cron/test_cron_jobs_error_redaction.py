@@ -54,7 +54,6 @@ def test_success_scrubs_preupgrade_sticky_failure(tmp_cron_dir):
     assert _KEY not in _jobs_json(tmp_cron_dir)
 
 
-
 @pytest.mark.parametrize("outcome", [
     {"success": False, "status": "cancelled"},
     {"success": False, "error": "boom"},
@@ -74,6 +73,7 @@ def test_any_outcome_scrubs_preupgrade_sticky_stamps(tmp_cron_dir, outcome):
     if outcome.get("status") == "cancelled":
         assert "Key limit exceeded" in stored["last_failure"]["detail"]
     assert "Key limit exceeded" in stored["last_fire_error"]["detail"]
+
 
 def test_delivery_error_is_redacted_in_jobs_json(tmp_cron_dir):
     job = create_job(prompt="watch prices", schedule="every 1h")

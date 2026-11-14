@@ -5,6 +5,7 @@ import pytest
 
 from gateway.config_loader import load_yaml_layer
 from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, yaml_env_setter
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +194,7 @@ def test_source_history_the_launch_home_no_longer_owns_does_not_block_a_yaml_edi
     monkeypatch.setenv(bridged_env_marker("TELEGRAM_PROXY"), bridged_env_digest(proxy))  # inherited
     monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", {"TELEGRAM_PROXY"})
     if history == "other_profile":
-        monkeypatch.setitem(env_loader._SECRET_SOURCE_VALUES_BY_HOME, str((tmp_path / "other").resolve()),
+        monkeypatch.setitem(env_loader._SECRET_SOURCE_VALUES_BY_HOME, hermes_home_key(tmp_path / "other"),
                             {"TELEGRAM_PROXY": proxy})
     (tmp_path / "config.yaml").write_text("telegram:\n  proxy_url: 'http://other:3128'\n", encoding="utf-8")
 

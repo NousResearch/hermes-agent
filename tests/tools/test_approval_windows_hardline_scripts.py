@@ -80,3 +80,31 @@ def test_quoted_drive_roots_stay_hardline(cmd):
 def test_escaped_quote_in_prose_does_not_end_the_string():
     # One echo argument; the backslash-flattened text must not close the quote at `\"`.
     assert not detect_hardline_command('echo "x' + B + '"; rd /s /q C:' + B + ' later"')[0]
+
+
+@pytest.mark.parametrize("cmd", [
+    "Restart-Computer -WhatIf",
+    "stop-computer -whatif",
+    "Restart-Computer -ComputerName srv1 -WhatIf -Force",
+    'pwsh -c "Restart-Computer -WhatIf"',
+    'pwsh -c "Get-Date; Stop-Computer -WhatIf"',
+])
+def test_power_off_whatif_preview_is_not_hardline(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "Restart-Computer -WhatIf:$false",
+    "Restart-Computer -WhatIf -WhatIf:$false",
+    'Restart-Computer -ComputerName " -WhatIf"',
+    "Restart-Computer # -WhatIf",
+    "Restart-Computer $args -WhatIf",
+    "Restart-Computer @p -WhatIf",
+    "Restart-Computer -WhatIfx",
+    "Restart-Computer -WhatIf; Restart-Computer",
+    "Restart-Computer -WhatIf && Stop-Computer",
+    "Restart-Computer -WhatIf" + chr(10) + "Stop-Computer",
+    'pwsh -c "Restart-Computer -WhatIf; Stop-Computer"',
+])
+def test_whatif_data_or_a_later_real_power_off_stays_hardline(cmd):
+    assert detect_hardline_command(cmd)[0], cmd

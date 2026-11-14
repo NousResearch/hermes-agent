@@ -193,3 +193,17 @@ def provider_retry_after_seconds(error: Any) -> Optional[float]:
             nested = body.get("error")
             value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
     return value if value is not None and value > 0 else None
+
+
+def unavailable_retry_wait(retry_after_s: Optional[float], *, waited_s: float, budget_s: float) -> Optional[float]:
+    """Seconds to wait before re-trying the SAME model after a 503 + Retry-After, or None to fail over.
+
+    None when the header carries no usable wait, or when honouring it would overrun the remaining
+    wall-clock budget: a server asking for longer than we are willing to wait is not coming back
+    in time, so the caller moves on now instead of sleeping and retrying once more."""
+    if retry_after_s is None or retry_after_s <= 0:
+        return None
+    remaining = float(budget_s) - float(waited_s)
+    if remaining <= 0 or retry_after_s > remaining:
+        return None
+    return float(retry_after_s)

@@ -159,9 +159,9 @@ pages. Direct FAL requires a funded `FAL_KEY`; managed-gateway availability
 depends on that gateway's endpoint allowlist and is not implied by FAL availability.
 Existing provider and model defaults are unchanged.
 
-## OpenAI API: GPT Image 2.5
+## OpenAI API: GPT Image 2.5 and 2.6
 
-The **OpenAI** provider supports GPT Image 2.5 Flare (fast everyday creation)
+The **OpenAI** provider supports GPT Image 2.5 and 2.6 Flare (fast everyday creation)
 and Sunburst (precision generation and editing), using `OPENAI_API_KEY`.
 Select them through `hermes tools` → Image Generation → OpenAI, or set:
 
@@ -170,11 +170,16 @@ hermes config set image_gen.provider openai
 hermes config set image_gen.openai.model gpt-image-2.5-flare
 ```
 
-`gpt-image-2.5-flare` and `gpt-image-2.5-sunburst` use automatic quality.
-Append `-low`, `-medium`, `-high`, `-xhigh`, or `-max` to select a fixed quality,
-for example `gpt-image-2.5-sunburst-high`. Both support generation and editing
-with up to 16 reference images. Existing GPT Image 2 selections and the
-`gpt-image-2-medium` default are unchanged.
+`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.6-flare` and
+`gpt-image-2.6-sunburst` use automatic quality. Append `-low`, `-medium`, `-high`,
+`-xhigh`, or `-max` to select a fixed quality, for example
+`gpt-image-2.6-sunburst-high`. All four support generation and editing with up
+to 16 reference images and cost the same per token. Hermes requests raster PNG
+output from 2.6; its SVG, animated GIF and `complexity` options are not exposed.
+
+OpenAI retires `gpt-image-2` on February 10, 2027 and recommends 2.6 Sunburst or
+Flare instead ([deprecations](https://developers.openai.com/api/docs/deprecations)).
+The `gpt-image-2-medium` default is unchanged for now; pick a 2.6 tier to move early.
 
 This is paid API usage, separate from a ChatGPT/Codex subscription. Both models
 cost $5 per million text-input tokens, $8 per million image-input tokens, and
@@ -182,7 +187,9 @@ $30 per million image-output tokens (cached input rates are $1.25 and $2,
 respectively). Per-image cost varies with usage; the GPT Image 2 calculator
 does not estimate 2.5 token consumption. See the official
 [Flare](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare) and
-[Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst) docs.
+[Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst) docs, and
+[2.6 Flare](https://developers.openai.com/api/docs/models/gpt-image-2.6-flare) /
+[2.6 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst).
 
 The **OpenAI (Codex auth)** provider does not offer 2.5. The Codex backend
 accepts any `model` value (including nonexistent ids) and generates with its
@@ -288,7 +295,7 @@ Two inputs drive the edit:
 | Backend | Image-to-image | Reference cap | How |
 |---|---|---|---|
 | **FAL.ai** (edit-capable models below) | ✓ | up to 16 (per model) | routes to the model's `/edit` endpoint |
-| **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
+| **OpenAI** (GPT Image 2 / 2.5 & 2.6 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 3`) | ✓ | up to 4 | instruction-following edit of the pictures given (`image_urls`); local files are embedded in the request, up to 3 MB in total |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`); local files are embedded in the request, up to 3 MB in total |

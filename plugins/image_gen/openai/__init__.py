@@ -1,4 +1,4 @@
-"""OpenAI GPT Image 2 and 2.5 Flare/Sunburst quality tiers;
+"""OpenAI GPT Image 2 and 2.5/2.6 Flare/Sunburst quality tiers;
 base64 output → image cache. Selection: ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai.model`` →
 ``image_gen.model`` → :data:`DEFAULT_MODEL`; an id outside the catalog is sent verbatim.
 Endpoint: ``image_gen.openai.base_url`` → the named endpoint ``image_gen.openai.provider`` →
@@ -27,15 +27,16 @@ MODELS = {
     **{key: {**meta, "api_model": API_MODEL} for key, meta in GPT_IMAGE_2_TIERS.items()},
     **{
         model if quality == "auto" else f"{model}-{quality}": {
-            "display": f"GPT Image 2.5 {name} ({quality.title()})",
+            "display": f"GPT Image {version} {name} ({quality.title()})",
             "speed": speed,
             "strengths": strengths,
             "api_model": model,
             "quality": quality,
         }
+        for version in ("2.5", "2.6")
         for model, name, speed, strengths in (
-            ("gpt-image-2.5-flare", "Flare", "Fast", "Everyday image generation and editing"),
-            ("gpt-image-2.5-sunburst", "Sunburst", "Slower", "Precision generation and editing"),
+            (f"gpt-image-{version}-flare", "Flare", "Fast", "Everyday image generation and editing"),
+            (f"gpt-image-{version}-sunburst", "Sunburst", "Slower", "Precision generation and editing"),
         )
         for quality in ("auto", "low", "medium", "high", "xhigh", "max")
     },
@@ -138,7 +139,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
     price = "varies"
     setup = dict(
         name="OpenAI", badge="paid",
-        tag="GPT Image 2 / 2.5 Flare / 2.5 Sunburst — text-to-image & image editing",
+        tag="GPT Image 2 / 2.5 & 2.6 Flare / Sunburst — text-to-image & image editing",
         key="OPENAI_API_KEY", prompt="OpenAI API key", url="https://platform.openai.com/api-keys")
 
     def is_available(self) -> bool:

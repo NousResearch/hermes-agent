@@ -31,7 +31,7 @@ from hermes_cli.plugins_cmd_capabilities import (
 from hermes_cli.plugins_cmd_git import (
     _EXACT_COMMIT_RE, _canonical_source, _checkout_exact_revision, _clone_plugin_repo, _git_head_revision,
     _git_or_raise, _git_pull_plugin_dir, _git_resolve_commit, _normalize_exact_revision, _pin_annotation,
-    _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _update_install_record,
+    _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _scrub_git_url, _update_install_record,
     _write_install_metadata, pinned_revision,
 )
 from hermes_cli.plugins_cmd_install import (
@@ -449,7 +449,7 @@ def _clone_failure_message(git_url: str, git_error: str) -> str:
     The text reaches ``_fail`` -> Rich ``console.print``: escape the git output so ``[...]`` in it is
     not parsed as markup."""
     from rich.markup import escape
-    return (f"Could not download the plugin from {git_url}. Check the address (browse the catalog "
+    return (f"Could not download the plugin from {_scrub_git_url(git_url)}. Check the address (browse the catalog "
             "with `hermes plugins search`), check your internet connection, or, if the repository "
             "is private, sign in first with `gh auth login` (or set GITHUB_TOKEN in your .env).\n"
             f"Details: {escape(git_error.strip())}")

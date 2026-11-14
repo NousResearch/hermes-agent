@@ -131,6 +131,12 @@ def _finish_change(c: Console, invalidate_cache: bool, what: str = "Change will 
     c.print(f"[dim]Use /reset to start a new session now, or --now to {verb} immediately (invalidates prompt cache).[/]\n")
 
 
+def _shown(identifier: str) -> str:
+    """*identifier* for display: a URL's ``user:token@`` userinfo is masked before it is printed."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(identifier, force=True)
+
+
 def _print_error(c: Console, message: str) -> None:
     # One unwrapped line: the Desktop Hub toasts a failed action's last 3 log lines, and an 80-column
     # wrap left only the tail of the message there (the subject was cut off).
@@ -495,13 +501,13 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     if not identifier:
         return
     if not meta:
-        _print_error(c, f"Could not find '{identifier}' in any source.")
+        _print_error(c, f"Could not find '{_shown(identifier)}' in any source.")
         return
     c.print()
     info_lines = [f"[bold]Name:[/] {meta.name}", f"[bold]Description:[/] {meta.description}",
                   f"[bold]Source:[/] {meta.source}",
                   f"[bold]Trust:[/] {_trust_cell(meta.trust_level, meta.source)}",
-                  f"[bold]Identifier:[/] {meta.identifier}"]
+                  f"[bold]Identifier:[/] {_shown(meta.identifier)}"]
     if meta.tags:
         info_lines.append(f"[bold]Tags:[/] {', '.join(meta.tags)}")
     info_lines.extend(_format_extra_metadata_lines(meta.extra))
@@ -548,6 +554,7 @@ def _scan_block_message(result, identifier: str) -> str:
     hard_block = result.verdict == "dangerous" and result.trust_level in ("community", "trusted")
     policy = ("Hermes never installs unverified skills with high-risk findings, even with --force."
               if hard_block else "Re-run with --force to install anyway.")
+    identifier = _shown(identifier)
     return (f"the security scan found {findings} in '{identifier}' (listed above). "
             f"{policy} Review the findings or ask the author to fix them; to read the skill without "
             f"installing, run `hermes skills inspect {identifier}`.")
@@ -631,7 +638,7 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
     if pinned:
         return pinned
     _print_error(c, f"no source adapter for '{source_id}'. "
-                    f"Refusing to resolve '{identifier}' against other registries "
+                    f"Refusing to resolve '{_shown(identifier)}' against other registries "
                     f"(that would change the skill's provenance).")
     return None
 
@@ -658,12 +665,12 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     # from a skill that exists.
     if meta is not None and not rate_limited and not rejected:
         src_id = getattr(source, "source_id", lambda: "the registry")()
-        c.print(f"[bold red]Error:[/] '{identifier}' is listed in the {src_id} index, "
+        c.print(f"[bold red]Error:[/] '{_shown(identifier)}' is listed in the {src_id} index, "
                 f"but its files no longer exist upstream.")
         c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
                 "its author. Try `hermes skills search` for an alternative.[/]\n")
         return "stale_index"
-    c.print(f"[bold red]Error:[/] Could not download '{identifier}'.")
+    c.print(f"[bold red]Error:[/] Could not download '{_shown(identifier)}'.")
     if rejected:
         c.print(f"[yellow]Hint:[/] GitHub rejected {' and '.join(rejected)} (401 Bad credentials). "
                 f"Replace or remove the token in {display_hermes_home()}/.env, or re-run [bold]gh auth login[/].")
@@ -855,7 +862,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
             elif _hub_rejected_credentials(sources):
                 attempt["failure_class"] = "auth_rejected"
             return None, "failed", False
-        c.print(f"\n[bold]Fetching:[/] {identifier}")
+        c.print(f"\n[bold]Fetching:[/] {_shown(identifier)}")
         meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if _matched_source is not None:
         attempt["registry"] = _matched_source.source_id() or "other"
@@ -1326,7 +1333,7 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         if not repo:
             _print_error(c, f"Repo required. Usage: hermes skills tap {action} owner/repo")
             return
-        c.print((ok_line if getattr(mgr, method)(repo) else fail_line).format(repo=repo))
+        c.print((ok_line if getattr(mgr, method)(repo) else fail_line).format(repo=_shown(repo)))
     else:
         c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove\n")
 

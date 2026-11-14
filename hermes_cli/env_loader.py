@@ -1186,9 +1186,10 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         reapplied = earlier is not None and earlier[1] == before
         prior = earlier[2] if reapplied else before
         # The frozen launch env follows a rotated write, so a later revoke still matches it.
-        if reapplied and os.environ[name] == _published_value(name, staged):
-            revoke_launch_env_write(name, before, os.environ[name])
-        writes[name] = (applied.source, os.environ[name], prior)
+        published = _published_value(name, staged)
+        if reapplied and os.environ[name] == published:
+            revoke_launch_env_write(name, before, published)
+        writes[name] = (applied.source, published, prior)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes
     else:

@@ -194,6 +194,14 @@ def test_a_concurrent_write_during_the_fetch_never_enters_the_frozen_launch_env(
         with _profile_runtime_scope(launch_home):
             manager.discover_and_load(force=True)
         assert capture_launch_env()["VAULT_ONLY_KEY"] == "v1"
+        # Removing the source takes back only its own value: the foreign one stays in os.environ.
+        config = launch_home / "config.yaml"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+        assert os.environ["VAULT_ONLY_KEY"] == "from-secondary"
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
     finally:
         set_multiplex_active(False)
 

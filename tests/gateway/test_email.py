@@ -120,6 +120,15 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertNotIn("<p>", result)
         self.assertNotIn("<b>", result)
 
+    def test_strip_html_does_not_double_decode_entities(self):
+        from plugins.platforms.email.adapter import _strip_html
+
+        self.assertEqual(
+            _strip_html("The token is &amp;lt;APIKEY&amp;gt;"),
+            "The token is &lt;APIKEY&gt;",
+        )
+        self.assertEqual(_strip_html("<p>Don&#39;t &rsquo;&nbsp;&quot;x&quot;</p>"), "Don't \u2019 \"x\"")
+
 
 class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""

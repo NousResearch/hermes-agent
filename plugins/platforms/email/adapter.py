@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.parser import BytesHeaderParser
 from email.utils import formatdate, parseaddr
+from html import unescape as _html_unescape
 from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -55,8 +56,8 @@ _CHARSET_ALIASES = {"unknown-8bit": "utf-8", "unknown": "utf-8", "x-unknown": "u
                     "gb2312": "gb18030", "gbk": "gb18030", "ks_c_5601-1987": "cp949"}
 # Ordered (pattern, replacement) substitutions for _strip_html.
 _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[^>]*>", re.IGNORECASE), "\n"),
-              (re.compile(r"</p>", re.IGNORECASE), "\n"), (re.compile(r"<[^>]+>"), ""), (re.compile(r"&nbsp;"), " "),
-              (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
+              (re.compile(r"</p>", re.IGNORECASE), "\n"), (re.compile(r"<[^>]+>"), ""))
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
 # ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
 _SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
 _COMMENT_RE = re.compile(r"\([^()]*\)")
@@ -281,7 +282,10 @@ def _strip_html(html: str) -> str:
     """Naive HTML tag stripper for fallback text extraction."""
     for pattern, repl in _HTML_SUBS:
         html = pattern.sub(repl, html)
-    return html.strip()
+    # One unescape pass after tag removal: each entity layer decodes once (``&amp;lt;`` stays ``&lt;``),
+    # and named/numeric entities (``&#39;``, ``&rsquo;``) reach the agent as text, not markup.
+    html = _html_unescape(html).replace("\xa0", " ")
+    return _BLANK_RUN_RE.sub("\n\n", html).strip()
 
 
 def _extract_email_address(raw: str) -> str:

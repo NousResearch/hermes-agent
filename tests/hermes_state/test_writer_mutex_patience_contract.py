@@ -19,6 +19,7 @@ import pytest
 
 from hermes_state import SessionDB, classify_persistence_error
 from hermes_state_errors import is_sqlite_lock_error
+from persistence.sqlite._holder import StoreHolder
 from tests.waiting import wait_until
 
 
@@ -103,7 +104,7 @@ def test_queued_token_delta_survives_a_mutex_refusal(db, monkeypatch, caplog):
     """The token writer applies queued deltas with routine patience; a refusal must requeue, not drop."""
     caplog.set_level(logging.DEBUG, logger="hermes_state")
     for name in ("_WRITE_PATIENCE_S", "_TRANSCRIPT_WRITE_PATIENCE_S"):
-        monkeypatch.setattr(SessionDB, name, 0.05)
+        monkeypatch.setattr(StoreHolder, name, 0.05)
     holder, release = _hold_writer_mutex(db, hold_s=5)
     try:
         db.queue_token_counts("owned", input_tokens=7, output_tokens=3, model="m")

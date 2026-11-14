@@ -1250,7 +1250,9 @@ gateway:
 
 `warn` logs each offending call site once with its stack; `raise` makes the call
 fail (useful in development and CI). Off costs nothing: no storage method is
-wrapped. Takes effect on the next gateway start.
+wrapped. Takes effect on the next gateway start. The guard is process-wide, so
+under multiplexing only the launching profile's `config.yaml` sets it; a
+secondary profile's value is ignored.
 
 ## Gateway Restart Drain
 

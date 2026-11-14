@@ -1,7 +1,7 @@
 name: finix
 title: Finix
 repo: https://github.com/web3blind/finix
-sha: 168a8aa37911d7a18650a869388105d0eaed3293
+sha: d4cc0eb3adcd8f00946215c8179a0b89f2e967da
 description: Encrypted profile backups with cloud readback verification and experimental default-profile recovery.
 maintainer: web3blind
 tier: community
@@ -11,8 +11,9 @@ version: "0.1.0"
 readme: true
 platforms: [linux, windows]
 known_issues:
-  - Experimental beta. Full live default-profile restoration and Linux cloud restoration have not passed end-to-end acceptance.
-  - Native Windows archive verification succeeded, but Desktop cold preview timed out before Apply. UI still contains Russian labels.
+  - Experimental beta. New-profile import and activation are blocked pending a supported safe host import contract.
+  - The optional pinned Google Workspace skill bridge is not a stable SDK provider API and does not satisfy the outstanding SDK-only review requirement.
+  - Windows and cloud acceptance reports have not yet been reconciled with the pinned publication-status documents; see the PR discussion.
   - Requires separately installed age and age-keygen. Keep independent backups and the recovery key off the backup host.
 capabilities:
   provides_tools: []

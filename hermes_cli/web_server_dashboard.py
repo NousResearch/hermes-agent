@@ -1051,9 +1051,11 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         if target is None:
             return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
         host, dashboard_dir, api_file = target
-        from hermes_cli.web_server_plugin_profiles import run_hosted_request
+        from hermes_cli.web_server_plugin_profiles import read_forwarded_body, run_hosted_request
         query, headers = request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"]
-        body = await request.body()
+        body = await read_forwarded_body(request)
+        if body is None:
+            return Response(status_code=499)
         from hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
         authenticated = admitted_for_sensitive_route(request)
         return await run_hosted_request(host.home, name, lambda timeout: host.asgi_request(

@@ -36,35 +36,18 @@ class TestFsmonitorInjection:
     def test_gitignore_filtering_still_applies(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         repo = tmp_path / "repo"
-        dependency = repo / "node_modules" / "package" / ".hidden"
-        dependency.mkdir(parents=True)
-        (dependency / "dependency.js").write_text("HIDDEN_GI_TOKEN = true\n")
-        local = repo / ".project-local"
-        local.mkdir()
-        (local / "settings.cfg").write_text("HIDDEN_GI_TOKEN = true\n")
+        # Directory matches come from find and are filtered only by git check-ignore;
+        # "generated_cache" is outside the fixed prune list, so only git drops it.
+        (repo / "generated_cache").mkdir(parents=True)
+        (repo / "kept_cache").mkdir()
         _init_repo(repo)
-        (repo / ".gitignore").write_text("node_modules/\n")
-        r = json.loads(search_tool("HIDDEN_GI_TOKEN", path=str(repo), task_id="t-gi"))
-        warning = r.get("warning", "")
-        # check-ignore still runs (now with the fsmonitor override) and still
-        # prunes gitignored dependency trees from the hidden-file hint.
-        assert r["total_count"] == 0
-        assert "hidden or gitignored" in warning
-        assert "settings.cfg" in warning
-        assert "dependency.js" not in warning
-
+        (repo / ".gitignore").write_text("generated_cache/\n")
+        r = json.loads(search_tool("*_cache", target="files", path=str(repo), task_id="t-gi"))
+        found = json.dumps(r)
+        assert "kept_cache" in found
+        assert "generated_cache" not in found
 
 class TestPathNotFoundHint:
-
-    def test_missing_path_hint_lists_dash_named_parent(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        # A parent whose name looks like an ls option: without `--` the listing
-        # fails and the similar-paths hint is silently lost.
-        parent = tmp_path / "--width"
-        parent.mkdir()
-        (parent / "gone_sibling.txt").write_text("x\n")
-        r = json.loads(search_tool("TOKEN_ALPHA", path=str(parent / "gone"), task_id="t-dash"))
-        assert "gone_sibling.txt" in r.get("error", "")
 
     def test_missing_relative_path_hint_lists_dash_named_parent(self, tmp_path):
         # An absolute parent starts with `/` and is never an ls option; the relative

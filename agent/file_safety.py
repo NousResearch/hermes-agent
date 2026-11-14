@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import HERMES_PROTECTED_SUBPATHS, SECRET_CACHE_STORES
 from hermes_platform.host.facts import os_family
 
 
@@ -322,22 +322,6 @@ def build_write_approval_paths(home: str) -> set[str]:
     return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
 
 
-# HERMES_HOME / root subpaths that the agent's generic file tools must not
-# rewrite. Session transcripts (state.db, sessions/) are application-owned
-# state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
-# browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
-# browser credential and its grants to native apps) hold credential material.
-# skills/ and memories/ are deliberately NOT here: they are user-editable
-# content, and write approval for them (memory/skills ``write_approval``) is
-# enforced by the memory/skill subsystem tools, not the generic write path
-# (#60440 tracks closing that gap for write_file/patch).
-# Control files (auth.json, config.yaml, webhook_subscriptions.json) are
-# deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = (
-    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
-
-
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
 
@@ -385,7 +369,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
         return "credential"
 
     for base in _credential_store_dirs():
-        for sub in _HERMES_PROTECTED_SUBPATHS:
+        for sub in HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
                 if deny_path_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"

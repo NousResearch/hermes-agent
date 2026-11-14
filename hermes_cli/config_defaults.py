@@ -1676,6 +1676,9 @@ DEFAULT_CONFIG = {
         # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
         # Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
         "destructive_slash_confirm": True,
+        # false: dangerous-command approval cards never offer "Always" and nothing is persisted to
+        # command_allowlist (typed "/approve always" counts as "once"). Default true = today's behavior.
+        "allow_always": True,
     },
     # Permanently allowed dangerous command patterns (added via "always" approval).
     "command_allowlist": [],

@@ -446,9 +446,9 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
     global _BRIDGED_ALLOW_ALL_USERS
-    from gateway.platforms._shared import profile_scoped, record_yaml_env_prior, yaml_env_setter
+    from gateway.platforms._shared import bridge_env_skipped, record_yaml_env_prior, yaml_env_setter
 
-    skip_env_bridge = profile_scoped()
+    skip_env_bridge = bridge_env_skipped()
     set_env = yaml_env_setter(fallback=True)
     gateway_section = yaml_cfg.get("gateway")
     allow_all = yaml_cfg.get("allow_all_users")

@@ -148,10 +148,28 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     nothing in the files shadows them.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
+    from gateway.bridged_env import follow_bridged_env
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
+    # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
+    follow_bridged_env(scope)
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
 
+
+def follow_launch_bridged_env() -> None:
+    """After the launch profile's live allowlist reload re-bridged its lists, bring the INSTALLED launch
+    mapping (built at the body's entry, before the reload) up to date, so the rest of this body reads
+    the edited lists. The caller runs this only with the launch scope bound (``_owner_scope``) and its
+    bridge not skipped, so the mapping is never another profile's."""
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope
+    from gateway.bridged_env import follow_bridged_env
+    from hermes_constants import get_hermes_home
+
+    scope = current_secret_scope()
+    if isinstance(scope, dict):
+        follow_bridged_env(scope)
+        scope.update(build_profile_secret_scope(get_hermes_home()))  # .env / sources still win, as at build
 
 
 def owner_secret_scope(home: str | Path) -> dict[str, str]:

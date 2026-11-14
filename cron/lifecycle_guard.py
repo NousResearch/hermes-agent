@@ -71,8 +71,10 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # `taskkill /F /IM python.exe`, `pkill -9 python3` or `killall python` carry no hermes/gateway token
 # yet terminate it (#113667). Token-aware rather than a line regex: option VALUES are never read as
 # targets (`pkill -u <user> chrome`), `-f` cmdline patterns are judged as patterns, and other image
-# names (`taskkill /F /IM chrome.exe`) stay available. Numeric-PID kills are out of scope:
-# the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to.
+# names (`taskkill /F /IM chrome.exe`) stay available. Numeric-PID kills of OTHER processes stay
+# allowed (the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to); a
+# literal PID equal to the gateway's own is refused only when the caller passes ``gateway_pid``
+# (same PID namespace by construction, see `_targets_gateway_pid`).
 _INTERPRETER_IMAGE_RE = re.compile(r"^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$")
 _HOST_INTERPRETER_NAME = Path(sys.executable).name.lower() if sys.executable else ""
 _KILLER_VALUE_OPTIONS = {
@@ -767,6 +769,70 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
 
 
+# Shell syntax words that may precede the executed command in a `;`/`&&`-split segment
+# (`if true; then kill N; fi`). Peeled only for the PID check; shlex has already dropped quotes, so a
+# quoted `'then' kill N` peels too — a harmless over-block of a command that sends nothing.
+_PID_SCAN_SYNTAX_PREFIXES = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
+_KILL_LISTING_OPTIONS = frozenset({"-l", "-L", "--list", "--table"})
+_KILL_SIGNAL_VALUE_OPTIONS = frozenset({"-s", "-n", "--signal"})
+
+
+def _kill_targets_pid(args: list[str], pid: int) -> bool:
+    """Whether POSIX/procps ``kill`` with *args* signals literal *pid* (listings and signal-0 probes
+    send nothing)."""
+    position = 0
+    while position < len(args):
+        arg = args[position]
+        if arg == "--":
+            return any(token.isascii() and token.isdecimal() and int(token) == pid for token in args[position + 1:])
+        if arg in _KILL_LISTING_OPTIONS or arg in ("-0", "-s0", "-n0", "--signal=0"):
+            return False
+        if arg in _KILL_SIGNAL_VALUE_OPTIONS:
+            if args[position + 1:position + 2] == ["0"]:
+                return False
+            position += 2
+            continue
+        if arg.isascii() and arg.isdecimal() and int(arg) == pid:
+            return True
+        position += 1
+    return False
+
+
+def _windows_killer_targets_pid(name: str, args: list[str], pid: int) -> bool:
+    """``taskkill /PID n`` (local only: ``/S`` names another host) or ``Stop-Process -Id n``."""
+    lowered = [arg.lower() for arg in args]
+    if name == "taskkill" and "/s" in lowered:
+        return False
+    flags = ("/pid", "-pid") if name == "taskkill" else ("-id",)
+    for flag, value in zip(lowered, args[1:]):
+        if flag in flags and any(part.isascii() and part.isdecimal() and int(part) == pid for part in value.split(",")):
+            return True
+    return False
+
+
+def _targets_gateway_pid(command: str, gateway_pid: int) -> bool:
+    """An executed ``kill`` / ``taskkill`` / ``Stop-Process`` whose LITERAL PID operand is the gateway's
+    own (#149944). Dynamic PIDs (``$(pgrep …)``, ``$PPID``) are not resolved. ``sh -c`` payloads and
+    referenced scripts reach this through the recursive walk."""
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    for segment in _iter_command_segments(strip_inert_heredoc_bodies(command)):
+        offset = 0
+        while offset < len(segment) and segment[offset] in _PID_SCAN_SYNTAX_PREFIXES:
+            offset += 2 if segment[offset] == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
+        segment = segment[offset:]
+        index = _executed_command_index(segment)
+        if index is None:
+            continue
+        name = _executable_name(segment[index]).lower().removesuffix(".exe")
+        args = segment[index + 1:]
+        if name == "kill" and _kill_targets_pid(args, gateway_pid):
+            return True
+        if name in ("taskkill", "stop-process") and _windows_killer_targets_pid(name, args, gateway_pid):
+            return True
+    return False
+
+
 def _direct_lifecycle_scan(command: str) -> bool:
     """Pure-string direct scans: lifecycle regex (data-exempted) + submit."""
     return (
@@ -1093,6 +1159,7 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    gateway_pid: Optional[int] = None,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1100,7 +1167,9 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command):
+    if _direct_lifecycle_scan(command) or (
+        executed and gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
+    ):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
@@ -1108,7 +1177,7 @@ def _contains_unsafe_gateway_action(
     def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, gateway_pid=gateway_pid,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1184,10 +1253,12 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    gateway_pid: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
-    real lifecycle command or the command is allowed.
+    real lifecycle command or the command is allowed. *gateway_pid* additionally refuses executed
+    literal-PID kills of that process; pass it only when the command runs in this PID namespace.
 
     Total by construction: never raises. Direct scans are pure string ops; the referenced-script
     walk (filesystem, remote backends, shlex on decoded bytes) is best-effort defense-in-depth — an
@@ -1202,7 +1273,7 @@ def scan_gateway_lifecycle(
     try:
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, gateway_pid=gateway_pid,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:
@@ -1212,7 +1283,9 @@ def scan_gateway_lifecycle(
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command), None
+            return _direct_lifecycle_scan(command) or (
+                gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
+            ), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
             return (contains_gateway_lifecycle_command(command)

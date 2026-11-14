@@ -9,7 +9,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/abundantbeing/vibeleak-atlas/blob/898323b75fa926c9b4a1a7675091ed647def3617/README.md
-image: https://raw.githubusercontent.com/abundantbeing/vibeleak-atlas/898323b75fa926c9b4a1a7675091ed647def3617/.github/assets/readme/vibeleak-symbol.png
+image: https://raw.githubusercontent.com/abundantbeing/vibeleak-atlas/71f9aff5a239a75fe683070bbe3a94bf1abfccd2/.github/assets/readme/catalog-cover.jpg
 platforms: [windows]
 known_issues:
   - "Website assessments need a VibeLeak owner API key, which is part of the Pro plan. Local folder review needs no key or account."

@@ -50,6 +50,8 @@ vi.mock('@/store/system-actions', () => ({
   runGatewayRestart: vi.fn()
 }))
 
+import { getLogs } from '@/hermes'
+
 import { GatewayMenuPanel } from './gateway-menu-panel'
 
 const renderPanel = (gatewayState: string) =>
@@ -99,5 +101,29 @@ describe('GatewayMenuPanel reconnect action', () => {
     const reconnect = screen.getByRole('button', { name: 'Reconnect gateway' })
     await act(async () => fireEvent.click(reconnect))
     expect(mocks.reconnectGateway).toHaveBeenCalledOnce()
+  })
+})
+
+describe('GatewayMenuPanel recent activity source', () => {
+  afterEach(() => {
+    cleanup()
+    vi.mocked(getLogs).mockResolvedValue({ file: 'gui', lines: [] })
+  })
+
+  it('shows the fresher of gui.log and gateway.log (#146682)', async () => {
+    // gui.log is frozen when the Desktop attaches to the messaging gateway; the panel must
+    // not present its days-old lines as current activity.
+    vi.mocked(getLogs).mockImplementation(async ({ file }) => ({
+      file: file ?? 'gui',
+      lines:
+        file === 'gateway'
+          ? ['2026-10-31 19:04:26,001 INFO gateway is alive']
+          : ['2026-10-27 09:00:00,000 WARNING gui stale line']
+    }))
+
+    renderPanel('open')
+
+    expect(await screen.findByText(/gateway is alive/)).toBeTruthy()
+    expect(screen.queryByText(/gui stale line/)).toBeNull()
   })
 })

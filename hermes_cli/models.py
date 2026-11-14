@@ -2292,17 +2292,6 @@ def _probe_neg_key(base_url: str) -> Optional[str]:
     return f"{host}:{port}" if host else None
 
 
-def _probe_result(
-    models, probed_url, resolved_base_url, suggested_base_url=None, used_fallback=False
-) -> dict[str, Any]:
-    return {
-        "models": models,
-        "probed_url": probed_url,
-        "resolved_base_url": resolved_base_url,
-        "suggested_base_url": suggested_base_url,
-        "used_fallback": used_fallback}
-
-
 def probe_api_models(
     api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
     api_mode: Optional[str] = None, request_headers: Optional[dict[str, str]] = None,
@@ -2310,6 +2299,8 @@ def probe_api_models(
     """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
     ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
     ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    from hermes_cli.models_catalog import _probe_result, _published_name
+
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
@@ -2369,13 +2360,20 @@ def probe_api_models(
         from hermes_cli.chat_catalog import note_catalog_item
 
         probed = []
+        names: dict[str, str] = {}
         for item in data.get("data", []):
             if isinstance(item, dict) and note_catalog_item(item):
                 continue
             probed.append(item.get("id", ""))
+            if isinstance(item, dict):
+                model_id = str(item.get("id") or "").strip()
+                label = _published_name(item)
+                if model_id and label:
+                    names[model_id] = label
         return _probe_result(
             probed, url, candidate_base.rstrip("/"),
-            alternate_base if alternate_base != candidate_base else normalized, is_fallback)
+            alternate_base if alternate_base != candidate_base else normalized, is_fallback,
+            model_names=names)
 
     if _neg_key is not None and all_timed_out:
         _probe_neg_cache[_neg_key] = time.monotonic()

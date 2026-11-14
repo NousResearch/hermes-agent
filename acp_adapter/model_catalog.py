@@ -29,6 +29,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         from hermes_cli.model_switch import _declared_model_ids, _entry_models_discovered, _models_config_is_allowlist
         from hermes_cli.model_switch_providers import _NativePickerModelList, _fetch_picker_live_models
         from hermes_cli.model_switch_providers import _discover_flag
+        from hermes_cli.models_catalog import fetch_api_model_names
         from hermes_cli.models_local import should_use_ollama_native_catalog
         from hermes_cli.providers import custom_provider_slug
     except ImportError:
@@ -90,7 +91,12 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
 
         if not model_ids and not isinstance(live, _NativePickerModelList):
             return None
-        return slug, name, [(mid, "") for mid in model_ids]
+        names = {}
+        if api_key and _discover_flag(entry):
+            names = fetch_api_model_names(
+                api_key, base_url, timeout=1.5,
+                api_mode=entry.get("api_mode"), headers=native_headers)
+        return slug, name, [(mid, names.get(mid, "")) for mid in model_ids]
 
     catalogs = [_entry_catalog(entry) for entry in entries if isinstance(entry, dict)]
     return [c for c in catalogs if c is not None]
@@ -168,6 +174,7 @@ class _ModelCatalog:
     seen_ids: set[str] = field(default_factory=set)
     seen_semantic_ids: set[str] = field(default_factory=set)
     empty_authoritative: set[str] = field(default_factory=set)
+    display_names: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.current_choice_provider == "ollama":
@@ -209,7 +216,10 @@ class _ModelCatalog:
             )
             for model_entry in row_models:
                 if isinstance(model_entry, dict):
-                    model_entry = model_entry.get("id") or model_entry.get("model") or model_entry.get("name")
+                    entry_name = str(model_entry.get("name") or "").strip()
+                    model_entry = model_entry.get("id") or model_entry.get("model") or entry_name
+                else:
+                    entry_name = ""
                 rendered_model = str(model_entry or "").strip()
                 if not rendered_model:
                     continue
@@ -217,9 +227,17 @@ class _ModelCatalog:
                     self.semantic(encoded_provider) == self.semantic(self.current_choice_provider)
                 )
                 self.add(
-                    encoded_provider, rendered_model, f"{provider_name} · {rendered_model}",
+                    encoded_provider, rendered_model,
+                    self.label(rendered_model, entry_name, f"{provider_name} · {rendered_model}"),
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
                 )
+
+    def label(self, model_id: str, published: str = "", fallback: str = "") -> str:
+        """Prefer the row's name, then models.dev, then the existing fallback."""
+        label = str(published or "").strip()
+        if not label or label == model_id:
+            label = self.display_names.get(model_id, "")
+        return label or fallback or model_id
 
     def add_named_catalogs(self, catalogs: list, current_choice_provider: str) -> None:
         """Named user-defined endpoints (providers: / custom_providers:) are invisible
@@ -231,8 +249,9 @@ class _ModelCatalog:
                 continue
             for named_model, named_desc in named_catalog:
                 is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
-                parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
-                self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
+                parts = [f"Provider: {named_label}", "current" if is_current else ""]
+                self.add(named_slug, named_model, self.label(named_model, named_desc),
+                         " • ".join(part for part in parts if part))
 
 
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
@@ -240,6 +259,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.inventory import build_models_payload, load_picker_context
     from hermes_cli.models import normalize_provider, provider_label
+    from hermes_cli.models_catalog import model_display_names
 
     normalized_provider = normalize_provider(provider)
     context = load_picker_context().with_overrides(
@@ -280,6 +300,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         normalize_provider=normalize_provider, current_model=model,
         current_choice_provider=current_choice_provider,
         current_base_url=current_base,
+        display_names=model_display_names(),
     )
     cat.add_inventory_rows(inventory_rows, provider_label)
     cat.add_named_catalogs(named_catalogs, current_choice_provider)

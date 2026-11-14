@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnected, WebSocketState
 
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
@@ -77,12 +78,19 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     event_channels, event_lock = _get_event_state(app)
     async with event_lock:
         subs = list(event_channels.get(channel, ()))
+    from tui_gateway.ws import ws_peer_gone
     for sub in subs:
         try:
+            if ws_peer_gone(sub) or getattr(sub, "application_state", None) == WebSocketState.DISCONNECTED:
+                # The write side may be closed by either peer or server; finally removes the subscriber.
+                _log.debug("broadcast skipped closed subscriber")
+                continue
             await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; /api/events' finally removes it.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+        except (WebSocketDisconnect, WebSocketDisconnected):
+            # A dropped peer or a close racing the send leaves no writable subscriber.
+            _log.debug("broadcast skipped closed subscriber")
+        except Exception:  # health: allow BLE001 -- subscriber boundary; exception details can contain secrets
+            _log.warning("broadcast send failed for subscriber")
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:

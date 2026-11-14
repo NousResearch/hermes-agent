@@ -75,11 +75,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "cron/scheduler_script.py",
-    "symbol": "_script_argv",
-    "kind": "bare_which"
-  },
-  {
     "path": "gateway/platforms/base.py",
     "symbol": "transcode_to_ogg_opus",
     "kind": "bare_which"

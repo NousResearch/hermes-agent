@@ -141,6 +141,36 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     return rendered
 
 
+_DEFAULT_PROFILE_LINE = (
+    "Active Hermes profile: default. Other profiles (if any) live "
+    "under {root}/profiles/<name>/. Each profile has its own "
+    "skills/, plugins/, cron/, and memories/ that affect a different "
+    "session than this one. Do not modify another profile's "
+    "skills/plugins/cron/memories unless the user explicitly directs "
+    "you to."
+)
+_NAMED_PROFILE_LINE = (
+    "Active Hermes profile: {name}. This session reads "
+    "and writes {home}/. The default "
+    "profile's data lives at {root}/skills/, {root}/plugins/, "
+    "{root}/cron/, {root}/memories/ — those belong to a "
+    "different session run from a different shell. Do NOT modify "
+    "another profile's skills/plugins/cron/memories unless the user "
+    "explicitly directs you to."
+)
+
+
+def _canonical_profile_line(line: str) -> bool:
+    """Accept only the renderer's one-paragraph profile templates, not project prose."""
+    for template in (_DEFAULT_PROFILE_LINE, _NAMED_PROFILE_LINE):
+        pattern = re.escape(template)
+        for field in ("root", "name", "home"):
+            pattern = pattern.replace(re.escape("{" + field + "}"), r"[^\r\n]+?")
+        if re.fullmatch(pattern, line):
+            return True
+    return False
+
+
 def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
@@ -154,8 +184,16 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
-        return ()
+    tail = prompt[after_end:]
+    if not tail.startswith("\n\nConversation started:"):
+        # Current builders put their profile paragraph between the frame and
+        # clock. Keep accepting legacy adjacent-clock frames, but never skip
+        # arbitrary caller text while locating a purported canonical frame.
+        profile_line, separator, _ = tail.removeprefix("\n\n").partition("\n\n")
+        if not separator or not _canonical_profile_line(profile_line):
+            return ()
+        if not tail[len(profile_line) + 2:].startswith("\n\nConversation started:"):
+            return ()
     framed = prompt[start:after_end]
     restored = []
     for match in _PLUGIN_SECTION_FRAME_RE.finditer(framed):
@@ -388,14 +426,7 @@ def _active_profile_line(agent: Any) -> str:
         # ROOT (get_hermes_home() on a bound profile session is the PROFILE dir).
         # Without one, keep the ambient (patchable) resolution byte-identical.
         _root_str = str(get_default_hermes_root() if _agent_home_path is not None else get_hermes_home())
-        return (
-            "Active Hermes profile: default. Other profiles (if any) live "
-            "under " + _root_str + "/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
-        )
+        return _DEFAULT_PROFILE_LINE.format(root=_root_str)
     # A non-default name is only returned when the resolved home is ALREADY
     # <root>/profiles/<name>, so the profile home is the session home itself.
     profile_home = str(_agent_home_path) if _agent_home_path is not None else str(get_hermes_home())
@@ -405,15 +436,7 @@ def _active_profile_line(agent: Any) -> str:
     # default profile's data sits at the ROOT (get_default_hermes_root()), which in ambient profile mode is
     # NOT get_hermes_home().
     default_root = get_default_hermes_root()
-    return (
-        f"Active Hermes profile: {active_profile}. This session reads "
-        f"and writes {profile_home}/. The default "
-        f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
-        f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
-        f"different session run from a different shell. Do NOT modify "
-        f"another profile's skills/plugins/cron/memories unless the user "
-        f"explicitly directs you to."
-    )
+    return _NAMED_PROFILE_LINE.format(name=active_profile, home=profile_home, root=default_root)
 
 
 def _default_platform_hint(platform_key: str, tool_names: Any = ()) -> str:

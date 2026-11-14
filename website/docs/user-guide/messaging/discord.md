@@ -469,6 +469,10 @@ When enabled, every `@mention` in a regular text channel automatically creates a
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
 
+If Discord's SDK surfaces a thread-creation rate-limit error, Hermes stops that attempt without starting another fallback or retry. The parent-channel notice includes an estimated next-attempt time when the error provides a retry delay. Discord renders a relative countdown and the same absolute time in each viewer's local timezone. Repeated requests in that channel before the known deadline reuse the estimate instead of attempting another creation. If the delay is unknown, the notice says to try again later without inventing a time. Hermes does not queue the failed request or run it in the parent channel, and attempts to delete any fallback seed it already posted. Check for an existing thread before retrying because an SDK error does not always prove that Discord rejected every internal attempt.
+
+With `display.suppress_warning_notifications: true`, the notice uses the neutral "Hermes could not confirm a new thread. Check for an existing thread before retrying." text instead. Stock discord.py still owns HTTP retries and route/global waits. Those waits can delay both creation and warning delivery, so the estimate may already have elapsed when the notice arrives. This handling does not promise an early notice, set a client-wide timeout, or cancel an in-flight creation.
+
 #### `discord.reactions`
 
 **Type:** boolean — **Default:** `true`

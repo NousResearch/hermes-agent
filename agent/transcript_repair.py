@@ -5,6 +5,7 @@ clone lookup) and sync markers after commit."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
@@ -16,6 +17,10 @@ from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, SessionMessagesMixin
 
+
+logger = logging.getLogger(__name__)
+
+_TOOL_RESULT_SUPERSEDED = "tool_result_superseded"
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
 # role, active flag and the ones owned by the display index / timestamp / session linkage. ``message_uid``
@@ -295,6 +300,110 @@ def resolve_and_repair_transcript_batch(
         else:
             msg.pop(CANONICAL_ROW, None)
     return inserted_rows
+
+
+def _latest_active_tool_rows_by_call_id(
+    conn: sqlite3.Connection, session_id: str, call_ids: list[str],
+) -> dict[str, sqlite3.Row]:
+    """Newest active tool row per ``tool_call_id`` for *session_id* (one SELECT)."""
+    if not call_ids:
+        return {}
+    placeholders = _placeholders(call_ids)
+    rows = conn.execute(
+        f"SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = 'tool' "
+        f"AND tool_call_id IN ({placeholders}) ORDER BY id ASC",
+        (session_id, *call_ids),
+    ).fetchall()
+    latest: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        cid = row["tool_call_id"]
+        if isinstance(cid, str) and cid:
+            latest[cid] = row
+    return latest
+
+
+def suppress_duplicate_tool_call_writes(
+    conn: sqlite3.Connection,
+    session_id: str,
+    inserted_rows: list[dict[str, Any]],
+    encode_content_fn: Callable[[Any], Any],
+    serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop redundant tool-result INSERTs for a session-scoped ``tool_call_id``.
+
+    Identical payloads are idempotent; conflicting payloads UPDATE the latest active row in place
+  so readers keep a stable rowid (no DELETE+INSERT).
+    """
+    call_ids = sorted({
+        cid
+        for msg in inserted_rows
+        if isinstance(msg, dict)
+        and msg.get("role") == "tool"
+        and isinstance((cid := msg.get("tool_call_id")), str)
+        and cid
+    })
+    if not call_ids:
+        return inserted_rows
+
+    durable = _latest_active_tool_rows_by_call_id(conn, session_id, call_ids)
+    batch_encoded: dict[str, Any] = {}
+    out: list[dict[str, Any]] = []
+
+    for msg in inserted_rows:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        role = msg.get("role")
+        call_id = msg.get("tool_call_id")
+        if role != "tool" or not isinstance(call_id, str) or not call_id:
+            out.append(msg)
+            continue
+
+        encoded = encode_content_fn(msg.get("content"))
+        row = durable.get(call_id)
+        if row is not None:
+            if row["content"] == encoded:
+                logger.info(
+                    "Skipped duplicate tool result for tool_call_id=%r session=%r",
+                    call_id,
+                    session_id,
+                )
+                continue
+            serialized = dict(serialize_message_fn(msg, float(row["timestamp"])))
+            conn.execute(
+                "UPDATE messages SET content = ?, effect_disposition = ? "
+                "WHERE id = ? AND session_id = ? AND role = 'tool'",
+                (serialized["content"], _TOOL_RESULT_SUPERSEDED, int(row["id"]), session_id),
+            )
+            logger.warning(
+                "Superseded tool result for tool_call_id=%r session=%r row_id=%s",
+                call_id,
+                session_id,
+                row["id"],
+            )
+            durable[call_id] = conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (int(row["id"]), session_id),
+            ).fetchone()
+            batch_encoded[call_id] = encoded
+            continue
+
+        prior_encoded = batch_encoded.get(call_id)
+        if prior_encoded is not None:
+            if prior_encoded == encoded:
+                continue
+            for index in range(len(out) - 1, -1, -1):
+                candidate = out[index]
+                if isinstance(candidate, dict) and candidate.get("tool_call_id") == call_id:
+                    out[index] = msg
+                    break
+            batch_encoded[call_id] = encoded
+            continue
+
+        out.append(msg)
+        batch_encoded[call_id] = encoded
+
+    return out
 
 
 def _rewrite_row(

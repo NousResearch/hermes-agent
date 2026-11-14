@@ -357,6 +357,31 @@ def _is_stale_tool_call_marker_message(msg: dict[str, Any]) -> bool:
     return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
 
 
+def _strip_iteration_limit_summary_nudges(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop legacy max-iteration summary nudges when replaying a durable transcript.
+
+    Pre-fix builds stored the synthetic user-role budget summary request without
+    ephemeral flags (metadata is not projected). Replaying it re-enters the tool loop.
+    """
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+
+    if not messages:
+        return messages
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip() == MAX_ITERATIONS_SUMMARY_REQUEST:
+                continue
+        out.append(msg)
+    return out
+
+
 def _strip_stale_tool_call_markers(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Blank stale ``[marker]`` assistant content (replaying it teaches the model
     to keep emitting it); tool_call/result pairing stays intact."""

@@ -41,6 +41,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_pre_verify_synthetic",
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
+    "_max_iterations_summary_synthetic",  # iteration-budget summary nudge; not durable transcript
 )
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}

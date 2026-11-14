@@ -174,7 +174,7 @@ function StatusbarVisibilityMenu({
   }, [items, leftItems])
 
   return (
-    <ContextMenuContent className="w-52">
+    <ContextMenuContent className="w-52" data-statusbar-menu="">
       {toggles.length > 0 && (
         <>
           <ContextMenuLabel>{copy.customizeTitle}</ContextMenuLabel>
@@ -282,6 +282,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
         <DropdownMenuContent
           align={item.menuAlign ?? 'start'}
           className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
+          data-statusbar-menu=""
           side="top"
           sideOffset={8}
         >

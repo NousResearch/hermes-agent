@@ -527,7 +527,7 @@ skills:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
-When `write_approval: true`, skill writes (create / edit / patch / write_file /
+When `write_approval: true`, skill writes (the `skill_manage` actions create / edit / patch / write_file /
 delete) always **stage** regardless of origin. Like the memory gate, it covers
 writes made through the `skill_manage` tool, not direct edits of skill files by
 the generic file tools or the terminal. You review the one-line gist inline, but

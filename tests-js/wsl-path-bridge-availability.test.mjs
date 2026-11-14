@@ -59,12 +59,17 @@ for (const [name, registry, expected] of [
       assert.equal(bridge.resolvePickerDefaultPath('/home/alex', undefined, 'local'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
       assert.equal(calls.filter(call => call.exe === 'reg.exe').length, registryCalls)
     } else {
-      for (const value of ['/home/alex', '/mnt/c/Users/alex', '/C:/Users/alex']) {
-        assert.equal(bridge.resolveLocalReadPath(value, undefined, 'local'), value)
-        assert.equal(bridge.resolvePickerDefaultPath(value, undefined, 'local'), value)
-      }
+      // POSIX paths stay untouched: no distro lookup, no \\wsl.localhost UNC probe.
+      assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '/home/alex')
+      assert.equal(bridge.resolvePickerDefaultPath('/home/alex', undefined, 'local'), '/home/alex')
+      assert.equal(bridge.resolveLocalReadPath('/C:/Users/alex', undefined, 'local'), '/C:/Users/alex')
+      // A drive-alias spelling maps to the LOCAL native path (the drive-alias step precedes
+      // the gate): a local existsSync on C:/..., never a \\wsl.localhost UNC probe.
+      assert.equal(bridge.resolveLocalReadPath('/mnt/c/Users/alex', undefined, 'local'), 'C:/Users/alex')
+      assert.deepEqual(probes, ['C:/Users/alex'])
+      // WSL machinery stays dormant: registry lookups only, no wsl.exe launch.
       assert.equal(calls.length, registryCalls)
-      assert.deepEqual(probes, [])
+      assert.ok(calls.every(call => call.exe === 'reg.exe'))
     }
     bridge.setWslBridgeProfileState('remote', false)
     assert.equal(bridge.resolvePickerDefaultPath('/home/alex', undefined, 'remote'), '/home/alex')

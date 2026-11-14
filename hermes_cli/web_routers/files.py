@@ -27,7 +27,10 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
+from agent.file_safety import (
+    HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, get_nt_namespace_error, get_write_denied_error,
+    is_write_approval_required, resolved_home_credential_stores,
+)
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -88,7 +91,7 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_token.json", "google_oauth_pending.json", "google_oauth.json",
     "webhook_subscriptions.json",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
-    ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
+    *HOME_CREDENTIAL_FILES,  # ~/.netrc, ~/.npmrc, ~/.git-credentials, ... (file_safety's write guard)
 })
 
 # Directory names whose whole subtree is credential material (the canonical
@@ -97,6 +100,11 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
 # trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
 _SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+
+# OS/CLI credential trees (~/.ssh, ~/.aws, ~/.config/gh, ...) as lowercase component
+# sequences, matched as consecutive path components for the same reason: the default
+# managed root is $HOME, and a home-anchored check would miss them under any other root.
+_SENSITIVE_MANAGED_DIR_SEQUENCES = tuple(tuple(d.lower().split("/")) for d in HOME_CREDENTIAL_DIRS)
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -117,7 +125,29 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
-    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+    parts = tuple(part.lower() for part in path.parts)
+    if any(part in _SENSITIVE_MANAGED_DIR_NAMES for part in parts):
+        return True
+    return any(
+        parts[i:i + len(seq)] == seq
+        for seq in _SENSITIVE_MANAGED_DIR_SEQUENCES
+        for i in range(len(parts) - len(seq) + 1)
+    )
+
+
+def _is_local_sensitive_path(path: Path, stores: Optional[tuple[set[str], list[str]]] = None) -> bool:
+    """:func:`_is_sensitive_path`, or *path* (a path on THIS host) resolves to or under a home
+    credential store: names alone miss ``~/.ssh -> ~/keys`` (both ``~/.ssh/id_rsa`` and
+    ``~/keys/id_rsa`` resolve into the store). *stores* lets a directory scan resolve the
+    store locations once (:func:`agent.file_safety.resolved_home_credential_stores`)."""
+    if _is_sensitive_path(path):
+        return True
+    files, dirs = stores if stores is not None else resolved_home_credential_stores()
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return True  # fail closed: a path that cannot be resolved cannot be cleared
+    return real in files or any(real == d or real.startswith(d.rstrip(os.sep) + os.sep) for d in dirs)
 
 
 _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
@@ -159,7 +189,8 @@ def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] =
     if not anchor.is_absolute():
         anchor = root.expanduser() / anchor if root is not None else None
     hops = _link_chain(anchor) if anchor is not None else []
-    if hops is None or any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
+    if (hops is None or any(_is_sensitive_path(p) for p in (Path(requested), Path(os.path.realpath(target)), *hops))
+            or _is_local_sensitive_path(target)):
         raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 
@@ -254,7 +285,7 @@ def _fs_regular_file(path: Path, profile_home: Optional[Path] = None) -> tuple[P
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
-    if _is_sensitive_path(target):
+    if _is_local_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
@@ -682,11 +713,12 @@ def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
+    stores = resolved_home_credential_stores()
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
         entries = []
         for entry in scan:
             entry_path = Path(entry.path)
-            if _is_sensitive_path(entry_path):
+            if _is_local_sensitive_path(entry_path, stores):
                 continue
             metadata = _managed_file_entry(policy, entry_path, skip_missing=True)
             if metadata is not None:
@@ -715,7 +747,7 @@ def _managed_readable_file(
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_path(target):
+    if _is_local_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return policy, target, display_path, _MANAGED_FILE_MAX_BYTES, mime_type
@@ -1059,10 +1091,10 @@ _FS_LIST_ERRNO = (
 
 
 def _fs_list_entries(target: Path) -> list[dict[str, Any]]:
-    entries = []
+    entries, stores = [], resolved_home_credential_stores()
     with os.scandir(target) as scan:
         for entry in scan:
-            if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
+            if entry.name in _FS_READDIR_HIDDEN or _is_local_sensitive_path(Path(entry.path), stores):
                 continue
             entries.append({
                 "name": entry.name,
@@ -1078,9 +1110,12 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
         try:
-            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+            listing = await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
+        # Entry paths are the SSH host's own: hide its credential stores as the local scan does.
+        listing["entries"] = [e for e in listing["entries"] if not _is_sensitive_path(PurePosixPath(e["path"]))]
+        return listing
     target = _agent_fs_path(path, profile_home=_fs_profile_home(profile))
     _hosted_fs_read_guard(target, request)
     try:

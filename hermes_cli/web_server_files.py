@@ -481,11 +481,11 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
 
 
 def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
-    from hermes_cli.web_routers.files import _is_sensitive_path
+    from hermes_cli.web_routers.files import _is_local_sensitive_path, _is_sensitive_path
 
     resolved = _canonical_path(target)
     return (_path_is_under(root, resolved)
-            and not _is_sensitive_path(target) and not _is_sensitive_path(resolved))
+            and not _is_sensitive_path(target) and not _is_local_sensitive_path(resolved))
 
 
 def _hosted_fs_read_guard(target: Path, request: Optional[Request] = None) -> Path | None:

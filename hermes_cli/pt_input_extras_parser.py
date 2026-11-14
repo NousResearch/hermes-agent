@@ -496,7 +496,7 @@ def install(*, overwrite: bool = False) -> bool:
     try:
         import prompt_toolkit.input.vt100_parser as vt
         from prompt_toolkit.keys import Keys
-    except Exception:
+    except ImportError:
         return False
 
     get_match = getattr(vt.Vt100Parser, "_get_match", None)
@@ -534,6 +534,6 @@ def install(*, overwrite: bool = False) -> bool:
         vt.Vt100Parser._get_match = _get_match
         type(cache).__missing__ = __missing__
         cache.clear()
-    except Exception:
+    except (AttributeError, TypeError):   # the private API moved, or its type is immutable
         return False
     return True

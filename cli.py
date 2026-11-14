@@ -248,7 +248,7 @@ try:
     _csi_u.install()
     del _csi_u
 except Exception:
-    pass
+    logger.debug("extended-key parser not installed; the alias tables still apply", exc_info=True)
 import threading
 import queue
 

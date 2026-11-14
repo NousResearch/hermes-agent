@@ -270,20 +270,25 @@ def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: 
 def typing_refresh_wanted(adapter: Any, event: MessageEvent) -> bool:
     """Whether this turn should show a typing indicator at all: False when the adapter has it
     disabled, when the event is a scheduled heartbeat (proactive work has nothing to say yet), and
-    when the authorization gate the message handler runs will drop the message (#149024).
-
-    That last one is the fix for a real leak: ``_process_message_background`` starts the refresh
-    loop before ``_handle_message``, so on a platform where strangers can reach the bot — Signal
-    linked as a secondary device on the owner's own number — ``sendTyping`` went to an unauthorized
-    contact as the owner, and only then was the message dropped. The verdict is the runner's own
-    (the handler asks the same question), so the indicator cannot disagree with admission. Internal
-    events are admitted without an allowlist, and a missing runner or a raising verdict keeps the
-    indicator: this probe must never be the reason a conversation loses its status bubble."""
+    when the authorization gate the message handler runs will drop the message (#149024)."""
     if not getattr(getattr(adapter, "config", None), "typing_indicator", True):
         return False
     if getattr(event, "_heartbeat_session_id", None):
         return False
-    if getattr(event, "internal", False):
+    return sender_may_see_activity(adapter, event)
+
+
+def sender_may_see_activity(adapter: Any, event: Any) -> bool:
+    """Whether pre-admission outbound activity (typing, 👀/✅ processing reactions) may reach this
+    event's sender: the runner's own authorization verdict, asked before the handler that applies it.
+
+    ``_process_message_background`` starts the refresh loop and the processing hooks before
+    ``_handle_message`` authorizes, so on a platform where strangers can reach the bot — Signal
+    linked as a secondary device on the owner's own number — ``sendTyping`` went to an unauthorized
+    contact as the owner, and only then was the message dropped (#149024). Internal events are
+    admitted without an allowlist, and a missing runner or a raising verdict keeps the activity:
+    this probe must never be the reason a conversation loses its status bubble."""
+    if not isinstance(event, MessageEvent) or getattr(event, "internal", False):
         return True
     runner = getattr(adapter, "gateway_runner", None)
     if runner is None:
@@ -292,11 +297,17 @@ def typing_refresh_wanted(adapter: Any, event: MessageEvent) -> bool:
     source = getattr(event, "source", None)
     if source is None or not callable(check):
         return True
+    # One verdict per event: the start and complete hooks must agree (no ✅ without its 👀).
+    cached = getattr(event, "_activity_authorized", None)
+    if cached is not None:
+        return cached
     try:
-        return bool(check(source))
+        verdict = bool(check(source))
     except Exception:
-        logger.debug("Typing indicator authorization probe failed; keeping the indicator", exc_info=True)
-        return True
+        logger.debug("Activity authorization probe failed; keeping typing/reactions", exc_info=True)
+        verdict = True
+    event._activity_authorized = verdict
+    return verdict
 
 
 def typing_pause_key(chat_id: Any, metadata: Optional[dict]) -> tuple:

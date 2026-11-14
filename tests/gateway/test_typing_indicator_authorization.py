@@ -154,3 +154,49 @@ async def test_authorization_probe_error_keeps_typing():
     await _drive_turn(adapter, _event())
 
     assert adapter._keep_typing.await_count == 1
+
+
+class _ReactingAdapter(_StubAdapter):
+    """Records the processing hooks: Signal/Telegram/Discord send 👀/✅ reactions from them."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hook_calls = []
+
+    async def on_processing_start(self, event):
+        self.hook_calls.append("start")
+
+    async def on_processing_complete(self, event, outcome):
+        self.hook_calls.append("complete")
+
+
+def _reacting_adapter(runner):
+    adapter = _ReactingAdapter(
+        PlatformConfig(enabled=True, token="t", typing_indicator=True), Platform.SIGNAL,
+    )
+    adapter._message_handler = AsyncMock(side_effect=_turn_body)
+    adapter._keep_typing = AsyncMock(return_value=None)
+    adapter.gateway_runner = runner
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_sender_gets_no_processing_reactions():
+    """The same pre-admission leak through the lifecycle hooks: 👀 before the drop, ✅ after."""
+    adapter = _reacting_adapter(_StubRunner(authorized=False))
+
+    await _drive_turn(adapter, _event())
+
+    assert adapter.hook_calls == []
+    assert adapter._message_handler.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_authorized_sender_keeps_processing_reactions():
+    runner = _StubRunner(authorized=True)
+    adapter = _reacting_adapter(runner)
+
+    await _drive_turn(adapter, _event(user_id=_OWNER))
+
+    assert adapter.hook_calls == ["start", "complete"]
+    assert len(runner.sources) == 1  # one verdict per event, shared by typing and both hooks

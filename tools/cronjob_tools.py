@@ -740,7 +740,11 @@ def _action_create(a: dict[str, Any]) -> str:
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
-        return tool_error(_partial.pop("error"), success=False, **_partial)
+        # The raw exception text names the provider error class and can carry provider
+        # details (a callback URL and its token). The contract's `user_message` is the
+        # human-facing variant written for exactly this surface (#150973).
+        _partial.pop("error")
+        return tool_error(exc.user_message(), success=False, **_partial)
     _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.",
         "Created PAUSED — resume to schedule, or explicitly run now." if not job.get("enabled", True) else None,
         _local_delivery_notice(job, deliver))))

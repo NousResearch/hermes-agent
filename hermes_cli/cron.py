@@ -820,7 +820,18 @@ def cron_create(args):
            if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
         **_job_api_kwargs(args))
     if not result.get("success"):
-        print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
+        if result.get("job_saved"):
+            # The job WAS created — only the external scheduler registration failed. A red
+            # "Failed to create job" contradicts the body and tells the user to re-create a
+            # job that exists (#150973), so report it as the warning it is.
+            print(color(result.get("user_message")
+                        or result.get("error") or "Job saved, but scheduler registration failed.",
+                        Colors.YELLOW))
+            if result.get("job_id"):
+                print(f"  Job ID: {result['job_id']}")
+        else:
+            message = result.get("user_message") or result.get("error", "unknown error")
+            print(color(f"Failed to create job: {message}", Colors.RED))
         return 1
     print(color(f"Created job: {result['job_id']}", Colors.GREEN))
     print(f"  Name: {result['name']}\n  Schedule: {result['schedule']}")

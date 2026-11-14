@@ -822,15 +822,24 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
               const del = isDiff && l.startsWith('-')
               const hunk = isDiff && l.startsWith('@@')
 
-              return (
+              const content = (
                 <Text
-                  backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
                   color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
                   dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
                   key={j}
                 >
                   {l}
                 </Text>
+              )
+
+              // Box paints the whole allocated row, including wrapped tails;
+              // Text backgrounds only paint the source glyphs.
+              return add || del ? (
+                <Box backgroundColor={add ? t.color.diffAdded : t.color.diffRemoved} key={j}>
+                  {content}
+                </Box>
+              ) : (
+                content
               )
             })}
           </Box>

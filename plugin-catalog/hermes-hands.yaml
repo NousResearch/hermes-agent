@@ -1,0 +1,61 @@
+name: hermes-hands
+title: Hermes Hands
+repo: https://github.com/Ridwannurudeen/hermes-hands-plugin
+sha: "1eb7dc3fc1365fd397550b2e480af5820587e0f3"
+subdir: hermes-hands
+description: >-
+  Run Hermes terminal and file tools on a paired Windows or Linux computer while Hermes stays on a
+  Linux or WSL gateway. The device agent connects out over HTTPS, signs with Ed25519 keys pinned at
+  pairing, and fails closed when it is offline, revoked or unreachable. Optional witness mode is
+  started by the person at the computer: local consent, every command shown on their screen before
+  it runs, a consent question for each screenshot, a stop key, a 30 minute limit and signed
+  receipts. In a witness session every tool call that reaches the device needs the helper's
+  approval, and shell composition, scripts, common startup persistence and other tools are blocked.
+  Disclosure: runs shell commands and file operations on the device as its logged in user (not a
+  sandbox); a compromised gateway or helper account can still command paired devices; the device
+  agent is a separate Python package (hermes-hands), installed with pipx from this repository at the
+  pinned device commit (a full 40 character SHA), that keeps its private key in the OS keyring or an owner only file; command text, which can hold sensitive arguments, is kept in local receipts;
+  screenshots are cached on the gateway and go to the configured vision model and chat platform;
+  the checkup probes 1.1.1.1, 8.8.8.8 and 9.9.9.9 on port 443 and resolves example.com; optional H
+  help puts device text into a user-role model turn; no telemetry.
+maintainer: Ridwan Nurudeen
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Ridwannurudeen/hermes-hands-plugin/tree/1eb7dc3fc1365fd397550b2e480af5820587e0f3/hermes-hands#readme
+version: "0.2.1"
+image: https://raw.githubusercontent.com/Ridwannurudeen/hermes-hands-plugin/1eb7dc3fc1365fd397550b2e480af5820587e0f3/hermes-hands/assets/banner.png
+platforms:
+  - linux
+known_issues:
+  - The supported minimum is Hermes 0.23.1, which CI runs the full automated suite against. Two names outside the public plugin list, register_token_route and LocalEnvironment, are imported because no public seam exists yet; a later Hermes release can break them.
+  - Once a conversation has used a terminal or file tool, including native server file operations, it cannot switch target. Start a new conversation with /new, then /hands use <target>; before the first terminal or file-tool execution, any target switch is allowed. Switching pauses while a call is pending; a first attempt that is declined or refused before execution releases that guard. Core keeps per-session file-tool caches and the recorded working folder from the previous machine, and no published seam clears them; see ask 7 in docs/HOOK-REQUEST-ISSUE.md.
+  - In a witness session, arguments that are not already their schema type, text Hermes would redact on the approval card and credential patterns Hands recognizes are refused. Other secrets are shown in cleartext on the card and can run if approved.
+  - In a witness session, an omitted or null terminal timeout for a foreground command becomes one explicit default from the public configuration bridge (180 seconds when unset), shown on the approval card and dispatched unchanged. Set an explicit timeout to choose another value. Preserving the scoped profile default needs a public accessor; see ask 9 in docs/HOOK-REQUEST-ISSUE.md.
+  - The gateway runs on Linux or WSL. Native Windows gateways and macOS devices are not supported.
+  - Reading a PDF or Office document transfers the whole file to the gateway before extraction, even when a page was requested with offset and limit. The person's console shows the whole-file transport command. Core can wrap a Hands read refusal in a document-extraction or unavailable-terminal error.
+  - The lead will update the posted hook request (https://github.com/NousResearch/hermes-agent/issues/154264) from docs/HOOK-REQUEST-ISSUE.md immediately after the release push to match this release's private couplings.
+  - Screenshots need a desktop session on the device; a headless Linux machine has no screen to capture. In witness mode each screenshot also needs the person's yes.
+  - The console shows every device job, including core's one-time shell snapshot setup. Core also runs login startup code and sources and refreshes its shell snapshot under the call's approval. These inherited shell jobs are not separately approved. The exact-execution guarantee covers the approved command and file operations, within that runtime envelope.
+  - Witness mode needs an interactive terminal. It cannot run as a service or under pythonw.
+  - In a witness session, yolo mode or approvals turned off block every device tool; turn approvals back on. The transport selected with security.approval.transport must ask a human; a plugin transport can answer automatically, and Hands counts its response as approval. The gateway refuses a command another plugin changed after the approval. Each execution needs a matching Hands approval; identical bodies in a Desktop batch can consume each other's approvals, with no more executions than approvals. A write or patch needs a full path, such as ~/notes.txt. A patch must match its old_string exactly once unless the approved call has replace_all=true; a fuzzy match is refused and the model retries with the exact text.
+  - Witness tests cover single query, cron and unattended approve and deny modes, finite unattended turns, a normal human yes, and secret refusal against core redaction.
+  - Session and Always on a witness approval do not carry over to the next step. Always leaves an unused command_allowlist entry that the owner can delete.
+  - Approval text must fit in 300 UTF-16 units after surface escaping and wrapping, or 500 on Telegram after core HTML escaping. A longer call is refused, not shortened. Short ~/ paths keep requests under the limit.
+  - Device help text is quoted and capped at 200 characters but enters a user-role model turn, so it is a prompt-injection surface.
+  - Git program-selecting options and their abbreviations are refused on every subcommand unless consumed as option values or after --. Recognized Git nested-command carriers and other tool launchers, command-selecting configuration settings, all alias.* settings and unknown subcommands that could be aliases are refused. Explicit read-only git config query modes and ssh.variant remain allowed. Ordinary git difftool and git mergetool, including -t/--tool, are accepted for helper approval; difftool's -x/--extcmd command options, their abbreviations and command-selecting configuration settings remain refused. Explicit template directories for clone and init, and send-email recipient/header commands and its SMTP server option (every value), are refused. Config includes and protocol allowances are refused when set. Existing repository configuration and hooks can still launch programs.
+  - Common startup persistence (startup folders, autostart, LaunchAgents, shell profiles, cron, Run keys, scheduled tasks) is blocked only in witness sessions. Other logon methods, such as sc create, are not blocked and reach the helper's approval.
+  - On Linux, a process that moves to a new session or process group can outlive a stop or revoke. If the small watcher process the agent starts for each job group has died or stalled for more than a second, a process started late by a background command can also outlive Stop. Windows scheduled task logon startup and Linux screenshots were not tested live.
+capabilities:
+  provides_tools:
+    - hands_screenshot
+    - hands_devices
+    - hands_checkup
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware:
+    - tool_execution
+  requires_env: []

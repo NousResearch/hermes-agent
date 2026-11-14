@@ -109,16 +109,19 @@ def test_removing_or_disabling_every_source_unmasks_its_values(tmp_path, monkeyp
 
 
 
-def test_removed_routed_source_releases_mask(tmp_path, monkeypatch):
+@pytest.mark.parametrize("config", ["", "secrets:\n  cmd:\n    enabled: false\n"])
+def test_removed_routed_source_releases_mask(tmp_path, monkeypatch, config):
     # unsupportedpastels review on #155274: the routed no-config return must unregister too.
     home = _home(tmp_path, "routed")
+    real_apply_all = reg_module.apply_all
     _source(monkeypatch, [{"VENDOR_TOKEN": OPAQUE}])
     assert env_loader.hydrate_profile_secret_sources(home) == {"VENDOR_TOKEN": OPAQUE}
     with _profile(home):
         assert OPAQUE not in redact_sensitive_text(f"bare {OPAQUE}")
 
+    monkeypatch.setattr(reg_module, "apply_all", real_apply_all)  # the real registry skips a disabled source
     env_loader.reset_secret_source_cache(home)
-    (home / "config.yaml").write_text("", encoding="utf-8")
+    (home / "config.yaml").write_text(config, encoding="utf-8")
     assert env_loader.hydrate_profile_secret_sources(home) == {}
 
     with _profile(home):

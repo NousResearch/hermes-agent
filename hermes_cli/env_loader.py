@@ -270,7 +270,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     except Exception:
         return {}
 
-    if not report.sources:
+    if not report.sources:  # every source disabled: nothing is applied any more, so stop masking it
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
     # D32, as on the process-global path: a source must never supply the config backend's own
     # deployment or plane credential, for a routed profile either (this snapshot feeds that

@@ -43,6 +43,10 @@ from agent.auxiliary_profile_gates import (
     PROFILE_REASONING_KEYS, contains_profile_reasoning_fields, profile_forwards_max_tokens,
 )
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.auxiliary_pool_fallback import (pool_credential_is_model_eligible as _pool_credential_is_model_eligible,
+                                           pool_runtime_api_key as _pool_runtime_api_key,
+                                           pool_runtime_base_url as _pool_runtime_base_url,
+                                           pool_runtime_base_url_for_key as _pool_runtime_base_url_for_key)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1066,32 +1070,9 @@ def _peek_pool_entry(provider: str, pool: Any = None, model: Optional[str] = Non
         logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
     return None
 
-
-def _pool_runtime_api_key(entry: Any) -> str:
-    # runtime_api_key handles provider-specific fallback (e.g. agent_key for nous); None entry → "".
-    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    return str(key or "").strip()
-
-
-def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
-    if entry is None:
-        return str(fallback or "").strip().rstrip("/")
-    if getattr(entry, "provider", None) == "nous":
-        # Canonical auth-layer reader so the env override shares one normalization path.
-        from hermes_cli.auth import _nous_inference_env_override
-        env_url = _nous_inference_env_override()
-        if env_url:
-            return env_url
-    # runtime_base_url is provider-aware; fall back for non-PooledCredential entries.
-    url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "inference_base_url", None)
-           or getattr(entry, "base_url", None) or fallback)
-    return str(url or "").strip().rstrip("/")
-
-
 # Hosts the aux Anthropic path may be pointed at via model.base_url; anything else falls back
 # to the Anthropic default so a foreign host never leaks in.
 _ANTHROPIC_COMPATIBLE_HOSTS = frozenset({"api.anthropic.com"})
-
 
 def _is_anthropic_compatible_host(url: str) -> bool:
     """True for native Anthropic hosts and gateways serving Messages under a ``/anthropic`` path
@@ -2334,7 +2315,10 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
-            base_url = override_url or _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            if not _pool_credential_is_model_eligible("openrouter", or_key, or_model):
+                logger.debug("Auxiliary client: OpenRouter credential is cooled for %s", or_model)
+                return None, None
+            base_url = override_url or _pool_runtime_base_url_for_key(entry, or_key, OPENROUTER_BASE_URL)
             logger.debug("Auxiliary client: OpenRouter via pool")
             return _create_openai_client(
                 api_key=or_key, base_url=base_url, default_headers=build_or_headers()
@@ -2346,9 +2330,14 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
         _mark_provider_unhealthy(
             "openrouter", ttl=60, reason=_describe_openrouter_unavailable(or_model), level=logging.DEBUG)
         return None, None
+    if not _pool_credential_is_model_eligible("openrouter", or_key, or_model):
+        logger.debug("Auxiliary client: OpenRouter credential is cooled for %s", or_model)
+        return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(
-        api_key=or_key, base_url=override_url or OPENROUTER_BASE_URL, default_headers=build_or_headers()
+        api_key=or_key,
+        base_url=override_url or _pool_runtime_base_url_for_key(entry, or_key, OPENROUTER_BASE_URL),
+        default_headers=build_or_headers(),
     ), or_model
 
 
@@ -3052,8 +3041,9 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
     except ImportError:
         return None, None
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    effective_model = requested_model or model
     # A model-scoped cooldown spares the key's other models.
-    pool_present, entry = _select_pool_entry("anthropic", requested_model or model)
+    pool_present, entry = _select_pool_entry("anthropic", effective_model)
     if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
@@ -3062,9 +3052,15 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
         token = explicit_api_key or resolve_anthropic_token()
     if not token:
         return None, None
+    if not _pool_credential_is_model_eligible("anthropic", token, effective_model):
+        logger.debug("Auxiliary client: Anthropic credential is cooled for %s", effective_model)
+        return None, None
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
     # Anthropic-compatible; a foreign host (Codex, OpenRouter) would 401 every aux call.
-    base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
+    base_url = (
+        _pool_runtime_base_url_for_key(entry, token, _ANTHROPIC_DEFAULT_BASE_URL)
+        if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
+    )
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
@@ -3073,7 +3069,11 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == "anthropic":
                 cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-                if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
+                cfg_key = str(model_cfg.get("api_key") or "").strip()
+                if (
+                    cfg_base_url and _is_anthropic_compatible_host(cfg_base_url)
+                    and (not cfg_key or cfg_key == str(token).strip())
+                ):
                     base_url = cfg_base_url
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) wins over
     # both the pool row and config.yaml, under the same Anthropic-compatible host rule the

@@ -208,6 +208,10 @@ class SignalAdapter(BasePlatformAdapter):
         self._running = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
+        # signal-cli >= 0.14.x tags each SSE event with an ``id:`` and replays the events after a
+        # reconnect's ``Last-Event-ID`` from its in-memory buffer; older daemons send no id.
+        self._last_event_id: Optional[str] = None
+        self._pending_event_id: Optional[str] = None
         self._account_normalized = self.account.strip()
         # Recently sent timestamps filter echo-backs (Note to Self / linked-device sync-sents); LRU + TTL
         # so a pending echo in a chatty group isn't evicted by many outbounds.
@@ -285,6 +289,9 @@ class SignalAdapter(BasePlatformAdapter):
         """Dispatch one SSE line; keepalive comments (":") count as activity so the health monitor stays quiet."""
         if line.startswith(":"):
             self._last_sse_activity = time.time()
+        elif line.startswith("id:"):
+            # The id precedes its data line; it becomes the resume point only once that event ran.
+            self._pending_event_id = line[3:].strip() or None
         elif line.startswith("data:") and (data_str := line[5:].strip()):
             self._last_sse_activity = time.time()
             try:
@@ -293,6 +300,8 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.debug("Signal SSE: invalid JSON: %s", data_str[:100])
             except Exception:
                 logger.exception("Signal SSE: error handling event")
+            if self._pending_event_id:
+                self._last_event_id, self._pending_event_id = self._pending_event_id, None
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon, reconnecting with jittered backoff."""
@@ -301,8 +310,11 @@ class SignalAdapter(BasePlatformAdapter):
         while self._running:
             try:
                 logger.debug("Signal SSE: connecting to %s", url)
-                async with self.client.stream("GET", url, headers={"Accept": "text/event-stream"},
-                                              timeout=None) as response:
+                headers = {"Accept": "text/event-stream"}
+                if self._last_event_id:  # resume: the daemon first replays what arrived while we were away
+                    headers["Last-Event-ID"] = self._last_event_id
+                self._pending_event_id = None  # an id whose data line never arrived is not consumed
+                async with self.client.stream("GET", url, headers=headers, timeout=None) as response:
                     self._sse_response = response
                     backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
                     self._last_sse_activity = time.time()

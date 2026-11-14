@@ -30,9 +30,9 @@ import { introDe } from './intro-de'
 
 export const deOverrides = {
   gatewayGroupOpen: {
-    opening: "Gruppenchat wird geöffnet…",
-    lookupFailed: "Diese Gruppe konnte auf dem Gateway nicht gefunden werden. Versuche es erneut.",
-    missing: "Dieser Gruppenchat existiert nicht mehr."
+    opening: 'Gruppenchat wird geöffnet…',
+    lookupFailed: 'Diese Gruppe konnte auf dem Gateway nicht gefunden werden. Versuche es erneut.',
+    missing: 'Dieser Gruppenchat existiert nicht mehr.'
   },
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
@@ -2399,12 +2399,15 @@ export const deOverrides = {
         enabledTitle: 'Echtes Profil-Browsen aktiv',
         enabledMessage: 'Neue Sessions browsen mit einem Schnappschuss Ihres Standard-Browserprofils.',
         disabledTitle: 'Echtes Profil-Browsen deaktiviert',
-        disabledMessage: 'Der Profil-Schnappschuss wird gelöscht und der In-App-Browser davon abgemeldet; neue Sessions verwenden einen sauberen Browser.',
+        disabledMessage:
+          'Der Profil-Schnappschuss wird gelöscht und der In-App-Browser davon abgemeldet; neue Sessions verwenden einen sauberen Browser.',
         failedSave: 'Die Echtes-Profil-Einstellung konnte nicht gespeichert werden',
         reimportSignins: 'Anmeldungen erneut importieren',
         signinsImportedTitle: 'Anmeldungen im In-App-Browser',
-        signinsImported: count => `In-App-Browser mit ${count} Cookie${count === 1 ? '' : 's'} aus Ihrem Browserprofil angemeldet.`,
-        signinsRemote: 'Dieses Backend läuft auf einem anderen Rechner, daher wird sein Browserprofil nicht in den In-App-Browser importiert.',
+        signinsImported: count =>
+          `In-App-Browser mit ${count} Cookie${count === 1 ? '' : 's'} aus Ihrem Browserprofil angemeldet.`,
+        signinsRemote:
+          'Dieses Backend läuft auf einem anderen Rechner, daher wird sein Browserprofil nicht in den In-App-Browser importiert.',
         signinsFailed: 'Anmeldungen konnten nicht in den In-App-Browser importiert werden',
         prompt: {
           title: 'Auf Ihren Websites angemeldet bleiben',
@@ -3005,7 +3008,8 @@ export const deOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Kein Bot-Token nötig',
-      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      intro: (platform: string) =>
+        `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       link: (platform: string) => `${platform} verknüpfen`,
       linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
       linkedAccounts: 'Verknüpfte Konten',
@@ -3020,13 +3024,16 @@ export const deOverrides = {
       waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
       linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
-      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      refused: (platform: string) =>
+        `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
       qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
       managed: 'Von Team Gateway verwaltet',
-      managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
+      managedNote: (platform: string) =>
+        `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
       managedIntro: 'Die Konten dieses Agenten werden im Nous Portal verknüpft.',
       openPortal: 'Konten im Nous Portal verknüpfen',
-      noNewAccount: (platform: string) => `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
+      noNewAccount: (platform: string) =>
+        `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
     },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
@@ -3235,7 +3242,8 @@ export const deOverrides = {
     fieldDeliver: 'Zustellen an',
     fieldDeliverOnly: 'Nur die Payload zustellen',
     fieldSignature: 'Signatur',
-    fieldSignatureHint: 'Das einzige Signaturschema, das diese Route akzeptiert. GitHub-, GitLab- und Linear-Zustellungen brauchen ihre eigene Festlegung.',
+    fieldSignatureHint:
+      'Das einzige Signaturschema, das diese Route akzeptiert. GitHub-, GitLab- und Linear-Zustellungen brauchen ihre eigene Festlegung.',
     signatureOptions: {
       generic: 'Generisch (mit Zeitstempel)',
       github: 'GitHub',
@@ -3911,7 +3919,8 @@ export const deOverrides = {
       '/topup': 'Ihr Nous-Guthaben anzeigen und die Abrechnung im Portal verwalten',
       '/platform': 'Eine fehlerhafte Gateway-Plattform pausieren, fortsetzen oder auflisten',
       '/version': 'Hermes-Agent-Version anzeigen',
-      '/debug': 'Debug-Bericht (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links',
+      '/debug':
+        'Debug-Bericht (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links',
       '/model': 'Modell für diese Session wechseln'
     },
     hotkeyDescs: {
@@ -5135,7 +5144,8 @@ export const deOverrides = {
       readAloud: 'Vorlesen',
       copyFullResponse: 'Vollständige Antwort kopieren',
       readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
-      contentRefusedNotice: 'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
+      contentRefusedNotice:
+        'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',
       scrollToBottom: 'Nach unten scrollen',

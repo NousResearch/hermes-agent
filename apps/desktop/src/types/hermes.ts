@@ -718,6 +718,7 @@ export interface SessionMessage {
     | 'content_refused'
     | 'failed_turn'
     | 'hidden'
+    | 'internal_notification'
     | 'model_switch'
     | 'personality_switch'
     | 'process_complete'

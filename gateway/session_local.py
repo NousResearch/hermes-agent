@@ -285,6 +285,17 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
+    params = dict(params)
+    if params.get('desktop_project_id') is not None:
+        from pathlib import Path
+        from hermes_cli.desktop_project_authority import prepare_desktop_project_request
+        try:
+            params, _desktop_project = prepare_desktop_project_request(
+                params,
+                db_path=Path(authority.db.db_path).resolve().parent / 'projects.db',
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeStoreError('invalid_params', field='desktop_project_id', detail=str(exc)) from exc
     from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
     from gateway.run import _resolve_gateway_model
     from dataclasses import replace

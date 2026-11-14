@@ -101,6 +101,20 @@ test('canonical create retries retain identity', () => {
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)
 })
 
+test('canonical create retry identity includes the structured Desktop Project id', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const params = { source: 'desktop', profile: 'default', desktop_project_id: 'p_host-1' }
+  const first = protocol.prepare('session.create', params)
+
+  expect(first).toMatchObject({ source: 'gui', desktop_project_id: 'p_host-1' })
+  expect(protocol.prepare('session.create', { ...params })).toEqual(first)
+
+  const otherProject = protocol.prepare('session.create', { ...params, desktop_project_id: 'p_host-2' })
+
+  expect(otherProject.desktop_project_id).toBe('p_host-2')
+  expect(otherProject.request_id).not.toBe(first.request_id)
+})
+
 // TUI-26: a bare stop phrase typed into a LOCAL voice chat (turned on by another viewer) ends the
 // chat on the owner and admits nothing; the owner answers `{voice_stopped: true}`.
 test('a voice_stopped prompt.submit reply is a settled no-admission receipt, never a mismatch', () => {

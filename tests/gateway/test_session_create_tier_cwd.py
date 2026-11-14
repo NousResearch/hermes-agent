@@ -82,3 +82,35 @@ async def test_inherited_cwd_yields_to_a_named_profiles_workspace_and_a_pick_doe
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_desktop_project_create_uses_backend_root_and_rejects_conflicting_explicit_cwd(tmp_path, monkeypatch):
+    from pathlib import Path
+    from hermes_cli import projects_db
+
+    project_root, client_cwd = tmp_path / 'host-project', tmp_path / 'client-cwd'
+    project_root.mkdir()
+    client_cwd.mkdir()
+    store, _runner, authority, owner = _owner(tmp_path / 'root' / 'profiles' / 'work', monkeypatch, {
+        'model': {'default': 'm'}})
+    try:
+        database = Path(authority.db.db_path).resolve().parent / 'projects.db'
+        with projects_db.connect_closing(db_path=database) as connection:
+            project_id = projects_db.create_project(
+                connection, name='Host project', primary_path=str(project_root))
+
+        _, policy = await _create(
+            owner, authority, 'project-root', client_cwd,
+            desktop_project_id=project_id, cwd_explicit=False)
+        request = json.loads(policy.request_json)
+        assert policy.cwd == str(project_root.resolve())
+        assert request['desktop_project_id'] == project_id
+
+        refused = await _create(
+            owner, authority, 'project-conflict', client_cwd,
+            desktop_project_id=project_id, cwd_explicit=True)
+        assert refused == 'invalid_params'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

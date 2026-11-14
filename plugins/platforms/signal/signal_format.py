@@ -109,11 +109,15 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
         styles = adjusted_monospace + heading_styles
     else:
         styles.extend(heading_styles)
-    # Inline markers: seed occupied with code blocks so code text is never restyled.
+    # Inline markers: seed occupied with code blocks so code text is never restyled. Each pattern
+    # scans the gaps between code blocks separately: a marker inside code must not open a match
+    # that swallows (and so drops) a real pair in the prose after it.
     all_matches: list[tuple[int, int, int, int, str]] = []
     occupied: list[tuple[int, int]] = list(code_blocks)
+    bounds = [0, *(b for block in sorted(code_blocks) for b in block), len(text)]
+    gaps = [(bounds[i], bounds[i + 1]) for i in range(0, len(bounds), 2) if bounds[i] < bounds[i + 1]]
     for pattern, style in _INLINE_PATTERNS:
-        for match in pattern.finditer(text):
+        for match in (m for gs, ge in gaps for m in pattern.finditer(text, gs, ge)):
             ms, me = match.start(), match.end()
             if not any(ms < oe and me > os for os, oe in occupied):
                 all_matches.append((ms, me, match.start(1), match.end(1), style))

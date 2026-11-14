@@ -5,6 +5,8 @@ strikethrough, monospace, code blocks, headings, and — critically — the
 false-positive regressions that caused spurious italics in production.
 """
 
+import pytest
+
 from plugins.platforms.signal.signal_format import markdown_to_signal
 
 # ---------------------------------------------------------------------------
@@ -314,3 +316,27 @@ class TestCodeProtection:
         assert len(mono) == 2
         assert _find_style(styles, "ITALIC") == []
         assert _find_style(styles, "STRIKETHROUGH") == []
+
+
+_APPROVAL_COMMANDS = [
+    "rm -rf /srv/*/cache/*",
+    "find . -name *_old_* -delete",
+    "chmod -R 777 ~~/backup~~",
+    "cp __init__.py **/pkg/",
+    "# comment *line*\necho _x_ `y`",
+]
+
+
+@pytest.mark.parametrize("command", _APPROVAL_COMMANDS)
+def test_fenced_command_round_trips_amid_styled_prose(command):
+    """An approval prompt's fenced command reads byte-identical, and the prose
+    around it (heading, bold, italic) is still styled outside the fence."""
+    md = f"## Approve?\n```bash\n{command}\n```\nThis is **dangerous** and _final_."
+    text, styles = _m2s(md)
+    mono = _find_style(styles, "MONOSPACE")
+    assert len(mono) == 1
+    start, length, _ = mono[0].split(":")
+    assert text[int(start) : int(start) + int(length)] == command
+    assert text == f"Approve?\n{command}\nThis is dangerous and final."
+    assert len(_find_style(styles, "BOLD")) == 2
+    assert len(_find_style(styles, "ITALIC")) == 1

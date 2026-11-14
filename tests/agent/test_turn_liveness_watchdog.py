@@ -8,8 +8,8 @@ stuck until the gateway process is killed.
 
 The fix adds a turn liveness watchdog next to the durable lease refresher in
 ``AIAgent.run_conversation`` (policy lives in ``agent/turn_liveness.py``).
-It keys off the agent's activity clock (``_last_activity_ts`` — the #72039
-single progress source, which lease renewal never touches). When a turn
+It keys off the agent's progress clock (separate from ``_last_activity_ts``).
+Ordinary activity and lease renewal do not count as durable progress. When a turn
 shows no observable progress for the configured bound
 (``agent.turn_liveness.timeout_s`` in config.yaml), it:
 
@@ -162,13 +162,15 @@ def _agent_with_db(db, *, session_id="stalled-session", platform="desktop"):
     agent.quiet_mode = True
     # A real cached agent entering a new turn holds the activity clock
     # from its PREVIOUS turn: `_reset_activity_labels_after_turn` keeps
-    # `_last_activity_ts` across turns by design, so an agent that sat
+    # Both clocks persist across turns by design, so an agent that sat
     # idle longer than the watchdog bound (user walked away, came back,
     # sent a message) enters with a STALE clock. `AIAgent.run_conversation`
     # stamps the clock at turn entry (#95663 review), so the watchdog
     # measures idle from THIS turn's start — mirror that reality: stale
     # entry clock, fresh measurement after the wrapper's turn-entry stamp.
     agent._last_activity_ts = time.time() - 1000.0
+    agent._last_progress_ts = time.time() - 1000.0
+    agent._turn_liveness_progress_generation = 0
     agent._last_activity_desc = "previous turn (idle)"
     agent._session_turn_lease_refresh_interval = 60.0
     return agent
@@ -263,7 +265,7 @@ def test_watchdog_does_not_fire_while_turn_still_making_progress(
     def busy_loop(_agent, _message, _system, history, *_args, **_kwargs):
         # Keep making progress well past the 0.3s idle bound.
         while time.time() - t_start < 0.6:
-            _agent._touch_activity("test tick")
+            _agent._touch_activity("test tick", progress=True)
             time.sleep(0.02)
         return {
             "final_response": "done",
@@ -285,6 +287,33 @@ def test_watchdog_does_not_fire_while_turn_still_making_progress(
     # The lease refresher ran during the turn — renewal is orthogonal to the
     # watchdog and continued while the turn was alive.
     assert len(db.refresh_times) >= 1
+
+def test_watchdog_aborts_activity_only_failing_tool_loop(watchdog_config, monkeypatch, caplog):
+    """Repeated fast tool failures refresh activity but must not mask a stalled turn."""
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._session_turn_lease_refresh_interval = 0.05
+
+    def failing_tool_loop(_agent, _message, _system, history, *_args, **_kwargs):
+        # Mirrors a fast tool error and the next model/tool iteration. The ordinary activity clock
+        # remains fresh, but no successful tool result or stream output advances the progress clock.
+        while not _agent._hard_interrupt_requested.wait(0.01):
+            _agent._touch_activity("tool completed: browser (error)")
+        return {
+            "final_response": "aborted",
+            "messages": history,
+            "api_calls": 1,
+            "completed": False,
+            "interrupted": True,
+        }
+
+    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+        result = _run_turn(agent, failing_tool_loop, monkeypatch)
+
+    assert result["interrupted"] is True
+    assert agent._last_activity_ts > agent._last_progress_ts
+    assert db.events[-1][0] == "release"
+    assert any("no progress" in record.getMessage() for record in caplog.records)
 
 def test_watchdog_stops_lease_renewal_when_interrupt_cannot_unwind_wedge(
     watchdog_config, monkeypatch
@@ -359,11 +388,11 @@ def test_watchdog_declines_abort_when_activity_resumes_during_warning(
         # warning delivery itself is what unblocks the wedge: the turn
         # resumes DURING the warning window, before the commit point.
         assert resume_event.wait(10.0)
-        _agent._touch_activity("turn resumed")
+        _agent._touch_activity("turn resumed", progress=True)
         touched_event.set()
         # Keep the turn alive a while so lease renewal is observable.
         while time.time() - t_start < 0.8:
-            _agent._touch_activity("still alive")
+            _agent._touch_activity("still alive", progress=True)
             time.sleep(0.02)
         # Capture DURING the turn — the wrapper's finally clears any
         # interrupt after the loop returns, so post-run assertions on the
@@ -449,19 +478,19 @@ def test_watchdog_declines_abort_when_activity_resumes_after_revalidation(
         *,
         hard_cancel=False,
         tool_reason=None,
-        require_generation=None,
+        require_progress_generation=None,
     ):
         # Deterministically land real progress in the exact
         # post-revalidation / pre-interrupt window: every abort hammer
         # attempt is preceded by a fresh activity stamp on the clock.
         injected["count"] += 1
-        agent._touch_activity("resumed after revalidation")
-        if require_generation is not None:
+        agent._touch_activity("resumed after revalidation", progress=True)
+        if require_progress_generation is not None:
             return real_interrupt(
                 message,
                 hard_cancel=hard_cancel,
                 tool_reason=tool_reason,
-                require_generation=require_generation,
+                require_progress_generation=require_progress_generation,
             )
         return real_interrupt(
             message, hard_cancel=hard_cancel, tool_reason=tool_reason
@@ -546,7 +575,7 @@ def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publicat
         # internal generation comparison. Then resume with real progress
         # while the hammer is mid-flight.
         assert fence.entered.wait(10.0), "interrupt never reached the fence"
-        _agent._touch_activity("resumed inside interrupt publication window")
+        _agent._touch_activity("resumed inside interrupt publication window", progress=True)
         fence.release.set()
         # Keep the turn making REAL progress while observing whether the
         # parked interrupt published anything. Continuous activity also
@@ -554,7 +583,7 @@ def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publicat
         # publication observed here is attributable to the stale attempt.
         deadline = time.time() + 1.0
         while time.time() < deadline:
-            _agent._touch_activity("still alive")
+            _agent._touch_activity("still alive", progress=True)
             if _agent._interrupt_requested or _agent._hard_interrupt_requested.is_set():
                 break
             time.sleep(0.02)
@@ -621,7 +650,7 @@ def test_watchdog_declines_abort_when_interrupt_publish_raises(
         *,
         hard_cancel=False,
         tool_reason=None,
-        require_generation=None,
+        require_progress_generation=None,
     ):
         raised["count"] += 1
         raise RuntimeError("synthetic interrupt publication failure")
@@ -688,7 +717,7 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
     from agent.conversation_compression import CompressionCommitFence
 
     agent = AIAgent.__new__(AIAgent)
-    agent._turn_liveness_activity_generation = 5
+    agent._turn_liveness_progress_generation = 5
     agent._turn_liveness_abort_claim = None
     agent._interrupt_requested = False
     agent._interrupt_message = None
@@ -716,7 +745,7 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
             agent,
             "watchdog: no progress",
             hard_cancel=True,
-            require_generation=5,
+            require_progress_generation=5,
         )
 
     interrupt_thread = threading.Thread(target=interrupt_fn)
@@ -730,13 +759,13 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
     touched = threading.Event()
 
     def turn_fn():
-        agent._touch_activity("turn resumed")
+        agent._touch_activity("turn resumed", progress=True)
         touched.set()
 
     turn_thread = threading.Thread(target=turn_fn)
     turn_thread.start()
     assert touched.wait(10.0), "competing activity never landed"
-    assert agent._turn_liveness_activity_generation == 6
+    assert agent._turn_liveness_progress_generation == 6
 
     parking_lock.release_park.set()
     interrupt_thread.join(10.0)

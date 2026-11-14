@@ -823,8 +823,9 @@ def _kill_targets_pid(args: list[str], pid: int) -> bool:
             continue
         if _is_pid_operand(arg, pid, group=signal_given):
             return True
-        if arg.startswith("-"):
-            signal_given = True
+        # A signal ends option parsing for `-N`, and so does the first PID operand: in
+        # `kill 99 -N` the `-N` is a process-group target.
+        signal_given = True
         position += 1
     return False
 
@@ -848,8 +849,9 @@ def _windows_killer_targets_pid(name: str, args: list[str], pid: int) -> bool:
         if flag in flags:
             values.append(inline if colon else (args[position + 1] if position + 1 < len(args) else ""))
         elif name == "stop-process" and not lowered[position].startswith("-"):
-            values.append(args[position])  # first positional operand binds to -Id
-            break
+            # The positional operand binds to -Id. A bare token after an unlisted option
+            # (`-ErrorAction Stop -Id N`) may be that option's value, so keep scanning.
+            values.append(args[position])
         if name == "stop-process" and flag in _STOP_PROCESS_VALUE_PARAMS and not colon:
             position += 1
         position += 1

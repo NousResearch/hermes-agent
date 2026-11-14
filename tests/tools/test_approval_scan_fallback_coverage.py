@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.tools import test_hardline_blocklist as blocklist
-from tools import approval
+from tools import approval, approval_smart
 from tools.approval import check_all_command_guards, check_dangerous_command
 from tools.approval_detection import (
     _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _SCAN_INCOMPLETE_DESCRIPTION,
@@ -98,3 +98,19 @@ def test_a_fallback_refusal_says_where_it_came_from_and_how_to_recover(gate):
     assert "quoted text can match" in result["message"]
     assert "Split the work into smaller commands" in result["message"]
 
+
+def test_smart_approval_never_decides_a_scan_incomplete_finding(gate, monkeypatch):
+    # Detection's own budget can run out on a command the hardline scan finished: the finding,
+    # not only the hardline scan, keeps the guardian LLM out.
+    gate("smart")
+    guardian = MagicMock(return_value="approve")
+    monkeypatch.setattr(approval_smart, "_smart_approve", guardian)
+    monkeypatch.setattr(approval, "detect_dangerous_command", lambda command: (
+        True, _SCAN_INCOMPLETE_DESCRIPTION, _SCAN_INCOMPLETE_DESCRIPTION))
+    callback = MagicMock(return_value="deny")
+    assert hardline_scan_incomplete("echo ok") is False
+    result = check_all_command_guards("echo ok", "local", approval_callback=callback)
+    assert result["approved"] is False and not result.get("smart_approved")
+    guardian.assert_not_called()
+    callback.assert_called_once()
+    assert callback.call_args.kwargs.get("allow_session") is False

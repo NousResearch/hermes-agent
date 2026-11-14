@@ -1463,7 +1463,10 @@ def check_all_command_guards(command: str, env_type: str,
         pattern_key=keys[0], pattern_keys=keys,
         session_key=session_key, approval_callback=approval_callback,
         # The guardian LLM never approves a command the scanners could not read to the end: a person must.
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart" and not unread,
+        # Key on the finding too (as _approval_scope does), so a detection-budget trip on a command the
+        # hardline scan finished still reaches a human.
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        smart=approval_mode == "smart" and not unread and _SCAN_INCOMPLETE_DESCRIPTION not in keys,
     )
 
 

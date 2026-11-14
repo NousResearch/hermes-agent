@@ -207,6 +207,59 @@ describe('tool media renderers', () => {
     expect(screen.queryByTestId('card-sfx')).toBeNull()
   })
 
+  it('lets the owning plugin draw a document its tool produced even when the reply names it mid-sentence', async () => {
+    const MODEL_PATH = '/home/u/.hermes/cache/generated/model.glb'
+    const NOTES_PATH = '/home/u/notes.txt'
+
+    const messages = [
+      userMessage('u1', 'make a model'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-model',
+            toolName: 'sfx_make',
+            args: { prompt: 'cube' },
+            argsText: '{"prompt":"cube"}',
+            result: { file_path: MODEL_PATH }
+          },
+          {
+            type: 'text',
+            text: renderMediaTags(
+              `I saved MEDIA:${MODEL_PATH} for you.\n\nYour notes are in MEDIA:${NOTES_PATH} as before.`
+            )
+          }
+        ],
+        status: { type: 'complete', reason: 'stop' },
+        createdAt,
+        metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
+      } as unknown as ThreadMessage
+    ]
+
+    disposers.push(claim('sfx', ['sfx_make']))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const { container } = render(
+      <ThreadRuntime messages={messages}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage: Assistant, UserMessage: () => null }} />
+        </ThreadPrimitive.Root>
+      </ThreadRuntime>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('card-sfx').textContent).toBe('model.glb'))
+    expect(seen.at(-1)?.file).toMatchObject({ kind: 'file', name: 'model.glb', path: MODEL_PATH })
+    // A document no tool produced stays inline link text.
+    const links = [...container.querySelectorAll('a[data-inline-file-link]')]
+    expect(links.map(link => link.getAttribute('href'))).toEqual([NOTES_PATH])
+    // The plugin's block card never lands inside a <p>.
+    expect(screen.getByTestId('card-sfx').closest('p')).toBeNull()
+    expect(error.mock.calls.map(call => String(call[0])).join('\n')).not.toMatch(/descendant/)
+    error.mockRestore()
+  })
+
   it('keeps the built-in player outside a transcript turn (a Bot group room has no tool calls)', async () => {
     disposers.push(claim('sfx', ['sfx_make']))
     const { container } = render(<MessageTextContent text={`MEDIA:${SFX_PATH}`} />)

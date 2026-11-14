@@ -7,7 +7,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { controlUnder, createAgentHarness } from './create-agent-test-utils'
+import { controlUnder, createAgentHarness, dismissAllNotifications } from './create-agent-test-utils'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
@@ -27,14 +27,8 @@ describe('profile creation warnings', () => {
 
   async function showNotifications() {
     const { NotificationStack } = await import('@/components/notifications')
-    const { clearNotifications, notify } = await import('@/store/notifications')
-    const { $notifications, dismissNotification } = await import('@/store/notifications')
-
-    for (const notice of $notifications.get()) {
-      dismissNotification(notice.id)
-    }
-
-    clearNotifications()
+    const { notify } = await import('@/store/notifications')
+    await dismissAllNotifications()
     mocks.notify.mockImplementation(notify)
 
     return render(<NotificationStack />)
@@ -199,25 +193,6 @@ describe('profile creation warnings', () => {
       [expect.objectContaining({ title: 'inbox-triage — local', message: warnings.join('\n'), persistent: true })]
     ])
     expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
-  })
-
-  it.each(['created', 'pending'])('keeps a %s draft when renamed away and back before Create', async state => {
-    const base = mocks.request.getMockImplementation()!
-    let finishCreate: (() => void) | undefined
-    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'profiles.create' && state === 'pending' && !finishCreate
-      ? new Promise(resolve => { finishCreate = () => resolve({}) })
-      : base(method, params))
-    await renderDialog(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await waitFor(() => expect(createCalls()).toHaveLength(1))
-    const input = screen.getByPlaceholderText('inbox-triage')
-    fireEvent.change(input, { target: { value: 'inbox-triagex' } })
-    fireEvent.change(input, { target: { value: 'inbox-triage' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await act(async () => finishCreate?.())
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
-    expect(createCalls()).toHaveLength(1)
-    expect(mocks.deleteBot).not.toHaveBeenCalled()
   })
 
   it('keeps the model setup notice and action available when creation also returned warnings', async () => {

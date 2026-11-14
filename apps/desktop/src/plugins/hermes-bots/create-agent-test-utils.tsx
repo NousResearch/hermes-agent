@@ -97,6 +97,16 @@ export function controlUnder(caption: string) {
   return screen.getByText(caption).parentElement!.querySelector('[role="combobox"]') as HTMLElement
 }
 
+
+/** Dismisses every store notice, persistent ones included (timers and onDismiss too). */
+export async function dismissAllNotifications() {
+  const { $notifications, dismissNotification } = await import('@/store/notifications')
+
+  for (const notice of $notifications.get()) {
+    dismissNotification(notice.id)
+  }
+}
+
 /** Registers the suite lifecycle and returns the dialog helpers bound to `mocks`. */
 export function createAgentHarness(mocks: CreateAgentMocks) {
   // Each build re-imports the dialog's whole module graph.
@@ -140,11 +150,7 @@ export function createAgentHarness(mocks: CreateAgentMocks) {
     cleanup()
     // A suite that routes notify to the real store leaves auto-dismiss timers
     // behind; one firing after this file's jsdom window is gone throws.
-    const { $notifications, dismissNotification } = await import('@/store/notifications')
-
-    for (const notice of $notifications.get()) {
-      dismissNotification(notice.id)
-    }
+    await dismissAllNotifications()
 
     // Radix's focus scope dispatches its unmount event from a 0 ms timer; let it fire
     // here, or it lands in the next test file's jsdom window and throws there.

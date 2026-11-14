@@ -90,7 +90,8 @@ _BIDI_CONTROL_RE = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
 
 
 def strip_tool_metadata_text(text: str) -> str:
-    """``strip_unicode_tags`` plus bidi override/isolate controls, for MCP tool metadata."""
+    """``strip_unicode_tags`` plus bidi override/isolate controls, for MCP tool metadata and
+    every tool result (``make_tool_result_message``)."""
     text = strip_unicode_tags(text)
     if not text or not _BIDI_CONTROL_RE.search(text):
         return text

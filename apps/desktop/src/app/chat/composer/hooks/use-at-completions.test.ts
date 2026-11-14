@@ -1,6 +1,8 @@
+import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { queryClient } from '@/lib/query-client'
 
 import { useAtCompletions } from './use-at-completions'
@@ -101,6 +103,39 @@ describe('PERF: @ path completions are cached and skip the debounce', () => {
 
     expect(result.current.loading).toBe(false)
     expect(calls.length).toBe(1)
+
+    vi.useRealTimers()
+  })
+})
+
+describe('@symbol: rows', () => {
+  it('name the symbol but insert the @file ref of its defining file', async () => {
+    vi.useFakeTimers()
+    queryClient.clear()
+
+    const gateway = {
+      request: vi.fn(async () => ({
+        items: [{ text: '@file:src/my repo.ts', display: 'loadUser', meta: 'func · src/my repo.ts', kind: 'symbol' }]
+      }))
+    }
+
+    const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
+
+    act(() => {
+      result.current.adapter.search?.('symbol:load')
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300)
+    })
+
+    let rows: readonly Unstable_TriggerItem[] = []
+    act(() => {
+      rows = (result.current.adapter.search?.('symbol:load') || []) as readonly Unstable_TriggerItem[]
+    })
+
+    expect(gateway.request).toHaveBeenCalledWith('complete.path', expect.objectContaining({ word: '@symbol:load' }))
+    expect(rows.map(r => [r.type, r.label])).toEqual([['symbol', 'loadUser']])
+    expect(hermesDirectiveFormatter.serialize(rows[0])).toBe('@file:`src/my repo.ts`')
 
     vi.useRealTimers()
   })

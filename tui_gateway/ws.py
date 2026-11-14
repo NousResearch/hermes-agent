@@ -21,6 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
 from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
+from tui_gateway.ws_group_controls import GroupControlLanes
 
 _log = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ _WS_WRITE_TIMEOUT_S = 10.0
 # later frame and RPC reply parked behind the writer lock (#106369).
 _WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
-# Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
+# Frames read ahead of a busy dispatcher. Serial RPCs dispatch in arrival order, but on a
 # per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
 # by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
 # handler latency (#108325). A full queue parks the reader — the old serial behaviour.
@@ -100,8 +101,11 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # These handlers only project already-owned state.  They may take seconds for a large stored
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
-# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.transcript"})
+# RPCs retain arrival order within their control lane; at most two reads consume a connection.
+_WS_CONCURRENT_READ_METHODS = frozenset({
+    "session.context_breakdown", "session.transcript", "groups.state", "groups.log", "groups.list",
+    "groups.capabilities",
+})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
@@ -503,6 +507,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     async def _dispatch_concurrent_read(req: Any) -> None:
         async with concurrent_read_slots:
+            if client_gone.is_set():
+                return
             started_reads.add(asyncio.current_task())
             try:
                 await _dispatch_one(req)
@@ -540,7 +546,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                     held_room.release()
                 frames.clear()
             while frames:
-                await _dispatch_one(frames[0])
+                await _dispatch_ready(frames[0])
                 frames.popleft()
                 held_room.release()
         except _SendFailed:
@@ -594,16 +600,19 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return stop
 
     async def _dispatch_loop() -> None:
-        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        """Park starting profiles; each group's controls and bounded reads run beside serial work."""
         while (req := await _next_request()) is not stop:
-            req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method in _WS_CONCURRENT_READ_METHODS:
-                task = asyncio.create_task(_dispatch_concurrent_read(req))
-                concurrent_reads.add(task)
-                task.add_done_callback(_finish_concurrent_read)
-                continue
             if await _hold_for_profile_start(req):
                 continue
+            await _dispatch_ready(req)
+
+    async def _dispatch_ready(req: Any) -> None:
+        req_method = req.get("method") if isinstance(req, dict) else None
+        if req_method in _WS_CONCURRENT_READ_METHODS:
+            task = asyncio.create_task(_dispatch_concurrent_read(req))
+            concurrent_reads.add(task)
+            task.add_done_callback(_finish_concurrent_read)
+        elif not await group_controls.queue(authority_connection, req, _unless_dispatch_failed):
             await _dispatch_one(req)
 
     async def _queue_request(req: Any) -> None:
@@ -639,6 +648,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         finally:
             step.cancel()  # no-op once done
 
+    group_controls = GroupControlLanes(_dispatch_one, send_failed, client_gone, limit=_WS_DISPATCH_QUEUE_MAX)
     try:
         await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
         disconnect_reason = "connected"
@@ -729,8 +739,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
-        await _end_reads()
         await _end_held()
+        await _end_reads()
+        await group_controls.close()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()

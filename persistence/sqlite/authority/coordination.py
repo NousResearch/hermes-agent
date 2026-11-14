@@ -27,12 +27,14 @@ from persistence.authority.coordination import (
     DelegationRecovery, DeliveryState, FinishedDelegationRow, HandoffState, HandoffStatus, InflightDelegation,
     OrphanCompletion, OwnerStamp, PendingCompletion, PendingHandoff, RecordedOwner,
 )
+from persistence.authority.subagents import SubagentLimits, SubagentRecovery
 
 from .._backend import SQLiteStore, register_repository, translated
 from ..conversation._store.compression import _session_turn_lease_key_on_conn
 from ..conversation._store.core import _compression_lock_holder_process_is_dead
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._delivery_ledger import LEDGER_PATIENCE_S, DeliveryObligationVerbs
+from .subagents import SubagentLedgerVerbs, recover_subagents
 
 __all__ = ["SQLiteCoordinationRepository"]
 
@@ -127,9 +129,10 @@ def _exhausted_warning(delegation_id: str) -> None:
                                delegation_id, DELEGATION_MAX_DELIVERY_ATTEMPTS)
 
 
-class SQLiteCoordinationRepository(DeliveryObligationVerbs):
+class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs):
     """Compression lock, turn lease, hygiene streak, handoffs and the two ledgers of the bound profile's
-    ``state.db``. The ledger verbs run through the registered writer with the ledgers' 10 s lock wait."""
+    ``state.db``, the delegation ledger with its subagent records. The ledger verbs run through the registered writer
+    with the ledgers' 10 s lock wait."""
 
     def __init__(self, store: SQLiteStore) -> None:
         self._store = store
@@ -493,11 +496,15 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs):
         with translated():
             self._ledger_write(_do)
 
-    # Each recovery lands only while its row keeps the state and ``updated_at`` the caller read; the caller probes
-    # owners and builds each event outside the transaction.
-    def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery]) -> int:
+    # Each recovery lands only while its row keeps the state and ``updated_at`` the caller read, after the subagent
+    # records still held by their dead owners; the caller probes owners and builds each record and event outside the
+    # transaction.
+    def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery],
+                                      subagent_recoveries: Sequence[SubagentRecovery] = (),
+                                      limits: Optional[SubagentLimits] = None) -> int:
         now = time.time()
         def _do(conn):
+            recover_subagents(conn, subagent_recoveries, limits, now)
             recovered = 0
             for recovery in recoveries:
                 cursor = conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,

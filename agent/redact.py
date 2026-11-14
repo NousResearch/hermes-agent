@@ -675,7 +675,8 @@ def _is_b64_pem_key(blob: str) -> bool:
 # A partial print keeps only one armor line: ``head`` of a key file has BEGIN + body, ``tail``
 # has body + END. The full-block pattern needs both, so those body lines leaked verbatim.
 _PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
-_PEM_BODY_LINE_RE = re.compile(r"[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*")
+# A pure-hex line is a digest in docs, not key material: a base64 body line is never all hex.
+_PEM_BODY_LINE_RE = re.compile(r"[ \t]*(?![0-9A-Fa-f]+[ \t]*$)[A-Za-z0-9+/=]{16,}[ \t]*")
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a

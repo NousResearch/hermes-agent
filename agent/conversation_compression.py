@@ -852,15 +852,16 @@ def _record_stall_interrupted_backoff(
 
 
 def resolve_compression_fallback_route() -> Optional[dict]:
-    """Return the first usable ``auxiliary.compression.fallback_chain`` entry.
-    The aux client applies the chain only from its exception handler, so a silent stall never reaches it; this
-    pins the route onto one bounded retry instead. Only the first complete entry: if it errors, the aux
-    client's own exception path walks the rest. ``None`` when none is usable (skip compression)."""
+    """Return the first usable ``auxiliary.compression.fallback_providers`` entry (or legacy
+    ``fallback_chain``). The aux client applies the chain only from its exception handler, so a silent stall
+    never reaches it; this pins the route onto one bounded retry instead. Only the first complete entry:
+    if it errors, the aux client's own exception path walks the rest. ``None`` when none is usable
+    (skip compression)."""
     try:
-        from agent.auxiliary_client import _fallback_entry_api_key, _get_auxiliary_task_config
-        chain = _get_auxiliary_task_config("compression").get("fallback_chain")
+        from agent.auxiliary_client import _fallback_entry_api_key, _get_auxiliary_fallback_chain
+        chain = _get_auxiliary_fallback_chain("compression")
     except Exception:
-        logger.debug("compression fallback_chain lookup failed", exc_info=True)
+        logger.debug("compression fallback_providers lookup failed", exc_info=True)
         return None
     if not isinstance(chain, list):
         return None

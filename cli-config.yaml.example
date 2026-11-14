@@ -954,18 +954,33 @@ prompt_caching:
 #                            # background_review, moa_reference, ...). Example: run
 #                            # compression at "low" and vision at "none" to cut
 #                            # side-task latency/cost on reasoning models.
+#     # Fallback chain: tried in order when this task's primary provider/model fails.
+#     # Entries follow the same shape as top-level ``fallback_providers`` (provider,
+#     # model, base_url, api_key, api_mode, ...). Reads ``fallback_providers`` first,
+#     # then legacy ``fallback_chain`` for backward compatibility.
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemini-3.5-flash-lite:free"
+#     #   - provider: "openrouter"
+#     #     model: "google/gemini-3.1-flash-lite:free"
 #
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:
 #     provider: "auto"
 #     model: ""
 #     reasoning_effort: "low"
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemini-3.5-flash-lite:free"
 #
 #   # Gemini 3.1 TTS hidden audio-tag insertion
 #   tts_audio_tags:
 #     provider: "auto"       # empty model = your main chat model
 #     model: ""
 #     timeout: 30
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemini-3-flash-preview:free"
 #
 #   # Automatic session title generation after the first exchange
 #   title_generation:
@@ -975,6 +990,11 @@ prompt_caching:
 #     model: ""
 #     timeout: 30
 #     language: ""           # empty = match the user's language; or e.g. "English"
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemma-4-31b-it:free"
+#     #   - provider: "openrouter"
+#     #     model: "google/gemma-4-26b-a4b-it:free"
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:
@@ -991,6 +1011,9 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemini-3.5-flash-lite:free"
 #
 #   # Auto-generated short session titles after the first exchange.
 #   # Each active Discord/Telegram channel can spawn a background title
@@ -1001,6 +1024,11 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous title calls
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemma-4-31b-it:free"
+#     #   - provider: "openrouter"
+#     #     model: "google/gemma-4-26b-a4b-it:free"
 #
 #   # Context compression — summarizes long sessions to shrink the prompt.
 #   # Heavy and often hits the slowest provider chain.  Setting a small
@@ -1016,6 +1044,11 @@ prompt_caching:
 #                                 # budget) — raising "timeout" alone does not widen this
 #                                 # window. Each substantive event re-arms it; a slow but
 #                                 # progressing reasoning/summary stream is not affected.
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemma-4-31b-it:free"
+#     #   - provider: "openrouter"
+#     #     model: "google/gemma-4-26b-a4b-it:free"
 #
 #   # Post-turn memory/skill self-improvement review fork. Runs after a turn
 #   # when the nudge intervals fire; writes skills/memories in a daemon thread.
@@ -1024,6 +1057,9 @@ prompt_caching:
 #     enabled: true            # false = skip automatic forks (/refine still works)
 #     provider: "auto"         # or pin a cheaper model (see memory.md)
 #     model: ""
+#     # fallback_providers:
+#     #   - provider: "openrouter"
+#     #     model: "google/gemini-3.5-flash-lite:free"
 
 # =============================================================================
 # Persistent Memory

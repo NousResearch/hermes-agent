@@ -3755,17 +3755,35 @@ def _auth_refresh_provider_for_route(
     return host_provider or normalized
 
 
+def _get_auxiliary_fallback_chain(task: Optional[str]) -> Optional[list[dict[str, Any]]]:
+    """Return the auxiliary task's configured fallback chain.
+
+    Reads ``fallback_providers`` (the naming used by the main agent and delegation) first, then
+    falls back to ``fallback_chain`` (legacy auxiliary spelling) for backward compatibility.
+    Returns ``None`` when neither is configured.
+    """
+    if not task:
+        return None
+    task_config = _get_auxiliary_task_config(task)
+    chain = task_config.get("fallback_providers")
+    if chain is None:
+        chain = task_config.get("fallback_chain")
+    if not isinstance(chain, list) or not chain:
+        return None
+    return chain
+
+
 def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[dict[str, Any]]:
-    """Resolve the ``fallback_chain`` entry a ``fallback_chain[<i>](<provider>)`` label points at,
+    """Resolve the ``fallback_chain`` / ``fallback_providers`` entry a label points at,
     or None when the label is not a configured-chain candidate or the index no longer resolves."""
     if not task or not fb_label:
         return None
-    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
+    m = re.match(r"(?:fallback_chain|fallback_providers)\[(\d+)\]", fb_label)
     if not m:
         return None
     try:
-        chain = _get_auxiliary_task_config(task).get("fallback_chain")
-        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
+        chain = _get_auxiliary_fallback_chain(task)
+        entry = chain[int(m.group(1))] if chain is not None else None
     except Exception:
         return None
     return entry if isinstance(entry, dict) else None
@@ -4228,13 +4246,15 @@ def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None, skip_lanes=(),
 ) -> tuple[Optional[Any], Optional[str], str]:
-    """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
-    ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still run after a
-    model-scoped failure); this walk's ``skip_lanes`` are passed over. Returns (client, model, label)."""
+    """Try auxiliary.<task>.fallback_providers entries in order (each needs ``provider``; model/base_url/api_key optional).
+    Reads ``fallback_providers`` (main-agent convention) first, then falls back to legacy
+    ``fallback_chain``. ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the
+    same provider still run after a model-scoped failure); this walk's ``skip_lanes`` are passed over.
+    Returns (client, model, label)."""
     if not task:
         return None, None, ""
-    chain = _get_auxiliary_task_config(task).get("fallback_chain")
-    if not chain or not isinstance(chain, list):
+    chain = _get_auxiliary_fallback_chain(task)
+    if not chain:
         return None, None, ""
     skip = _failed_backend_skip(
         failed_provider, failed_model, failed_base_url=failed_base_url, failure_scope=failure_scope)
@@ -4252,10 +4272,10 @@ def _try_configured_fallback_chain(
             continue
         if _is_provider_unhealthy(fb_provider, fb_base_url, fb_model_raw):
             _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url, model=fb_model_raw)
-            tried.append(f"fallback_chain[{i}]({fb_provider}) (unhealthy)")
+            tried.append(f"fallback_providers[{i}]({fb_provider}) (unhealthy)")
             continue
         fb_model = fb_model_raw or None
-        label = f"fallback_chain[{i}]({fb_provider})"
+        label = f"fallback_providers[{i}]({fb_provider})"
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
@@ -4272,7 +4292,7 @@ def _try_configured_fallback_chain(
             return fb_client, resolved_model or fb_model, label
         tried.append(label)
     if tried:
-        logger.debug("Auxiliary %s: configured fallback_chain exhausted (tried: %s)", task, ", ".join(tried))
+        logger.debug("Auxiliary %s: configured fallback_providers exhausted (tried: %s)", task, ", ".join(tried))
     return None, None, ""
 
 
@@ -7714,12 +7734,12 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     chain, explicit: main-agent-model net). Returns the response or None.
     Every fallback label except auth bypasses the explicit-provider gate: the provider cannot serve
     this request regardless of user intent. An auth error from an explicit provider may only use the
-    task's own configured fallback_chain; it never implies an unconfigured provider hop."""
+    task's own configured fallback_providers; it never implies an unconfigured provider hop."""
     task, tag, resolved_provider, first_err = route.task, route.tag, route.resolved_provider, failure.error
     is_auto = resolved_provider in {"auto", "", None}
     reason = aux_errors.fallback_label(failure, rung_spent=rung_spent)
     is_capacity_error = reason not in (None, aux_errors.AUTH_ERROR)
-    task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
+    task_chain = _get_auxiliary_fallback_chain(task)
     has_task_fallback_chain = isinstance(task_chain, list) and bool(task_chain)
     explicit_auth_with_task_chain = (
         reason == aux_errors.AUTH_ERROR and not is_auto and has_task_fallback_chain

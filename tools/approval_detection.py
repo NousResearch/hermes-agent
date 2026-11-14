@@ -7,7 +7,6 @@ prompting live here.
 import bisect
 import fnmatch
 import functools
-import itertools
 import logging
 import os
 import re
@@ -417,27 +416,6 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
-def _hardline_detection_variants(command: str, capped: list[str] | None = None):
-    """The shared detection variants plus the hardline-only command-position projections:
-    exec wrappers (nice, timeout, command, doas ...) peeled using the original quote state so the
-    verb lands on the _CMDPOS anchor, and literal command strings carried by env -S / su -c /
-    runuser -c / sh -c scanned as commands of their own. Kept out of the dangerous layer, whose
-    unanchored rules (pipe-to-shell sinks) would read a peeled `|| sudo bash` as `| bash`."""
-    from tools.approval_wrappers import carried_command_variants, strip_wrapper_prefixes
-
-    seen = set()
-    masked = _mask_quoted_newlines(command)
-    stripped = strip_wrapper_prefixes(masked)
-    # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
-    # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
-    # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
-    peeled = itertools.chain(_command_detection_variants(stripped, capped=capped), carried_command_variants(stripped)) if stripped != masked else ()
-    for variant in itertools.chain(_command_detection_variants(command, capped=capped), peeled, carried_command_variants(command)):
-        if variant not in seen:
-            seen.add(variant)
-            yield variant
-
-
 def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description). The size
     and real-nesting limits refuse. A scan that runs out of its step budget refuses only when the
@@ -506,13 +484,15 @@ def _detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
+    from tools.approval_wrappers import hardline_detection_variants
+
     # The -WhatIf preview exemption holds only when every guarded statement previews on its own (judged on the raw
     # command: masking a quoted newline joins statements); otherwise those rules apply without it.
     patterns = HARDLINE_PATTERNS_COMPILED
     if "whatif" in command.lower() and not whatif_preview_is_real(command):
         patterns = _HARDLINE_PATTERNS_NO_WHATIF
     capped: list[str] = []
-    for command_variant in _hardline_detection_variants(command, capped=capped):
+    for command_variant in hardline_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in patterns:
@@ -1029,6 +1009,8 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    # sudo's list / validate / remove-timestamp modes take no command (`sudo -k cmd` does run it).
+    "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
 }
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
@@ -1551,13 +1533,15 @@ def _iter_shell_command_starts(command: str):
             starts.append(end)
 
 
-def _mark_command_starts(command: str, marker: str = "\n") -> str:
+def _mark_command_starts(command: str, marker: str = "\n", skip=()) -> str:
     """Insert *marker* (a newline) before each real (quote-aware) command start.
     ``\\n`` is already a ``_CMDPOS`` separator, so this exposes subshell ``(cmd)`` and brace-group
     ``{ cmd; }`` openers — which the flat pattern class omits — to the anchored patterns WITHOUT the
     quoted-prose false positives that adding ``(`` / ``{`` to ``_CMDPOS`` would cause: starts inside
     quotes are never produced, so ``--title "block (reboot)"`` is left as-is."""
-    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
+    skip_starts = [a for a, _ in skip]  # sorted, non-overlapping spans
+    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0 and not (
+        (k := bisect.bisect_right(skip_starts, o) - 1) >= 0 and o < skip[k][1]))
     return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
 
 
@@ -1755,6 +1739,8 @@ def _deny_command_variants(command: str):
 
 
 def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
+    from tools.approval_wrappers import literal_heredoc_bodies
+
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
@@ -1858,7 +1844,8 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
         if fresh(variant):
             yield variant
         # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked.
-        marked_variant = _mark_command_starts(variant)
+        # Not inside a quoted-delimiter heredoc fed to a non-shell: that body is literal data.
+        marked_variant = _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))
         if fresh(marked_variant):
             yield marked_variant
         pending = carry

@@ -157,7 +157,7 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
 | `format C:`, `Format-Volume`, `Clear-Disk`, `rd /s /q C:\`, `Remove-Item -Recurse C:\` | Windows analogues: format/wipe a volume or recursively delete a drive root |
-| `Restart-Computer` / `Stop-Computer` | Windows analogue of `shutdown`/`reboot` |
+| `Restart-Computer` / `Stop-Computer` (a plain `-WhatIf` preview stays approvable) | Windows analogue of `shutdown`/`reboot` |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.

@@ -140,6 +140,9 @@ _WIN_CMDPOS = (_CMDPOS + r'(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\
                r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
 # A cmdlet name ends its token: `Stop-Computer.ps1` / `Clear-Disk-Report` name other commands.
 _CMDLET_END = r'(?![\w.\\/-])'
+# A bare `-WhatIf` of the same invocation only previews; a quote/variable/splat/subexpression/comment before
+# it, or any `-WhatIf:<value>`, voids that (a closing quote may follow only at the end: `pwsh -c "… -WhatIf"`).
+_PS_NOT_WHATIF = r'(?!(?=[^\n;&|"\'`(){}$@#]*\s-whatif(?:\s|["\']?$))(?![^\n;&|"\'`(){}$@#]*-whatif:))'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -179,7 +182,7 @@ HARDLINE_PATTERNS = [
     # Windows analogues of the shutdown / mkfs / dd / root-rm rules. Command-position anchored like
     # the POSIX rules (#93392), also behind a powershell/pwsh/cmd launcher because cmdlets are
     # only reachable that way from git-bash, so `git commit -m "never format c:"` stays runnable.
-    (_WIN_CMDPOS + r'(?:restart|stop)-computer' + _CMDLET_END, "system shutdown/reboot (PowerShell)"),
+    (_WIN_CMDPOS + r'(?:restart|stop)-computer' + _CMDLET_END + _PS_NOT_WHATIF, "system shutdown/reboot (PowerShell)"),
     (_WIN_CMDPOS + r'format-volume' + _CMDLET_END, "format filesystem (Format-Volume)"),
     (_WIN_CMDPOS + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
     (_WIN_CMDPOS + r'clear-disk' + _CMDLET_END, "wipe disk (Clear-Disk)"),

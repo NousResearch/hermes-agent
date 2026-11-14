@@ -1,0 +1,23 @@
+name: qmd-workspaces
+repo: https://github.com/lad75020/ollama-qmd-rag
+sha: 6c356e8cac6fbb0422c5eab8a63fc1bf80461845
+description: >-
+  Convert uploaded document folders to Markdown, index them in QMD, and retrieve relevant passages for Hermes Desktop with Ollama. Disclosure — reads user-uploaded workspace files and the configured QMD index; sends prompt text and extracted/retrieved document content to the configured Ollama endpoint (loopback by default); may invoke `qmd status`, optional `pdftotext`, or the Tailscale CLI. No telemetry or direct credential-file reads.
+maintainer: lad75020
+tier: community
+category: desktop
+version: "1.0.2"
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Linux support is beta and tested but not fully qualified; macOS is the only fully tested platform. Windows is unsupported."
+capabilities:
+  provides_tools:
+    - qmd_workspace_search
+    - qmd_workspace_index
+    - qmd_workspace_list
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

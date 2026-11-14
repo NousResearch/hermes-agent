@@ -408,7 +408,11 @@ POST http://host:8644/webhooks/<route>
 POST http://host:8644/p/coder/webhooks/<route>
 ```
 
-An unknown or unconfigured profile in the prefix returns `404`. The shared
+An unknown or unconfigured profile in the prefix returns `404`. On the
+`api_server` listener the body is
+`{"error": "Unknown or unconfigured profile", "code": "profile_unknown"}`;
+clients should key on `code` (gateways before it send the `error` sentence
+alone). The shared
 listener is the default profile's `api_server` port (or its `webhook` port when
 no API server is enabled); it serves three kinds of profile-prefixed paths:
 

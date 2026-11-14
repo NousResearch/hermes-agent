@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_state_holders import read_only_db_uri
+from hermes_cli.sqlite_safe_read import connect_tracked, read_header_bytes_preopen
 
 from .._backend import translated
 
@@ -242,7 +243,7 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
+        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0, tracking_path=path)
         return fn(conn), None
     except Exception as exc:  # health: allow BLE001 -- the error is returned to the caller
         return None, exc
@@ -269,7 +270,6 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists: close() would cancel this process's POSIX locks
         # (see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
             return _done("cannot read header", size=size)
@@ -349,7 +349,10 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
 def _restore_epoch(path: Path) -> int:
     if not path.exists():
         return 0
-    with closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    with closing(connect_tracked(read_only_db_uri(path), uri=True, tracking_path=path,
+                                 connect_fn=sqlite3.connect)) as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_epoch'").fetchone():
             return 0
         row = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()
@@ -421,9 +424,11 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
     Callers go through ``restore_from``, which validates *src* and holds
     the maintenance reservation and epoch floor around this publication.
     """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        dst_conn = connect_tracked(str(dst), tracking_path=dst)
         try:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
@@ -431,7 +436,7 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         except sqlite3.Error as exc:
             # Optional: backup() still publishes over a deep WAL, just less tidily.
             logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
-        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)  # health: allow HX015 -- the backup being restored, not a live store
         try:
             src_conn.backup(dst_conn)
         finally:

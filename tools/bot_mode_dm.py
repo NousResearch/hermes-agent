@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import logging
 import os
 import re
@@ -49,6 +50,7 @@ REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 # the machine dies between spawn ack and the runner's finally.
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
+# Fallback for ``bot_mode.live_wait_seconds`` — see ``live_wait_seconds`` below.
 _LIVE_WAIT_SECONDS = 300
 # A live owner may run a turn past one wait window, but each waiting runner holds ~46 MB and the
 # sender's notify slot: past this the runner reports pending (do not resend) and exits.
@@ -60,6 +62,28 @@ _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # Fan-out bound: one combined runner holds one sub-runner per target.
 FAN_OUT_MAX = 8
+
+
+def live_wait_seconds() -> float | None:
+    """``bot_mode.live_wait_seconds`` — the optional single live Bot Chat reply-wait budget, lazily
+    read; ``None`` when unset or invalid, meaning every lane keeps its own default (gateway lanes
+    wait ``_LIVE_WAIT_SECONDS``; the local DM runner caps at ``_LIVE_WAIT_MAX_SECONDS`` polled in
+    ``_LIVE_WAIT_SECONDS`` windows). When SET, the value is ONE budget spanning both legs of a live
+    delivery — the target's queue wait and its reply production — and it overrides every lane: work
+    that outlives it settles its mailbox receipt after the waiter has exited, stranding the reply
+    in a ticket nobody reads again, so installations whose bot turns run long raise it in
+    config.yaml. Every live-wait lane resolves through this one function so the lanes cannot
+    drift."""
+    from tools.bot_relay import _bot_mode_cfg
+
+    val = _bot_mode_cfg("live_wait_seconds", loader="load_config")
+    if val is None:
+        return None
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
 
 def _default_home() -> str:
@@ -603,10 +627,15 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
     from tools.bot_failure_reasons import RUNTIME_OFFLINE
     from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
-    deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
+    # Unset knob -> the upstream lane defaults: a 30-minute runner cap polled in 300-second
+    # windows. A SET knob is one budget — the deadline and the poll window widen together, so a
+    # single await can cover the whole budget instead of slicing it into 300-second polls.
+    budget = live_wait_seconds()
+    deadline = time.monotonic() + (budget if budget is not None else _LIVE_WAIT_MAX_SECONDS)
+    window = budget if budget is not None else _LIVE_WAIT_SECONDS
     missed, unreachable = 0, False
     while True:
-        record = await_delivery(home, delivery_id, max(0.0, min(_LIVE_WAIT_SECONDS, deadline - time.monotonic())))
+        record = await_delivery(home, delivery_id, max(0.0, min(window, deadline - time.monotonic())))
         if record is None or record["status"] not in ("queued", "claimed") or time.monotonic() >= deadline:
             break
         try:

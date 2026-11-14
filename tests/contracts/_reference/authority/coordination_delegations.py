@@ -102,12 +102,18 @@ class DelegationLedger:
                    owner_pid=owner.pid, owner_birth=owner.started_at, task=stored_task, updated_at=time.time())
         self._ledger()[str(delegation_id)] = row
 
+    def _units_owed_a_resume(self) -> set[str]:
+        """The ``unit_id`` of every ``resumable`` or ``expired`` subagent record still owed its report."""
+        return {str(row["document"]["unit_id"]) for row in self._table("resumable_subagents").values()
+                if row["state"] in ("resumable", "expired") and row["document"].get("auto_promised")
+                and row["document"].get("auto_gave_up") is None and row["document"].get("unit_id") is not None}
+
     def prune_delegation_ledger(self) -> None:
-        ledger = self._ledger()
+        ledger, keep = self._ledger(), self._units_owed_a_resume()
         cutoff = time.time() - DELEGATION_RETENTION_SECONDS
-        for key in [key for key, row in ledger.items() if row["delivery_state"] == DeliveryState.DELIVERED and row["updated_at"] < cutoff]:
+        for key in [key for key, row in ledger.items() if row["delivery_state"] == DeliveryState.DELIVERED and row["updated_at"] < cutoff and key not in keep]:
             del ledger[key]
-        terminal = [row for row in ledger.values() if row["state"] not in _IN_FLIGHT]
+        terminal = [row for row in ledger.values() if row["state"] not in _IN_FLIGHT and row["delegation_id"] not in keep]
         if len(terminal) > DELEGATION_MAX_RETAINED_TERMINAL:
             terminal.sort(key=lambda row: (0 if row["delivery_state"] == DeliveryState.DELIVERED else 1, row["updated_at"]))
             for row in terminal[:len(terminal) - DELEGATION_MAX_RETAINED_TERMINAL]:

@@ -756,18 +756,24 @@ let prevBusyByRuntime: Record<string, boolean> = Object.fromEntries(
 // extra status read per turn start rather than a per-file stat/read pass.
 async function captureTurnBaseline(cwd: string): Promise<void> {
   const review = desktopGit()?.review
-  const sha = await review?.revParse?.(cwd, 'HEAD')
 
-  if (!sha) {
-    return
-  }
+  try {
+    const sha = await review?.revParse?.(cwd, 'HEAD')
 
-  recordTurnBase(cwd, sha)
+    if (!sha) {
+      return
+    }
 
-  const untracked = await review?.untracked?.(cwd)
+    recordTurnBase(cwd, sha)
 
-  if (untracked) {
-    recordTurnUntracked(cwd, untracked)
+    const untracked = await review?.untracked?.(cwd)
+
+    if (untracked) {
+      recordTurnUntracked(cwd, untracked)
+    }
+  } catch {
+    // Best-effort: a bridge failure leaves this cwd on its previous baseline
+    // (or none) rather than raising inside the renderer's turn-start path.
   }
 }
 

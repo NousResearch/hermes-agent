@@ -734,6 +734,21 @@ describe('turn baseline capture', () => {
     expect($reviewTurnUntracked.get()).toEqual({})
     expect(review.untracked).not.toHaveBeenCalled()
   })
+
+  it('keeps the previous baselines when a bridge read rejects', async () => {
+    stubReview({
+      revParse: vi.fn(async () => 'deadbeef'),
+      untracked: vi.fn(async () => {
+        throw new Error('status failed')
+      })
+    })
+
+    $sessionStates.set({ rt_broken: sessionState(true, '/repo') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($reviewTurnBase.get()).toEqual({ '/repo': 'deadbeef' })
+    expect($reviewTurnUntracked.get()).toEqual({})
+  })
 })
 
 describe('lastTurn scope', () => {

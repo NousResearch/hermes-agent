@@ -64,6 +64,18 @@ def _tools_changed_notice(payload):
     return f"Editor MCP tools changed (servers: {servers}); the new tool list applies from the next turn.\n"
 
 
+def _failed_turn_error(terminal):
+    """The error an uncaught ``GatewayClientError("admitted_turn_failed")`` became, plus the cause the
+    completion carried: its ``failure_reason`` code and summary text. A retry's terminal receipt
+    carries only the outcome, so its error stays bare."""
+    data = {"details": "admitted_turn_failed"}
+    if isinstance(reason := terminal.get("failure_reason"), str) and reason:
+        data["failure_reason"] = reason
+    if summary := _text(terminal).strip():
+        data["message"] = summary
+    return acp.RequestError.internal_error(data)
+
+
 class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     def __init__(self):
         self._conn = None
@@ -732,7 +744,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # Our own lost turn: the same refusal whether session.info or this completion woke us.
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         if outcome == "failed":
-            raise GatewayClientError("admitted_turn_failed")
+            raise _failed_turn_error(terminal)
         from acp_adapter.gateway_session_meta import turn_usage
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",

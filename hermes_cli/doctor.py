@@ -22,6 +22,7 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 from hermes_cli.colors import Colors, color
 from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
 from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
+from hermes_cli.doctor_env_overrides import _check_route_env_overrides
 from hermes_cli.doctor_tools import _safe_which
 
 from hermes_cli.doctor_config import (
@@ -119,7 +120,7 @@ DOCTOR_CHECKS = (
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
-    ('Auth Providers', _check_auth_providers),
+    ('Auth Providers', _check_auth_providers), ('Environment Overrides', _check_route_env_overrides),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),
     (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),

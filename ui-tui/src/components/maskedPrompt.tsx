@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useT } from '../i18n/useT.js'
 import type { Theme } from '../theme.js'
 
+import { LinkifiedText } from './linkifiedText.js'
 import { TextInput } from './textInput.js'
 
 export function MaskedPrompt({ cols = 80, icon, label, onSubmit, reveal, sub, t }: MaskedPromptProps) {
@@ -11,11 +12,9 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, reveal, sub, t 
 
   return (
     <Box flexDirection="column">
-      <Text bold color={t.color.warn}>
-        {icon} {label}
-      </Text>
+      <LinkifiedText bold color={t.color.warn} t={t} text={`${icon} ${label}`} />
 
-      {sub && <Text color={t.color.muted}> {sub}</Text>}
+      {sub && <LinkifiedText color={t.color.muted} t={t} text={` ${sub}`} />}
 
       <Box>
         <Text color={t.color.label}>{'> '}</Text>
@@ -60,10 +59,11 @@ export function SudoPrompt({ cols, onSubmit, t }: SecurePromptProps) {
 export function SecretPrompt({
   cols,
   envVar,
+  help,
   onSubmit,
   prompt,
   t
-}: SecurePromptProps & { envVar: string; prompt: string }) {
+}: SecurePromptProps & { envVar: string; help?: string; prompt: string }) {
   const T = useT()
 
   return (
@@ -72,7 +72,7 @@ export function SecretPrompt({
       icon="🔑"
       label={prompt}
       onSubmit={onSubmit}
-      sub={T.secure.secret.forEnvVar(envVar)}
+      sub={help ? `${help} · ${T.secure.secret.forEnvVar(envVar)}` : T.secure.secret.forEnvVar(envVar)}
       t={t}
     />
   )

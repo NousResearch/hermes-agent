@@ -128,7 +128,14 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         return true
 
       case 'secret':
-        patchOverlayState({ secret: { envVar: str(p.env_var), prompt: str(p.prompt), requestId: request.id } })
+        patchOverlayState({
+          secret: {
+            envVar: str(p.env_var),
+            help: str((p.metadata as Record<string, unknown> | undefined)?.help) || undefined,
+            prompt: str(p.prompt),
+            requestId: request.id
+          }
+        })
         open(request, t('session.status.secretInputNeeded'))
 
         return true

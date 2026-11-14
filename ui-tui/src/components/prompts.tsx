@@ -7,6 +7,7 @@ import { clarifyAnswerText, clarifyRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
+import { LinkifiedText } from './linkifiedText.js'
 import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
@@ -165,9 +166,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, onTell, req, t }: Approval
 
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
-      <Text bold color={t.color.warn}>
-        {T.prompt.approval.title} · {req.description}
-      </Text>
+      <LinkifiedText bold color={t.color.warn} t={t} text={`${T.prompt.approval.title} · ${req.description}`} />
 
       <Box flexDirection="column" paddingLeft={1}>
         {shown.map((line, i) => (
@@ -489,9 +488,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 
       {req.detail ? (
         <Box paddingLeft={1}>
-          <Text color={t.color.text} wrap="truncate-end">
-            {req.detail}
-          </Text>
+          <LinkifiedText color={t.color.text} t={t} text={req.detail} wrap="truncate-end" />
         </Box>
       ) : null}
 

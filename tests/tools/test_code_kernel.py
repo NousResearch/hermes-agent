@@ -710,6 +710,17 @@ class TestCellStdoutSpill(unittest.TestCase):
         if os.name == "posix":
             self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
 
+    def test_cell_spill_keeps_full_non_ascii_output(self):
+        """The runner caps its spill in characters written as UTF-8, so a multibyte
+        spill under that cap is several times larger on disk; it is still our spill
+        and must be published in full, not dropped to the clipped-head fallback."""
+        with _kernel_config():
+            result = _run("print('\\u6f22' * 2_000_000)")  # ~6MB of UTF-8 on disk
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("FULL output saved", result.get("warning", ""))
+        body = Path(result["stdout_spill_path"]).read_text(encoding="utf-8")
+        self.assertEqual(body.count("\u6f22"), 2_000_000)
+
     def test_cell_spill_path_survives_sys_exit_teardown(self):
         """A cell that spills and then sys.exit()s kills its kernel, which rmtree()s the
         tmpdir the runner wrote to. The advertised spill path must still resolve."""

@@ -43,9 +43,14 @@ _IS_WINDOWS = sys.platform == "win32"
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
 
-# Read bound for a cell spill file: the runner writes at most the 5MB spill cap plus a
-# short marker, so anything larger at that name is a swapped-in file, not our spill.
-_CELL_SPILL_READ_CAP = 5_000_000 + 4096
+# Runner-side cap on a cell's full-stdout spill, in characters (the runner slices str).
+_RUNNER_SPILL_CHARS = 5_000_000
+
+# Read bound for a cell spill file, in bytes: the runner writes at most _RUNNER_SPILL_CHARS
+# characters as UTF-8 (<= 4 bytes each) plus a short marker, so anything larger at that
+# name is a swapped-in file, not our spill. A char-count bound here would refuse genuine
+# multibyte (CJK, accented) spills and drop them to the clipped-head fallback.
+_CELL_SPILL_READ_CAP = 4 * _RUNNER_SPILL_CHARS + 4096
 
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
@@ -133,7 +138,7 @@ import traceback
 _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {_RUNNER_CAPTURE_BYTES}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
-_SPILL_CAP = {5_000_000}
+_SPILL_CAP = {_RUNNER_SPILL_CHARS}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 
 

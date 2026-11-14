@@ -57,3 +57,49 @@ def test_missing_pin_is_refused_instead_of_constructing_download_url(tmp_path, m
     assert binaries.pinned_tag("cpu") == "b123"
     with pytest.raises(binaries.BinaryResolutionError, match="not pinned"):
         binaries.resolve_backend("cpu", target=pm.current_target())
+
+
+def test_custom_engine_serves_a_user_binary(tmp_path, monkeypatch):
+    server = tmp_path / "llama-server.exe"
+    server.write_bytes(b"fake")
+    monkeypatch.setenv("HERMES_LLAMACPP_SERVER", str(server))
+    engine = binaries.installed_engine("cuda")
+    assert engine is not None
+    assert (engine.backend, engine.tag, engine.binary) == ("custom", "user", server)
+
+
+def test_custom_executable_config_value_resolves(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_LLAMACPP_SERVER", raising=False)
+    server = tmp_path / "llama-server"
+    server.write_bytes(b"fake")
+    engine = binaries.installed_engine("cuda", custom_executable=str(server))
+    assert engine is not None
+    assert (engine.backend, engine.tag, engine.binary) == ("custom", "user", server)
+
+
+def test_custom_env_wins_over_config(tmp_path, monkeypatch):
+    env_server = (tmp_path / "env" / "llama-server.exe")
+    env_server.parent.mkdir()
+    env_server.write_bytes(b"env")
+    cfg_server = (tmp_path / "cfg" / "llama-server.exe")
+    cfg_server.parent.mkdir()
+    cfg_server.write_bytes(b"cfg")
+    monkeypatch.setenv("HERMES_LLAMACPP_SERVER", str(env_server))
+    engine = binaries.installed_engine("cuda", custom_executable=str(cfg_server))
+    assert engine is not None
+    assert engine.binary == env_server
+
+
+def test_custom_executable_must_be_a_llama_server_binary(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_LLAMACPP_SERVER", raising=False)
+    not_server = tmp_path / "python.exe"
+    not_server.write_bytes(b"fake")
+    with pytest.raises(binaries.BinaryResolutionError, match="must be a llama-server"):
+        binaries.installed_engine("cuda", custom_executable=str(not_server))
+
+
+def test_missing_custom_executable_fails_loudly(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_LLAMACPP_SERVER", raising=False)
+    missing = tmp_path / "llama-server.exe"
+    with pytest.raises(binaries.BinaryResolutionError, match="does not exist"):
+        binaries.installed_engine("cuda", custom_executable=str(missing))

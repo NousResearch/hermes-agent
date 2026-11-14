@@ -563,6 +563,7 @@ export const deOverrides = {
     pressKey: 'Taste drücken…',
     set: 'setzen',
     conflictWith: label => `Auch belegt mit „${label}“`,
+    nothingNeedsYou: 'Gerade wartet keine Session auf Sie',
     categories: {
       composer: 'Composer',
       profiles: 'Profile',
@@ -585,6 +586,7 @@ export const deOverrides = {
       'session.newTab': 'Neuer Session-Tab',
       'session.newWindow': 'Neues Fenster',
       'session.next': 'Nächste Session',
+      'session.nextAttention': 'Nächste Session, die Sie braucht',
       'session.prev': 'Vorherige Session',
       'session.slot.1': 'Zu letzter Session 1 wechseln',
       'session.slot.2': 'Zu letzter Session 2 wechseln',

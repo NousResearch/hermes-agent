@@ -566,6 +566,7 @@ export const esOverrides = {
     pressKey: 'Pulsa una tecla…',
     set: 'definido',
     conflictWith: label => `También asignado a “${label}”`,
+    nothingNeedsYou: 'Ninguna sesión te necesita ahora',
     categories: {
       composer: 'Compositor',
       profiles: 'Perfiles',
@@ -588,6 +589,7 @@ export const esOverrides = {
       'session.newTab': 'Nueva pestaña de sesión',
       'session.newWindow': 'Nueva ventana',
       'session.next': 'Siguiente sesión',
+      'session.nextAttention': 'Siguiente sesión que te necesita',
       'session.prev': 'Sesión anterior',
       'session.slot.1': 'Cambiar a la sesión reciente 1',
       'session.slot.2': 'Cambiar a la sesión reciente 2',

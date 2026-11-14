@@ -1517,15 +1517,18 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
+    # Three distinct launch cases, and an empty pick is one of them: an absent flag (None) resolves the
+    # default; ``-t ""`` / an empty list is an explicit "no toolsets" (a script's sandbox guard: the agent
+    # must not act in the world); names pick exactly those. Testing falsiness folded the middle into the
+    # first, so a guard written as ``-t ""`` silently ran the full default bundle (story_agents.py).
+    explicit_toolsets = isinstance(toolsets, (str, list, tuple))
     toolsets_list = None
-    if isinstance(toolsets, str) and toolsets:
-        toolsets_list = [t.strip() for t in toolsets.split(",")]
-    elif isinstance(toolsets, (list, tuple)) and toolsets:
-        # Fire may pass multiple --toolsets as a tuple
-        toolsets_list = []
-        for t in toolsets:
-            toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
-    elif not toolsets:
+    if explicit_toolsets:
+        toolsets_list = [name.strip()
+                         for entry in ([toolsets] if isinstance(toolsets, str) else toolsets)
+                         for name in (entry.split(",") if isinstance(entry, str) else [str(entry)])
+                         if name.strip()]
+    else:
         # Coding posture inside a code workspace, else the profile default the gateway resolves (its
         # platform resolver reads plugin toolsets, which only the gateway loads: adopted when the session
         # opens). Neither is a pick: this list only feeds the display.
@@ -1561,10 +1564,10 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
-    if not toolsets:
-        cli._explicit_toolsets = False  # the gateway resolves the default and coding posture itself
-    # Only a typed -t is checked against a resumed session's frozen toolsets.
-    cli._typed_toolsets = toolsets_list if toolsets else None
+    # An empty pick is a pick: the gateway must see ``toolsets: []``, not resolve the profile default.
+    cli._explicit_toolsets = explicit_toolsets
+    # Only a typed -t is checked against a resumed session's frozen toolsets (an empty pick included).
+    cli._typed_toolsets = toolsets_list if explicit_toolsets else None
 
     # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
     # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the

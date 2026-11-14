@@ -76,6 +76,45 @@ beforeEach(() => {
   )
 })
 
+describe('cloud gateway attribution badge', () => {
+  it('draws the gateway name on the row itself and leaves other rows unchanged', () => {
+    const cloud: RosterRow = {
+      connectionId: 'cloud-123',
+      connectionKind: 'remote',
+      connectionLabel: 'cloud-123',
+      gatewayName: 'cloud-123',
+      name: 'default',
+      remoteSource: true,
+      sourceScoped: true,
+      title: 'Cloud 123'
+    }
+
+    const { container, unmount } = render(
+      <BotRow bot={cloud} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+    )
+
+    const badge = container.querySelector('[data-gateway-badge="cloud-123"]')
+
+    expect(badge).not.toBeNull()
+    expect(badge?.textContent).toContain('cloud-123')
+
+    unmount()
+
+    const plain = render(
+      <BotRow
+        bot={{ name: 'default', connectionId: 'local', connectionKind: 'local' }}
+        onDelete={noop}
+        onEdit={noop}
+        onGroup={noop}
+        onNewSection={noop}
+      />
+    )
+
+    // A local row keeps today's subtitle: no gateway badge.
+    expect(plain.container.querySelector('[data-gateway-badge]')).toBeNull()
+  })
+})
+
 describe('group-turn presence', () => {
   it('updates only the exact member face and clears it when the room stops', () => {
     const local: RosterRow = { name: 'default', connectionId: 'local' }

@@ -87,7 +87,7 @@ interface RosterGatewaySection<TRow extends RosterGatewayRow = RosterGatewayRow>
 /** Sections built from rows that always carry their resolved roster row. */
 export type ResolvedRosterGatewaySection = RosterGatewaySection<RosterGatewayRow & { bot: RosterRow }>
 
-export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow[]) {
+export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow[], primaryConnectionId?: string) {
   const byId = new Map<string, RosterGatewayOption & { count: number }>()
 
   for (const source of Array.isArray(sources) ? sources : []) {
@@ -113,6 +113,7 @@ export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow
       connectionId: id,
       kind: bot.connectionKind,
       label: bot.connectionLabel || id,
+      ...(bot.gatewayName ? { name: bot.gatewayName } : {}),
       reachable: bot.sourceReachable,
       error: bot.sourceError,
       count: 0
@@ -122,11 +123,23 @@ export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow
     byId.set(id, source)
   }
 
-  return [...byId.values()].sort((a, b) =>
-    String(a.label || a.connectionId).localeCompare(String(b.label || b.connectionId), undefined, {
+  // D7 — the primary connection's section leads, then the rest alphabetically
+  // by label (today's order). Without this a cloud gateway can outrank
+  // "This device" and push the user's own bots below it.
+  const primary = String(primaryConnectionId || '').trim()
+
+  return [...byId.values()].sort((a, b) => {
+    const aPrimary = Boolean(primary) && a.connectionId === primary
+    const bPrimary = Boolean(primary) && b.connectionId === primary
+
+    if (aPrimary !== bPrimary) {
+      return aPrimary ? -1 : 1
+    }
+
+    return String(a.label || a.connectionId).localeCompare(String(b.label || b.connectionId), undefined, {
       sensitivity: 'base'
     })
-  )
+  })
 }
 
 export function rosterGatewaySections<TRow extends RosterGatewayRow>(
@@ -235,6 +248,9 @@ interface RosterSectionHeaderProps {
   onDoubleClick?: () => void
   onToggle: () => void
   status?: { available: boolean; label: string }
+  /** Roster section this heading folds, when it folds one (`gateway:<id>`).
+   *  Exposed on the button so a test can address ONE section's health. */
+  sectionKey?: string
   tip?: string
 }
 
@@ -247,6 +263,7 @@ export function RosterSectionHeader({
   label,
   onDoubleClick,
   onToggle,
+  sectionKey,
   status,
   tip
 }: RosterSectionHeaderProps) {
@@ -257,6 +274,7 @@ export function RosterSectionHeader({
         'flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
         action ? 'flex-1' : 'mt-1'
       )}
+      data-roster-section={sectionKey}
       onClick={onToggle}
       onDoubleClick={onDoubleClick}
     >
@@ -310,7 +328,7 @@ export function GatewaySectionHeading({ collapsed, count, onToggle, option }: Ga
     sourceReachable: option?.reachable
   })
 
-  const label = option?.label || option?.connectionId || b.roster.currentGateway
+  const label = option?.name || option?.label || option?.connectionId || b.roster.currentGateway
   const kind = option?.kind || 'remote'
 
   return (
@@ -320,6 +338,7 @@ export function GatewaySectionHeading({ collapsed, count, onToggle, option }: Ga
       gatewayKind={kind}
       label={label}
       onToggle={onToggle}
+      sectionKey={`gateway:${option?.connectionId || ''}`}
       status={status}
       tip={`${label} · ${status.label}`}
     />

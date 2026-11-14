@@ -185,6 +185,7 @@ import {
   backendScopeKey,
   backendScopePrefix,
   buildAgentRoster,
+  cloudGatewayIdentity,
   connectionDialFieldsChanged,
   connectionIdForPendingLogin,
   mergeConnectionInput,
@@ -14789,13 +14790,23 @@ ipcMain.handle('hermes:agents:roster', async () => {
     // instead of appending duplicates (remote-only desktops doubled every
     // bot otherwise; see #88344).
     primaryConnectionId: registry.primary,
-    sources: enumerations.map(({ connection, error, installId, profiles, needsSignIn }) => ({
-      connectionId: connection.id,
-      label: connection.label,
-      kind: connection.kind,
-      ...rosterSourceStatus({ profiles, error, needsSignIn }),
-      ...(installId ? { installId } : {})
-    }))
+    sources: enumerations.map(({ connection, error, installId, profiles, needsSignIn }) => {
+      // Cloud-gateway attribution (§8.1): `name` is always the entry's cloud
+      // instance name when it has one, `cloud` only when the entry is the
+      // loopback token remote `hermes cloud` writes.
+      const cloud = cloudGatewayIdentity(connection, installId)
+
+      return {
+        connectionId: connection.id,
+        label: connection.label,
+        kind: connection.kind,
+        ...rosterSourceStatus({ profiles, error, needsSignIn }),
+        ...(connection.url ? { url: connection.url } : {}),
+        name: String(connection.name || '').trim() || connection.label,
+        ...(cloud ? { cloud } : {}),
+        ...(installId ? { installId } : {})
+      }
+    })
   }
 })
 

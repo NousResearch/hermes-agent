@@ -1375,6 +1375,9 @@ export interface DesktopRosterAgent {
   profile: string
   targetProfile?: string
   handle: string
+  // Set for rows owned by a `hermes cloud` gateway: the gateway's cloud name
+  // (registry `name`). Absent on every other row, which keeps today's subtitle.
+  gatewayName?: string
   // False when this source lists the profile but does not serve it.
   // Absent means the source's own reachable flag.
   reachable?: boolean
@@ -1392,6 +1395,13 @@ export interface DesktopAgentRoster {
     reachable: boolean
     error?: string
     needsSignIn?: boolean
+    // Dialled endpoint (remote/cloud entries); absent for the local source.
+    url?: string
+    // Gateway name: the registry entry's cloud instance name, else the label.
+    name?: string
+    // Present only for `hermes cloud` entries (loopback token remote with a
+    // non-empty name). `gateway_id` is the observed install_id when known.
+    cloud?: { bot: string; gateway_id?: string }
     // Stable backend identity (/api/status install_id) when known.
     installId?: string
   }[]

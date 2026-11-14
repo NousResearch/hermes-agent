@@ -638,8 +638,68 @@ export interface RosterAgent {
   /** Bare profile name, or `<profile>-<label-slug>` when the profile name
    * exists on more than one registered source (the @name-device rule). */
   handle: string
+  /** Set for rows owned by a `hermes cloud` gateway: the registry entry's
+   * cloud instance name (D3). Absent for every other source, so the row keeps
+   * today's subtitle. Carried on the ROW so a collapsed gateway section does
+   * not lose the attribution (§6.1). */
+  gatewayName?: string
   /** Rich metadata for this exact connection + profile, when enumerated. */
   profileMetadata?: RosterProfileMetadata
+}
+
+/** The `sources[].cloud` block of the roster reply (§8.1). Present only for
+ *  `hermes cloud` entries — the shape that entry writes is `kind: 'remote'` +
+ *  a plaintext token + a loopback Desktop URL + the cloud instance `name`. */
+export interface RosterSourceCloud {
+  /** Cloud instance name — the registry entry's `name` (falls back to label). */
+  bot: string
+  /** Gateway id. The CLI mints it at create (D5) and it is not carried in the
+   *  registry yet, so the Desktop reports the observed `/api/status`
+   *  `install_id` when the source answered; omitted otherwise. */
+  gateway_id?: string
+}
+
+/** Loopback-only endpoint — the URL shape `hermes cloud` registers (a
+ *  supervisor-held forward on this machine). A LAN address never qualifies. */
+export function isLoopbackRemoteUrl(url?: string): boolean {
+  const raw = String(url || '').trim()
+
+  if (!raw) {
+    return false
+  }
+
+  try {
+    const parsed = new URL(raw)
+    const host = parsed.hostname.toLowerCase()
+
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/** The cloud-gateway identity of a registry entry, or null when it is not a
+ *  `hermes cloud` entry (§8.1 rule: `name` non-empty AND a token-auth remote
+ *  pointing at loopback). Entries written before the CLI carried `name` do not
+ *  qualify — they render as plain remotes, exactly as today. */
+export function cloudGatewayIdentity(
+  connection: RegistryConnection,
+  installId?: string
+): null | RosterSourceCloud {
+  if (connection.kind !== 'remote' || connection.authMode !== 'token') {
+    return null
+  }
+
+  const name = String(connection.name || '').trim()
+
+  if (!name || !isLoopbackRemoteUrl(connection.url)) {
+    return null
+  }
+
+  return {
+    bot: name,
+    ...(installId ? { gateway_id: installId } : {})
+  }
 }
 
 export interface RosterProfileMetadata {
@@ -852,6 +912,8 @@ export function buildAgentRoster(
   const roster: RosterAgent[] = []
 
   for (const { connection, profile, profileMetadata } of rows) {
+    const cloudGateway = cloudGatewayIdentity(connection)
+
     roster.push({
       connectionId: connection.id,
       connectionKind: connection.kind,
@@ -859,6 +921,7 @@ export function buildAgentRoster(
       profile,
       targetProfile: connection.remoteProfile || profile,
       handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1),
+      ...(cloudGateway ? { gatewayName: cloudGateway.bot } : {}),
       ...(profileMetadata ? { profileMetadata } : {})
     })
   }
@@ -1123,7 +1186,7 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
 
     const name = String(input.name || '').trim()
 
-    if (kind === 'cloud' && name) {
+    if ((kind === 'cloud' || kind === 'remote') && name) {
       entry.name = name
     }
 
@@ -1166,7 +1229,7 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   inherit('org')
 
   if (
-    input.kind === 'cloud' &&
+    (input.kind === 'cloud' || input.kind === 'remote') &&
     (input.url === undefined || normalizeRemoteBaseUrl(input.url) === normalizeRemoteBaseUrl(existing.url))
   ) {
     inherit('name')
@@ -1363,7 +1426,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         const name = String(entry.name || '').trim()
 
-        if (kind === 'cloud' && name) {
+        if ((kind === 'cloud' || kind === 'remote') && name) {
           clean.name = name
         }
 
@@ -1480,7 +1543,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
 
     const name = String(block.name || '').trim()
 
-    if (kind === 'cloud' && name) {
+    if ((kind === 'cloud' || kind === 'remote') && name) {
       entry.name = name
     }
 

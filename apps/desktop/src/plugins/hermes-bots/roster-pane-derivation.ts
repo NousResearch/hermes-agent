@@ -148,7 +148,7 @@ export function deriveRosterRows(input: RosterRowsInput) {
   const botRows =
     rowKindFilter === 'groups'
       ? []
-      : preferReachableSameNameRows(filteredRoster).map((bot): RosterBotRow => ({
+      : preferReachableSameNameRows(filteredRoster, gatewayOptions).map((bot): RosterBotRow => ({
           kind: 'bot',
           bot,
           pinned: isPinned(bot),

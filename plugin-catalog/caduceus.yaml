@@ -1,18 +1,18 @@
 name: caduceus
 title: "Caduceus: Personalized Health & DNA AI"
 repo: https://github.com/electricsheephq/caduceus
-sha: dd0c20dd4235a1f4a9e433e113c835ba2bd9640b
+sha: f400d4838b4ab7665e317c6b9f3c79e991ab610d
 description: "Answers about your own health that cite your DNA, Apple Health trends, medical records and new research, from a vault on your machine. Caduceus imports 23andMe, AncestryDNA, MyHeritage or FamilyTreeDNA raw data, a Promethease report, an Apple Health export, Health Auto Export data (a JSON export or a live sync) and US health records (FHIR) into local SQLite, then gives your agent gene–drug checks (CPIC guidelines plus GLP-1 research), trends before and after a medication start, a rebuilt variant report, a one-page brief for your doctor and a research watch that puts studies on your own gene–drug pairs first. No DNA file yet? /caduceus demo loads an invented person to try it. /caduceus erase deletes everything it stored; your settings and any schedules you created stay. Privacy levels are yours to choose: open by default, or standard, which hides Alzheimer's risk, hereditary cancer risk, carrier status, mental health and reproductive results until you unlock them. Information with limits, not medical advice. Disclosure — imports, search and reports run locally, and the vault is never uploaded as a whole; tool results (slices of your data) enter the conversation, so the model provider you chose sees them; a hook adds one fixed note, holding none of your data, to the first health, medication or DNA question of each chat when the vault has data (off with the `vault_hint` setting); the research watch (on by default, runs when you or the agent ask for it or on a schedule you create, off with the `research_watch` setting) sends gene and topic terms, the names of medications you recorded, and public marker and article IDs, never genotypes, to Europe PMC and NCBI; the Health Auto Export sync (off until you allow that app's MCP server for Caduceus in Hermes config, and run only when you or the agent ask for it or on a schedule you create) reads Apple Health data from that server through Hermes's own MCP client and sends none of your data out; scheduled checks run model turns billed like any message; no telemetry. Includes a report-a-problem skill: the agent drafts a bug report, asks you to check it holds no health data, and files it to this repository with `gh` only after you approve the draft."
 maintainer: 100yenadmin
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-image: https://raw.githubusercontent.com/electricsheephq/caduceus/dd0c20dd4235a1f4a9e433e113c835ba2bd9640b/docs/media/banner.jpg
+image: https://raw.githubusercontent.com/electricsheephq/caduceus/f400d4838b4ab7665e317c6b9f3c79e991ab610d/docs/media/banner.jpg
 docs_url: https://github.com/electricsheephq/caduceus#readme
-version: "0.3.0"
+version: "0.3.1"
 screenshots:
-  - https://raw.githubusercontent.com/electricsheephq/caduceus/dd0c20dd4235a1f4a9e433e113c835ba2bd9640b/docs/media/screenshot-variant-report.png
-  - https://raw.githubusercontent.com/electricsheephq/caduceus/dd0c20dd4235a1f4a9e433e113c835ba2bd9640b/docs/media/screenshot-health-brief.png
+  - https://raw.githubusercontent.com/electricsheephq/caduceus/f400d4838b4ab7665e317c6b9f3c79e991ab610d/docs/media/screenshot-variant-report.png
+  - https://raw.githubusercontent.com/electricsheephq/caduceus/f400d4838b4ab7665e317c6b9f3c79e991ab610d/docs/media/screenshot-health-brief.png
 platforms: []
 capabilities:
   provides_tools:

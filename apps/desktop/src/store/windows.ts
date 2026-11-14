@@ -7,6 +7,17 @@ import { notifyError } from './notifications'
 // global session sidebar or the install / onboarding overlays.
 const SECONDARY_WINDOW_FLAG = 'secondary'
 
+// Pure predicate over a query string, so callers that reason about a window
+// kind from an arbitrary search (routing decisions, tests) do not go through
+// the cache below.
+export function isSecondaryWindowSearch(search: string): boolean {
+  try {
+    return new URLSearchParams(search).get('win') === SECONDARY_WINDOW_FLAG
+  } catch {
+    return false
+  }
+}
+
 let secondaryWindowCache: boolean | null = null
 
 export function isSecondaryWindow(): boolean {
@@ -14,17 +25,11 @@ export function isSecondaryWindow(): boolean {
     return secondaryWindowCache
   }
 
-  let result = false
+  secondaryWindowCache = isSecondaryWindowSearch(
+    typeof window === 'undefined' ? '' : window.location.search
+  )
 
-  try {
-    result = new URLSearchParams(window.location.search).get('win') === SECONDARY_WINDOW_FLAG
-  } catch {
-    result = false
-  }
-
-  secondaryWindowCache = result
-
-  return result
+  return secondaryWindowCache
 }
 
 let watchWindowCache: boolean | null = null

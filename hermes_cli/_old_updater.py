@@ -31,8 +31,21 @@ _HISTORICAL_UPDATE_FRAMES = (
 
 def _is_historical_update_frame(frame: Any) -> bool:
     modules, names = _HISTORICAL_UPDATE_FRAMES
-    return (frame.f_globals.get("__name__") in modules
-            and frame.f_code.co_name in names)
+    if frame.f_code.co_name not in names:
+        return False
+    module = frame.f_globals.get("__name__")
+    if module in modules:
+        return True
+    # `python -m hermes_cli.main update` runs the updater as `__main__`; releases from before
+    # update_cmd.py was split out keep cmd_update/_cmd_update_impl there. Recognize them by the
+    # file the code was compiled from: this checkout's own hermes_cli/main.py.
+    if module != "__main__":
+        return False
+    try:
+        source = Path(frame.f_code.co_filename).resolve()
+    except (OSError, ValueError):
+        return False
+    return source == Path(__file__).resolve().with_name("main.py")
 
 
 def in_historical_update() -> bool:

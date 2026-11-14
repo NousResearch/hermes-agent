@@ -35,7 +35,7 @@ import {
   setMessagingSessions,
 } from '@/store/session'
 
-import { botModeFetchScope } from './use-session-list-actions'
+import { botModeFetchScope } from './bot-mode-fetch-scope'
 
 const telegramRow = (id: string, profile = 'mybot') =>
   ({

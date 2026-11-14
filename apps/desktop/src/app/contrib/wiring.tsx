@@ -982,8 +982,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // Pin/unpin the selected session (statusbar keybind + chat header) — pinned
   // on the durable lineage-root id so it survives auto-compression.
-  // Messaging rows live outside recents — resolve across every slice
-  // (#126732).
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
 
@@ -1081,8 +1079,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
     // The sidebar row menu reuses this verb in the Archived view too, where the
     // row is already archived — dispatch by state so the verb restores there
-    // instead of re-archiving (#98813). Messaging rows live outside recents,
-    // so resolve across every slice (#126732).
+    // instead of re-archiving (#98813), across every slice (#126732).
     onArchiveSession: sessionId => {
       const listed = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, sessionId))
 

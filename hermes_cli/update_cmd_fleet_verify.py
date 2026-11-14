@@ -431,6 +431,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 # A symlinked profile served by another install's checkout (#120240).
                 external_gateway_pids={row.get("pid") for row in _fleet_snapshot if row_is_external(row)},
                 live_gateway_pids=_live_gateway_pids,
+                self_restart_pending=getattr(restart, "self_restart_pending_pids", None),
             )
             from dataclasses import asdict
             from hermes_cli.update_serve_obligations import defer_manual_serve

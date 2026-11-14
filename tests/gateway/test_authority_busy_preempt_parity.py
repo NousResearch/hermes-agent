@@ -86,13 +86,10 @@ async def test_busy_voice_note_steers_with_transcript_folds_and_acks(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_busy_voice_note_interrupts_with_transcript_in_interrupt_mode(tmp_path, monkeypatch):
+async def test_busy_voice_note_interrupts_at_once_in_interrupt_mode(tmp_path, monkeypatch):
+    """The interrupt carries the media placeholder, never a transcript it waited for (#143961); the
+    admitted follow-up keeps the audio and transcribes it as its own turn."""
     runner, authority, source, agent, sent, _turn = await _setup(tmp_path, monkeypatch, 'interrupt')
-
-    async def transcribe(event, adapter, source, text, **_):
-        return 'TRANSCRIBED stop that', ['TRANSCRIBED stop that']
-
-    monkeypatch.setattr(runner, '_transcribe_and_echo_pending_voice', transcribe)
     monkeypatch.setattr(runner, '_pending_event_audio_paths', lambda event: list(event.media_urls))
     monkeypatch.setattr(runner, '_handle_message_with_agent', lambda *a, **k: None)
     voice = tmp_path / 'note.ogg'
@@ -104,7 +101,7 @@ async def test_busy_voice_note_interrupts_with_transcript_in_interrupt_mode(tmp_
         from tests.waiting import async_wait_until
         await async_wait_until(lambda: _admitted(authority), timeout=10, what='the voice note admitted')
         task.cancel()
-        assert agent.interrupts == [('TRANSCRIBED stop that',)], agent.interrupts
+        assert agent.interrupts == [(f'[User sent audio: {voice}]',)], agent.interrupts
         assert sent, 'no busy ack'
     finally:
         authority.db.close()

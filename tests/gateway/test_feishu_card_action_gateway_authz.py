@@ -180,6 +180,7 @@ class TestNoFeishuAllowlist:
     @pytest.mark.asyncio
     async def test_non_approval_card_action_still_routes(self):
         adapter = _make_adapter()
+        adapter._default_group_policy = "open"  # admitted by the chat; only the approval gate is absent
         data = SimpleNamespace(event=SimpleNamespace(
             token="tok_other", context=SimpleNamespace(open_chat_id="oc_group"),
             operator=SimpleNamespace(open_id="ou_bystander"),

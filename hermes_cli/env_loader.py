@@ -15,6 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
+from hermes_constants import hermes_home_key, is_launch_only_env_key
 from hermes_cli.left_core_migration import profile_env_names
 from utils import atomic_replace, mkstemp_beside
 
@@ -60,6 +61,10 @@ _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # cleared by a per-home ``reset_secret_source_cache``: it describes ``os.environ``, which a reset does not
 # touch, and the next pass needs it to revoke.
 _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]] = {}
+# Per home: YAML-bridge claims a source released when it supplied the name (applied OR skipped as equal)
+# — name → (source name, bridge marker digest). Revoking that source hands the value back to the bridge
+# while it is still the bridged value, or a later YAML tightening would read it as the operator's.
+_RELEASED_BRIDGE_CLAIMS_BY_HOME: dict[str, dict[str, tuple[str, str]]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -162,6 +167,24 @@ def dotenv_published_values(name: str) -> frozenset[str]:
     folded = name.upper()
     with _DOTENV_LOCK:
         return frozenset(value for key, (_base, value, _pass) in _DOTENV_PUBLISHED.items() if key.upper() == folded)
+
+
+def has_nonblank_dotenv_value(name: str) -> bool:
+    """Whether dotenv supplied an override, not merely an empty assignment later filled by YAML.
+
+    A known key without a publication receipt is conservatively treated as explicit provenance.
+    On Windows the name matches case-insensitively: a ``telegram_reactions`` line in ``.env`` and
+    ``TELEGRAM_REACTIONS`` are one environment variable there, and two distinct ones elsewhere.
+    """
+    from hermes_platform.host.facts import os_family
+
+    fold = str.upper if os_family() == "win32" else str
+    with _DOTENV_LOCK:
+        keys = [key for key in (*_LOADED_DOTENV_KEYS, *_MANAGED_DOTENV_KEYS) if fold(key) == fold(name)]
+        if not keys:
+            return False
+        published = [_DOTENV_PUBLISHED[key] for key in keys if key in _DOTENV_PUBLISHED]
+        return not published or any(record[1].strip() for record in published)
 
 
 def managed_dotenv_keys() -> frozenset[str]:
@@ -288,6 +311,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
         _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         _SECRET_SOURCE_WRITES_BY_HOME.clear()
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
@@ -436,6 +460,14 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
     return out
 
 
+def _release_bridge_claim(name: str) -> None:
+    """An operator source now owns *name*: drop the YAML bridge's marker for it, or a value equal to an
+    earlier bridged one would still read as the bridge's and be scrubbed from child envs."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
+
+    os.environ.pop(BRIDGED_ENV_MARKER_PREFIX + name, None)
+
+
 def _load_dotenv_with_fallback(
     path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
 ) -> None:
@@ -454,6 +486,9 @@ def _load_dotenv_with_fallback(
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):
                 continue
+            if is_launch_only_env_key(name):
+                _warn_launch_only_key(f"dotenv {path}", name)
+                continue  # deployment bootstrap knob (#135200, #144685)
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
             ours = record is not None and current == record[1]
@@ -463,11 +498,43 @@ def _load_dotenv_with_fallback(
             baseline = record[0] if ours else current
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
+            if value.strip():
+                _release_bridge_claim(name)
     # Every key this file defines, for the launch-residue strip: dotenv never unsets, so a key later
     # removed from the launch .env stays in os.environ and a re-parse of the file no longer names it.
     # Managed keys are recorded separately: they are administrator policy, not launch-profile residue.
-    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(name for name, _value in assignments)
+    # Launch-only keys are recorded nowhere: they were never published, so a leftover file entry must
+    # not strip the launch value from a routed child either (#135200).
+    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(
+        name for name, _value in assignments if not is_launch_only_env_key(name))
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
+
+
+_LAUNCH_ONLY_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _warn_launch_only_key(source: str, name: str) -> None:
+    """Log a skipped launch-only key once per (profile home, source, name): the gateway reloads
+    ``.env`` every turn, and a multiplex process serves several homes that each deserve the warning."""
+    marker = (hermes_home_key(), source, name)
+    if marker not in _LAUNCH_ONLY_WARNED:
+        _LAUNCH_ONLY_WARNED.add(marker)
+        logger.warning("%s: ignoring launch-only key %s — only the launch environment may set it",
+                       source, name)
+
+
+def bridge_config_scalars(cfg: dict, target) -> None:
+    """Copy top-level ``config.yaml`` scalars into ``target`` (env or scope mapping) where unset.
+
+    Launch-only keys are refused like a ``.env`` entry: config.yaml is user-writable, so a
+    ``HERMES_MANAGED_DIR:`` line there must not repoint the managed scope (#135200, #144685)."""
+    for name, value in cfg.items():
+        if not isinstance(value, (str, int, float, bool)) or name in target:
+            continue
+        if is_launch_only_env_key(name):
+            _warn_launch_only_key("config.yaml", name)
+            continue
+        target[name] = str(value)
 
 
 def _dotenv_assignments(path: Path) -> list:
@@ -843,7 +910,8 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     write, or is removed when it had none."""
     home_key = str(Path(home_path).resolve())
     writes = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key)
-    if not writes:
+    claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.get(home_key)
+    if not writes and not claims:
         return
     try:
         from agent.secret_scope import load_env_file
@@ -851,6 +919,27 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
     except Exception:
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
+    _revoke_value_writes(home_key, writes or {}, keep, owned_by_dotenv)
+    _restore_bridge_claims(home_key, claims or {}, keep, owned_by_dotenv)
+
+
+def _restore_bridge_claims(home_key: str, claims: dict, keep, owned_by_dotenv: set) -> None:
+    """Give a revoked source's name back to the YAML bridge when it again holds the bridged value."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+
+    kept = {name: claim for name, claim in claims.items() if keep(name, claim[0])}
+    for name, (_source, marker) in claims.items():
+        if name not in kept and name not in owned_by_dotenv and bridged_env_digest(os.environ.get(name)) == marker:
+            os.environ[BRIDGED_ENV_MARKER_PREFIX + name] = marker
+    if kept:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME[home_key] = kept
+    else:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _revoke_value_writes(home_key: str, writes: dict, keep, owned_by_dotenv: set) -> None:
+    if not writes:
+        return
     kept: dict[str, tuple[str, str, str | None]] = {}
     for name, (source, value, prior) in writes.items():
         if keep(name, source):
@@ -932,6 +1021,7 @@ def _publish_staged_env(staged: dict, environ_before: dict) -> None:
     for name, value in staged.items():
         if environ_before.get(name) != value:
             os.environ[name] = value
+            _release_bridge_claim(name)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
@@ -1017,9 +1107,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # snapshot failed every default-profile turn for the process lifetime (#102041).
     values: dict[str, str] = {}
     supplied = _record_supplied_names(report)
+    _record_released_bridge_claims(home_key, report, supplied, environ_before)
     for name in supplied:
         if name in os.environ:
             values[name] = os.environ[name]
+            _release_bridge_claim(name)  # a value a source supplies is the operator's, even one it skipped
     _record_secret_source_writes(home_key, report, supplied, environ_before)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
@@ -1039,6 +1131,21 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             print(f"  {src.label}: {warn}", file=sys.stderr)
     for conflict in report.conflicts:
         print(f"  Secret sources: {conflict}", file=sys.stderr)
+
+
+def _record_released_bridge_claims(home_key: str, report, supplied: set[str], environ_before: dict) -> None:
+    """Remember each bridge-owned value (marker matched before this pass) a source now supplies."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+
+    owner = {name: src.name for src in report.sources for name in src.skipped_existing}
+    owner.update({name: applied.source for name, applied in report.provenance.items()})
+    claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.setdefault(home_key, {})
+    for name in supplied:
+        marker = environ_before.get(BRIDGED_ENV_MARKER_PREFIX + name)
+        if marker and name in owner and bridged_env_digest(environ_before.get(name)) == marker:
+            claims[name] = (owner[name], marker)
+    if not claims:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
 
 
 def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict) -> None:

@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ Kon nie ontfoutverslag oplaai nie: {error}"
     header: "**Ontfoutverslag opgelaai:**"
     auto_delete: "⏱ Plakke sal outomaties oor 6 uur uitgevee word."
-    full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
+    full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share --nous` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
-    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug` om die opsommingsverslag op te laai."
+    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
+    upload_hint: "Niks is opgelaai nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
+    upload_hint_local: "Niks is opgelaai nie. Stuur `/debug upload` om die opsommingsverslag op te laai, of `/debug local` om dit hier te bekyk."
+    nous_refused: "Niks is opgelaai nie. Private Nous-oplaaie is nie van hier af beskikbaar nie: voer `hermes debug share --nous` in 'n terminaal uit, of gebruik Send diagnostics in die rekenaartoepassing. `/debug upload` laai die opsomming eerder na 'n publieke plakblad op."
   deny:
     stale: "❌ Opdrag geweier (goedkeuring was verouderd)."
     no_pending: "Geen hangende opdrag om te weier nie."
@@ -601,6 +604,7 @@ gateway:
     disabled: "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."
     enabled: "⚡ YOLO-modus **AAN** vir hierdie sessie — alle opdragte word outomaties goedgekeur. Gebruik versigtig."
   shared:
+    fallback_model_suffix: " — terugval vir `{primary}`"
     session_db_unavailable: "Sessie-databasis is nie beskikbaar nie."
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found: "Sessie nie in databasis gevind nie."
@@ -647,8 +651,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Kon nie die {kind}-aanhegsel aflewer nie ({file_name})."
     delivery_failed_retry: "⚠️ Boodskapaflewering het na verskeie pogings misluk. Probeer asseblief weer — jou versoek is verwerk, maar die antwoord kon nie gestuur word nie."
     plain_fallback_prefix: "(Antwoordformatering het misluk, gewone teks:)\n\n{content}"
-    turn_error_no_details: "geen besonderhede beskikbaar nie"
-    turn_error_detailed: "Jammer, ek het 'n fout ondervind ({error_type}).\n{error_detail}\nProbeer weer of gebruik /reset om 'n vars sessie te begin."
     turn_error: "Jammer, ek het 'n fout ondervind."
     context_injection_refused: "Konteksinspuiting geweier."
     no_home_channel: "📬 Geen tuiste-kanaal is vir {platform} gestel nie. 'n Tuiste-kanaal is waar Hermes cron-taakresultate en kruisplatform-boodskappe aflewer.\n\nTik {sethome_cmd} om hierdie klets jou tuiste-kanaal te maak, of ignoreer dit om oor te slaan."
@@ -807,6 +809,7 @@ gateway:
     ack_generate: "AGENTS.md word vanaf 'n projekskandering gegenereer…"
   moa:
     prepare_failed: "Kon nie MoA-beurt voorberei nie."
+    managed_session: "/moa is nie in hierdie sessie beskikbaar nie: veiligemodus-, konfigurasievrye, kanban- en bestuurde-werker-sessies voer elke beurt op hul eie model uit. Stuur die opdrag sonder /moa."
   quick_command:
     no_output: "Opdrag het geen uitvoer teruggegee nie."
     timed_out: "Vinnige opdrag het uitgetel (30s)."
@@ -982,6 +985,17 @@ platform:
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
   shared:
+    vault_code:
+      title: "🔐 Verifikasiekode vir {site}"
+      body: "{site} vra 'n eenmalige kode (SMS of e-pos). Druk die knoppie en tik dit in die vorm wat oopmaak: dit gaan reguit na die bladsy en word nooit hier geplaas nie."
+      button: "Voer kode in"
+      modal_title: "Kode vir {site}"
+      input_label: "Eenmalige kode"
+      submitted: "Kode ingedien; dit word in die bladsy ingevoer."
+      ended: "Hierdie kodeversoek is verby; niks is ingevoer nie."
+      not_author: "Slegs die persoon wat hierdie versoek begin het, kan die kode invoer."
+      submitted_footer: "✓ Kode ingedien"
+    response_as_file: "📎 Lang antwoord: die volledige teks is aangeheg."
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (dit het reeds uitgetel of is elders afgehandel)."
@@ -1172,8 +1186,6 @@ platform:
         unknown: "Onbekende vaardigheid: `{name}`. Begin tik vir outovoltooi-voorstelle."
       auto_args_description: "Argumente: {args_hint}"
       auto_description_fallback: "Voer /{name} uit"
-    limits:
-      response_truncated: "⚠️ **Antwoord afgekap** — hierdie antwoord het die afleweringslimiet ({max_messages} boodskappe) oorskry. {dropped_chars} karakters is nie afgelewer nie; die volledige antwoord is in die sessieloglae."
     forum:
       default_title: "Nuwe plasing"
     voice:
@@ -1195,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Kon nie `{filename}` aanheg nie — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB vir hierdie kanaal. Pers die lêer saam of deel eerder 'n skakel."
       image_skipped_too_large: "⚠️ `{filename}` oorgeslaan — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Antwoord op hierdie boodskap met die kode. Hermes vee jou antwoord dadelik uit en vul die kode op die bladsy in; die model sien dit nooit."
+      delete_failed: "Kon nie jou antwoord hier uitvee nie. Vee dit asseblief self uit."
     approval:
       action_once: "✅ Eenmalig"
       action_session: "✅ Sessie"
@@ -1252,6 +1267,11 @@ platform:
       affirm: "✓ Ja"
       negate: "✗ Nee"
       other: "✏️ Ander (tik antwoord)"
+      multi_hint: "Kies een of meer, tik dan Stuur."
+      send: "✅ Stuur"
+      selected_count: "Gekies: {count}"
+      select_one: "Kies eers ten minste een opsie."
+      toggle_failed: "Kon nie die keuse bywerk nie — tik weer."
       expired_toast: "⚠️ Hierdie prompt het verval — gebruik asseblief /retry."
       expired_body: "⚠️ Hierdie vraag het verval of die sessie is herstel — gebruik asseblief /retry."
       type_answer: "✏️ Tik jou antwoord in die klets."
@@ -1709,7 +1729,7 @@ slash:
   version:
     description: "Wys Hermes Agent-weergawe"
   debug:
-    description: "Laai ontfoutverslag op (stelselinligting + loglae) en kry deelbare skakels"
+    description: "Ontfoutverslag (weergawes, konfigurasiesleutels, foutetellings; geen logteks nie): wys eers die privaatheidskennisgewing; /debug upload deel skakels"
   quit:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
@@ -3823,7 +3843,7 @@ tips:
   t246: "Die HERMES_HOME_MODE-omgewingsveranderlike (oktaal, bv. 0701) stel eie gidstoestemmings vir webbediener-deurkruising."
   t247: "Houermodus: plaas .container-mode in HERMES_HOME en die gasheer-CLI voer outomaties binne die houer uit."
   t248: "Ctrl+C het 5 prioriteitsvlakke: kanselleer opname → kanselleer prompte → kanselleer kieser → onderbreek agent → sluit af."
-  t249: "Elke onderbreking tydens 'n agent-lopie word met tydstempels na ~/.hermes/interrupt_debug.log gelog."
+  t249: "Onderbrekings tydens 'n agent-lopie word in agent.log gelog (sien met `hermes logs`); stel HERMES_DEBUG_INTERRUPT=1 vir 'n gedetailleerde spoor."
   t250: "BROWSER_CDP_URL koppel blaaiergereedskap aan enige lopende Chromium-familie-blaaier — aanvaar WebSocket, HTTP of host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true aktiveer gevorderde anti-opsporing met 'n aangepaste Chromium (Scale Plan)."
   t252: "Die CLI skakel outomaties na kompakte modus oor in terminale smaller as 80 kolomme."
@@ -3920,7 +3940,7 @@ tips:
   t343: "/voice tts skakel slegs-TTS-modus aan of af — die agent antwoord hardop, maar jy tik steeds jou prompte."
   t344: "/reload-skills skandeer ~/.hermes/skills/ weer sodat inprop-vaardighede verskyn sonder om die sessie te herbegin."
   t345: "/indicator kaomoji|emoji|unicode|ascii kies die styl van die TUI-besig-aanwyser wat tydens agent-lopies gewys word."
-  t346: "/debug laai 'n ondersteuningsbundel (stelselinligting + logs) op en gee deelbare skakels terug — werk ook in die klets."
+  t346: "/debug upload laai 'n opsomming op (weergawes, konfigurasiesleutels, foutetellings; geen logteks nie) en gee 'n deelbare skakel terug — werk ook in die klets."
   t347: "hermes -z \"<prompt>\" is die suiwerste eenmalige lopie: finale antwoord op stdout, niks anders nie — ideaal om in skripte te pyp."
   t348: "hermes chat --pass-session-id spuit die sessie-ID in die stelselprompt in sodat die agent daarna kan verwys."
   t349: "hermes chat --image path/to/pic.png heg 'n plaaslike beeld aan 'n enkele -q-navraag sonder 'n aparte oplaaistap."

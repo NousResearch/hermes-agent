@@ -189,9 +189,8 @@ def _load_hermes_env() -> None:
         cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    for key, val in cfg.items():
-        if isinstance(val, (str, int, float, bool)) and key not in target:
-            target[key] = str(val)
+    from hermes_cli.env_loader import bridge_config_scalars
+    bridge_config_scalars(cfg, target)
 
 
 def cmd_send(args: argparse.Namespace) -> None:

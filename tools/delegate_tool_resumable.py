@@ -7,8 +7,8 @@ each heartbeat while its terminal cwd moves, ``record_stop`` after its cleanup r
 whose owner process died (``recover_abandoned``). The row's ``pinned`` flag is the worktree pin: set for a child that
 did not complete and was not stopped by a person, for ``delegation.resumable_ttl_hours`` (newest
 ``delegation.max_resumable`` per profile; the oldest beyond the cap loses its pin, the row stays). Automatic
-resumption is NOT done here: ``resume_mode`` / ``next_attempt_at`` are what a scheduler gated on
-``delegation.auto_resume`` will read.
+resumption is ``delegate_tool_auto_resume`` (gated on ``delegation.auto_resume``), which reads ``resume_mode`` /
+``next_attempt_at`` and marks a record ``superseded`` when its parent moved on.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ AUTO_AT, AUTO_ON_BOOT, ON_FIX = "AUTO_AT", "AUTO_ON_BOOT", "ON_FIX"
 REPAIR_THEN_CONTINUE, HANDOFF = "REPAIR_THEN_CONTINUE", "HANDOFF"
 GATEWAY_SHUTDOWN = "gateway_shutdown"
 # A record ``action='continue'`` can rebuild from (``claimed`` while a continue is starting, ``running`` live).
-_FINISHED = ("resumable", "completed", "stopped")
+_FINISHED = ("resumable", "completed", "stopped", "superseded")
 _DEFAULT_TTL_HOURS, _DEFAULT_MAX_RESUMABLE = 48.0, 32
 _EXPIRED_RETENTION_S = 7 * 24 * 3600.0
 
@@ -122,7 +122,8 @@ def _row(conn, sid: str) -> Optional[dict[str, Any]]:
 def _upsert(conn, sid: str, record: dict[str, Any], *, state: str, pinned: bool, expires_at: Optional[float],
             stop_cause: Optional[str] = None) -> None:
     now = time.time()
-    record = {k: v for k, v in record.items() if k not in ("state", "stop_cause")}
+    # ``auto_claim`` / ``auto_cancel`` mark only a claim no run has started yet: a written run record never carries them.
+    record = {k: v for k, v in record.items() if k not in ("state", "stop_cause", "auto_claim", "auto_cancel")}
     conn.execute(
         """INSERT INTO resumable_subagents (subagent_id, state, pinned, stop_cause, owner_pid, owner_started_at,
                record_json, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -139,8 +140,9 @@ def _apply_limits(conn) -> None:
     ttl, cap = _settings()
     now = time.time()
     conn.execute("UPDATE resumable_subagents SET pinned=0, state='expired' WHERE expires_at IS NOT NULL "
-                 "AND expires_at <= ? AND state IN ('resumable','completed','stopped')", (now,))
-    conn.execute("DELETE FROM resumable_subagents WHERE state='expired' AND updated_at < ?",
+                 "AND expires_at <= ? AND state IN ('resumable','completed','stopped','superseded')", (now,))
+    from tools.delegate_tool_auto_resume import OWED_SQL  # kept until the scheduler delivers its one give-up
+    conn.execute(f"DELETE FROM resumable_subagents WHERE state='expired' AND updated_at < ? AND NOT COALESCE(({OWED_SQL}), 0)",
                  (now - _EXPIRED_RETENTION_S - ttl * 3600,))
     conn.execute("""UPDATE resumable_subagents SET pinned=0 WHERE pinned=1 AND subagent_id NOT IN (
                         SELECT subagent_id FROM resumable_subagents WHERE pinned=1
@@ -276,11 +278,23 @@ def record_start(run: Any) -> None:
     start_trees = _worktrees_of(start_cwd)
     # ``lock`` serializes the start-record retries (heartbeat thread vs the stop path) with the terminal write, so a
     # retry still waiting on the busy timeout can never land after ``record_stop`` and flip the row back to running.
+    # Who started this run: a parent's spawn, a parent's continue (no automatic resume after it), the scheduler.
+    origin = getattr(child, "_delegate_run_origin", None)
+    origin = origin if origin in ("continue", "auto") else "spawn"
+    auto = {"auto_attempts": int(earlier.get("auto_attempts") or 0), "auto_off": earlier.get("auto_off")
+            or ("the parent continued it itself" if origin == "continue" else None),
+            # The automatic-resume deadline counts from the FIRST stop, across every resumed run.
+            "auto_first_stopped_at": earlier.get("auto_first_stopped_at")}
     durable: dict[str, Any] = {"db": path, "cwd": cwd, "start_main": start_trees[0] if start_trees else None,
-                               "baselines": dict(earlier.get("repo_baselines") or {}), "lock": threading.RLock()}
+                               "baselines": dict(earlier.get("repo_baselines") or {}), "lock": threading.RLock(),
+                               "auto": auto}
     _note_repo(durable["baselines"], durable["start_main"], cwd)
 
     def _do(conn):
+        if origin == "auto":  # the parent's last word: a stop, /stop or replacement since the claim cancels it here
+            from tools.delegate_tool_auto_resume import admit_start
+            if cancelled := admit_start(conn, sid):
+                return cancelled
         prev = _row(conn, sid) or {}
         with _active_subagents_lock:
             owners.update((_recent_subagents.get(sid) or {}).get("ancestor_owner_session_ids") or ())
@@ -295,14 +309,25 @@ def record_start(run: Any) -> None:
                   or run.worktree_info, "outcome": "running", "resume_mode": None,
                   # Kept across continues: a tree the child made in an earlier run is still its own.
                   "worktrees_at_start": prev.get("worktrees_at_start") or start_trees,
-                  "auto_attempts": prev.get("auto_attempts", 0)}
+                  # A promise belongs to one stop: this run's own stop (or boot recovery) makes it afresh.
+                  "run_origin": origin, "run_started_at": time.time(), "auto_promised": False, **auto}
         record["repo_baselines"] = durable["baselines"]
         # A running record pins too (its paths are resolved at sweep time): a crash before boot recovery ran must
         # not hand its tree to the sweep. Bounded by the same TTL.
         _upsert(conn, sid, record, state="running", pinned=True, expires_at=time.time() + _settings()[0] * 3600)
         return True
 
-    durable["pending"] = None if _write(path, _do) else _do
+    outcome = _write(path, _do)
+    if isinstance(outcome, str):  # cancelled by the parent before it ran: no run record, the child does not start
+        child._delegate_auto_cancelled = outcome
+        child._delegate_claim = None  # the row is the parent's now: cleanup must not hand any claim back
+        return
+    if origin == "auto" and not outcome:
+        # Fail closed: without its run record the parent's last word could not be checked, and a later retry would
+        # check it while the child already runs. It does not start; cleanup hands the claim back to ``resumable``.
+        child._delegate_auto_cancelled = "Not continued: its run record could not be written"
+        return
+    durable["pending"] = None if outcome else _do
     child._delegate_durable = durable
 
 
@@ -387,9 +412,20 @@ def stamp_entry(run: Any, entry: dict[str, Any]) -> None:
     durable["cwd"] = _child_cwd(run) or durable.get("cwd")  # before cleanup drops the child's cwd record
     if not _flush(durable):
         return  # no record to continue from: the entry must not offer a resume
-    state, mode, _ = classify(entry, stop_cause_live(run))
+    state, mode, next_at = classify(entry, stop_cause_live(run))
     if state == "resumable":
         entry["resume_mode"] = mode
+        if getattr(run.child, "_delegation_unit_id", None) and not durable["auto"]["auto_off"]:
+            from tools.delegate_tool_auto_resume import promise
+            from tools.delegate_tool_auto_resume import gave_up, gave_up_line
+            candidate = {**durable["auto"], "resume_mode": mode, "next_attempt_at": next_at}
+            if auto := promise(candidate):
+                entry["auto_resume"] = auto
+                durable["promised"] = True  # only a stop that promised a resume may be resumed automatically
+            elif reason := gave_up(candidate):  # this stop's own completion is the one terminal failure
+                entry["auto_gave_up"] = reason
+                entry["error"] = f"{entry.get('error') or entry.get('status')}; {gave_up_line(run.subagent_id, reason)}"
+                durable["gave_up"] = reason
 
 
 def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
@@ -408,6 +444,9 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
         record = _row(conn, sid) or {}
         if isinstance(session_id, str) and session_id:
             record["session_id"] = session_id
+        record["auto_promised"] = bool(durable.get("promised"))
+        if durable.get("gave_up"):
+            record["auto_gave_up"] = record["auto_note"] = durable["gave_up"]
         _finish(conn, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd)
 
     with durable["lock"]:
@@ -427,6 +466,8 @@ def _finish(conn, sid: str, record: dict[str, Any], entry: dict[str, Any], cause
               "next_attempt_at": next_at, "failure_reason": entry.get("failure_reason"),
               "failure_resets_at": entry.get("failure_resets_at"), "usage_limit": entry.get("usage_limit"),
               "stopped_at": time.time()}
+    if state == "resumable" and not record.get("auto_first_stopped_at"):
+        record["auto_first_stopped_at"] = record["stopped_at"]
     if isinstance(entry.get("worktree"), dict):
         record["worktree"] = {**(record.get("worktree") or {}), **entry["worktree"]}
     record["pin_paths"] = (_pin_paths(record) if pins is None else pins) if state == "resumable" else []
@@ -487,13 +528,13 @@ def _still_abandoned(conn, sid: str, pid: Any, started: Any) -> Optional[dict[st
     return _row(conn, sid)
 
 
-def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]]) -> dict[str, list[str]]:
+def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]],
+                      records: Optional[dict[str, dict[str, Any]]] = None) -> None:
     """Boot: each planned record (``plan_recovery``) still held by its dead owner becomes resumable (outcome
-    ``unknown``, or a gateway shutdown when that was marked), pinned on where it last was.
-    ``{delegation_id: [subagent_id, ...]}``. A row that died after the plan was made is reclaimed by ``claim``."""
-    recovered: dict[str, list[str]] = {}
+    ``unknown``, or a gateway shutdown when that was marked), pinned on where it last was; *records* collects each
+    recovered record. A row that died after the plan was made is reclaimed by ``claim``."""
     if not plan:
-        return recovered
+        return
     _begin_immediate(conn)
     for sid, (pid, started, pins) in plan.items():
         record = _still_abandoned(conn, sid, pid, started)
@@ -501,8 +542,18 @@ def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]]) -> dict
             continue
         entry, cause = _abandoned_entry(record)
         _finish(conn, sid, record, entry, cause, cwd=record.get("cwd"), pins=pins)
-        recovered.setdefault(str(record.get("unit_id") or record.get("delegation_id") or ""), []).append(sid)
-    return recovered
+        if records is not None:
+            records[sid] = record
+
+
+def continuable_of(conn, unit_id: str) -> list[str]:
+    """Every child of the async unit *unit_id* its parent can continue now: the ones boot recovery just finished,
+    and the ones that recorded their own resumable stop before the owner exited (a gateway restart stops each
+    child cleanly, while the unit's ledger row is left running)."""
+    return [sid for (sid,) in conn.execute(
+        "SELECT subagent_id FROM resumable_subagents WHERE state='resumable' AND COALESCE("
+        "json_extract(record_json, '$.unit_id'), json_extract(record_json, '$.delegation_id'))=? "
+        "ORDER BY created_at", (unit_id,))]
 
 
 def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -544,17 +595,41 @@ def claim(parent_agent: Any, sid: str) -> tuple[Optional[dict[str, Any]], Option
         return None, (f"Subagent '{sid}' is still running or being continued. Try again shortly; if this persists, "
                       "spawn a new task.") if record.get("state") in ("running", "claimed") else None
     owner = _owner_identity()  # boot recovery must not reclaim a continue this live process is starting
+    from tools.delegate_tool_auto_resume import CANCEL_DEBT  # the parent took it over: no automatic report owed
     claimed = _write(path, lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=? "
-        "WHERE subagent_id=? AND state=?",
+        f"UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=?, "
+        f"record_json=json_set(record_json, {CANCEL_DEBT}) WHERE subagent_id=? AND state=?",
         (owner["owner_pid"], owner["owner_started_at"], time.time(), sid, record["state"])).rowcount)
     return (record, None) if claimed == 1 else (None, f"Subagent '{sid}' is already being continued.")
 
 
+def _hand_back(conn, sid: str, state: str, *, promised: Optional[bool] = None, owner_pid: Optional[int] = None) -> None:
+    """Return a claimed record no run started to *state* (with *promised* as its debt when given), in one write
+    transaction: a stop that landed during the claim (``$.auto_cancel``) wins over handing a promise back."""
+    _begin_immediate(conn)
+    mine, where = (" AND owner_pid=?", (sid, owner_pid)) if owner_pid is not None else ("", (sid,))
+    got = conn.execute("SELECT json_extract(record_json, '$.auto_cancel.state'), json_extract(record_json, "
+                       f"'$.auto_cancel.note') FROM resumable_subagents WHERE subagent_id=? AND state='claimed'{mine}",
+                       where).fetchone()
+    if got is None:
+        return
+    record_json, params, unpin = "record_json", [], ""
+    if got[0]:  # the parent cancelled it during the claim: no automatic resume, no report
+        promised = False
+        if state == "resumable":
+            state, record_json, params = got[0], "json_set(record_json, '$.auto_note', ?)", [got[1]]
+            unpin = ", pinned=0" if state == "stopped" else ""
+    if promised is not None:
+        record_json, params = f"json_set({record_json}, '$.auto_promised', json(?))", [*params, json.dumps(promised)]
+    conn.execute(f"UPDATE resumable_subagents SET record_json=json_remove({record_json}, '$.auto_claim', "
+                 f"'$.auto_cancel'), state=?{unpin} WHERE subagent_id=? AND state='claimed'{mine}",
+                 (*params, state, *where))
+
+
 def release(parent_agent: Any, sid: str, record: dict[str, Any]) -> None:
-    """Hand a claimed record back (the continue was refused before anything ran)."""
-    _write(_db_path_for(parent_agent), lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state=? WHERE subagent_id=? AND state='claimed'", (record["state"], sid)))
+    """Hand a claimed record back (the continue was refused before anything ran), with the debt it had."""
+    _write(_db_path_for(parent_agent), lambda conn: _hand_back(conn, sid, record["state"],
+                                                               promised=bool(record.get("auto_promised"))))
 
 
 def hold_claim(child: Any, parent_agent: Any, sid: str, record: dict[str, Any]) -> None:
@@ -563,17 +638,49 @@ def hold_claim(child: Any, parent_agent: Any, sid: str, record: dict[str, Any]) 
     child._delegate_claim = (_db_path_for(parent_agent), sid, record["state"])
 
 
-def release_unstarted(child: Any) -> None:
-    """Hand back the claim of a continued child whose run ended before ``record_start`` (idempotent)."""
+def release_unstarted(child: Any) -> bool:
+    """Hand back the claim of a continued child whose run ended before ``record_start`` (idempotent). True when
+    the hand-back committed (or there was none); a failed one is queued for ``retry_hand_backs``."""
     claim = getattr(child, "_delegate_claim", None)
     durable = getattr(child, "_delegate_durable", None)
     if not isinstance(claim, tuple) or (isinstance(durable, dict) and durable.get("pending") is None):
-        return
-    child._delegate_claim = None
+        return True
     path, sid, state = claim
-    _write(path, lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state=? WHERE subagent_id=? AND state='claimed' AND owner_pid=?",
-        (state, sid, os.getpid())))
+    # A stop that reached this registered child before it ran (an automatic run failing closed) is the parent's
+    # decision: the row ends ``stopped``, never handed back for the scheduler to resume.
+    stopped = (getattr(child, "_delegate_run_origin", None) == "auto"
+               and getattr(child, "_delegate_stop_requested", False) is True)
+    pending = (path, sid, "stopped" if stopped else state, False if stopped else None)
+    committed = _hand_back_pending(pending)
+    if not committed:  # the store is busy: the queue owns the claim now, and the scheduler's tick retries it
+        with _PENDING_HAND_BACKS_LOCK:
+            _PENDING_HAND_BACKS.append(pending)
+    child._delegate_claim = None
+    return committed
+
+
+# Hand-backs whose write failed (``release_unstarted``): a row left ``claimed`` by this live process is invisible to
+# the scheduler and to boot recovery, so a promised child would never report while the process lives.
+_PENDING_HAND_BACKS: list[tuple[Optional[Path], str, str, Optional[bool]]] = []
+_PENDING_HAND_BACKS_LOCK = threading.Lock()
+
+
+def _hand_back_pending(pending: tuple[Optional[Path], str, str, Optional[bool]]) -> bool:
+    """One hand-back attempt; True once it committed (a row no longer ``claimed`` by this process counts)."""
+    path, sid, state, promised = pending
+    return _write(path, lambda conn: (_hand_back(conn, sid, state, promised=promised, owner_pid=os.getpid()),
+                                      True)[1]) is True
+
+
+def retry_hand_backs() -> None:
+    """Scheduler tick: retry each queued hand-back once, keeping only the ones that still failed."""
+    with _PENDING_HAND_BACKS_LOCK:
+        queued = list(_PENDING_HAND_BACKS)
+        _PENDING_HAND_BACKS.clear()
+    failed = [p for p in queued if not _hand_back_pending(p)]
+    if failed:
+        with _PENDING_HAND_BACKS_LOCK:
+            _PENDING_HAND_BACKS.extend(failed)
 
 
 def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:
@@ -615,7 +722,7 @@ def _read_pins(db: Path, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
         return []
     try:
         rows = conn.execute("SELECT subagent_id, record_json, expires_at, state FROM resumable_subagents "
-                            "WHERE pinned=1 AND state IN ('resumable','running','claimed') "
+                            "WHERE pinned=1 AND state IN ('resumable','superseded','running','claimed') "
                             "AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT ?",
                             (now, cap)).fetchall()
     except sqlite3.Error:
@@ -625,7 +732,7 @@ def _read_pins(db: Path, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
     out = []
     for sid, raw, exp, state in rows:
         record = {**json.loads(raw or "{}"), "expires_at": exp}
-        if state != "resumable":
+        if state in ("running", "claimed"):
             record["pin_paths"] = _live_pins(record)
         out.append((sid, record))
     return out

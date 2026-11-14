@@ -250,6 +250,8 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             path, quiet=request.quiet, problems=problems))
         if request.quiet:  # nothing printed them: the caller (a gateway's client) shows them
             result.warnings.extend(line.strip().removeprefix("⚠ ") for line in problems if line.strip())
+        from hermes_cli.default_plugins import spawn_install
+        step("default plugins", lambda: spawn_install(path))  # detached: a create never waits on git
     if request.alias:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))
@@ -440,35 +442,40 @@ def _mirror_voice_sections(path: Path) -> bool:
 
 
 def inherit_launch_model(path: Path) -> bool:
-    """Pin the launch model.provider/default into ``path`` unless its model section already has both."""
+    """Copy the launch model seed without revalidating it; keep an existing explicit pin."""
     from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-    from hermes_cli.profile_model_seed import launch_model_seed, merge_endpoint_seed
+    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
+    from hermes_cli.config_model_section import _normalize_root_model_keys
+    from hermes_cli.model_assignment import apply_inherited_model_assignment, normalize_main_model_assignment
+    from hermes_cli.profile_model_seed import merge_endpoint_seed, prepare_inherited_endpoint_seed
     from tui_gateway.launch_profile_policy import profile_config_scope
-    with profile_config_scope(path):
-        dst_model = (read_user_config_raw() or {}).get("model") or {}
-    if dst_model.get("provider") and dst_model.get("default"):
-        return False
-    model_cfg = (load_config_readonly() or {}).get("model") or {}
-    if not (model_cfg.get("provider") and model_cfg.get("default")):
-        return False
-    # The endpoint seed goes in BEFORE the pin: the pin validates inside the new profile, which rejects a
-    # provider it has no definition for (#101885).
-    seed = launch_model_seed(read_user_config_raw())
-    if seed.get("providers") or seed.get("custom_providers"):
-        with profile_config_scope(path), CONFIG_MUTATION_LOCK:
-            save_config(merge_endpoint_seed(read_user_config_raw(), seed))
-    # Validation needs the expanded base_url; the profile then gets back the launch file's ${VAR} spelling.
-    write_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
-                         base_url=str(model_cfg.get("base_url") or ""))
-    raw_url = ((read_user_config_raw() or {}).get("model") or {}).get("base_url")
-    if isinstance(raw_url, str) and "${" in raw_url:
-        with profile_config_scope(path), CONFIG_MUTATION_LOCK:
-            cfg = read_user_config_raw() or {}
-            if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
-                cfg["model"]["base_url"] = raw_url
+    with CONFIG_MUTATION_LOCK:
+        with profile_config_scope(path):
+            cfg = _normalize_root_model_keys(read_user_config_raw() or {})
+        dst_model = cfg.get("model") or {}
+        if dst_model.get("provider") and dst_model.get("default"):
+            return False
+        model_cfg = (load_config_readonly() or {}).get("model") or {}
+        if not (model_cfg.get("provider") and model_cfg.get("default")):
+            return False
+        # Canonicalize raw routing without resolving credentials. Selection identity is pinned
+        # to the launch scope; URL/key refs intentionally bind the destination's secrets.
+        provider, model = str(model_cfg["provider"]), str(model_cfg["default"])
+        # Only the model-name repair: the provider stays the one the source runs (the provider
+        # recovery can resolve a bare ``custom`` to some other declared endpoint).
+        normalized_provider, normalized_model = normalize_main_model_assignment(provider, model)
+        if normalized_provider == provider:
+            model = normalized_model
+        raw = _normalize_root_model_keys(read_user_config_raw() or {})
+        raw["model"] = {**(raw.get("model") or {}), "provider": provider, "default": model}
+        seed, claimed = prepare_inherited_endpoint_seed(raw)
+        with profile_config_scope(path):
+            cfg = merge_endpoint_seed(cfg, seed, claimed=claimed)
+            cfg["model"] = apply_inherited_model_assignment(dst_model, seed["model"])
+            with refusing_locked_omissions("model", "providers", "custom_providers"):
                 save_config(cfg)
     return True
+
 
 
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,

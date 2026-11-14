@@ -106,3 +106,38 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     assert restart.incomplete
     assert "follow-up 'gateway_restart'" in out.getvalue()
     assert cleared == [True]
+
+
+def test_a_planned_gateway_left_with_its_restart_pending_is_not_reported_unaccounted(monkeypatch, tmp_path):
+    """A gateway still running live work past the drain wait is left running with its restart pending
+    (self_restart_pending_pids). The runtime reconciliation must read that as a deferred restart, the
+    same row the fleet matrix renders "restart pending", not a silently missed one owing a manual
+    restart follow-up."""
+    from hermes_cli import update_cmd
+    from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan, _restart_mechanism
+
+    busy = os.getpid()
+    _fleet_homes(monkeypatch, tmp_path, {"default": {"pid": busy, "gateway_state": "running", "code_sha": OLD}})
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr(fleet_mod._time, "sleep", lambda s: None)
+    monkeypatch.setattr(fleet_mod, "_clear_fleet_restart_pending_marker", lambda: None)
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    plan = UpdatePlan()
+    plan.runtimes = [RuntimeRecord(kind="gateway", profile="default", pid=busy, supervisor="systemd",
+                                   restart_via=_restart_mechanism("systemd", "default"))]
+    restart = fleet_mod._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[busy], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        self_restart_pending_pids={busy},
+    )
+    ur.begin_update_receipt()
+    receipt = ur._current.get()
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        fleet_verify._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None,
+                                                update_complete=True)
+    assert "never touched" not in out.getvalue(), out.getvalue()
+    assert not restart.incomplete, out.getvalue()
+    outcomes = receipt.data["runtime_outcomes"]
+    assert [o["outcome"] for o in outcomes] == ["restart_pending"]

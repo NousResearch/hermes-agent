@@ -593,20 +593,13 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
-    filtered: list[str] = []
-    skip_next = False
-    for token in tokens:
-        if skip_next:
-            skip_next = False
-        elif token in ("--profile", "-p"):
-            skip_next = True
-        elif not token.startswith(("--profile=", "-p=")):
-            filtered.append(token)
-    for i, token in enumerate(filtered):
-        if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
-    return None
+    filtered = [t for i, t in enumerate(tokens) if t not in ("--profile", "-p")
+                and not t.startswith(("--profile=", "-p=")) and not (i and tokens[i - 1] in ("--profile", "-p"))]
+    if "gateway" not in filtered:
+        return None
+    # Gateway-level flags may precede the action (`gateway --accept-hooks run`); bare `gateway` runs.
+    rest = filtered[filtered.index("gateway") + 1:]
+    return None if {"-h", "--help"} & set(rest) else next((t for t in rest if not t.startswith("-")), "run")
 
 
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:

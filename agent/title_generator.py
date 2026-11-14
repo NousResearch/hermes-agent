@@ -5,6 +5,7 @@ is called, cannot fail), then an **upgrade** from one small-model call (cheap ti
 JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
+import itertools
 import json
 import logging
 import os
@@ -449,8 +450,95 @@ def _title_from_reasoning(message: Any) -> str:
     return ""
 
 
-def _clean_title(text: str) -> Optional[str]:
-    """Normalize a model-produced title, or None when nothing usable remains."""
+# Code pages a model's UTF-8 bytes have come back through (``à`` = C3 A0 read as cp1250 gives ``Ă`` plus
+# a no-break space, which the whitespace collapse below would then make permanent).
+_MOJIBAKE_CODECS = ("cp1252", "cp1250", "latin-1")
+
+
+def _repair_mojibake(text: str, typed: Optional[set[str]] = None) -> str:
+    """``text`` with UTF-8 restored when it is UTF-8 read through a single-byte code page; unchanged
+    otherwise. Strict both ways, so ordinary accented text never round-trips into something else. With
+    ``typed`` (the non-ASCII characters of the title input), a repair must only produce characters the
+    user typed: clean Romanian ``Ăş`` is also valid cp1250-read UTF-8 for ``ú``."""
+    for codec in _MOJIBAKE_CODECS:
+        try:
+            repaired = text.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if repaired != text and (typed is None or all(c in typed for c in repaired if ord(c) > 0x7F)):
+            return repaired
+    return text
+
+
+def _typed_chars(source: str) -> set[str]:
+    """Non-ASCII characters of the title input, in both cases (a title may capitalize what the user typed)."""
+    return {c for char in source if ord(char) > 0x7F for c in (char, *char.upper(), *char.lower())}
+
+
+def _byte_spellings() -> dict[str, tuple[int, ...]]:
+    """Each glyph a UTF-8 byte >= 0x80 shows as under the code pages models echo: cp1252/cp1250/latin-1
+    plus Greek cp1253 and Turkish cp1254 (#149025's ``ArkadaμƒΔ±ΕŸ`` mixes cp1252 and cp1253 glyphs)."""
+    table: dict[str, list[int]] = {}
+    for codec in (*_MOJIBAKE_CODECS, "cp1253", "cp1254"):
+        for byte in range(0x80, 0x100):
+            with suppress(UnicodeDecodeError):
+                spelled = table.setdefault(bytes([byte]).decode(codec), [])
+                if byte not in spelled:
+                    spelled.append(byte)
+    return {glyph: tuple(found) for glyph, found in table.items()}
+
+
+_BYTE_SPELLINGS = _byte_spellings()
+
+
+def _decode_spelled(glyphs: str) -> str:
+    """The single character whose UTF-8 bytes ``glyphs`` spell, one glyph per byte; ``""`` otherwise."""
+    options = [_BYTE_SPELLINGS.get(glyph) for glyph in glyphs]
+    if not all(options):
+        return ""
+    for combo in itertools.product(*options):
+        with suppress(UnicodeDecodeError):
+            decoded = bytes(combo).decode("utf-8")
+            if len(decoded) == 1:
+                return decoded
+    return ""
+
+
+def _repair_spelled_chars(text: str, typed: set[str]) -> Optional[str]:
+    """``text`` with each character the user typed restored where the model spelled out its UTF-8 bytes
+    (a model can emit that mixed with intact words, so a whole-string round trip cannot undo it, #149025).
+
+    Only characters in ``typed`` (``_typed_chars`` of the title input) count as repairs, so ordinary text whose letters happen to form a
+    UTF-8 sequence (Turkish ``İş``) stays as is. Once a repair proves the output is byte-damaged, a leftover
+    letter or symbol the user never typed is undecodable residue (``μƒ``): None, so the caller keeps the
+    title derived from the user's own words."""
+    out: list[str] = []
+    i, repaired = 0, False
+    while i < len(text):
+        char = next((c for n in (2, 3, 4) if (c := _decode_spelled(text[i:i + n])) in typed), "")
+        if char:
+            i += len(char.encode("utf-8"))
+            out.append(char)
+            repaired = True
+        else:
+            out.append(text[i])
+            i += 1
+    if not repaired:
+        return text
+    fixed = "".join(out)
+    if any(c not in typed and ord(c) > 0x7F and unicodedata.category(c)[0] in "LS" for c in fixed):
+        logger.debug("Rejecting byte-damaged title output: %r", text)
+        return None
+    return fixed
+
+
+def _clean_title(text: str, source: str = "") -> Optional[str]:
+    """Normalize a model-produced title, or None when nothing usable remains. ``source`` is the text the
+    title was generated from; it lets byte-spelled characters the user typed be restored."""
+    typed = _typed_chars(source) if source else None
+    text = _repair_mojibake(text or "", typed)
+    if typed is not None and (text := _repair_spelled_chars(text, typed)) is None:
+        return None
     title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
@@ -578,7 +666,7 @@ def generate_title(
         )
         message = response.choices[0].message
         raw_title = _extract_title_text(message.content or "") or _title_from_reasoning(message)
-        title = _clean_title(raw_title)
+        title = _clean_title(raw_title, user_snippet)
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,

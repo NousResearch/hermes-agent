@@ -278,8 +278,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     datetime/locale-sensitive tests are deterministic.
     """
     # 1. Blank every credential-shaped env var that's currently set.
+    # Bridge ownership markers too: an earlier test's real config load leaves them in os.environ, and
+    # a later test's setenv of the same value would then read as the bridge's own leftover.
     for name in list(os.environ.keys()):
-        if _looks_like_credential(name):
+        if _looks_like_credential(name) or name.startswith("HERMES_BRIDGED_"):
             monkeypatch.delenv(name, raising=False)
 
     # 2. Blank behavioral HERMES_* vars that could change test semantics.

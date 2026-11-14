@@ -408,6 +408,17 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
         assert model in _PROVIDER_MODELS["vertex"], model
 
 
+def test_gemini_4_hydrogen_is_pickable_and_priced(monkeypatch):
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    cost = estimate_usage_cost("gemini-4-hydrogen", usage, provider="gemini")
+    assert "gemini-4-hydrogen" in _PROVIDER_MODELS["gemini"] and _PROVIDER_MODELS["gemini"][0] == "gemini-3.8-flash"
+    assert (cost.status, cost.source) == ("estimated", "official_docs_snapshot")
+    assert str(cost.amount_usd) == "9.075"  # 1.50 + 7.50 + 0.075
+
+
 def test_gemini_4_carbon_is_pickable_and_prices_like_argon(monkeypatch):
     from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 

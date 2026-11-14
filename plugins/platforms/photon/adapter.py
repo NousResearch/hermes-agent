@@ -42,7 +42,8 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
+from gateway.platforms.helpers import bypasses_chat_order, chat_ordered_work, voice_mention_gate_enabled
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
@@ -452,18 +453,35 @@ def _parse_timestamp(ts_str: str) -> datetime:
 _Normalized = tuple[str, MessageType, list[str], list[str]]  # text, type, media_urls, media_types
 
 
+def _is_voice_payload(payload: dict[str, Any]) -> bool:
+    """A ``voice`` payload, or an attachment that is one: iMessage voice notes are CAF and may arrive
+    "(unnamed)", so MIME is a signal too."""
+    if payload.get("type") == "voice":
+        return True
+    return payload.get("type") == "attachment" and (
+        str(payload.get("name") or "").lower().endswith(".caf") or payload.get("mimeType") == "audio/x-caf")
+
+
+def _cached_media_type(payload: dict[str, Any], mime: str, is_voice: bool) -> str:
+    """A voice payload is cached as audio, so its media type says audio too (a ``.caf`` sent as
+    ``application/octet-stream`` would otherwise count as voice yet never reach STT)."""
+    if not is_voice:
+        return mime or "application/octet-stream"
+    if mime.lower().startswith("audio/"):
+        return mime
+    return "audio/x-caf" if str(payload.get("name") or "").lower().endswith(".caf") else "audio/mp4"
+
+
 def _normalize_binary_payload(payload: dict[str, Any]) -> _Normalized:
     """Cache an inline attachment/voice payload; fall back to a text marker."""
-    is_voice = payload.get("type") == "voice"
+    is_voice = _is_voice_payload(payload)
     name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
     mime = payload.get("mimeType") or ""
-    # iMessage voice notes are CAF and may arrive "(unnamed)", so MIME is a signal too.
-    is_voice = is_voice or name.lower().endswith(".caf") or mime == "audio/x-caf"
     mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
     label = "voice" if is_voice else "attachment"
     cached = _cache_inbound_attachment(payload, name, mime, force_audio=is_voice)
     if cached:
-        return f"({label})", mtype, [cached], [mime or ("audio/mp4" if is_voice else "application/octet-stream")]
+        return f"({label})", mtype, [cached], [_cached_media_type(payload, mime, is_voice)]
     duration = payload.get("duration")
     duration_text = f", duration: {duration}s" if isinstance(duration, (int, float)) else ""
     return f"[Photon {label} received: {name} ({mime or 'unknown MIME'}{duration_text})]", mtype, [], []
@@ -503,6 +521,19 @@ _CONTENT_NORMALIZERS: dict[Any, Callable[[dict[str, Any]], _Normalized]] = {
     "group": _normalize_group_content,
 }
 _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache media bytes → run off the event loop
+
+
+def _reply_inner(content: dict[str, Any]) -> dict[str, Any]:
+    """The user's own payload of a threaded reply (``{type: "reply", content}``), else *content*."""
+    inner = content.get("content") if content.get("type") == "reply" else None
+    return inner if isinstance(inner, dict) else content
+
+
+def _carries_voice(content: dict[str, Any]) -> bool:
+    """A voice note, alone or inside a ``group`` envelope: only speech can hold a spoken wake word."""
+    if content.get("type") == "group":
+        return any(map(_is_voice_payload, _group_item_contents(content)))
+    return _is_voice_payload(content)
 
 
 def _mention_gate_text(content: dict[str, Any]) -> str:
@@ -813,10 +844,26 @@ class PhotonAdapter(BasePlatformAdapter):
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
+        # A group voice note may wait on gate-time STT: run it off this single reader, FIFO per chat.
+        chat, transcribes = self._gate_stt_chat(event)
+        work = chat_ordered_work(self)
+        content = _reply_inner(event.get("content") or {})  # a threaded /stop is still an escape hatch
+        command = content.get("type") == "text" and bypasses_chat_order(content.get("text"))
+        if transcribes or (chat and work.busy(chat) and not command):
+            work.submit(chat, lambda: self._dispatch_inbound(event), transcribes=transcribes)
+            return
         try:
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
+
+    def _gate_stt_chat(self, event: dict[str, Any]) -> tuple[str, bool]:
+        """``(space id, True when the spoken-wake-word gate will transcribe it)``."""
+        space = event.get("space") or {}
+        content = _reply_inner(event.get("content") or {})
+        return space.get("id") or "", bool(
+            space.get("type") == "group" and self.require_mention and _carries_voice(content)
+            and voice_mention_gate_enabled(self.config.extra))
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)
@@ -906,7 +953,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Preview art for a just-received URL must not become a second user prompt;
         # suppress before recording it as reactable or decoding image bytes.
         if self._is_recent_richlink_preview(space_id, content):
-            logger.info("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
+            logger.debug("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
             return
         # Everything past here is a real (reactable) message. Recorded before the mention
         # gate: reacting to a non-wake-word group message is valid.
@@ -926,7 +973,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
         gated = chat_type == "group" and self.require_mention
-        if gated and not self._message_matches_mention_patterns(_mention_gate_text(content)):
+        typed = gated and self._message_matches_mention_patterns(_mention_gate_text(content))
+        spoken = gated and not typed and _carries_voice(content) and voice_mention_gate_enabled(self.config.extra)
+        if gated and not (typed or spoken):  # spoken: #102330
             logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
             return
         if ctype in _BINARY_CONTENT_TYPES:
@@ -934,6 +983,18 @@ class PhotonAdapter(BasePlatformAdapter):
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
+        # A group envelope may carry photos beside the speech: only its audio enters STT, and a
+        # rejected envelope's other cached files are deleted with it.
+        audio = [u for u, m in zip(media_urls, media_types) if ctype == "voice" or m.lower().startswith("audio/")]
+        if spoken and not await spoken_mention_clips(audio, self._mention_patterns, adapter=self,
+                                                     source=_event("").source):
+            for path in set(media_urls) - set(audio):
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+            logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
+            return
+        if spoken:  # speech admitted it: a DOCUMENT-first envelope must still send its audio to STT
+            mtype = MessageType.VOICE
         if gated:
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)

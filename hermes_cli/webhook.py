@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import secrets
+import shlex
 import threading
 import time
 import urllib.request
@@ -176,10 +177,63 @@ def webhook_command(args):
         return handler(args)
 
 
+def _route_signature(args, existing: dict, is_update: bool) -> dict:
+    """The ``signature`` key for the saved route. New routes are pinned to timestamp-bound generic
+    signatures; an update keeps the route's pin (or its absence), so re-running subscribe never breaks a
+    provider route created before pins existed. An invalid stored pin (false, "") is kept too: the gateway
+    refuses that route, whereas dropping it would republish it unpinned and accept body-only GitHub/Linear
+    MACs again."""
+    if getattr(args, "signature", None) is not None:
+        return {"signature": args.signature}
+    if not is_update:
+        return {"signature": "generic"}
+    return {"signature": existing["signature"]} if "signature" in existing else {}
+
+
+def _is_known_delivery_target(target: object) -> bool:
+    """Whether the gateway can dispatch ``target``; plugin platforms register only after discovery."""
+    from gateway.webhook_targets import is_dispatchable_target
+
+    if not isinstance(target, str) or is_dispatchable_target(target):
+        return isinstance(target, str)
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()
+    return is_dispatchable_target(target)
+
+
+_REPAIR_FLAGS = (("prompt", "--prompt"), ("description", "--description"), ("script", "--script"),
+                 ("cron_job", "--cron-job"))
+
+
+def _repair_command(name: str, route: dict) -> str:
+    """A ``subscribe`` line that fixes the target AND resupplies the route's other saved options: subscribe
+    replaces the whole route (secret, signature and profile are kept on update by themselves)."""
+    parts = ["hermes", "webhook", "subscribe", name, "--deliver", "telegram", "--deliver-chat-id", "<CHAT_ID>"]
+    for key, flag in _REPAIR_FLAGS:
+        if isinstance(route.get(key), str) and route[key]:
+            parts += [flag, shlex.quote(route[key])]
+    for key, flag in (("events", "--events"), ("skills", "--skills")):
+        if isinstance(route.get(key), list) and route[key]:
+            parts += [flag, shlex.quote(",".join(map(str, route[key])))]
+    parts += [flag for key, flag in (("deliver_only", "--deliver-only"), ("mirror_to_session", "--mirror-to-session"))
+              if route.get(key) is True]
+    return " ".join(parts)
+
+
+def _subscribe_input_error(name: str, deliver: str) -> str | None:
+    if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
+        return f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores."
+    if not _is_known_delivery_target(deliver):
+        return (f"Error: Unknown delivery target '{deliver}'. Use a platform name such as 'telegram'; "
+                "pass its chat ID separately with --deliver-chat-id.")
+    return None
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
-    if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
-        print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
+    if error := _subscribe_input_error(name, args.deliver or "log"):
+        print(error)
         return 1
 
     subs = _load_subscriptions()
@@ -218,6 +272,7 @@ def _cmd_subscribe(args):
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
         "profile": profile,
+        **_route_signature(args, existing, is_update),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -264,8 +319,12 @@ def _cmd_subscribe(args):
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
     print(f"  Profile: {profile}")
-    print(f"  Secret: {secret}")
+    # Masked: the full secret would otherwise land in scrollback, agent transcripts and CI logs.
+    from agent.redact import mask_secret
+    from hermes_constants import display_hermes_home
+    print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
+    print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -279,7 +338,7 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the route's stored secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 
@@ -306,6 +365,9 @@ def _cmd_list(args):
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
+        invalid_delivery = not _is_known_delivery_target(deliver)
+        if invalid_delivery:
+            deliver = f"{deliver} (INVALID)"
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
         if route.get("cron_job"):
@@ -319,6 +381,9 @@ def _cmd_list(args):
         print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if invalid_delivery:
+            print(f"    Fix:     {_repair_command(name, route)}")
+            print("             (subscribe replaces the whole route; adjust the platform and chat ID as needed)")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()
@@ -351,20 +416,31 @@ def _cmd_test(args):
     secret = subs[name].get("secret", "")
     url = _route_url(name, subs[name])
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
-    sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    headers = {"Content-Type": "application/json",
+               **_test_signature_headers(subs[name].get("signature"), secret, payload.encode())}
     print(f"  Sending test POST to {url}")
     try:
-        req = urllib.request.Request(
-            url,
-            data=payload.encode(),
-            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig, "X-GitHub-Event": "test"},
-            method="POST")
+        req = urllib.request.Request(url, data=payload.encode(), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
             print(f"  Response ({resp.status}): {body}")
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+
+
+def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
+    """Sign like the route's pinned provider would; generic and unpinned routes get timestamp-bound V2."""
+    body_mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if scheme == "github":
+        return {"X-Hub-Signature-256": "sha256=" + body_mac, "X-GitHub-Event": "test"}
+    if scheme == "linear":
+        return {"Linear-Signature": body_mac}
+    if scheme == "gitlab":
+        return {"X-Gitlab-Token": secret, "X-Gitlab-Event": "test"}
+    timestamp = str(int(time.time()))
+    v2 = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return {"X-Webhook-Signature-V2": v2, "X-Webhook-Timestamp": timestamp}
 
 
 _ACTIONS = {

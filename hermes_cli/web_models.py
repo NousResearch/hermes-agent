@@ -237,9 +237,12 @@ class LearningNodeEdit(BaseModel):
     profile: Optional[str] = None
 
 class DebugShareRequest(BaseModel):
-    # Redaction scrubs credential-shaped tokens before logs leave the machine; opt-out only.
+    # Set by the client only after the user confirmed the public upload; missing/false is refused
+    # so an empty POST can never publish logs (#94876).
+    consent: bool = False
+    # Accepted for compatibility: the public summary carries no log text, so it is always "redacted".
     redact: bool = True
-    lines: int = 200  # recent log lines in the summary tail (full logs are separate)
+    lines: int = 200  # recent log lines scanned for the summary's error counts
 
 class TTSSpeakRequest(BaseModel):
     text: str
@@ -348,6 +351,8 @@ class CronJobCreate(BaseModel):
     grace_minutes: Optional[int | str] = None
     # Missed-run policy: true runs one catch-up, false skips; omitted follows the default.
     catch_up: Optional[StrictBool] = None
+    # Header/footer wrapping: None inherits cron.wrap_response; a bool overrides it per job.
+    wrap_response: Optional[StrictBool] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict
@@ -404,6 +409,8 @@ class WebhookCreate(BaseModel):
     deliver_only: bool = False
     deliver_chat_id: Optional[str] = None
     secret: Optional[str] = None  # omit to auto-generate
+    # Omitted: new routes are pinned to generic, an edit keeps the stored pin.
+    signature: Optional[Literal["generic", "github", "gitlab", "linear"]] = None
 
 class WebhookEnabledToggle(BaseModel):
     enabled: bool

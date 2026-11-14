@@ -24,7 +24,6 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
@@ -43,8 +42,9 @@ from hermes_constants import (
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home, get_process_hermes_home
+from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
+from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
@@ -131,7 +131,7 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"}) | LAUNCH_ONLY_ENV_KEYS
 
 
 def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
@@ -588,6 +588,7 @@ def ensure_hermes_home():
 from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
 from hermes_cli import config_provider_env as _config_provider_env
 from hermes_cli.config_provider_env import core_declared_env_names
+from hermes_cli.config_model_section import _normalize_root_model_keys  # re-exported: frozen compat name
 from hermes_cli.config_providers import (
     _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
     _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
@@ -1582,91 +1583,6 @@ def split_model_config_default(raw_default: Any) -> tuple[str, str]:
     return (str(raw_default or "").strip(), "")
 
 
-def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
-    """Canonicalize the ``model`` section at the single load/save chokepoint.
-    Root-level ``provider``/``base_url``/``context_length`` (older layouts) are moved under
-    ``model`` only when the corresponding ``model.*`` key is empty — never overriding. ``api_base``
-    (the OpenAI-SDK/LiteLLM name users reach for) is an alias for ``base_url``; the runtime reads
-    only ``model.base_url``. A dict-valued ``default``/``model``/``name`` is flattened so no reader
-    sees a nested dict, and the id is canonicalized to ``default``.
-
-    Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the intuitive name OpenAI-SDK /
-    LiteLLM users reach for, and ``hermes config set`` blindly accepts any dotted key — so
-    ``model.api_base`` got written, confirmed, and then silently ignored by the runtime resolver (which
-    reads only ``model.base_url``), causing requests to fall back to OpenRouter. We migrate the alias to the
-    canonical key (fallback-only — never override an explicit ``base_url``) and drop the alias so it can't
-    confuse later loads.
-    Finally, canonicalizes the model-id key to ``model.default`` (issue #34500). The runtime resolver and
-    ~14 other readers select the chat model via ``model.default``; ``model.model`` was already aliased
-    inline at some sites but ``model.name`` was not, so a custom-provider config like ``model: {name: <id>,
-    provider: <custom>}`` resolved to an empty model and the API request went out with ``model=`` (HTTP 400
-    from OpenAI-compatible backends) — while display paths (``hermes status``/``dump``) read ``name`` and
-    *showed* the model, making the failure silent. Normalizing here (the single load/save chokepoint) means
-    every reader, present and future, sees a populated ``default`` and the stale alias is migrated out of
-    config.yaml on the next save. Precedence: ``default`` > ``model`` > ``name`` (never overrides an
-    explicit ``default``, so existing configs are unaffected).
-    """
-    model_in = config.get("model")
-    model_provider = model_in.get("provider") if isinstance(model_in, dict) else None
-    needs_model_work = (model_provider is not None and not isinstance(model_provider, str)) or (
-        isinstance(model_in, dict) and (
-            model_in.get("api_base")
-            or model_in.get("model") or model_in.get("name")
-            or any(isinstance(model_in.get(k), dict) for k in ("default", "model", "name"))))
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length", "api_base"))
-    if not has_root and not needs_model_work:
-        return config
-
-    config = dict(config)
-    model = config.get("model")
-    model = dict(model) if isinstance(model, dict) else {"default": model} if model else {}
-    config["model"] = model
-
-    # Flatten ``{provider: <p>, model: <m>}``. The nested provider wins over the merged default
-    # ``"auto"`` (which runtime resolution treats as authoritative) but never over a configured one.
-    for _key in ("default", "model", "name"):
-        _val = model.get(_key)
-        if isinstance(_val, dict):
-            _nested_model = _val.get("model") or _val.get("default")
-            _nested_provider = str(_val.get("provider") or "").strip()
-            model[_key] = str(_nested_model or "").strip()
-            if _nested_provider:
-                _outer_provider = str(model.get("provider") or "").strip()
-                if not _outer_provider or _outer_provider == "auto":
-                    model["provider"] = _nested_provider
-
-    for key in ("provider", "base_url", "context_length"):
-        root_val = config.get(key)
-        if root_val and not model.get(key):
-            model[key] = root_val
-        config.pop(key, None)
-
-    # Provider identity is a string (#117345): an unquoted YAML scalar (``provider: 2``)
-    # loads as int, and downstream readers call ``(provider or "").strip()`` — a gateway
-    # turn dies before the agent runs. Normalize at the load/save chokepoint so every
-    # reader (and the next save, which rewrites config.yaml) heals the persisted value.
-    # Guard on presence: coerce_provider_id(None) is "" — injecting an empty key into
-    # provider-less configs would add churn to config.yaml on the next save.
-    if model.get("provider") is not None:
-        model["provider"] = coerce_provider_id(model.get("provider"))
-
-    for alias_val in (config.get("api_base"), model.get("api_base")):
-        if alias_val and not model.get("base_url"):
-            model["base_url"] = alias_val
-    config.pop("api_base", None)
-    model.pop("api_base", None)
-
-    # ``model``/``name`` are last-resort aliases (in that order), then dropped.
-    alias = model.get("model") or model.get("name")
-    if not model.get("default") and alias:
-        model["default"] = alias
-    if model.get("default"):
-        model.pop("model", None)
-        model.pop("name", None)
-
-    return config
-
-
 def _normalize_max_turns_config(config: dict[str, Any]) -> dict[str, Any]:
     """Move legacy root-level ``max_turns`` under ``agent``; the schema default is injected only
     when the user set max_turns somewhere (so save_config can otherwise omit it)."""
@@ -2000,7 +1916,7 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
             "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "docker_orphan_reaper", "sandbox_dir", "persistent_shell", "home_mode")}}
 
 
 def _terminal_env_value(value: Any) -> str:
@@ -2617,7 +2533,7 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     # dashboard launch scope), so a same-request read after the write must see it there too; a
     # routed profile's value never reaches the shared process env.
     targets = [scope] if isinstance(scope, dict) else []
-    if not routed and (scope is None or isinstance(scope, dict)):
+    if not routed and not is_launch_only_env_key(key) and (scope is None or isinstance(scope, dict)):
         targets.append(os.environ)
     for target in targets:
         if value is None:
@@ -2763,7 +2679,7 @@ def reload_env() -> int:
     env_vars = load_env()
     count = 0
     for key, value in env_vars.items():
-        if os.environ.get(key) != value:
+        if not is_launch_only_env_key(key) and os.environ.get(key) != value:  # launch-only: never from .env (#135200)
             os.environ[key] = value
             count += 1
     known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS
@@ -3060,34 +2976,6 @@ def _looks_structured_value(value: str) -> bool:
     return False
 
 
-def _coerce_int(value: str):
-    """int(value) for a clean integer literal (signs/whitespace/underscores OK), else None."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_float(value: str):
-    """``float(value)`` only when the conversion preserves its decimal value; NaN/inf rejected.
-    Decimal-looking identifiers more precise than a binary float must stay strings."""
-    try:
-        f = float(value)
-        if f != f or f in (float("inf"), float("-inf")) or Decimal(value) != Decimal(str(f)):
-            return None
-    except (TypeError, ValueError, InvalidOperation):
-        return None
-    return f
-
-
-_SCALAR_WORDS = {
-    'true': True, 'yes': True, 'on': True,
-    'false': False, 'no': False, 'off': False,
-    # YAML null. Many DEFAULT_CONFIG leaves are "null/absent = off"; without this,
-    # ``config set X null`` stored the truthy string "null" and the feature could never be cleared.
-    'null': None, 'none': None, '~': None}
-
-
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
@@ -3103,6 +2991,9 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     lower = stripped.lower()
     if lower in _SCALAR_WORDS:
         return _SCALAR_WORDS[lower]
+    quoted = _quoted_bool(stripped) if isinstance(_default_value_for_key(key), bool) else None
+    if quoted is not None:
+        return quoted
     for coerce in (_coerce_int, _coerce_float):
         coerced = coerce(stripped)
         if coerced is not None:
@@ -3370,7 +3261,14 @@ def set_config_value(key: str, value: str, force: bool = False):
     from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
-    _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
+    from hermes_cli.config_secret_refs import config_set_secret_value, masked_display_value
+    value = config_set_secret_value(key, value, user_config)
+    # A provider switch re-points its block at a new route; the old provider's base_url/api_mode
+    # must not survive it (#113719, #40862 for ``model``; #141832 for ``auxiliary.<task>``, where
+    # base_url even overrides the provider). Before _set_nested, so the outgoing provider is
+    # still readable.
+    from hermes_cli.config_route_guard import stale_route_notice
+    _route_notice = stale_route_notice(user_config, key, value)
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
@@ -3378,26 +3276,6 @@ def set_config_value(key: str, value: str, force: bool = False):
     from tools.mcp_tool_common import drop_legacy_disabled_for_key
     for _note in _dropped_shadow_notes(user_config, key, legacy_key, drop_legacy_disabled_for_key):
         print(_note)
-    # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
-    # state of the OLD provider, and the runtime honours them for whatever provider the block now
-    # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
-    # them the way a persisted ``/model`` switch does: the previous route goes unless it is the
-    # new provider's own endpoint.
-    _route_notice = ""
-    _old_provider = str(_old_provider or "").strip() or "the previous provider"
-    if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
-        from hermes_cli.route_identity import drop_stale_model_route
-        _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
-        if _popped:
-            _route_notice = (
-                "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in _popped.items())
-                + f" — that route belonged to {_old_provider}, not {value}. {value}'s endpoint resolves "
-                "automatically; set model.base_url again if you meant a custom endpoint.")
-        elif _unverified:
-            _route_notice = color(
-                f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
-                f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
-                "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
@@ -3420,13 +3298,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.i18n import reset_language_cache
         reset_language_cache()
 
-    # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
-    # ``model.api_key`` (lowercase, so it misses the .env routing above).
-    _display_value = value
-    if _is_secret_config_key(key) and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
-    print(f"✓ Set {key} = {_display_value} in {config_destination(config_path)}")
+    print(f"✓ Set {key} = {masked_display_value(key, value)} in {config_destination(config_path)}")
     if _route_notice:
         print(_route_notice)
 

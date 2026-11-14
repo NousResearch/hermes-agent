@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -114,11 +115,18 @@ def append_user_instruction(parts: list, instruction: str) -> str:
 
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
-    """Recover the user's instruction from a slash-skill-expanded turn: the
-    string unchanged when it is NOT scaffolding, the extracted instruction when
-    the scaffolding carried one, or ``None`` for a bare ``/skill`` invocation."""
+    """Recover the user's instruction from a slash-skill-expanded or gateway
+    auto-load turn: the string unchanged when it is NOT scaffolding, the
+    extracted instruction when the scaffolding carried one, or ``None`` for a
+    bare ``/skill`` invocation."""
     if not isinstance(content, str):
         return None
+    if _AUTO_LOAD_HEADER_RE.match(content):
+        # Gateway auto-load scaffolding wraps the user's typed text in the same
+        # model-facing turn as the loaded skill bodies; keep only the typed text.
+        # A complete header is required so typed text that merely starts like one
+        # stays intact; a bare load carries no instruction.
+        return _auto_load_typed_text(content) or None
     if not content.startswith(_SKILL_INVOCATION_PREFIX):
         return content
     if _BUNDLE_MARKER in content:
@@ -145,18 +153,52 @@ def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
         return None
     name_match = re.match(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)"', content)
     name = name_match.group(1) if name_match else ""
-    # The payload footer ends with this exact sentence (_build_skill_message); the
-    # user's text is the last thing after the FINAL footer in the message.
+    tail = _auto_load_typed_text(content)
+    if not tail:
+        return f"/{name}" if name else None
+    return " ".join(tail.split())
+
+
+_AUTO_LOAD_SCAFFOLDS: OrderedDict[str, None] = OrderedDict()
+_AUTO_LOAD_SCAFFOLDS_MAX = 32
+_AUTO_LOAD_SCAFFOLDS_LOCK = threading.Lock()
+
+
+def register_auto_load_scaffold(scaffold: str) -> None:
+    """Record the exact payload text the gateway prepended to a turn's typed text, so the
+    boundary is known rather than guessed from prose the user may also have typed or pasted."""
+    if not scaffold:
+        return
+    with _AUTO_LOAD_SCAFFOLDS_LOCK:
+        _AUTO_LOAD_SCAFFOLDS[scaffold] = None
+        _AUTO_LOAD_SCAFFOLDS.move_to_end(scaffold)
+        while len(_AUTO_LOAD_SCAFFOLDS) > _AUTO_LOAD_SCAFFOLDS_MAX:
+            _AUTO_LOAD_SCAFFOLDS.popitem(last=False)
+
+
+def _registered_auto_load_tail(content: str) -> Optional[str]:
+    """Text after the longest registered scaffold *content* starts with; None on a miss."""
+    with _AUTO_LOAD_SCAFFOLDS_LOCK:
+        best = max((s for s in _AUTO_LOAD_SCAFFOLDS if content.startswith(s)), key=len, default=None)
+    return None if best is None else content[len(best):]
+
+
+def _auto_load_typed_text(content: str) -> str:
+    """The user's text after the auto-load payloads of a turn, stripped (``""`` when none).
+    The boundary the gateway registered wins; a turn built in another process (an old session
+    row) falls back to the FINAL payload footer, which ends with this exact sentence
+    (_build_skill_message)."""
+    registered = _registered_auto_load_tail(content)
+    if registered is not None:
+        return registered.strip()
     footer_end = content.rfind(_SKILL_DIR_NOTE_END)
     if footer_end == -1:
-        return f"/{name}" if name else None
+        return ""
     tail = content[footer_end + len(_SKILL_DIR_NOTE_END):].lstrip()
     while block_end := next((end for start, end in _TRAILING_BLOCK_ENDS if tail.startswith(start)), None):
         cut = tail.find(block_end)
         tail = tail[cut + len(block_end):].lstrip() if cut >= 0 else ""
-    if not tail.strip():
-        return f"/{name}" if name else None
-    return " ".join(tail.split()) or None
+    return tail.strip()
 
 
 def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:

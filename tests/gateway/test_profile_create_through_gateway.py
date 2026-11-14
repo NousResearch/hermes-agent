@@ -60,16 +60,35 @@ def test_cli_creates_through_a_live_gateway_local_and_by_url(tmp_path, monkeypat
         assert refused.value.code == 1
         assert "A profile named 'viagw' already exists" in capsys.readouterr().out
 
+        # This home's own gateway by URL: it reports the instance this home's discovery names, so the
+        # profile it made here gets this terminal's command.
+        url = descriptor["api_origin"].replace("http:", "ws:") + "/api/ws?token=normal-http-owner"
+        monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", url)
+        profile_cmd._profile_create(parser.parse_args(["profile", "create", "viaurl"]))
+        out = capsys.readouterr().out
+        assert (home / "profiles" / "viaurl" / "config.yaml").is_file(), out
+        assert (user / ".local" / "bin" / "viaurl").is_file(), out
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_URL")
+
         # Named: a different home with no gateway, pointed at this one by URL.
         terminal_home = tmp_path / "terminal-home"
         terminal_home.mkdir()
-        url = descriptor["api_origin"].replace("http:", "ws:") + "/api/ws?token=normal-http-owner"
         remote = _create(terminal_home, user, "byurl", env={"HERMES_TUI_GATEWAY_URL": url})
         out = remote.stdout + remote.stderr
         assert remote.returncode == 0, out
         assert "normal-http-owner" not in out
         assert (home / "profiles" / "byurl" / "config.yaml").is_file(), out
         assert not (terminal_home / "profiles").exists(), out
+        # The same from that home, asking for its command: the profile is not in this home, so no command.
+        monkeypatch.setenv("HERMES_HOME", str(terminal_home))
+        monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", url)
+        (terminal_home / "config.yaml").write_text("{}\n")
+        profile_cmd._profile_create(parser.parse_args(["profile", "create", "byurl2"]))
+        out = capsys.readouterr().out
+        assert (home / "profiles" / "byurl2" / "config.yaml").is_file(), out
+        assert not (user / ".local" / "bin" / "byurl2").exists(), out
+        (terminal_home / "config.yaml").unlink()
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_URL")
 
         # Named, from this terminal's ``work``: this gateway doesn't serve a ``work``, so the request is
         # refused before any create, never run in the gateway's launch profile.

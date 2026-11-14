@@ -26,7 +26,8 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     return text or None
 
 
-def _cron_string_list(value: Any) -> Optional[list[str]]:
+def _cron_string_list(value: Any, *, keep_empty: bool = False) -> Optional[list[str]]:
+    """Trim a list-shaped form field. Empty collapses to None ("clear") unless ``keep_empty``."""
     if isinstance(value, str):
         raw_items = re.split(r"[\n,]", value)
     elif isinstance(value, (list, tuple)):
@@ -34,7 +35,21 @@ def _cron_string_list(value: Any) -> Optional[list[str]]:
     else:
         return None
     items = [str(item).strip() for item in raw_items if str(item).strip()]
-    return items or None
+    return items if items or keep_empty else None
+
+
+def _keep_zero_tool_allowlist(updates: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Drop an ``enabled_toolsets: None`` that would widen a stored zero-tool allowlist.
+
+    The dashboard's toolset picker cannot render an explicit empty allowlist: it shows the same
+    empty selection for "no restriction" and for "nothing allowed", and always saves the former
+    as None. Merging that onto a stored ``[]`` hands the job every tool — exactly what a
+    zero-tool allowlist exists to prevent (#148886). A non-empty stored allowlist stays
+    clearable from the same picker, because the user can see and uncheck it.
+    """
+    if "enabled_toolsets" in updates and updates["enabled_toolsets"] is None \
+            and existing.get("enabled_toolsets") == []:
+        updates.pop("enabled_toolsets")
 
 
 def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
@@ -66,6 +81,53 @@ def _validate_dashboard_cron_effective_job(job: dict[str, Any]) -> None:
         return
     if not (prompt or skills or script):
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
+
+
+def _validate_dashboard_cron_security(
+    profile: str, effective: dict[str, Any], updates: Optional[dict[str, Any]] = None,
+) -> None:
+    """Prompt-scan and credential-safety guards the agent tool path applies
+    (``tools/cronjob_tools.py``). A dashboard-created or -edited job must not
+    bypass them.
+
+    ``updates=None`` (create, blueprint instantiate) validates every field
+    present. A mapping scopes the prompt/deliver checks to touched fields —
+    mirroring the tool's update path — while ``base_url`` always checks the
+    EFFECTIVE pair so an unrelated edit cannot leave an unsafe
+    provider+endpoint combination schedulable. A ``pinned`` update is resolved
+    into ``updates`` here (popped, provider/model written), so the pair checked
+    is the pair ``update_job`` stores.
+
+    The base_url check reads ``providers:`` and stored secrets, so it runs in the
+    OWNING profile's config+secret scope: the launch profile's same-named provider
+    must not vouch for an endpoint that would receive another profile's key.
+    """
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    from tools.cronjob_job_args import (
+        _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
+    from tools.cronjob_prompt_scan import _scan_cron_prompt
+
+    def _touched(key: str) -> bool:
+        return updates is None or key in updates
+
+    prompt = _cron_optional_text(effective.get("prompt"))
+    with _config_profile_scope(profile):
+        if updates and "pinned" in updates:
+            # Resolve ``pinned`` into provider/model HERE, in the owning profile's scope, so
+            # update_job stores exactly the pair checked below instead of re-resolving it unscoped.
+            from cron.jobs import _apply_pin_update
+            _apply_pin_update(effective, updates)
+            effective = {**effective, **updates}
+        base_url_error = _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
+    error = (
+        (_touched("prompt") and prompt and _scan_cron_prompt(prompt))
+        or base_url_error
+        or (_touched("deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("deliver"))))
+        or (_touched("failure_deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("failure_deliver")))))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
 
 
 def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_name: str) -> None:
@@ -262,6 +324,12 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
+        _validate_dashboard_cron_security(profile_name, {
+            "prompt": body.prompt,
+            "provider": _cron_optional_text(body.provider),
+            "base_url": _cron_optional_text(body.base_url, strip_trailing_slash=True),
+            "deliver": _cron_optional_text(body.deliver) or "local",
+        })
         return _mutate_cron_for_profile(
             profile_name,
             "create_job",
@@ -276,11 +344,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
             script=script,
             context_from=context_from,
-            enabled_toolsets=_cron_string_list(body.enabled_toolsets),
+            # [] is an explicit zero-tool allowlist, not "unrestricted" (#82010/#148886).
+            enabled_toolsets=_cron_string_list(body.enabled_toolsets, keep_empty=True),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
             timezone=_cron_optional_text(body.timezone),
             grace_minutes=body.grace_minutes,
+            wrap_response=body.wrap_response,
             **{key: getattr(body, key) for key in ("paused", "paused_reason", "catch_up")
                if key in body.model_fields_set})
     except HTTPException:

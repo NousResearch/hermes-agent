@@ -81,6 +81,35 @@ class TestSendWithReplyToMode:
         assert calls[2].kwargs.get("reply_to_message_id") is None
 
 
+class TestMultipartAnchorOptOut:
+    """``extra.anchor_multipart_replies: false`` drops the anchor only from split replies."""
+
+    @staticmethod
+    def _adapter(chunks, **extra):
+        config = PlatformConfig(enabled=True, token="test-token", reply_to_mode="first", extra=extra)
+        adapter = TelegramAdapter(config)
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: list(chunks)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_opted_out_split_reply_sends_no_anchor_but_single_reply_keeps_it(self):
+        split = self._adapter(["chunk1", "chunk2"], anchor_multipart_replies=False)
+        await split.send("12345", "long content", reply_to="999")
+        assert [c.kwargs.get("reply_to_message_id") for c in split._bot.send_message.call_args_list] == [None, None]
+
+        single = self._adapter(["only"], anchor_multipart_replies=False)
+        await single.send("12345", "short", reply_to="999")
+        assert single._bot.send_message.call_args.kwargs.get("reply_to_message_id") == 999
+
+    @pytest.mark.asyncio
+    async def test_default_still_anchors_first_chunk_of_split_reply(self):
+        adapter = self._adapter(["chunk1", "chunk2"])
+        await adapter.send("12345", "long content", reply_to="999")
+        assert [c.kwargs.get("reply_to_message_id") for c in adapter._bot.send_message.call_args_list] == [999, None]
+
+
 class TestConfigSerialization:
     """Tests for reply_to_mode serialization."""
 

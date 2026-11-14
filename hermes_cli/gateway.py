@@ -73,6 +73,7 @@ from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gat
 # Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
 # import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
 from hermes_cli.gateway_restart_env import restart_watcher_env
+from hermes_cli.gateway_bundled_env import systemd_env_line as _systemd_env_line
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -999,7 +1000,7 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
 
 
 GATEWAY_RESTART_WATCHER_TIMEOUT_S = 120
-"""How long the detached restart watcher waits for the old PID to exit before giving up.
+"""Windows only: the watcher's wait for the old PID (POSIX waits for exit: a restart-pending gateway is busy).
 
 ``hermes update``'s post-relaunch liveness check budgets against this: the watcher spawns the new
 gateway only AFTER the old PID is gone, so a verification window shorter than this can expire
@@ -1100,8 +1101,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + {watcher_timeout_literal}
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + {watcher_timeout_literal} if sys.platform == "win32" else None
+        while deadline is None or time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
             if not pid_exists_stdlib(pid):
                 break
@@ -2996,13 +2997,6 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
 
 
-def _systemd_env_line(name: str, value: str) -> str:
-    """One ``Environment="NAME=value"`` line: ``\\`` and ``"`` escaped for systemd's quoting, ``%``
-    doubled so specifier expansion leaves the value alone."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return f'Environment="{name}={escaped}"\n'
-
-
 def _installed_unit_ld_library_path(system: bool) -> str:
     """``LD_LIBRARY_PATH`` baked into the installed unit; ``""`` when absent."""
     return _unit_environment_value(get_systemd_unit_path(system=system), "LD_LIBRARY_PATH") or ""
@@ -3149,7 +3143,7 @@ def _systemd_command(argv: list[str]) -> str:
 
 def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None = None) -> None:
     """Publish the source command before a service definition references it."""
-    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, publishes_service_launcher
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     root, home = PROJECT_ROOT, get_hermes_home()
@@ -3163,8 +3157,8 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
     try:
         # Publication gate: ask what stage_launcher will bind, so an inherited
         # HERMES_RUNTIME_DIR cannot stand in for this install's store (#131745).
-        if resolve_store_python(root, publication=True) is None:
-            return  # Externally owned Nix/developer runtime.
+        if not publishes_service_launcher(root):
+            return  # Externally owned Nix/developer runtime, or a macOS app's own signed launcher.
         local = root / ".hermes" / "bin"
         paths = ensure_install_launchers(root, local)
         if len(paths) != len(ENTRY_POINTS):
@@ -3247,6 +3241,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
                               python=python_path, home=hermes_home)
     stop_mark = installation_command(project_root, module="gateway.systemd_stop_mark",
                                 python=python_path, home=hermes_home)
+    from hermes_cli.gateway_bundled_env import systemd_bundled_env_block
+    bundled_env_block = systemd_bundled_env_block(get_systemd_unit_path(system=system))  # #85357
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -3261,7 +3257,7 @@ WorkingDirectory={working_dir}
 
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
-Restart=always
+{bundled_env_block}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -3300,13 +3296,11 @@ def _strip_optional_systemd_directives(text: str) -> str:
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize plist text for staleness checks, ignoring the PATH payload: the generated PATH is
-    captured from the invoking shell and varies across shells."""
-    import re
-    return re.sub(
-        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
-        _normalize_service_definition(text), flags=re.DOTALL,
-    )
+    """Normalize plist text for staleness checks. The Hermes-owned PATH prefix (venv/node bin dirs and
+    the pm-managed Node) is deterministic and IS compared; only the invoking shell's PATH tail is
+    masked, so a Node update cannot leave a stale plist looking current (#144735)."""
+    from hermes_cli.gateway_launchd import normalize_plist_path_for_comparison
+    return normalize_plist_path_for_comparison(text)
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:
@@ -3730,10 +3724,6 @@ def systemd_restart(system: bool = False):
     if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         # Event loop provably dead: SIGUSR1 can't drain it, so bounded SIGTERM → SIGKILL and let systemd relaunch.
         print(
-            # Health probe says the event loop is provably dead (#81642): SIGUSR1 can never drain it, so the
-            # graceful wait below would burn the full budget. A busy-but-alive gateway (fresh heartbeat)
-            # never takes this path — its in-flight work, including the #86684 cron drain floor, keeps the
-            # full graceful budget.
             # Health probe says the event loop is provably dead (#81642): the gateway cannot process a
             # graceful shutdown, so waiting the full drain budget only stalls the restart (and `hermes
             # update` behind it) for 180s. Bounded escalation instead: SIGTERM grace → SIGKILL → proceed,
@@ -3779,8 +3769,12 @@ def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
         f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
         f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
     )
-    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    from gateway.status import get_process_start_time
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter, leave_restart_pending
+    born = get_process_start_time(pid)  # the identity signalled: a recycled PID never reads as pending
     if not _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
+        if leave_restart_pending(pid, f"Gateway PID {pid}", start_time=born):  # the budget bounds the wait, never the work
+            return None
         print(f"⚠ Graceful restart did not complete within {int(wait_budget)}s; forcing a service restart...")
         return "restart"
 

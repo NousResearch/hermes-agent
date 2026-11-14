@@ -43,7 +43,7 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
 
     monkeypatch.setattr(config, 'check_config_version', version)
     monkeypatch.setattr(config, 'migrate_config', migrate)
-    monkeypatch.setattr(update_cmd, '_migrate_sibling_profile_configs', list)
+    monkeypatch.setattr(update_cmd, '_migrate_sibling_profile_configs', lambda *_: [])
     monkeypatch.setattr(sys.stdin, 'isatty', lambda: case != 'noninteractive')
     monkeypatch.setattr(sys.stdout, 'isatty', lambda: case != 'noninteractive')
     monkeypatch.setattr('builtins.input', prompt)
@@ -136,6 +136,38 @@ def test_active_config_write_failure_still_migrates_siblings_and_restores_snapsh
     sibling_version, latest = config.check_config_version()
     assert sibling_version == latest > 48
 
+def test_owed_reasons_from_the_active_write_and_a_sibling_are_all_kept(monkeypatch, capsys):
+    """A failed active write and a sibling that advanced then stopped both reach the receipt:
+    one RuntimeError names each reason, chained to the write error, and the sibling that only
+    got part of the way is not reported with a success mark."""
+    from hermes_cli import update_cmd_config
+
+    disk_full = OSError("disk full")
+
+    def failing_write(**_):
+        raise disk_full
+
+    def siblings(notes=None, stopped=None):
+        stopped["work"] = 21
+        return [("work", 16, 20)]
+
+    monkeypatch.setattr(config, "check_config_version", lambda **_: (20, 53))
+    monkeypatch.setattr(config, "get_missing_env_vars", lambda **_: [])
+    monkeypatch.setattr(config, "get_missing_config_fields", list)
+    monkeypatch.setattr(config, "migrate_config", failing_write)
+    monkeypatch.setattr(update_cmd, "_migrate_sibling_profile_configs", siblings)
+    monkeypatch.setattr(update_cmd_config, "_restore_snapshot_safety_nets", lambda _snapshot: None)
+
+    with pytest.raises(RuntimeError) as raised:
+        update_cmd_config._check_and_apply_config_migration(pre_update_snapshot_id="snap")
+    assert "format v20 → v53 was not written: disk full" in str(raised.value)
+    assert "profile 'work' stopped at v21" in str(raised.value)
+    assert raised.value.__cause__ is disk_full
+    out = capsys.readouterr().out
+    assert "Profile 'work': config migration stopped at v21 (v16 → v20 applied)" in out
+    assert "✓ Profile 'work'" not in out
+
+
 @pytest.mark.parametrize("new_options", [False, True], ids=("format-only", "configure-new-options"))
 def test_partial_config_migration_stays_owed_after_update(monkeypatch, capsys, new_options):
     """A step failure returns failed_step rather than raising. Both update paths must retain a
@@ -198,7 +230,7 @@ def test_a_sibling_migration_that_stopped_stays_owed_after_update(tmp_path, monk
     snapshots = []
     monkeypatch.setattr(update_cmd_config, '_restore_snapshot_safety_nets', snapshots.append)
 
-    with pytest.raises(RuntimeError, match="profile 'sibling' v21"):
+    with pytest.raises(RuntimeError, match="profile 'sibling' stopped at v21"):
         update_cmd_config._check_and_apply_config_migration(pre_update_snapshot_id='snap')
     assert snapshots == ['snap']
     monkeypatch.setenv('HERMES_HOME', str(sibling))

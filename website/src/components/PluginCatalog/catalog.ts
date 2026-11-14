@@ -1,3 +1,5 @@
+import { externalUrlTarget } from "../../../../apps/shared/src/external-url";
+
 // Shared catalog vocabulary for the Plugins grid (src/pages/plugins), the per-plugin pages and the
 // author pages (plugins/plugin-catalog-pages generates their routes). One definition of the entry
 // shape, the tier/category taxonomy and the link builders keeps the three surfaces from drifting.
@@ -72,6 +74,13 @@ export function pluginPagePath(name: string): string {
 /** Site route of a maintainer's page. */
 export function authorPagePath(slug: string): string {
   return `/plugins/by/${encodeURIComponent(slug)}`;
+}
+
+/** The entry's docs link, or null when it is not a web URL: a stale or hand-edited plugins.json must
+ *  not turn docs_url into a javascript: href even though the extractor already drops one. */
+export function docsHref(plugin: Pick<CatalogPlugin, "docsUrl">): string | null {
+  const target = externalUrlTarget(plugin.docsUrl ?? "");
+  return target?.kind === "web" ? target.url : null;
 }
 
 export function repoUrl(plugin: Pick<CatalogPlugin, "repo">): string {

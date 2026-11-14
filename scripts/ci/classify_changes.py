@@ -94,6 +94,9 @@ import os
 import subprocess
 import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from hermes_agent.compat.paths import current_path, original_path
+
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
 # key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
@@ -317,6 +320,8 @@ _UPDATE_PIPELINE = (
     "gateway/host_rendezvous.py",
     "gateway/shutdown_forensics.py",
     "gateway/restart.py",
+    "gateway/host_topology.py",  # update --force: the served homes of a host multiplexer
+    "tools/process_registry.py",  # update --force: sweeps a killed gateway's background processes
     "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
 )
 # Selectors are owned by the import graph, not remembered. The update
@@ -367,6 +372,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/default_plugins.py",  # the update tail and boot bootstrap install catalog defaults
     "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
@@ -477,6 +483,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/subcommands/update",
         "hermes_cli/install_",
         "hermes_cli/_install_",
+        # The module-rename finder and its table: every update entry point installs it, and a move
+        # changes the table.
+        "hermes_agent/__init__.py",
+        "hermes_agent/compat/",
         "hermes_cli/main_install",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
@@ -544,13 +554,12 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
 def _with_package_inits(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Importing a/b/c.py runs a/__init__.py and a/b/__init__.py first, so a routed module
     routes the package inits above it. A shared hub's inits run whenever the hub is imported, so
-    they are routed too; only an init that is itself a hub stays out."""
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    inits = [f"{'/'.join(parts[:i])}/__init__.py"
+    they are routed too; only an init that is itself a hub stays out. A moved module also runs the
+    inits above where it lives now; each init is listed by its original path, as classify() reads it."""
+    inits = [original_path(f"{'/'.join(parts[:i])}/__init__.py")
              for p in (*paths, *sorted(_SHARED_HUBS)) if p.endswith(".py")
-             for parts in [p.split("/")[:-1]] for i in range(1, len(parts) + 1)]
-    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS
-                                          and os.path.isfile(os.path.join(root, i)))]))
+             for parts in [current_path(p).split("/")[:-1]] for i in range(1, len(parts) + 1)]
+    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS)]))
 
 
 for _lane in ("e2e_upgrade", "e2e_desktop_update"):
@@ -649,7 +658,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     ``run_e2e`` is the pull request's ``run-e2e`` label: it turns every slow
     lane on.
     """
-    files = [f.strip() for f in files if f.strip()]
+    files = [original_path(f.strip()) for f in files if f.strip()]
     catalog = any(_is_catalog_data(f) for f in files)
     code = [f for f in files if not _is_catalog_data(f)]
     python = any(not _py_irrelevant(f) for f in code)

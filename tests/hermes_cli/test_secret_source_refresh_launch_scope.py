@@ -110,6 +110,7 @@ def test_a_refresh_for_one_home_never_replaces_another_homes_installed_scope(lau
         set_multiplex_active(False)
 
 
+@pytest.mark.require_symlinks
 def test_an_unstamped_scope_on_a_pinned_host_belongs_to_the_pinned_home(tmp_path, monkeypatch):
     """A host that pins its launch home and mirrors the served profile into HERMES_HOME (Hermes
     WebUI): an unstamped scope is the pinned launch home's, so the mirrored profile's refresh must

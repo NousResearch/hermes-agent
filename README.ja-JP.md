@@ -27,8 +27,8 @@
 <tr><td><b>あなたのいる場所で動く</b></td><td>Telegram、Discord、Slack、WhatsApp、Signal、CLI — すべて単一のゲートウェイプロセスから。ボイスメモの文字起こし、プラットフォームをまたいだ会話の継続性。</td></tr>
 <tr><td><b>閉じた学習ループ</b></td><td>エージェント自身が管理し、定期的にナッジを行うメモリ。複雑なタスク完了後の自律的なスキル生成。使用中に自己改善するスキル。LLM要約を活用したクロスセッション想起のためのFTS5セッション検索。<a href="https://github.com/plastic-labs/honcho">Honcho</a>による弁証法的ユーザーモデリング。<a href="https://agentskills.io">agentskills.io</a>のオープン標準と互換。</td></tr>
 <tr><td><b>スケジュール自動化</b></td><td>任意のプラットフォームへの配信に対応した、組み込みcronスケジューラ。日次レポート、深夜バックアップ、週次監査 — すべて自然言語で指示し、無人で実行できます。</td></tr>
-<tr><td><b>委譲と並列化</b></td><td>独立したサブエージェントを生成し、並列ワークストリームを実行。RPC経由でツールを呼び出すPythonスクリプトを書くことで、複数ステップのパイプラインをコンテキストコストゼロのターンに圧縮します。</td></tr>
-<tr><td><b>ノートPCだけでなく、どこでも動作</b></td><td>7つのターミナルバックエンド — local、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox。DaytonaとModalはサーバーレス永続性を提供し、エージェントの環境はアイドル時に休止し、必要に応じて目覚めるため、セッション間のコストはほぼゼロです。月5ドルのVPSでもGPUクラスタでも動かせます。</td></tr>
+<tr><td><b>委譲と並列化</b></td><td>独立したサブエージェントを生成し、並列ワークストリームを実行。Desktopでは、設定 → Model → Subagents でサブエージェントのプロバイダ、モデル、上限を選び、ルート全体を適用（Apply）します。RPC経由でツールを呼び出すPythonスクリプトを書くことで、複数ステップのパイプラインをコンテキストコストゼロのターンに圧縮します。</td></tr>
+<tr><td><b>ノートPCだけでなく、どこでも動作</b></td><td>6つの組み込みターミナルバックエンド — local、Docker、SSH、Modal、Daytona、Vercel Sandbox — に加え、Singularity/Apptainerなどのプラグインバックエンドにも対応。DaytonaとModalはサーバーレス永続性を提供し、エージェントの環境はアイドル時に休止し、必要に応じて目覚めるため、セッション間のコストはほぼゼロです。月5ドルのVPSでもGPUクラスタでも動かせます。</td></tr>
 <tr><td><b>研究にすぐ使える</b></td><td>バッチでの軌跡生成、次世代のツール呼び出しモデルを訓練するための軌跡圧縮。</td></tr>
 </table>
 
@@ -52,7 +52,7 @@ PowerShellで以下を実行します:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-ソースインストーラは、Python 3.14、Node.js、npm、ripgrep、FFmpeg、Pythonの依存関係をPMに委ねます。
+ソースインストーラは、Python 3.14、Node.js、npm、pnpm、ripgrep、FFmpeg、Pythonの依存関係をPMに委ねます。
 Gitがない場合は、検証済みのGit for WindowsアーカイブをHermesのツールストアに配置します。
 システムのGitを置き換えることはありません。別配布のMSIX/App Installerパッケージとその更新管理については
 [インストール方法](https://hermes-agent.nousresearch.com/docs/getting-started/installation)を参照してください。
@@ -115,7 +115,6 @@ hermes config set   # 個別の設定値をセット
 hermes config get   # 個別の設定値を表示
 hermes gateway      # メッセージングゲートウェイを起動（Telegram、Discord等）
 hermes setup        # フルセットアップウィザードを実行（一括設定）
-hermes claw migrate # OpenClawから移行（OpenClaw利用者の場合）
 hermes update       # 最新バージョンへ更新
 hermes doctor       # 問題を診断
 ```
@@ -187,33 +186,34 @@ Hermesには2つのエントリポイントがあります: `hermes`でターミ
 
 ---
 
-## OpenClawからの移行
+## OpenClawやその他のエージェントからの移行
 
-OpenClawからの移行であれば、Hermesは設定、メモリ、スキル、APIキーを自動的にインポートできます。
+OpenClaw、Claude Code、Codex CLI、Cursorから移行する場合、Hermesは設定、メモリ、スキルをインポートできます（OpenClawの場合は、指定すればAPIキーも）。
 
-**初回セットアップ時:** セットアップウィザード（`hermes setup`）は自動的に`~/.openclaw`を検出し、設定開始前に移行を提案します。
+**セットアップ時:** `hermes setup`は他のエージェントからインポートするかを尋ね、見つかったもの（`~/.openclaw`、`~/.claude`、`~/.codex`、`~/.cursor`）を事前に選択した状態にし、公式の`agent-importers`プラグインをインストールしたうえで、まずプレビューを表示してからインポートを実行します。
 
 **インストール後はいつでも:**
 
 ```bash
-hermes claw migrate              # インタラクティブ移行（フルプリセット）
-hermes claw migrate --dry-run    # 何が移行されるかをプレビュー
-hermes claw migrate --preset user-data   # シークレットなしで移行
-hermes claw migrate --overwrite  # 既存の競合を上書き
+hermes plugins install agent-importers          # プロファイルごとに1回
+hermes import-agent openclaw                    # インタラクティブ移行（フルプリセット）
+hermes import-agent openclaw --dry-run          # 何が移行されるかをプレビュー
+hermes import-agent openclaw --migrate-secrets  # 許可リストのAPIキーも移行
+hermes import-agent claude-code                 # または codex / cursor
 ```
 
-インポート対象:
+OpenClawからのインポート対象:
 
 - **SOUL.md** — ペルソナファイル
 - **メモリ** — MEMORY.mdとUSER.mdのエントリ
 - **スキル** — ユーザー作成スキル → `~/.hermes/skills/openclaw-imports/`
 - **コマンド許可リスト** — 承認パターン
 - **メッセージング設定** — プラットフォーム設定、許可ユーザー、作業ディレクトリ
-- **APIキー** — 許可リストに含まれるシークレット（Telegram、OpenRouter、OpenAI、Anthropic、ElevenLabs）
+- **APIキー** — 許可リストに含まれるシークレット（Telegram、OpenRouter、OpenAI、Anthropic、ElevenLabs）。`--migrate-secrets`指定時のみ
 - **TTSアセット** — ワークスペースの音声ファイル
 - **ワークスペース指示** — AGENTS.md（`--workspace-target`使用時）
 
-全オプションは`hermes claw migrate --help`を参照するか、`openclaw-migration`スキルを使用すると、ドライランプレビュー付きのエージェント主導インタラクティブ移行が可能です。
+従来の`hermes claw migrate`も引き続き使えます。詳しくは[OpenClaw移行ガイド](https://hermes-agent.nousresearch.com/docs/guides/migrate-from-openclaw)と[他のエージェントからのインポート](https://hermes-agent.nousresearch.com/docs/user-guide/import-from-other-agents)を参照してください。
 
 ---
 

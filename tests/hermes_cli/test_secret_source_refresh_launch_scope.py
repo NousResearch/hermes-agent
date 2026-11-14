@@ -20,7 +20,8 @@ _FIXTURE_PLUGIN = (
     "    api_version = SECRET_SOURCE_API_VERSION\n"
     "    shape = 'bulk'\n\n"
     "    def fetch(self, cfg, home_path):\n"
-    "        return FetchResult(secrets={'VAULT_ONLY_KEY': 'from-plugin'})\n\n"
+    # SYSTEMD_ONLY_TOKEN is the operator's (set before the source runs): supplied, never written.
+    "        return FetchResult(secrets={'VAULT_ONLY_KEY': 'from-plugin', 'SYSTEMD_ONLY_TOKEN': 'from-plugin'})\n\n"
     "def register(ctx):\n"
     "    ctx.register_secret_source(FixtureVault())\n"
 )
@@ -87,6 +88,37 @@ def test_forced_rediscovery_keeps_launch_env_in_the_bound_launch_scope(launch_ho
             assert refresh_installed_secret_scope(launch_home / "profiles" / "ops") is True
             assert "SYSTEMD_ONLY_TOKEN" not in (current_secret_scope() or {})
             assert platform_gate_env("TELEGRAM_ALLOWED_USERS") == ""
+    finally:
+        set_multiplex_active(False)
+
+
+def test_a_removed_plugin_sources_boot_write_leaves_the_frozen_launch_env(launch_home):
+    """Boot discovery writes the plugin's value into os.environ, activation freezes that env, then
+    the plugin is disabled and a forced discovery revokes the write. The launch scope (refreshed in
+    the running turn, and every fresh launch bind after it) must lose the value with os.environ,
+    while the operator's own value for a name the source also supplied stays."""
+    from agent.secret_scope import current_secret_scope, set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # gateway boot discovery: the source writes VAULT_ONLY_KEY
+    assert os.environ["VAULT_ONLY_KEY"] == "from-plugin"
+    activate_multi_profile_hosting()
+    try:
+        config = launch_home / "config.yaml"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            assert current_secret_scope().get("VAULT_ONLY_KEY") == "from-plugin"
+            manager.discover_and_load(force=True)
+            assert "VAULT_ONLY_KEY" not in os.environ
+            assert "VAULT_ONLY_KEY" not in current_secret_scope()
+            assert current_secret_scope().get("SYSTEMD_ONLY_TOKEN") == "env-only"
+        fresh = launch_secret_scope(launch_home)
+        assert "VAULT_ONLY_KEY" not in fresh
+        assert fresh.get("SYSTEMD_ONLY_TOKEN") == "env-only"
     finally:
         set_multiplex_active(False)
 

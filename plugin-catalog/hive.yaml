@@ -1,6 +1,6 @@
 name: "hive"
 repo: "https://github.com/MFaiqKhan/hermes-hive"
-sha: "84640b52b55a8270787fd4f5ff65ae53671aae0e"
+sha: "665b3f06cf9c7e3139079b9929f59b04a101691e"
 description: "Hermes remembers how its errors were fixed, and Hermes installs can share those fixes: when a terminal command fails with an error that was fixed before, Hive adds the fix that worked (with how often it worked) under the output. Fixes are learned from exit codes, not guessed: a failed command, the steps after it, and the same command succeeding. Opt-in, Hive trades fixes with other installs over Nostr, signed by a random per-install key, with proof of work, cross-checks and a safety screen; it never runs anything. Disclosure — reads terminal command text, exit codes and output through the transform_terminal_output hook and (on `hermes hive learn`) state.db read-only; stores learned fixes under plugin-data/hive; with `hermes hive network read` it sends error fingerprints (hashes) to the configured Nostr relays (default nos.lol, relay.primal.net, relay.damus.io) to look up fixes; with `network share` it also publishes the normalized error line and the fix commands (home paths, private paths, hosts, IPs, e-mails and secret-looking text removed or withheld; preview with `hermes hive outbox`). Network is off by default."
 maintainer: "MFaiqKhan"
 tier: "community"

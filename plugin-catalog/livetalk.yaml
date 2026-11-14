@@ -19,7 +19,7 @@ description: >-
 maintainer: cruzlxyz
 tier: community
 version: "2.0.0"
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.22.1"
 category: voice
 docs_url: https://github.com/cruzlxyz/livetalk#readme
 image: https://raw.githubusercontent.com/cruzlxyz/livetalk/34f4ebb5978597ecd736bbd205ad9058edeeeb48/assets/cover.jpg

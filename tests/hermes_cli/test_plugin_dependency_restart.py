@@ -15,7 +15,6 @@ import json
 import logging
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -185,17 +184,20 @@ def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(
     """The common shape: ``import <dep>`` at module top. In a gateway booted before the install the
     load fails, so the plugin has no activation summary; the reload answer must still carry what
     blocked it, or enable reports "nothing of this plugin needs a session or restart"."""
-    from gateway.run_plugin_rewire import reload_plugins_verb
+    from gateway.run_plugin_rewire import GatewayPluginRewireMixin, reload_plugins_verb
     from hermes_cli import plugins
     from tui_gateway.contracts.tools_mcp_plugins import PluginActivation
 
     _select_generation(home, with_dist=True)
     (home / "plugins" / "depprobe" / "__init__.py").write_text(
         "import hermes_depprobe_fixture\n\ndef register(ctx):\n    pass\n", encoding="utf-8")
+    class Runner(GatewayPluginRewireMixin):
+        adapters = {}
+
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
     try:
-        answer = reload_plugins_verb(SimpleNamespace(adapters={}), loop)()  # the gateway's real verb
+        answer = reload_plugins_verb(Runner(), loop)()  # the gateway's real verb
     finally:
         loop.call_soon_threadsafe(loop.stop)
         plugins._reset_plugin_managers_for_tests()

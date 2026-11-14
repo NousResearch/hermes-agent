@@ -219,14 +219,15 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
         from hermes_cli.plugins_discovery import join_background_discovery
         join_background_discovery()
         manager = get_plugin_manager()
-        # Other forced passes (a reload-plugins verb, the dashboard) do not take the go-live lock, so the
-        # reads share the discovery lock with the pass that produced them.
-        with manager._discovery_lock:
-            manager.discover_and_load(force=True)
+        # Capture the forced pass before its unlocked listeners or another discovery can run.
+        def snapshot():
             activation = find_activation(activation_summaries(manager), name)
             blocked = None if activation else find_activation(dependency_blocked_summaries(manager), name)
             portable = manager.get_portable_mcp_servers()
             skills = plugin_skills(activation["key"]) if activation else []
+            return activation, blocked, portable, skills
+
+        activation, blocked, portable, skills = manager.discover_and_load(force=True, snapshot=snapshot)
     except Exception:
         logger.debug("in-process plugin reload after change to %r failed", name, exc_info=True)
         return None

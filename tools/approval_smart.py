@@ -78,10 +78,12 @@ def _has_heredoc(text: str, comments: list[tuple[int, int]]) -> bool:
     # Comments cannot open quotes or substitutions in the following shell code.
     # Each comment boundary is unquoted, so restarting after it is safe.
     for start, end in [*comments, (len(text), len(text))]:
+        after_lt = False  # an escaped '<' is word data, not the first '<' of a '<<<' here-string
         for kind, i, _, quote in _scan_shell(text, pos, start, subst="uq", brace=True):
-            if (kind == "char" and quote is None and text.startswith("<<", i)
-                    and not text.startswith("<<<", i) and not (i and text[i - 1] == "<")):
+            operator = kind == "char" and quote is None
+            if operator and text.startswith("<<", i) and not text.startswith("<<<", i) and not after_lt:
                 return True
+            after_lt = operator and text[i] == "<"
         pos = end
     return False
 

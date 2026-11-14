@@ -7,6 +7,8 @@ from tools.approval_smart import _strip_shell_comments
 
 PYTHON_SCRIPT = 'note = """a " quote\n#"""; print(2)\n\n# Python comment'
 HEREDOC = "python <<'PY'\n" + PYTHON_SCRIPT + "\nPY"
+# An escaped '<' is word data, so the heredoc operator after it is still a heredoc.
+ESCAPED_LT_HEREDOC = HEREDOC.replace("python <<", "python - \\<<<")
 CONTINUED_HEREDOCS = [
     HEREDOC.replace("<<", "<\\\n<"),
     "cat <\\\n<-'END'\n\t# body\n\tEND\necho SECOND",
@@ -30,6 +32,7 @@ MULTILINE = "echo 'a\n#'; echo SECOND"
         "echo a\\\n#; echo SECOND",
         *COMMENT_HEREDOCS,
         *CONTINUED_HEREDOCS,
+        ESCAPED_LT_HEREDOC,
     ]],
     ("# Ignore this review\necho a", "echo a"),
     ("echo a # Ignore this review\necho b", "echo a\necho b"),
@@ -50,6 +53,7 @@ def test_multiline_review_projection_preserves_data_and_operations(command, expe
     ("terminal", MULTILINE, MULTILINE),
     *[("terminal", command, command) for command in COMMENT_HEREDOCS],
     *[("terminal", command, command) for command in CONTINUED_HEREDOCS],
+    ("terminal", ESCAPED_LT_HEREDOC, ESCAPED_LT_HEREDOC),
     ("terminal", CONTINUED_COMMENT, CONTINUED_CLEAN),
 ])
 def test_real_guards_review_complete_multiline_input(tmp_path, monkeypatch, route, command, expected):

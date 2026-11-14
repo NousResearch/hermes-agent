@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 # ``mask_secret`` (``sk-p...7890``, ``_mask_token``'s ``sk-pro...WXYZ``: a short head, ``...``,
 # then exactly four tail chars) and hand-truncated previews of it (``sk-...``).
@@ -29,28 +29,73 @@ _AUTH_SCHEME_RE = re.compile(r"(?i)(?:bearer|basic|token|digest)\s+")
 _KEPT_PREFIX_RE = re.compile(r"\d+:|[A-Za-z][A-Za-z0-9]{0,7}[-_]")
 
 
-def _is_bare_mask(candidate: str) -> bool:
+def _is_marker_word(candidate: str) -> bool:
     lowered = candidate.lower()
-    if lowered in _BARE_MASKS or lowered.startswith(("«redacted", "[redacted")):
+    return (lowered in _BARE_MASKS or lowered.startswith(("«redacted", "[redacted"))
+            or bool(_FENCED_REDACTED_RE.fullmatch(candidate)))
+
+
+def _is_bare_mask(candidate: str, *, shapes: bool = True) -> bool:
+    if _is_marker_word(candidate):
         return True
-    return bool(_FENCED_REDACTED_RE.fullmatch(candidate) or _STARS_RE.fullmatch(candidate)
-                or _ELLIPSIS_MASK_RE.fullmatch(candidate))
+    return shapes and bool(_STARS_RE.fullmatch(candidate) or _ELLIPSIS_MASK_RE.fullmatch(candidate))
 
 
-def is_redacted_credential_value(value: Any) -> bool:
-    """True when ``value`` is a redaction/display mask rather than a usable secret."""
+def _mask_candidate(value: Any) -> str:
+    """``value`` with quotes and the context the redactor keeps in front (``Bearer ``) removed;
+    ``""`` for a non-string, an empty value or a ``${VAR}`` reference (never a mask)."""
     if not isinstance(value, str):
-        return False
+        return ""
     candidate = value.strip().strip("\"'")
     scheme = _AUTH_SCHEME_RE.match(candidate)
     if scheme:
         candidate = candidate[scheme.end():]
-    if not candidate or _ENV_REF_RE.fullmatch(candidate):
+    return "" if _ENV_REF_RE.fullmatch(candidate) else candidate
+
+
+def is_redacted_credential_value(value: Any, *, shapes: bool = True) -> bool:
+    """True when ``value`` is a redaction/display mask rather than a usable secret. With
+    ``shapes=False`` only the marker words (``[REDACTED]``, ``«redacted:…»``) count, not the
+    ellipsis/star shapes a human-chosen password can legitimately take."""
+    candidate = _mask_candidate(value)
+    if not candidate:
         return False
-    if _is_bare_mask(candidate):
+    if _is_bare_mask(candidate, shapes=shapes):
         return True
     prefix = _KEPT_PREFIX_RE.match(candidate)
-    return bool(prefix) and _is_bare_mask(candidate[prefix.end():])
+    return bool(prefix) and _is_bare_mask(candidate[prefix.end():], shapes=shapes)
+
+
+# Human-chosen secrets (``SUDO_PASSWORD``, ``dashboard.basic_auth.password``) have no prescribed
+# alphabet, so ``Hello...2026`` or ``****`` can be the real password. For these the mask SHAPES
+# are refused only when the value is what the maskers show for the credential stored now: that is
+# the write-back #42727 is about, and it is the only way the agent can have seen such a value.
+_PASSWORD_NAME_RE = re.compile(r"(?:^|_)(?:password|passwd|passphrase)$")
+
+
+def _is_password_name(key: str) -> bool:
+    return bool(_PASSWORD_NAME_RE.search(key.rsplit(".", 1)[-1].lower().replace("-", "_")))
+
+
+def _masks_of(stored: Any) -> set[str]:
+    """Every display value Hermes's redactor/maskers produce for the secret ``stored``."""
+    if not isinstance(stored, str) or not stored or _ENV_REF_RE.fullmatch(stored.strip()):
+        return set()
+    from agent.redact import _mask_token, _mask_token_nonreusable, mask_secret
+
+    return {"***", mask_secret(stored), _mask_token(stored), _mask_token_nonreusable(stored)}
+
+
+def _is_mask_write_back(key: str, value: Any, stored: Iterable[Any]) -> bool:
+    """``value`` would replace a credential with a display mask: any mask for a provider-style
+    credential name; for a password name, a marker word or a mask of a ``stored`` value."""
+    if not _is_password_name(key):
+        return is_redacted_credential_value(value)
+    if is_redacted_credential_value(value, shapes=False):
+        return True
+    candidate = _mask_candidate(value)
+    olds = [old for old in stored if isinstance(old, str) and old != value]
+    return bool(candidate) and any(candidate in _masks_of(old) for old in olds)
 
 
 def _is_credential_env_name(key: str) -> bool:
@@ -60,9 +105,24 @@ def _is_credential_env_name(key: str) -> bool:
     return _is_secret_config_key(key) or (isinstance(meta, dict) and meta.get("password") is True)
 
 
+def _stored_env_values(key: str) -> tuple[Any, ...]:
+    """What ``key`` holds now (``.env``, then this profile's environment): the values whose
+    masks the agent can have been shown."""
+    from agent.secret_scope import UnscopedSecretError
+    from hermes_cli.config import _scoped_environ_get, load_env
+
+    try:
+        scoped = _scoped_environ_get(key)
+    except UnscopedSecretError:  # multiplexed with no scope: no ambient env to compare with
+        scoped = None
+    return load_env().get(key), scoped
+
+
 def refuse_redacted_env_value(key: str, value: Any) -> None:
     """Raise ``ValueError`` when a credential ``.env`` entry would store a redacted mask."""
-    if is_redacted_credential_value(value) and _is_credential_env_name(key):
+    if not (is_redacted_credential_value(value) and _is_credential_env_name(key)):
+        return
+    if _is_mask_write_back(key, value, _stored_env_values(key) if _is_password_name(key) else ()):
         raise ValueError(
             f"Refusing to save {key.upper()}: the value is a redacted display mask, not the "
             "credential. Enter the real secret (or leave it unchanged).")
@@ -77,9 +137,9 @@ def _list_item_identity(item: Any) -> str:
     return "[*]"
 
 
-def _masked_credential_leaves(doc: Any, path: tuple[str, ...] = (),
-                              where: tuple[str, ...] = ()) -> Iterator[tuple[str, tuple[str, ...], str]]:
-    """Yield ``(display_path, location, value)`` for each credential leaf holding a mask, where
+def _credential_leaves(doc: Any, path: tuple[str, ...] = (),
+                       where: tuple[str, ...] = ()) -> Iterator[tuple[str, tuple[str, ...], Any]]:
+    """Yield ``(display_path, location, value)`` for each scalar credential leaf, where
     ``location`` replaces list indexes with the entry's identity."""
     from hermes_cli.config import _is_secret_config_key
 
@@ -90,10 +150,10 @@ def _masked_credential_leaves(doc: Any, path: tuple[str, ...] = (),
     else:
         return
     for key, loc, child in items:
-        if _is_secret_config_key(key) and is_redacted_credential_value(child):
+        if _is_secret_config_key(key) and not isinstance(child, (dict, list)):
             yield ".".join(path + (key,)), where + (loc,), child
         else:
-            yield from _masked_credential_leaves(child, path + (key,), where + (loc,))
+            yield from _credential_leaves(child, path + (key,), where + (loc,))
 
 
 def refuse_redacted_config_credentials(new: Any, read_old: Callable[[], Any]) -> None:
@@ -102,12 +162,17 @@ def refuse_redacted_config_credentials(new: Any, read_old: Callable[[], Any]) ->
 
     Pre-existing masks are matched by (location, value), with list indexes replaced by the entry's
     ``name``/``id``/``key``: deleting or reordering ``custom_providers`` keeps an old mask's
-    location, while the same mask string at any other credential path is still a new write."""
-    masked = list(_masked_credential_leaves(new))
+    location, while the same mask string at any other credential path is still a new write. A
+    password leaf is refused only for a mask of the value stored at its location (see
+    ``_PASSWORD_NAME_RE``)."""
+    masked = [leaf for leaf in _credential_leaves(new) if is_redacted_credential_value(leaf[2])]
     if not masked:
         return
-    on_disk = {(where, value) for _, where, value in _masked_credential_leaves(read_old())}
-    bad = [path for path, where, value in masked if (where, value) not in on_disk]
+    on_disk: dict[tuple[str, ...], list[Any]] = {}
+    for _, where, value in _credential_leaves(read_old()):
+        on_disk.setdefault(where, []).append(value)
+    bad = [path for path, where, value in masked
+           if value not in on_disk.get(where, ()) and _is_mask_write_back(path, value, on_disk.get(where, ()))]
     if bad:
         from hermes_cli.config_backend import ConfigValueError
 

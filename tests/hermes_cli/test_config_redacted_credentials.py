@@ -23,7 +23,8 @@ def home(tmp_path, monkeypatch):
         "auxiliary": {"vision": {"provider": "custom", "api_key": REAL}},
     }), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    for name in ("OPENAI_API_KEY", "FAL_KEY", "HERMES_MODEL_API_KEY", "AUXILIARY_VISION_API_KEY"):
+    for name in ("OPENAI_API_KEY", "FAL_KEY", "HERMES_MODEL_API_KEY", "AUXILIARY_VISION_API_KEY",
+                 "SUDO_PASSWORD"):
         monkeypatch.delenv(name, raising=False)
     return home
 
@@ -162,3 +163,54 @@ def test_save_config_allows_reordering_entries_beside_preexisting_mask(home):
     cfg["custom_providers"].reverse()
     save_config(cfg)
     assert [p["name"] for p in yaml.safe_load((home / "config.yaml").read_text())["custom_providers"]] == ["b", "a"]
+
+
+# Human-chosen passwords: mask-SHAPED values are real passwords unless they are a mask of the
+# password stored now (the write-back). Built by concatenation: ``"Hello" + "..." + "2026"``.
+_SHAPED_PASSWORDS = ["Hello" + "..." + "2026", "p" + "..." + "word", "wait" + "\u2026" + "1234", "*" * 4]
+
+
+@pytest.mark.parametrize("password", _SHAPED_PASSWORDS)
+def test_mask_shaped_sudo_password_can_be_saved(home, password):
+    from hermes_cli.config import load_env, save_env_value
+    save_env_value("SUDO_PASSWORD", password)  # not refused; .env keeps ASCII (_check_non_ascii_credential)
+    assert load_env()["SUDO_PASSWORD"] == password.encode("ascii", "ignore").decode()
+
+
+def test_sudo_password_refuses_a_mask_of_the_stored_password(home):
+    from agent.redact import mask_secret, redact_sensitive_text
+    from hermes_cli.config import load_env, save_env_value
+    stored = "correct-horse-" + "battery9"
+    save_env_value("SUDO_PASSWORD", stored)
+    shown = redact_sensitive_text(f"SUDO_PASSWORD={stored}", force=True).split("=", 1)[1]
+    for mask in {shown, mask_secret(stored), "[REDACTED]", "«redacted-secret»"}:
+        with pytest.raises(ValueError, match="redacted display mask"):
+            save_env_value("SUDO_PASSWORD", mask)
+    assert load_env()["SUDO_PASSWORD"] == stored
+
+
+def test_config_password_leaf_refuses_only_a_mask_of_the_stored_password(home):
+    from agent.redact import mask_secret
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.config_backend import ConfigValueError
+    stored = "correct-horse-" + "battery9"
+    cfg = read_raw_config()
+    cfg["dashboard"] = {"basic_auth": {"username": "op", "password": stored}}
+    save_config(cfg)
+    for mask in (mask_secret(stored), "***"):
+        cfg["dashboard"]["basic_auth"]["password"] = mask
+        with pytest.raises(ConfigValueError, match="dashboard.basic_auth.password"):
+            save_config(cfg)
+    for password in _SHAPED_PASSWORDS:
+        cfg["dashboard"]["basic_auth"]["password"] = password
+        save_config(cfg)
+        assert read_raw_config()["dashboard"]["basic_auth"]["password"] == password
+
+
+def test_provider_keys_still_refuse_every_mask_shape(home):
+    """The password carve-out is by name: a provider key keeps the full shape refusal."""
+    from hermes_cli.config import save_env_value
+    for mask in _SHAPED_PASSWORDS:
+        with pytest.raises(ValueError, match="redacted display mask"):
+            save_env_value("OPENAI_API_KEY", mask)
+

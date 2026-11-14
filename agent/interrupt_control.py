@@ -124,13 +124,16 @@ def consume_buffered_steer(agent, steer_text: str) -> bool:
     """Retire one buffered part whose text matches, because another carrier (the compaction user-turn
     anchor) now delivers that text in the rebuilt context. The part leaves the buffer and a ticketed
     one is stamped consumed, so settlement commits it as delivered and no later drain injects a
-    second copy of the same steer. True when a part was taken."""
+    second copy of the same steer. True when a part was taken. Matching is shape-aware: extraction
+    through a legacy-marker fallback can carry a lead-in line the buffered part never had, so a
+    part also matches when the extracted text ends with it (the lead-in is dropped, never the steer)."""
     if not steer_text:
         return False
+    target = steer_text.strip()
     with _ic_lock(agent, "_pending_steer_lock"):
         parts = _steer_parts(agent)
         for _i, (_ticket, _text) in enumerate(parts):
-            if _text == steer_text:
+            if _text == steer_text or _text == target or target.endswith(_text):
                 _set_steer_parts(agent, parts[:_i] + parts[_i + 1:])
                 if _ticket is not None:
                     _steer_fates(agent)[_ticket] = True

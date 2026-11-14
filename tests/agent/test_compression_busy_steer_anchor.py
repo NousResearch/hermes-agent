@@ -9,6 +9,17 @@ request.
 """
 
 import pytest
+import unittest.mock
+
+# When the checkout lives inside ~/.hermes (default install layout), the lazy
+# agent.conversation_loop import inside _is_synthetic_compression_user_turn trips the
+# per-test home-IO guard via pm's payload-manifest probe (it reads <home>/manifest.json,
+# outside the checkout allow-list). Importing at collection time — before the guard is
+# armed — caches the module so every test in this file behaves the same on every layout.
+try:
+    import agent.conversation_loop
+except Exception:
+    pass
 
 from agent.context_compressor import (
     COMPRESSION_CONTINUATION_USER_CONTENT,
@@ -189,8 +200,90 @@ def test_buffered_steer_consumed_by_anchor_is_not_reinjected():
 
     assert outcome == "inserted"
     assert sum(str(m.get("content")).count(STEER_B) for m in compressed) == 1
-    assert agent._drain_pending_steer() is None, "buffered copy survived the anchor — second inject incoming"
+    # withdraw BEFORE any drain: only the anchor's consume can have stamped the ticket.
     assert agent.withdraw_steer("adm-1") is False, "settlement would re-queue text the anchor already carries"
+    assert agent._drain_pending_steer() is None, "buffered copy survived the anchor — second inject incoming"
+
+
+def test_already_present_tool_borne_steer_retires_buffered_copy():
+    """Steer marker survived into the compressed tail AND the part is still
+    buffered: already_present must not leave two carriers — the context has it,
+    so the buffer must not inject it again."""
+    from agent.interrupt_control import InterruptControlMixin
+
+    agent = InterruptControlMixin()
+    agent.steer(STEER_B, ticket="adm-1")
+
+    original = [{"role": "user", "content": REQUEST_A}] + _tool_turns(0, 6, steer_at=5)
+    compressed = [_summary_row(), *_tool_turns(5, 1, steer_at=5)]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed, agent=agent)
+
+    assert outcome == "already_present"
+    assert agent.withdraw_steer("adm-1") is False
+    assert agent._drain_pending_steer() is None
+
+
+def test_typed_steer_user_row_anchor_retires_buffered_copy():
+    """Every live steer is a typed user row now: when the anchor is a copy of
+    that row, the identically-texted buffered part must be retired too."""
+    from agent.interrupt_control import InterruptControlMixin
+    from agent.prompt_builder import steer_user_row
+
+    agent = InterruptControlMixin()
+    agent.steer(STEER_B, ticket="adm-1")
+
+    original = [{"role": "user", "content": REQUEST_A}, steer_user_row(STEER_B)] + _tool_turns(1, 4)
+    compressed = [_summary_row(), *_tool_turns(5, 1)]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed, agent=agent)
+
+    assert outcome == "inserted"
+    assert sum(str(m.get("content")).count(STEER_B) for m in compressed) == 1
+    assert agent.withdraw_steer("adm-1") is False
+    assert agent._drain_pending_steer() is None
+
+
+def test_consume_matches_legacy_marker_shape():
+    """Text extracted through the legacy-marker fallback carries a lead-in line
+    the buffered part never had; shape-aware matching must still retire it, or
+    duplication silently survives and settlement re-queues."""
+    import agent.conversation_compression as cc
+    from agent.interrupt_control import InterruptControlMixin, consume_buffered_steer
+
+    agent = InterruptControlMixin()
+    agent.steer(STEER_B, ticket="adm-1")
+
+    legacy_open = "[OUT-OF-BAND USER MESSAGE (legacy)]\nThe user sent a new message while Hermes was working:"
+    legacy_close = "[/OUT-OF-BAND USER MESSAGE (legacy)]"
+    legacy_row = {"role": "tool", "tool_call_id": "c",
+                  "content": f"ok\n\n{legacy_open}\n{STEER_B}\n{legacy_close}"}
+    with (
+        unittest.mock.patch.object(cc, "_STEER_FALLBACK_OPEN", legacy_open),
+        unittest.mock.patch.object(cc, "_STEER_FALLBACK_CLOSE", legacy_close),
+    ):
+        legacy_extracted = cc._extract_steer_text_from_message(legacy_row)
+        assert legacy_extracted == f"The user sent a new message while Hermes was working:\n{STEER_B}"
+        assert consume_buffered_steer(agent, legacy_extracted) is True
+    assert agent._drain_pending_steer() is None
+    assert agent.withdraw_steer("adm-1") is False
+
+
+def test_merged_anchor_keeps_steer_display_kind():
+    """A merged anchor must carry the steer type onto the composite row, or
+    alternation repair welds the user's NEXT prompt into the steer text."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    original = [{"role": "user", "content": REQUEST_A}] + _tool_turns(0, 6, steer_at=2)
+    # Trailing user scaffolding (no assistant follows) forces the merge branch.
+    compressed = [_summary_row(), {"role": "assistant", "content": "Working."},
+                  {"role": "user", "content": "todo snapshot", "_todo_snapshot_synthetic": True}]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed)
+
+    assert outcome == "merged"
+    assert compressed[-1].get("display_kind") == STEER_DISPLAY_KIND
+    assert "_todo_snapshot_synthetic" not in compressed[-1]
 
 
 def test_consume_retires_one_copy_of_two_identical_buffered_steers():

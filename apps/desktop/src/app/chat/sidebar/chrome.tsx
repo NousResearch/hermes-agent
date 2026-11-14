@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipHintLabel } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 import type { TileDock } from '@/store/session-states'
@@ -75,8 +76,22 @@ export function SidebarSectionAddButton({
   onNewSessionSplit?: NewSessionSplitHandler
   onPlainClick: () => void
 }) {
+  const { t } = useI18n()
+  // The drag gesture is undiscoverable without a pointer-down, so say so on
+  // hover — but only when this "+" is actually a drag source (a click-only
+  // button with no drag handler must not advertise a gesture it lacks).
+  const draggable = Boolean(onNewProjectDrag ?? onNewSessionSplit)
+
   return (
-    <Tip label={ariaLabel}>
+    <Tip
+      label={
+        draggable ? (
+          <TipHintLabel hint={t.sidebar.nav?.['drag-hint']} text={ariaLabel} />
+        ) : (
+          ariaLabel
+        )
+      }
+    >
       <Button
         aria-label={ariaLabel}
         className={cn(HEADER_ACTION_BTN, SIDEBAR_FOCUS_VISIBLE)}

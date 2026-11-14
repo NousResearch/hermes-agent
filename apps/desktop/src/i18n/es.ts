@@ -3656,6 +3656,7 @@ export const esOverrides = {
     profileRail: 'Barra de perfiles',
     nav: {
       'new-session': 'Nueva sesión',
+      'drag-hint': 'Arrástralo a una barra de pestañas para apilar, o a un borde para dividir.',
       capabilities: 'Capacidades',
       messaging: 'Mensajería',
       artifacts: 'Artefactos',

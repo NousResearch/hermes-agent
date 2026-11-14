@@ -3668,6 +3668,7 @@ export const deOverrides = {
     profileRail: 'Profil-Leiste',
     nav: {
       'new-session': 'Neue Session',
+      'drag-hint': 'Auf eine Tab-Leiste ziehen zum Stapeln, an einen Rand ziehen zum Teilen.',
       capabilities: 'Fähigkeiten',
       messaging: 'Messaging',
       artifacts: 'Artefakte',

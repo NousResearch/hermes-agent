@@ -1625,6 +1625,13 @@ def _env_split_payload(tokens: list[str]) -> str | None:
     return None
 
 
+def _dequoted_escape(char: str, quote: str | None) -> str:
+    """What a backslash escape leaves after shell quote removal."""
+    if char == "\n":
+        return ""
+    return char if quote is None or char in '$`"\\' else "\\" + char
+
+
 def _deny_command_variants(command: str):
     """Add executable projections without reparsing normalized argument data.
 
@@ -1644,17 +1651,24 @@ def _deny_command_variants(command: str):
             executable = _deobfuscate_shell_word_for_detection(word)
             tail = segment[end - start:]
             # Collapse only unquoted inter-word whitespace; quoted prose is data.
-            parts = []
+            parts, bare = [], []
             for kind, i, j, quote in _scan_shell(tail):
                 if kind == "char" and quote is None and tail[i].isspace():
                     if not parts or parts[-1] != " ":
                         parts.append(" ")
+                        bare.append(" ")
                 else:
                     parts.append(tail[i:j])
+                    # Quote removal as the shell performs it, so `git "status"` meets a `git status` rule.
+                    if kind == "esc":
+                        bare.append(_dequoted_escape(tail[i + 1], quote))
+                    elif kind != "quote":
+                        bare.append(tail[i:j])
             tail = "".join(parts)
             for name in dict.fromkeys((executable, os.path.basename(executable))):
                 candidate = name + tail
                 yield candidate
+                yield name + "".join(bare)
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
                 yield _normalize_command_for_detection(candidate)

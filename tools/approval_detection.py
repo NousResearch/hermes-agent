@@ -22,6 +22,7 @@ from tools.approval_env_split import _split_env_string
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
+from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _pipe_launcher_re
 
 logger = logging.getLogger("tools.approval")
 
@@ -264,36 +265,6 @@ _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 # as the user, not the shell.
 _PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
 _PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
-# Launchers that run their trailing words as a command, with the short/long options that take a
-# SEPARATE value word. One shared table made a bare flag (`time -p`, `exec -a x`) swallow the shell
-# name as its value; per-launcher rows let `-p` be bare for time/command and valued for sudo.
-_PIPE_LAUNCHER_VALUE_FLAGS = {
-    "sudo": ("ugUCDhpRrtT", ("user", "group", "other-user", "close-from", "chdir", "host", "prompt",
-                             "role", "type", "command-timeout", "chroot")),
-    "doas": ("uC", ()),
-    # `-S STRING` is the command itself (split into words), never a swallowed value.
-    "env": ("uCa", ("unset", "chdir", "argv0")),
-    "exec": ("a", ()),
-    "command": ("", ()),
-    "nohup": ("", ()),
-    "nice": ("n", ("adjustment",)),
-    "time": ("fo", ("format", "output")),
-    "timeout": ("sk", ("signal", "kill-after")),
-    "stdbuf": ("ioe", ("input", "output", "error")),
-    "busybox": ("", ()),
-    "setsid": ("", ()),
-    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid")),
-}
-
-
-def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
-    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
-    valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
-    duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
-    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
-    return rf"{name}(?:\s++(?>{args}))*+"
-
-
 _PIPE_WRAPPERS_RE = (
     rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
     + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())

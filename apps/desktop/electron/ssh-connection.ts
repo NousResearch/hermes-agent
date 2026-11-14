@@ -296,6 +296,40 @@ function loginShellQuote(value: string) {
   return `'${String(value).replace(/['\\]/g, ch => (ch === `'` ? `'\\''` : `'\\\\'`))}'`
 }
 
+// sshd hands the command string to the remote account's LOGIN shell, so a payload still carrying
+// a newline is parsed by that shell before `sh` ever sees it. POSIX shells and fish accept a
+// newline inside loginShellQuote's single quotes; csh/tcsh does not ("Unmatched '''") and the
+// launch payloads are multi-line (the update-marker gate is a whole Python program), which is how
+// a tcsh remote connected, probed clean, and then failed to launch (#154114). `sh -s` is a
+// newline-free word for any login shell, and the payload then rides the channel's stdin —
+// which also keeps a ~7.5 KB program out of the mux session request (see the
+// REMOTE_MARKER_GATE_PY EMSGSIZE note in remote-lifecycle). Only taken when the caller needs no
+// stdin of its own: the payload IS the shell's script then.
+function posixExecCommand(remoteCommand, stdinData) {
+  if (stdinData == null && /[\r\n]/.test(String(remoteCommand))) {
+    return { command: 'sh -s', stdinData: String(remoteCommand) }
+  }
+
+  return { command: `sh -c ${loginShellQuote(remoteCommand)}`, stdinData }
+}
+
+// `python3 -c <program>` for a caller that must keep stdin free (a secret piped into the program),
+// so the payload cannot take the `sh -s` carrier above. The program is base64 so the one argv line
+// carries no newline and no quote any login shell reparses; Python itself decodes it.
+function singleLinePythonCommand(script: string) {
+  const encoded = Buffer.from(String(script), 'utf8').toString('base64')
+
+  return `python3 -c ${loginShellQuote(`import base64;exec(base64.b64decode("${encoded}").decode("utf-8"))`)}`
+}
+
+// The program a `singleLinePythonCommand` carrier ships: the reader for the encoding above, so a
+// test (or a caller holding a command it did not build) can assert on the source, not the blob.
+function decodeRemoteProgram(command?: string): string {
+  const encoded = /b64decode\("([^"]+)"\)/.exec(String(command ?? ''))?.[1]
+
+  return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : String(command ?? '')
+}
+
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {
   return [
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
@@ -1017,7 +1051,8 @@ class SshConnection {
   // rejects with a classified error on non-zero exit or timeout.
   //
   // sshd hands the command to the user's LOGIN shell. Payloads are POSIX sh, so
-  // fish rejects `help="$(…)"`. On Linux/Darwin wrap in `sh -c`; Windows stays raw.
+  // fish rejects `help="$(…)"`. On Linux/Darwin wrap in `sh -c`, or in `sh -s` when the
+  // payload is multi-line (csh/tcsh cannot take a newline inside those quotes); Windows stays raw.
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
     if (this._posixRemote === null) {
       try {
@@ -1035,8 +1070,11 @@ class SshConnection {
       }
     }
 
-    const command = this._posixRemote ? `sh -c ${loginShellQuote(remoteCommand)}` : remoteCommand
-    const args = buildExecArgs(this, command, this._connectTimeoutMs)
+    const carrier = this._posixRemote
+      ? posixExecCommand(remoteCommand, stdinData)
+      : { command: remoteCommand, stdinData }
+
+    const args = buildExecArgs(this, carrier.command, this._connectTimeoutMs)
     let result
 
     try {
@@ -1044,7 +1082,7 @@ class SshConnection {
         timeoutMs: timeoutMs ?? this._execTimeoutMs,
         spawnFn: this._spawnFn,
         command: this.sshBinary,
-        ...(stdinData != null ? { stdinData } : {})
+        ...(carrier.stdinData != null ? { stdinData: carrier.stdinData } : {})
       })
     } catch (error) {
       throw this._fail(error)
@@ -1413,15 +1451,18 @@ export {
   CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
+  decodeRemoteProgram,
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_EXEC_TIMEOUT_MS,
   DEFAULT_FORWARD_TIMEOUT_MS,
   forwardSpec,
   hostArgs,
   pickLocalPort,
+  posixExecCommand,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
+  singleLinePythonCommand,
   SSH_ERROR,
   SshConnection,
   sshErrorMessage,

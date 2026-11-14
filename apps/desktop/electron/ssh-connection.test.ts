@@ -260,6 +260,12 @@ function fakeChild({ code = 0, signal = null, stdout = '', stderr = '', errorEve
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
+  child.stdin = {
+    data: '',
+    end(chunk) {
+      child.stdin.data += chunk == null ? '' : String(chunk)
+    }
+  }
 
   child.kill = () => {
     child._killed = true
@@ -313,6 +319,7 @@ function assertSignalDeathNotUnreachable(err, signal) {
 // the args it was called with.
 function scriptedSpawn(scripts) {
   const calls: any[] = []
+  const children: any[] = []
   let i = 0
 
   const fn: any = (_cmd, args) => {
@@ -320,10 +327,14 @@ function scriptedSpawn(scripts) {
     const script = typeof scripts === 'function' ? scripts(args, i) : scripts[Math.min(i, scripts.length - 1)]
     i += 1
 
-    return fakeChild(script || {})
+    const child = fakeChild(script || {})
+    children.push(child)
+
+    return child
   }
 
   fn.calls = calls
+  fn.children = children
 
   return fn
 }
@@ -1469,6 +1480,30 @@ test('exec wraps POSIX payloads in sh -c so a fish login shell never parses them
   const cmd = spawnFn.calls[1].at(-1)
   assert.match(cmd, /^sh -c '/)
   assert.match(cmd, /help="\$\(true\)"/)
+})
+
+test('exec sends a multi-line POSIX payload on stdin so a csh/tcsh login shell never parses it', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 0, stdout: 'Linux\n' } : { code: 0, stdout: 'OK\n' }
+  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  // The launch payloads are multi-line: the update-marker gate alone is a whole Python program.
+  const payload = "python3 -c 'import sys\nprint(1)'\n"
+  await conn.exec(payload)
+  assert.equal(spawnFn.calls[1].at(-1), 'sh -s', 'csh/tcsh rejects a newline inside sh -c quotes')
+  assert.equal(spawnFn.children[1].stdin.data, payload, 'the payload is the shell script then')
+})
+
+test('exec keeps a caller-supplied stdin when its payload is multi-line', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 0, stdout: 'Linux\n' } : { code: 0 }
+  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec("python3 -c 'import sys\nprint(sys.stdin.read())'", { stdinData: 'tok' })
+  assert.match(spawnFn.calls[1].at(-1), /^sh -c '/)
+  assert.equal(spawnFn.children[1].stdin.data, 'tok', 'the caller’s stdin is not replaced by the payload')
 })
 
 test('exec leaves Windows PowerShell payloads unwrapped', async () => {

@@ -2,19 +2,7 @@ name: look-at-this
 repo: https://github.com/Elshayib/look-at-this
 sha: 31e4b2e64595da208a18530bdcc8566bc1f4deb9
 title: Look At This
-description: >-
-  Instant active-window, region-snip, and UI-context capture for Hermes Agent and
-  Hermes Desktop. Global OS hotkeys (Ctrl+Alt+L / Ctrl+Alt+S on Windows),
-  interactive window-hover/crosshair snipping, live window picker with thumbnails,
-  composer preview banner, and ephemeral single-turn vision injection. Runs an
-  in-process Win32 RegisterHotKey listener thread and a lazy headless PowerShell
-  UIAutomation reader on Windows, spawns an isolated Win32 GDI overlay subprocess
-  only during interactive snips, mounts authenticated local routes under
-  /api/plugins/look-at-this/*, injects queued captures via pre_llm_call and
-  llm_request, and stores transient state and temporary PNGs under
-  <HERMES_HOME>/plugin-data/look-at-this/ (data.db and shots/, deleted in
-  post_llm_call, on_session_end, /look clear, or after a 5-minute TTL). Zero
-  third-party Python dependencies and zero outbound network requests.
+description: "Instant active-window, region-snip, and UI-context capture for Hermes Agent and Hermes Desktop. Global OS hotkeys (Ctrl+Alt+L / Ctrl+Alt+S on Windows), interactive window-hover/crosshair snipping, live window picker with thumbnails, composer preview banner, and ephemeral single-turn vision injection. Runs an in-process Win32 RegisterHotKey listener thread and a lazy headless PowerShell UIAutomation reader on Windows, spawns an isolated Win32 GDI overlay subprocess only during interactive snips, mounts authenticated local routes under /api/plugins/look-at-this/*, injects queued captures via pre_llm_call and llm_request, and stores transient state and temporary PNGs under <HERMES_HOME>/plugin-data/look-at-this/ (data.db and shots/, deleted in post_llm_call, on_session_end, /look clear, or after a 5-minute TTL). Zero third-party Python dependencies and zero outbound network requests. Disclosure — the model can call lat_grab to screenshot any open window or screen region (password managers and private browser windows are refused) and the image, window text, URL and selection are sent to your model provider; on Windows it runs a background global-hotkey listener and a PowerShell UI Automation reader for as long as Hermes runs."
 maintainer: Elshayib
 tier: community
 category: desktop

@@ -696,8 +696,12 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
+    # A 429 whose Retry-After outlasts a live wait is a spent quota window, not a blip: rotate to the
+    # next pooled credential now instead of sitting the window out on this one.
+    from agent.retry_utils import LIVE_RETRY_WAIT_CAP_S, provider_retry_after_seconds
+    window_spent = status_code == 429 and (provider_retry_after_seconds(api_error) or 0) > LIVE_RETRY_WAIT_CAP_S
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-        status_code=status_code, has_retried_429=_retry.has_retried_429,
+        status_code=status_code, has_retried_429=_retry.has_retried_429 or window_spent,
         classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
         billing_unverified=classified.billing_unverified,
     )

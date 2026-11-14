@@ -72,8 +72,10 @@ async def queue_busy_moa(runner, event, session_key, source):
         return moa_usage()
     adapter = runner._delivery_adapter_for(source)
     queued = runner._queued_turn_event(event, prompt, False)
+    epoch = runner._route_stop_epoch(session_key)  # before the config read: a /stop during it drops this
     if adapter is None or not admit_moa_turn(runner, queued, source, session_key, await default_preset()):
         return t("gateway.busy.reject_moa")
     await _busy_accepted()
-    await runner._queue_command_turn(session_key, event, queued, adapter, t("gateway.queue.queued"))
+    await runner._queue_command_turn(session_key, event, queued, adapter, t("gateway.queue.queued"),
+                                     stop_epoch=epoch)
     return None  # its commit sends the ack

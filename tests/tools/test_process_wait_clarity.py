@@ -72,3 +72,27 @@ class TestWaitYieldRelease:
             assert not is_thread_yield_requested(t.ident)
         finally:
             registry.kill_process(sid)
+
+
+class TestWaitUntil:
+    """``wait(until=...)`` ends as soon as the awaited text is printed; a later wait only sees new output."""
+
+    def test_returns_on_match_and_consumes_it(self, registry, tmp_path):
+        import time
+
+        session = registry.spawn_local(
+            "echo 'listening on :1'; sleep 1; echo 'listening on :2'; sleep 30", cwd=str(tmp_path), task_id="t-until")
+        try:
+            start = time.monotonic()
+            first = registry.wait(session.id, timeout=20, until="listening on")
+            second = registry.wait(session.id, timeout=20, until="listening on")
+            assert (first["status"], second["status"]) == ("matched", "matched")
+            assert first["process_running"] is True
+            assert time.monotonic() - start < 10  # never held the 20 s window
+            assert registry.wait(session.id, timeout=1, until="listening on")["status"] == "timeout"
+        finally:
+            registry.kill_process(session.id)
+
+    def test_exit_before_match_returns_exit(self, registry, tmp_path):
+        session = registry.spawn_local("echo bye", cwd=str(tmp_path), task_id="t-until")
+        assert registry.wait(session.id, timeout=10, until="never printed")["status"] == "exited"

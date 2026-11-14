@@ -117,3 +117,49 @@ class TestAllowlistGlobWithQuotedArgs:
         assert not _command_matches_permanent_allowlist(
             "git -c alias.x='!touch /tmp/pwn; printf ok' x"
         )
+
+
+# Issue #145763: bash evaluates these operands as array subscripts, re-expanding a
+# single-quoted substitution. Probe strings are assembled at runtime.
+_SUB = "$(" + "id" + ")"
+_TICK = "`" + "id" + "`"
+
+
+class TestSubscriptEvaluatingBuiltins:
+    @pytest.mark.parametrize("cmd", [
+        f"test -v 'a[{_SUB}]'",
+        f"test -v 'a[{_TICK}]'",
+        f"[ -v 'a[{_SUB}]' ]",
+        f"[[ -v 'a[{_SUB}]' ]]",
+        f"[[ 1 -eq 'a[{_SUB}]' ]]",
+        f"printf -v 'a[{_SUB}]' x",
+        f"unset 'a[{_SUB}]'",
+        f"read 'a[{_SUB}]'",
+        f"declare 'a[{_SUB}]=1'",
+        f"local 'a[{_SUB}]=1'",
+        f"let 'b=a[{_SUB}]'",
+        f"printf -v'a[{_SUB}]' x",
+        f"builtin test -v 'a[{_SUB}]'",
+        f"LC_ALL=C test -v 'a[{_SUB}]'",
+    ])
+    def test_quoted_substitution_in_evaluated_operand_is_compound(self, cmd):
+        assert _has_allowlist_shell_operator(cmd)
+
+    @pytest.mark.parametrize("cmd", [
+        "test -f foo",
+        "test -v SHELL",
+        "test -v 'a[x]'",
+        "[[ -v 'a[1]' ]]",
+        f"test -n '{_SUB}'",
+        f"printf '%s' '{_SUB}'",
+        "cargo bench -- '^a(b|c)$'",
+    ])
+    def test_literal_operands_stay_simple(self, cmd):
+        assert not _has_allowlist_shell_operator(cmd)
+
+    def test_test_glob_refuses_subscript_substitution(self, monkeypatch):
+        import tools.approval as mod
+        monkeypatch.setattr(mod, "_permanent_approved", {"test *", "[[ *"})
+        assert not _command_matches_permanent_allowlist(f"test -v 'a[{_SUB}]'")
+        assert not _command_matches_permanent_allowlist(f"[[ -v 'a[{_TICK}]' ]]")
+        assert _command_matches_permanent_allowlist("test -f /etc/hostname")

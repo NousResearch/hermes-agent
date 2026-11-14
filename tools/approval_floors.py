@@ -141,6 +141,26 @@ _SHELL_CONTROL_CHARS = frozenset("\n\r;&|<>`$()")
 _REINTERPRETED_ARGUMENT_RE = re.compile(r"(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)")
 
 
+# Bash builtins that evaluate an operand as an array subscript / arithmetic expression, re-expanding `$(...)` and
+# backticks the outer shell kept literal inside single quotes (`test -v 'a[$(cmd)]'`, `[[ x -eq 'a[$(cmd)]' ]]`,
+# `printf -v`, `unset`, `read`, `declare`, `local`, `let`). Value: an option that must also be present, or None.
+_SUBSCRIPT_EVALUATING_BUILTINS = {
+    "test": "-v", "[": "-v", "[[": None, "printf": "-v",
+    "unset": None, "read": None, "declare": None, "typeset": None, "local": None, "let": None,
+}
+_ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _evaluates_quoted_subscript(command: str) -> bool:
+    words = command.split()
+    while words and (words[0] in ("builtin", "command") or _ASSIGNMENT_WORD_RE.match(words[0])):
+        words = words[1:]
+    if not words or words[0] not in _SUBSCRIPT_EVALUATING_BUILTINS:
+        return False
+    required = _SUBSCRIPT_EVALUATING_BUILTINS[words[0]]
+    return required is None or any(w.startswith(required) for w in words[1:])  # printf -vNAME
+
+
 def _has_allowlist_shell_operator(command: str) -> bool:
     """Return True when a command is too compound for the allowlist shortcut.
     Quote-aware: metacharacters inside quotes or behind a backslash are literal
@@ -148,17 +168,12 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     disqualifying: ``$`` or backtick inside DOUBLE quotes (expansion stays
     active), and any quoted/escaped control character when the command also
     carries a ``-c``/``-e``/``--command``/``--eval``-style option that would
-    hand the quoted text to another interpreter."""
+    hand the quoted text to another interpreter, or is a builtin that
+    evaluates an operand as an array subscript (``test -v``, ``[[``, ...)."""
     command = command or ""
     quote = None  # None | "'" | '"'
     has_reinterpretable = False
-    # test/[ /[[ with a -v operand reinterprets the subscript at check time
-    # (bash array-index expansion), so quoted metacharacters there are not
-    # literal. See issue #145763.
-    _first_tokens = command.lstrip().split(None, 1)
-    _first_token = _first_tokens[0] if _first_tokens else ""
-    test_v_mode = _first_token in ("test", "[", "[[") and bool(
-        re.search(r"(?<!\S)-v(?=\s|$)", command))
+    test_v_mode = _evaluates_quoted_subscript(command)
     i = 0
     n = len(command)
     while i < n:

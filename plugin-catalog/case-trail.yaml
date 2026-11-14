@@ -7,7 +7,7 @@ description: "Trace case-history and treatment research to actual opinion passag
 maintainer: flabanabba8
 tier: community
 category: web
-requires_hermes: ">=0.22.3"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/flabanabba8/case-trail/blob/e1b9a0de5a6f8024954aab40ed73f2f56f04cc2f/README.md
 image: https://raw.githubusercontent.com/flabanabba8/case-trail/e1b9a0de5a6f8024954aab40ed73f2f56f04cc2f/assets/thumbnail.jpg
 platforms:

@@ -72,6 +72,8 @@ def quote_command_placeholder(value: str, quote_context: Optional[str], os_name:
     if quote_context == "'":
         return value.replace("'", r"'\''")
     if quote_context == '"':
+        if windows:  # no '"' left; the CRT reads "\" literally except in the run before the closing quote
+            return value + "\\" * (len(value) - len(value.rstrip("\\")))
         return value.replace("\\", "\\\\").replace('"', r'\"').replace("$", r"\$").replace("`", r"\`")
     return subprocess.list2cmdline([value]) if windows else shlex.quote(value)
 

@@ -336,11 +336,11 @@ class TestRenderCommandTtsTemplate:
             "voice": "", "model": "", "speed": "1.0",
         }
         for template in (r'echo "\{input_path}"', r"echo \{input_path}"):
-            rendered = _render_command_tts_template(template, placeholders)
+            rendered = _render_command_tts_template(template, placeholders, os_name="posix")
             assert "\\{input_path}" in rendered
             assert "$(echo PWNED)" not in rendered
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX sh execution proof")
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
     def test_backslash_adjacent_placeholder_cannot_resurrect_substitution(self):
         """End-to-end on /bin/sh: the old renderer emitted "\\$(...)" — a double
         backslash that un-escapes the value — so command substitution executed."""
@@ -358,6 +358,7 @@ class TestRenderCommandTtsTemplate:
     @pytest.mark.parametrize("value", [
         r"C:\tmp\a&b.mp3", r"C:\tmp\a|b.mp3", r"C:\tmp\a^b.mp3", r"C:\tmp\a>b.mp3",
         r"C:\tmp\%TEMP%.mp3", r"C:\tmp\a!b.mp3", r'C:\tmp\a"b.mp3', "a\nb",
+        r"C:\tmp\a<b.mp3", "a\rb",
     ])
     @pytest.mark.parametrize("template", ["tts --out {output_path}", 'tts --out "{output_path}"'])
     def test_windows_refuses_cmd_metacharacters_in_values(self, template, value):
@@ -380,6 +381,12 @@ class TestRenderCommandTtsTemplate:
         rendered = _render_command_tts_template(
             "tts --out {output_path}", {"output_path": r"C:\Users\Me\My Audio\out.mp3"}, os_name="nt")
         assert rendered == r'tts --out "C:\Users\Me\My Audio\out.mp3"'
+
+    def test_windows_double_quoted_value_is_not_posix_escaped(self):
+        rendered = _render_command_tts_template(
+            'tts --out "{output_path}" --dir "{voice}"',
+            {"output_path": r"C:\Users\a$b`c\out.mp3", "voice": "C:\\voices dir\\"}, os_name="nt")
+        assert rendered == r'tts --out "C:\Users\a$b`c\out.mp3" --dir "C:\voices dir\\"'
 
     def test_posix_keeps_quoting_cmd_metacharacters(self):
         rendered = _render_command_tts_template(

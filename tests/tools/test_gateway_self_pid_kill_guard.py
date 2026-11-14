@@ -41,9 +41,12 @@ def run(tmp_path, monkeypatch):
     # A redirection before the command word; a lethal signal after a signal-0 lookalike group target.
     ">/dev/null kill -9 {pid}", "2>/dev/null kill {pid}", "> /dev/null kill {pid}", "kill -9 -0 {pid}",
     "kill -USR1 {pid}", "kill -9 " + "1" * 5000 + " {pid}", "kill 00{pid}",
+    # A PID operand ends option parsing, so a later `-N` is a group target; unlisted value options.
+    "kill {other} -{pid}", "kill {other} -- {pid}",
+    "powershell -c 'Stop-Process -ErrorAction Stop -Id {pid}'", "Stop-Process -ea SilentlyContinue {pid}",
 ])
 def test_literal_gateway_pid_kill_is_blocked(run, command):
-    assert run(command.format(pid=PID)) is not None
+    assert run(command.format(pid=PID, other=OTHER)) is not None
 
 
 def test_referenced_script_killing_gateway_pid_is_blocked(run, tmp_path):

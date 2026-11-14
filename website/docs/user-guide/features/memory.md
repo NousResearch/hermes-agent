@@ -356,8 +356,9 @@ ones — waits for your yes/no before it ever enters your profile.
 The gate covers writes made through the `memory` tool. It is not a file-system
 lock: in a foreground turn the generic file tools (`write_file`, `patch`) and the
 terminal can still edit `MEMORY.md` / `USER.md` directly. The background review
-cannot: its tool whitelist denies those write tools, so its saves always reach
-the gate.
+cannot by default: its tool whitelist denies those write tools, so its saves
+reach the gate unless you name one in `auxiliary.background_review.extra_tools`
+(see [below](#allowing-a-narrowly-scoped-extra-review-tool-extra_tools)).
 
 A staged `patch` or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.

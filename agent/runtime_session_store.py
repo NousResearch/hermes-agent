@@ -47,6 +47,21 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+# The receipt budget: how long a worker waits for the owning gateway to confirm a durable write.
+# It must never be shorter than the server's own contention budget — the gateway applies each
+# receipt as one SQLite transaction that legitimately waits out sibling writers for up to
+# SessionDB._TRANSCRIPT_WRITE_PATIENCE_S (hermes_state.py), so a smaller client budget expires
+# first and the worker dies with worker_receipt_timeout while the server is still healthy and
+# merely busy (fleet incident 2026-11-13: two workers of one profile convoying on one 3 GB
+# state.db; the append itself measures sub-millisecond — the wait is the sibling's transaction).
+# Sourced from the server constant so the two cannot drift; a receipt budget LONGER than the
+# server's patience would only convert a fast failure into a slow one, so it is clamped equal.
+# The fail-safe is unchanged: on expiry the worker still refuses to claim the write landed.
+from hermes_state import SessionDB as _SessionDB  # constant only; this facade never opens SQLite
+
+RECEIPT_BUDGET_S = _SessionDB._TRANSCRIPT_WRITE_PATIENCE_S
+
+
 def _caller_summary(limit=8):
     """module:function:line of the frames above this store (its own frames skipped), never
     locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
@@ -194,7 +209,7 @@ class WorkerRPC:
                     self._drop()
                     link = self._connection()
                     link.send(request_id, message)
-                response = link.receive(20)
+                response = link.receive(RECEIPT_BUDGET_S)
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

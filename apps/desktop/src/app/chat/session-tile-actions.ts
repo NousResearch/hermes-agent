@@ -12,11 +12,12 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { isUndeliveredCorrectionRefusal } from '@hermes/shared'
 import { useCallback, useMemo, useRef } from 'react'
 
-import type { ClientSessionState } from '@/app/types'
+import type { ClientSessionState, SessionRedirectResponse } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import { UnconfirmedCorrectionError } from '@/lib/correction-delivery'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -24,8 +25,9 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
-import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
+import { $connection, $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import {
   requestForSessionProfile,
   type SessionOwnerScope,
@@ -412,16 +414,28 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          liveId => requestSessionGateway<SessionRedirectResponse>('session.steer', { session_id: liveId, text }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
           }
         )
 
-        return result?.status === 'queued'
-      } catch {
-        return false
+        if (result?.status === 'queued') {
+          return true
+        }
+
+        if (result?.status === 'rejected' && result.delivered === false) {
+          return false
+        }
+
+        throw new Error('Correction delivery unconfirmed')
+      } catch (err) {
+        if (isUndeliveredCorrectionRefusal(err)) {
+          return false
+        }
+
+        throw err
       }
     },
     [bindRecoveredRuntime, requestSessionGateway]
@@ -435,6 +449,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       if (!text || !sessionId) {
         return false
       }
+
+      const source = storedIdRef.current
+      const connection = $connection.get()
+      const profile = $activeGatewayProfile.get()
+
+      const stillHere = () =>
+        storedIdRef.current === source && $connection.get() === connection && $activeGatewayProfile.get() === profile
 
       const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -469,7 +490,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           sessionId,
           storedIdRef.current,
           liveId =>
-            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+            requestSessionGateway<SessionRedirectResponse>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
               session_id: liveId,
               text
             }),
@@ -504,6 +525,14 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
           return true
         }
+
+        if (result?.status === 'rejected' && result.delivered === false) {
+          discardOptimisticMessage()
+
+          return false
+        }
+
+        throw new Error('Correction delivery unconfirmed')
       } catch (err) {
         discardOptimisticMessage()
 
@@ -512,13 +541,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           return false
         }
 
-        notifyError(err, copy.promptFailed)
-        throw err
+        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyError(err, copy.promptFailed) : undefined)
       }
-
-      discardOptimisticMessage()
-
-      return false
     },
     [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
   )

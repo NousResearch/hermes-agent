@@ -2565,6 +2565,13 @@ export const ruOverrides = {
     markAllRead: 'Отметить все как прочитанные'
   },
   composer: {
+    steerNotSentTitle: 'Сообщение не отправлено',
+    steerExternalNotSentBody:
+      'Это сообщение не отправлено и не добавлено в очередь. Скопируйте текст и отправьте его самостоятельно.',
+    steerUnconfirmedTitle: 'Доставка не подтверждена',
+    steerUnconfirmedBody: 'Доставка не подтверждена. Проверьте сообщения и очередь, прежде чем отправлять повторно.',
+    steerExternalUnconfirmedBody:
+      'Предыдущая отправка не подтверждена. Скопируйте текст и проверьте сообщения и очередь, прежде чем отправлять повторно.',
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',

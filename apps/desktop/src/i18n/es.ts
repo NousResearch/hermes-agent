@@ -3760,6 +3760,13 @@ export const esOverrides = {
     markAllRead: 'Marcar todo como leído'
   },
   composer: {
+    steerNotSentTitle: 'Mensaje no enviado',
+    steerExternalNotSentBody: 'Este mensaje no se envió ni se puso en cola. Copia su texto para enviarlo tú.',
+    steerUnconfirmedTitle: 'Entrega sin confirmar',
+    steerUnconfirmedBody:
+      'La entrega no está confirmada. Revisa los mensajes y la cola antes de decidir si enviar de nuevo.',
+    steerExternalUnconfirmedBody:
+      'Un envío anterior no está confirmado. Copia su texto y revisa los mensajes y la cola antes de decidir si enviar de nuevo.',
     message: 'Mensaje',
     wakingProfile: profile => `Despertando ${profile}…`,
     placeholderStarting: 'Iniciando Hermes...',

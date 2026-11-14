@@ -3779,6 +3779,13 @@ export const frOverrides = {
     markAllRead: 'Tout marquer comme lu'
   },
   composer: {
+    steerNotSentTitle: 'Message non envoyé',
+    steerExternalNotSentBody:
+      'Ce message n’a été ni envoyé ni mis en file d’attente. Copiez son texte pour l’envoyer vous-même.',
+    steerUnconfirmedTitle: 'Livraison non confirmée',
+    steerUnconfirmedBody: 'La livraison est incertaine. Vérifiez les messages et la file avant de décider de renvoyer.',
+    steerExternalUnconfirmedBody:
+      'Un envoi précédent est incertain. Copiez son texte et vérifiez les messages et la file avant de décider de renvoyer.',
     message: 'Message',
     wakingProfile: profile => `Réveil de ${profile}…`,
     placeholderStarting: 'Démarrage de Hermes…',

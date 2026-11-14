@@ -2302,6 +2302,13 @@ export const jaOverrides = {
   },
 
   composer: {
+    steerNotSentTitle: 'メッセージは送信されていません',
+    steerExternalNotSentBody:
+      'このメッセージは送信もキューへの追加もされていません。テキストをコピーして、ご自身で送信してください。',
+    steerUnconfirmedTitle: '送信を確認できません',
+    steerUnconfirmedBody: '送達は未確認です。再送する前にメッセージとキューを確認してください。',
+    steerExternalUnconfirmedBody:
+      '前の送信は未確認です。テキストをコピーし、再送する前にメッセージとキューを確認してください。',
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',

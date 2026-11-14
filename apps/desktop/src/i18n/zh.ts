@@ -3228,6 +3228,11 @@ export const zhOverrides = {
   },
 
   composer: {
+    steerNotSentTitle: '消息未发送',
+    steerExternalNotSentBody: '这条消息未发送，也未加入队列。请复制文本后自行发送。',
+    steerUnconfirmedTitle: '发送未确认',
+    steerUnconfirmedBody: '无法确认是否已送达。请先检查消息和队列，再决定是否重发。',
+    steerExternalUnconfirmedBody: '先前提交的消息尚未确认。请复制文本并检查消息和队列，再决定是否重发。',
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',

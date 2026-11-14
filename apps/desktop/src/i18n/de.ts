@@ -3772,6 +3772,14 @@ export const deOverrides = {
     markAllRead: 'Alle als gelesen markieren'
   },
   composer: {
+    steerNotSentTitle: 'Nachricht nicht gesendet',
+    steerExternalNotSentBody:
+      'Diese Nachricht wurde weder gesendet noch eingereiht. Kopiere den Text, um sie selbst zu senden.',
+    steerUnconfirmedTitle: 'Zustellung unbestätigt',
+    steerUnconfirmedBody:
+      'Die Zustellung ist unbestätigt. Prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',
+    steerExternalUnconfirmedBody:
+      'Eine frühere Übermittlung ist unbestätigt. Kopiere den Text und prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',
     message: 'Nachricht',
     wakingProfile: profile => `Wecke ${profile}…`,
     placeholderStarting: 'Hermes wird gestartet…',

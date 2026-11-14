@@ -1549,7 +1549,9 @@ While a tool call runs, an MCP server that sends `notifications/progress` (the
 MCP spec's progress channel; Hermes opts in by sending `_meta.progressToken` on
 every `tools/call`) reaches the renderer as a `tool.progress` event. The native
 tool row shows it as `42% · <message>` next to its timer; a plugin can render
-its own view:
+its own view. A foreground `terminal` command publishes the same event with its
+newest output line (ANSI-stripped, redacted) as `message` and `total: null`,
+at most about twice a second while output keeps arriving:
 
 ```javascript
 ctx.onEvent('tool.progress', ({ session_id, payload }) => {

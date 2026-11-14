@@ -46285,7 +46285,7 @@
       },
       "ToolProgressPayload": {
         "additionalProperties": false,
-        "description": "``agent.tool_progress_relay.tool_progress_payload`` \u2014 an MCP server's\n``notifications/progress`` for a running call, throttled to one per 500 ms per call.",
+        "description": "``agent.tool_progress_relay.tool_progress_payload`` \u2014 an MCP server's\n``notifications/progress`` or a foreground terminal command's newest output line\n(``message``) for a running call, throttled to one per 500 ms per call.",
         "properties": {
           "tool_id": {
             "title": "Tool Id",
@@ -52065,7 +52065,7 @@
     },
     {
       "name": "tool.progress",
-      "summary": "Live progress of a running tool call (MCP notifications/progress).",
+      "summary": "Live progress of a running tool call (MCP notifications/progress, terminal output).",
       "params": [
         {
           "name": "payload",

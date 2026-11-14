@@ -113,16 +113,20 @@ export const requestScrollToBottom = (sessionId: string | null = null) => {
 
 export type ThreadPageDirection = -1 | 1
 
+// `end` jumps to the newest message (End / ⌘↓), sharing the page channel's
+// routing so only the focused transcript moves.
+export type ThreadScrollIntent = ThreadPageDirection | 'end'
+
 // Bare PageUp/PageDown are global keybinds, while the scroll owner lives in
 // the focused thread. Route the intent by stable session key so kept-alive and
 // split transcripts cannot page together.
-const pageHandlers = new Map<string | null, Set<(direction: ThreadPageDirection) => void>>()
+const pageHandlers = new Map<string | null, Set<(intent: ThreadScrollIntent) => void>>()
 
 export const onThreadPageScrollRequest = (
-  handler: (direction: ThreadPageDirection) => void,
+  handler: (intent: ThreadScrollIntent) => void,
   sessionKey: string | null = null
 ) => {
-  const scoped = pageHandlers.get(sessionKey) ?? new Set<(direction: ThreadPageDirection) => void>()
+  const scoped = pageHandlers.get(sessionKey) ?? new Set<(intent: ThreadScrollIntent) => void>()
 
   scoped.add(handler)
   pageHandlers.set(sessionKey, scoped)
@@ -136,8 +140,8 @@ export const onThreadPageScrollRequest = (
   }
 }
 
-export const requestThreadPageScroll = (direction: ThreadPageDirection, sessionKey: string | null = null) => {
-  pageHandlers.get(sessionKey)?.forEach(handler => handler(direction))
+export const requestThreadPageScroll = (intent: ThreadScrollIntent, sessionKey: string | null = null) => {
+  pageHandlers.get(sessionKey)?.forEach(handler => handler(intent))
 }
 
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport

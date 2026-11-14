@@ -14,6 +14,13 @@ describe('comboFromEvent', () => {
     expect(comboFromEvent(keydown({ code: 'KeyI', key: 'C', metaKey: true, shiftKey: true }))).toBe('mod+shift+c')
   })
 
+  it('reads Home and End as bindable tokens that stay with a focused input', () => {
+    expect(comboFromEvent(keydown({ code: 'End', key: 'End' }))).toBe('end')
+    expect(comboFromEvent(keydown({ code: 'Home', key: 'Home', ctrlKey: true }))).toBe('mod+home')
+    expect(actionAllowedInInput('conversation.scrollToEnd', 'end')).toBe(false)
+    expect(actionAllowedInInput('conversation.scrollToEnd', 'mod+down')).toBe(false)
+  })
+
   it('keeps shifted punctuation anchored to the physical key token', () => {
     expect(comboFromEvent(keydown({ code: 'Slash', key: '?', metaKey: true, shiftKey: true }))).toBe('mod+shift+/')
   })

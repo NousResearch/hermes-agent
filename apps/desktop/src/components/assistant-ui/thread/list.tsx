@@ -810,22 +810,21 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     [paneVisible, scrollSessionId]
   )
 
-  // Floating jump button (outside this subtree) → return to the bottom.
-  useEffect(
-    () =>
-      onScrollToBottomRequest(() => {
-        if (isHistorical) {
-          returnToLatest?.()
-        }
+  // Floating jump button (outside this subtree) and the End / ⌘↓ keybind
+  // (conversation.scrollToEnd) → return to the newest message.
+  const jumpToLatest = useCallback(() => {
+    if (isHistorical) {
+      returnToLatest?.()
+    }
 
-        if (jumpRestoreRef.current) {
-          jumpRestoreRef.current()
-        } else {
-          void scrollToBottomUnlessSelecting()
-        }
-      }, scrollSessionId),
-    [scrollToBottomUnlessSelecting, scrollSessionId, isHistorical, returnToLatest]
-  )
+    if (jumpRestoreRef.current) {
+      jumpRestoreRef.current()
+    } else {
+      void scrollToBottomUnlessSelecting()
+    }
+  }, [scrollToBottomUnlessSelecting, isHistorical, returnToLatest])
+
+  useEffect(() => onScrollToBottomRequest(jumpToLatest, scrollSessionId), [jumpToLatest, scrollSessionId])
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
   // the same to any window): rAF and ResizeObserver may have been frozen, so
@@ -1426,6 +1425,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           return
         }
 
+        if (direction === 'end') {
+          jumpToLatest()
+
+          return
+        }
+
         // A no-op PageDown at the bottom must not escape sticky follow: the
         // browser will clamp the write and emit no scroll event to re-lock it.
         if (direction > 0 && threadScrollStateFromMetrics(el).kind === 'bottom') {
@@ -1456,7 +1461,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
         el.scrollTop += direction * el.clientHeight
       }, sessionKey ?? null),
-    [hiddenCount, isAtBottom, olderAvailable, scrollRef, sessionKey, showEarlier, stopScroll]
+    [hiddenCount, isAtBottom, jumpToLatest, olderAvailable, scrollRef, sessionKey, showEarlier, stopScroll]
   )
 
   // Scroll/wheel at the top edge pages older turns through the same showEarlier

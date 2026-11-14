@@ -185,6 +185,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'session.togglePin', category: 'session', defaults: [] },
   { id: 'conversation.scrollPageUp', category: 'session', defaults: ['pageup'] },
   { id: 'conversation.scrollPageDown', category: 'session', defaults: ['pagedown'] },
+  // End / ⌘↓ (Ctrl+↓ off macOS) — one press to the newest message, the same
+  // jump as the floating button. Both stay with a focused input (caret moves).
+  { id: 'conversation.scrollToEnd', category: 'session', defaults: ['end', 'mod+down'] },
   // Archive the active session. Ships unbound (like `session.togglePin`) so an
   // irreversible-feeling, mouse-only action doesn't silently claim a chord for
   // every user — surfaced in the panel for opt-in binding (the issue suggests
@@ -300,6 +303,7 @@ export const PLUGIN_APP_ACTIONS = [
   'session.focusSearch',
   'conversation.scrollPageUp',
   'conversation.scrollPageDown',
+  'conversation.scrollToEnd',
   // Navigation
   'nav.commandPalette',
   'nav.settings',

@@ -1,7 +1,7 @@
 name: consequence-map
 title: ConsequenceMap
 repo: https://github.com/BitSempre/ConsequenceMap
-sha: 2f6d681e7bcdb0c19c1a5632663b24b3dc4b8a04
+sha: c9843d631d699229b4554d3da32bc2b3540a16cb
 subdir: ConsequenceMap/plugin
 version: "0.3.0"
 description: >-
@@ -27,7 +27,7 @@ maintainer: BitSempre
 tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/BitSempre/ConsequenceMap/tree/2f6d681e7bcdb0c19c1a5632663b24b3dc4b8a04/ConsequenceMap
+docs_url: https://github.com/BitSempre/ConsequenceMap/tree/c9843d631d699229b4554d3da32bc2b3540a16cb/ConsequenceMap
 readme: true
 platforms:
   - windows

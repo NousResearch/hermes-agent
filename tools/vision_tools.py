@@ -121,7 +121,8 @@ async def _run_encode_on_cpu_executor(fn, *args, **kwargs):
     """Run a sync encode/resize callable on the bounded vision CPU executor (never the LLM call)."""
     import functools
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_vision_cpu_executor, functools.partial(fn, *args, **kwargs))
+    from agent.memory_provider import ctx_bound
+    return await loop.run_in_executor(_vision_cpu_executor, ctx_bound(functools.partial(fn, *args, **kwargs)))
 
 
 async def _validate_image_url_async(url: str) -> bool:
@@ -643,6 +644,10 @@ async def _prepare_image(
     into immutable history would 400 on every resume. The crop runs BEFORE any downscale so the
     region keeps the full resolution budget. On error no temp file is left."""
     from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_processing"):
+        # Hosted: decoding, conversion and the temp file would all happen on this host.
+        raise _ImagePrepError("Image processing is not available to a hosted agent.")
     try:
         resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
     except ImageResolutionError as exc:
@@ -1074,8 +1079,12 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
     (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
     from tools.image_source import (
-        ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
+        ImageResolutionError, ResolveContext, _is_local_terminal_backend, local_source_spelling,
+        resolve_image_source,
     )
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_processing"):
+        raise ValueError("Video processing is not available to a hosted agent.")  # it would cache here
     source = video_url.removeprefix("file://")
     local_path = Path(os.path.expanduser(source))
     lowered = (video_url or "").strip().lower()
@@ -1095,6 +1104,8 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
         return path
+    if path_like:
+        local_path = Path(await asyncio.to_thread(local_source_spelling, str(local_path)))
     if local_path.is_file():
         from agent.file_safety import raise_if_read_blocked
         raise_if_read_blocked(str(local_path))

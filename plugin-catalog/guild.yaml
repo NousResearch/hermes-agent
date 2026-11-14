@@ -1,0 +1,29 @@
+name: guild
+repo: https://github.com/Nnadijoshuac/hermes-guild
+sha: 440c2820fb376c414c0ed01d7e83e2f9d147b7b4
+description: "Shared skill library for a team's Hermes agents, or for one person's machines and profiles, kept in a git repository the team controls. A skill an agent saved is scrubbed of API keys, home folder paths, e-mail addresses and private IPs, pushed as a proposal branch, and merged only after a teammate approves it from the CLI, TUI or Desktop. Each member's agent then loads approved skills read-only. If an agent tries to edit a team skill, a pre_tool_call hook refuses the edit and tells it to use guild_propose. Hermes Desktop gets a Guild page to review diffs and approve or decline. Commands: `hermes guild init|join|propose|review|show|approve|reject|revert|log` and `/guild`. Disclosure — runs local `git` subprocesses (repository hooks disabled, no terminal prompts, only the environment variables git and ssh need) that fetch from and push to the remote you configure, using your existing git credentials; contacts nothing else and stores no credentials. Only the files of a skill you propose, or that your agent proposes after the approval prompt, leave the machine, with your member name in the commit. Optional background sync at session start (auto_sync_minutes, default 15, 0 turns it off); a sync moves a local skill identical to the team copy, or your own accepted proposal, into the plugin's backups folder. In a solo guild proposals are committed straight to main with no review. `init` and `join` add the library folder to the profile's skills.external_dirs and `leave` removes it. The write check reads tool arguments and does not inspect execute_code. The reviewer list is enforced by the plugin only; use branch protection on the git host for a server-side guarantee."
+maintainer: Nnadijoshuac
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Nnadijoshuac/hermes-guild#readme
+version: "0.1.0"
+title: "Guild"
+image: https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6/docs/desktop-review.png
+  - https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6/docs/desktop-library.png
+platforms: []
+capabilities:
+  provides_tools:
+    - guild_status
+    - guild_sync
+    - guild_propose
+    - guild_review
+  provides_hooks:
+    - pre_tool_call
+    - on_skill_lifecycle
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

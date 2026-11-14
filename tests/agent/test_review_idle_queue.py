@@ -74,6 +74,20 @@ def _make_queue(now=None, server_idle=True):
     return q, clock
 
 
+def test_discard_drops_only_the_item_its_dispatch_still_owns():
+    """A fenced plugin fork releases its slot; a newer item that replaced it stays queued."""
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    first, second = (lambda: None), (lambda: None)
+    q.enqueue(agent, "s1", {"task_cfg": {}}, dispatch=first)
+    q.discard("s1", first)
+    assert q.pending_count() == 0
+    q.enqueue(agent, "s1", {"task_cfg": {}}, dispatch=first)
+    q.enqueue(agent, "s1", {"task_cfg": {}}, dispatch=second)
+    q.discard("s1", first)
+    assert q.pending_count() == 1 and q._pending["s1"].dispatch is second
+
+
 def test_enqueue_coalesces_per_session_newest_wins_oldest_age():
     q, clock = _make_queue()
     agent = _FakeAgent()

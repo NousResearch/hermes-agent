@@ -52,39 +52,12 @@ class TestHandleUpdateCommand:
         """Returns an error when .git does not exist."""
         runner = _make_runner()
         event = _make_event()
-        # Point _hermes_home to tmp_path and project_root to a dir without .git
         fake_root = tmp_path / "project"
         fake_root.mkdir()
+
         with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.run.Path") as MockPath:
-            # Path(__file__).parent.parent.resolve() -> fake_root
-            MockPath.return_value = MagicMock()
-            MockPath.__truediv__ = Path.__truediv__
-            # Easier: just patch the __file__ resolution in the method
-
-        # Simpler approach — mock at method level using a wrapper
-        runner = _make_runner()
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            # The handler does Path(__file__).parent.parent.resolve()
-            # We need to make project_root / '.git' not exist.
-            # Since Path(__file__) resolves to the real gateway/run.py,
-            # project_root will be the real hermes-agent dir (which HAS .git).
-            # Patch Path to control this.
-
-            class FakePath(type(Path())):
-                pass
-
-            # Actually, simplest: just patch the specific file attr.
-            # The _handle_update_command handler lives in gateway/slash_commands.py
-            # (extracted from run.py in the god-file decomposition); it resolves
-            # project_root via Path(__file__).parent.parent, so fake that file.
-            fake_file = str(fake_root / "gateway" / "slash_commands.py")
-            (fake_root / "gateway").mkdir(parents=True)
-            (fake_root / "gateway" / "slash_commands.py").touch()
-
-            with patch("gateway.slash_commands.__file__", fake_file):
-                result = await runner._handle_update_command(event)
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)):
+            result = await runner._handle_update_command(event)
 
         assert "Not a git repository" in result
 
@@ -129,14 +102,11 @@ class TestHandleUpdateCommand:
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
@@ -163,9 +133,6 @@ class TestHandleUpdateCommand:
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
@@ -179,7 +146,7 @@ class TestHandleUpdateCommand:
             return None
 
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):

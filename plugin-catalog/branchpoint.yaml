@@ -1,0 +1,28 @@
+name: branchpoint
+repo: https://github.com/Sahil-SS9/hermes-branchpoint
+sha: "b9ff80bf851e5f1cf7549b73b9c7f32811a0b11b"
+title: Branchpoint
+version: "0.2.4"
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Sahil-SS9/hermes-branchpoint#readme
+readme: true
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-branchpoint/87ebeb0c06e622b4768b7e6d48c3704e372b3fba/docs/multiverse.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-branchpoint/87ebeb0c06e622b4768b7e6d48c3704e372b3fba/docs/decision.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-branchpoint/87ebeb0c06e622b4768b7e6d48c3704e372b3fba/docs/decision-log.png
+description: "Explore the same task with 2-8 independent agent plans (default 4), optionally on different models. Build selected routes in isolated Git worktrees (default top 2), compare them with three blind reviewers and an evidence-linked decision record, then adopt or converge their ideas into another candidate. Includes a loopback live view, decision log, rewind anchors and reversible adoption. Disclosure — Branchpoint spawns git and up to 8 headless Hermes agents (file tools only, your configured model and credentials) in git worktrees it creates in your repository, writes branches, snapshots and refs/branchpoint/ there (a snapshot on every prompt unless anchor_on_turn is off), and changes your working tree only when you run /branchpoint adopt. It runs your project's test, lint and type commands, including code the agents wrote, inside a bubblewrap or sandbox-exec sandbox (no network, home masked, allowlisted env), and refuses real builds without a sandbox unless you pass --unsafe-checks. Goal, source excerpts and route ledgers go to your configured model with best-effort secret scrubbing. A live view is served on 127.0.0.1 behind a token."
+known_issues:
+  - "Screenshots are pinned to the 0.2.1 release commit: the docs images are unchanged, and that is the revision whose immutable raw URLs are on the review-approved list."
+  - "Real builds require matching Branchpoint hooks installed and enabled in the child's Hermes home; absent, disabled or stale hooks stop the build."
+  - "Child token caps are not a live cross-process budget. Missing usage is explicitly estimated; inherited failing checks and skipped evidence remain visible."
+  - "Replay produces a paste-ready prompt, not a programmatically forked Hermes session. Undo restores the entire pre-adopt tree, replacing later edits."
+  - "POSIX file locking is required: Linux/macOS; use WSL on Windows. Native Hermes integration is tested on Linux, with offline CI on Linux and macOS."
+capabilities:
+  provides_tools: [branchpoint_status, branchpoint_decision, branchpoint_fork]
+  provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, transform_tool_result, post_api_request]
+  provides_middleware: []
+  requires_env: []

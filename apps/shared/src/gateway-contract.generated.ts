@@ -2156,6 +2156,9 @@ export interface ProfilesCreateParams {
   provider?: string | null
   share_auth?: boolean | string | null
   mirror_credentials?: boolean | string | null
+  clone_config?: boolean | string | null
+  sync_imports?: boolean | string | null
+  report?: boolean | string | null
 }
 export interface ProfilesCreateResult {
   ok?: boolean
@@ -2165,6 +2168,7 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
   warnings?: string[]
+  receipt?: ProfileCreateReceipt | null
 }
 /** What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no auth.json of its own and reads the default root's. */
 export interface ProfileMirrored {
@@ -2172,6 +2176,24 @@ export interface ProfileMirrored {
   auth?: boolean | 'shared'
   model_inherited?: boolean
   voice?: boolean
+}
+/** What ``hermes profile create`` prints about a new profile, read on the machine (and in the profile scope) that made it: built after a local create, or sent by the gateway that made it (``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a local create never loads pydantic. A client treats a receipt missing a field, or with a wrong type, as an unknown outcome. */
+export interface ProfileCreateReceipt {
+  path: string
+  display_path: string
+  launch_label: string
+  source_label: string
+  skills_synced: number | null
+  skills_opted_out: boolean
+  alias_path: string | null
+  alias_collision: string | null
+  mirrored: Record<string, boolean | 'shared'>
+  warnings: string[]
+  cloned_plugins: string[]
+  memory_provider: string | null
+  channels_left_behind: string[]
+  shared_channels: string[]
+  served_now: boolean | null
 }
 export interface ProfileNameParams {
   profile?: string | null
@@ -4601,7 +4623,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. ``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a model-provider plugin's updated tree failed to import (the previous version keeps serving). */
 export interface PluginActivation {
   name: string
   key: string
@@ -4610,6 +4632,7 @@ export interface PluginActivation {
   deferred?: Record<string, string[]>
   missing_dependencies?: string[]
   missing_in?: PluginRestartTarget[]
+  load_error?: string | null
 }
 export interface PluginLiveNow {
   mcp_servers?: PluginLiveServer[]
@@ -5256,10 +5279,13 @@ export interface CanonicalListParams {
   include_hidden?: boolean
   workspace?: string | null
   picker?: boolean
+  query?: string | null
+  cursor?: string | null
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
   scope: 'stored' | 'live'
+  next_cursor?: string | null
 }
 export interface CanonicalSessionListRow {
   session_id: string

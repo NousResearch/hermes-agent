@@ -9,6 +9,7 @@ import re
 from typing import Any, List
 from tools.ansi_strip import strip_tool_metadata_text
 from tools.mcp_tool_common import mcp_field
+from tools.threat_patterns import _FILLER
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -17,7 +18,8 @@ logger = logging.getLogger("tools.mcp_tool")
 _MCP_INJECTION_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE), reason)
     for pattern, reason in (
-        (r"ignore\s+(all\s+)?previous\s+instructions", "prompt override attempt ('ignore previous instructions')"),
+        (rf"ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions",
+         "prompt override attempt ('ignore previous instructions')"),
         (r"you\s+are\s+now\s+a", "identity override attempt ('you are now a...')"),
         (r"your\s+new\s+(task|role|instructions?)\s+(is|are)", "task override attempt"),
         (r"system\s*:\s*", "system prompt injection attempt"),

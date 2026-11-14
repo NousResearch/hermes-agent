@@ -25,9 +25,13 @@
 # Ports (host → container):
 #   9119 → 9119   Hermes Web UI
 #   8642 → 8642   API server (OpenAI-compatible /v1 endpoint — enable via API_SERVER_KEY)
-#   8789 → 8789   Gateway health endpoint (/health)
 #   8644 → 8644   Webhook inbound (disabled by default — enable in data/config.yaml)
 #   5433 → 5432   PostgreSQL (host:5433 → container:5432)
+#
+# There is no gateway health listener. The gateway's health surface is the API
+# server's /health on 8642, which is what GATEWAY_HEALTH_URL and the container
+# healthcheck both target. An 8789 mapping used to be published here; nothing
+# ever bound it, so docker forwarded a closed port.
 # Supported voice architecture for this lane:
 # - Hermes runtime comes from the published GHCR image in this compose file.
 # - Active voice provider and default voice come from mounted data/config.yaml.
@@ -140,17 +144,14 @@ services:
       # repeated here.
       - ./data:/opt/data
       - ${CUBECLOUD_WORKSPACE_DIR:-${USERPROFILE}/cubecloud-workspace}:/workspace
-      # Durable fix for the chat-completions stub. The published image ships
-      # APIServerAdapter._handle_chat_completions as a stub that returns None,
-      # which the security-headers middleware dereferences into a generic 500.
-      # The repo carries the delegating fix; mounting the file means the fix
-      # survives `docker compose up`, instead of living in the container's
-      # writable layer where a re-pull wipes it.
-      - ./gateway/platforms/api_server.py:/opt/hermes/gateway/platforms/api_server.py
+      # NOTE: the api_server.py override was removed, matching
+      # docker-compose.upstream.yml. The image is built from this repo's own
+      # source, so it already carries the security-headers fix; mounting a
+      # repo-tracked copy on top re-introduces the version-coupling failure
+      # mode (a mounted module against a different image base) with no upside.
       - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
     ports:
       - "8642:8642"
-      - "8789:8789"
       - "8644:8644"
     # Wait for hermes-web's healthcheck so config bootstrap is complete before gateway reads it
     depends_on:

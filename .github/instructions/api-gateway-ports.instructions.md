@@ -1,5 +1,5 @@
 ---
-description: "Use when configuring or troubleshooting the API gateway ports and listeners — the OpenAI-compatible API server (:8642), gateway health endpoint (:8789), webhook inbound (:8644), and dashboard (:9119). Covers env vars, config.yaml keys, compose port mappings, and host-bind security. Triggers when the user mentions 'api gateway port', 'api server', '8642', '8789', '8644', 'API_SERVER_PORT', 'API_SERVER_HOST', or OpenAI-compatible endpoint setup."
+description: "Use when configuring or troubleshooting the API gateway ports and listeners — the OpenAI-compatible API server and gateway health endpoint (:8642), webhook inbound (:8644), and dashboard (:9119). Covers env vars, config.yaml keys, compose port mappings, and host-bind security. Triggers when the user mentions 'api gateway port', 'api server', '8642', '8644', 'API_SERVER_PORT', 'API_SERVER_HOST', or OpenAI-compatible endpoint setup."
 name: "API Gateway Ports & Listeners"
 applyTo:
   - "docker-compose.yml"
@@ -28,8 +28,7 @@ docs, compose files, and code.
 
 | Port | Listener | Default bind | Env var override | config.yaml path |
 |------|----------|-------------|------------------|------------------|
-| **8642** | API server (OpenAI-compatible `/v1/chat/completions`, `/v1/models`, `/health`) | `127.0.0.1` | `API_SERVER_PORT`, `API_SERVER_HOST` | `platforms.api_server.extra.port` / `.host` |
-| **8789** | Gateway health endpoint (`/health`) — used by dashboard and cross-container probes | `0.0.0.0` (in compose) | `GATEWAY_HEALTH_URL` (dashboard side) | — |
+| **8642** | API server (OpenAI-compatible `/v1/chat/completions`, `/v1/models`, `/health`) — **this is also the gateway health endpoint** | `127.0.0.1` | `API_SERVER_PORT`, `API_SERVER_HOST` | `platforms.api_server.extra.port` / `.host` |
 | **8644** | Webhook inbound platform | `0.0.0.0` | `WEBHOOK_PORT` (via `platforms.webhook.extra.port`) | `platforms.webhook.extra.port` / `.host` |
 | **9119** | Web dashboard (`/api/status`, UI) | `0.0.0.0` (in container), `127.0.0.1` (host) | `HERMES_DASHBOARD_PORT` | — |
 | **5433→5432** | PostgreSQL | — | `POSTGRES_PASSWORD` | — |
@@ -94,14 +93,25 @@ http://localhost:8642/v1/chat/completions
 Authorization: Bearer <API_SERVER_KEY>
 ```
 
-## Gateway health (:8789)
+## Gateway health is `:8642`, not a separate port
 
-The gateway runner starts a health endpoint on port `8789` at `/health`.
-The dashboard container probes this via `GATEWAY_HEALTH_URL` (set to
-`http://hermes-gateway:8789` in compose) to show gateway status in the UI.
+There is **no** standalone gateway health listener. The gateway's health
+surface is the API server's `/health` on `8642`:
 
-This port is **not** the API server — it's a lightweight health check only.
-Don't point OpenAI-compatible frontends at `:8789`; use `:8642` instead.
+```
+curl -s http://127.0.0.1:8642/health
+{"status": "ok", "platform": "hermes-agent", "version": "0.23.1"}
+```
+
+`GATEWAY_HEALTH_URL` therefore points at `http://hermes-gateway:8642`, and the
+`hermes-gateway` healthcheck probes `http://127.0.0.1:8642/health`. Nothing binds
+`8789` — an `8789:8789` mapping used to be published in both compose files and
+docker forwarded a closed port. It was removed; do not re-add it.
+
+Because `/health` lives on the API server, it is only served while that platform
+is enabled (`API_SERVER_KEY` set, or `API_SERVER_ENABLED=true`). A gateway with
+the API server disabled has no local health endpoint; use
+`http://127.0.0.1:9119/api/status` (`components.gateway`) instead.
 
 ## Webhook inbound (:8644)
 
@@ -125,7 +135,7 @@ Bind `:8644` in the compose file's `hermes-gateway` service before enabling.
 When editing any compose file, verify these ports are consistent:
 
 1. `hermes-web`: `127.0.0.1:9119:9119` — dashboard, loopback-only on host
-2. `hermes-gateway`: `8642:8642` (API server), `8789:8789` (health), `8644:8644` (webhook, if enabled)
+2. `hermes-gateway`: `8642:8642` (API server + `/health`), `8644:8644` (webhook, if enabled)
 3. `postgres`: `5433:5432` — DB on host port 5433
 
 If `docker-compose.yml` and `docker-compose.upstream.yml` diverge on
@@ -140,7 +150,6 @@ all exposed host ports. When adding/changing a port, update the table:
 | Port (host) | Port (container) | Service |
 |---|---|---|
 | 9119 | 9119 | Hermes Web UI |
-| 8642 | 8642 | API server (OpenAI-compatible) — enable via `API_SERVER_KEY` |
-| 8789 | 8789 | Gateway health endpoint (internal) |
+| 8642 | 8642 | API server (OpenAI-compatible) + gateway `/health` — enable via `API_SERVER_KEY` |
 | 8644 | 8644 | Webhook inbound (disabled by default) |
 | 5433 | 5432 | PostgreSQL |

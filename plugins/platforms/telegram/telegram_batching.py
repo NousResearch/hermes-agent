@@ -3,7 +3,8 @@
 from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent
-from plugins.platforms.telegram.telegram_media_group import item_notes
+from gateway.platforms.helpers import caption_is_command
+from plugins.platforms.telegram.telegram_media_group import CAPTION_TEXT_ATTR, caption_text, item_notes
 
 
 def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:
@@ -72,12 +73,27 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
     existing.absorb_reply_expected(event)
     existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
     existing.extend_media(event)
-    caption, notes = event.text or "", []
+    captions = merged_text(caption_text(existing), event, caption_text(event), merge_caption) or ""
+    existing.text = merged_text(existing.text, event, event.text, merge_caption)
+    if CAPTION_TEXT_ATTR in existing.__dict__ or CAPTION_TEXT_ATTR in event.__dict__:  # an item inlined file text
+        existing.__dict__[CAPTION_TEXT_ATTR] = captions  # refreshed on every merge, so it never lags the text
+        if caption_is_command(captions):
+            # An album is judged by its ONE caption, which only one item carries. The uncaptioned siblings
+            # inlined their text, which would become the command's arguments or hide the command; the files
+            # stay attached and the agent is told to read them.
+            existing.text = captions
+            existing.media_text_inlined = [False if flag else flag for flag in pad_inline_flags(existing)]
+    return key
+
+
+def merged_text(text: Optional[str], event: MessageEvent, incoming: Optional[str], merge_caption) -> Optional[str]:
+    """``text`` with ``incoming`` (one album item's text) merged in: its caption deduped, its own notes kept."""
+    caption, notes = incoming or "", []
     for note in reversed(item_notes(event)):
         if caption.endswith(note):  # two same-name or unnamed same-size items both keep their note
             caption, notes = caption[:-len(note)].rstrip("\n"), [note, *notes]
     if caption:
-        existing.text = merge_caption(existing.text, caption)
+        text = merge_caption(text, caption)
     for note in notes:
-        existing.text = f"{existing.text}\n\n{note}" if existing.text else note
-    return key
+        text = f"{text}\n\n{note}" if text else note
+    return text

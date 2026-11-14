@@ -151,8 +151,31 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
 def mcp_server_enabled(cfg: dict) -> bool:
     """Whether ``mcp_servers.<name>`` is on. The ONE reader of the ``enabled`` key: the MCP client,
     the toolset resolver, the profile editor, and every list/status surface call it, so a value
-    can never be on for one surface and off for another. Absent, ``null`` or unparseable = on."""
-    return _parse_boolish(cfg.get("enabled", True), default=True)
+    can never be on for one surface and off for another. Absent, ``null`` or unparseable = on.
+    A legacy ``disabled: true`` (pre-v46 profile editor) also means off and wins over ``enabled``,
+    as v46 resolves it: a file stamped by a newer build runs no step, so v46 may not have run."""
+    return (_parse_boolish(cfg.get("enabled", True), default=True)
+            and not _parse_boolish(cfg.get("disabled", False), default=False))
+
+
+def write_mcp_server_enabled(cfg: dict, on: bool) -> None:
+    """Switch ``mcp_servers.<name>`` on or off for every writer. A legacy ``disabled`` is dropped
+    in the same write: the reader above lets it win, so leaving it would undo an enable."""
+    cfg["enabled"] = bool(on)
+    cfg.pop("disabled", None)
+
+
+def drop_legacy_disabled_for_key(located) -> bool:
+    """A generic write of ``mcp_servers.<name>.enabled`` (``hermes config set``) also drops the
+    legacy ``disabled``, as :func:`write_mcp_server_enabled` does, or an enable would not take.
+    *located*: ``hermes_cli.config._locate_nested`` of the written key, so a server name with a
+    dot resolves to the same entry the write landed on. True when it dropped one."""
+    if located is None:
+        return False
+    parents, entry, key = located
+    if key != "enabled" or len(parents) != 2 or parents[0][1] != "mcp_servers" or not isinstance(entry, dict):
+        return False
+    return entry.pop("disabled", None) is not None
 
 
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:

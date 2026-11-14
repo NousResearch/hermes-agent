@@ -155,9 +155,11 @@ On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see t
 If your bot stays offline and `gateway.log` mentions privileged Gateway Intents, the **Message Content Intent** is disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
 :::
 
-**Regarding server count:**
-- If your bot is in **fewer than 100 servers**, you can simply toggle intents on and off freely.
-- If your bot is in **100 or more servers**, Discord requires you to submit a verification application to use privileged intents. For personal use, this is not a concern.
+**Regarding reach (Discord changed this in 2026):**
+- If your bot can reach **fewer than 10,000 users** across all its servers, you can simply toggle intents on and off freely. For personal use, this is not a concern.
+- Once it reaches **10,000 users**, Discord notifies the app owner (email / system DM / Developer Portal) and you have **90 days** to apply for privileged intent access, or the intents are switched off. Apps granted access through a review must also **reapply once a year**, again with a 90-day window after the notification.
+
+The threshold used to be "100 servers"; it is now counted in users. Details: [Changes to Privileged Intent Access for Discord Apps](https://support-dev.discord.com/hc/en-us/articles/40281523410967-Changes-to-Privileged-Intent-Access-for-Discord-Apps).
 
 Click **Save Changes** at the bottom of the page.
 

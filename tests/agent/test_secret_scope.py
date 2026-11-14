@@ -2,6 +2,7 @@
 import pytest
 
 from agent import secret_scope as ss
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -392,7 +393,7 @@ class TestEnvFileParsing:
         (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n")
         from hermes_cli import env_loader
 
-        home_key = str(tmp_path.resolve())
+        home_key = hermes_home_key(tmp_path)
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,
             home_key,
@@ -414,7 +415,7 @@ class TestEnvFileParsing:
 
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,
-            str(other.resolve()),
+            hermes_home_key(other),
             {"XIAOMI_API_KEY": "sk-other-profile"},
         )
 

@@ -83,7 +83,7 @@ _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # the subcommand whenever the path held a space. A separate value is still at most one non-dash word.
 # The git rules below therefore match the SUBCOMMAND, which no literal `git <verb>` prefix ever is
 # (#150744).
-_GIT_OPTION_WORD = r"""(?:[^\s"']++|"[^"]*"|'[^']*')+"""
+_GIT_OPTION_WORD = r"""(?:[^\s"'`$]++|\$\([^()]*+\)|`[^`]*+`|\$(?!\([^()]*+\))|"[^"]*"|'[^']*')+"""
 _GIT_GLOBAL_FLAGS = rf'(?:-{_GIT_OPTION_WORD}(?:\s++(?!-\S){_GIT_OPTION_WORD})?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
@@ -1707,6 +1707,19 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
+_ESCAPED_WORD_CHAR = re.compile(r"\\([ \t\"'`])|\\.", re.DOTALL)
+
+
+def _join_escaped_word_chars(command: str) -> str:
+    """Replace each backslash-escaped space, tab, quote or backtick with `_`, outside single quotes
+    (where a backslash is literal); `\\` pairs are consumed first so an escaped backslash stays itself."""
+    def join(span: re.Match) -> str:
+        if span.group(0)[0] == "'":
+            return span.group(0)
+        return _ESCAPED_WORD_CHAR.sub(lambda e: "_" if e.group(1) else e.group(0), span.group(0))
+    return re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.", join, command, flags=re.DOTALL)
+
+
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
@@ -1735,12 +1748,12 @@ def _command_detection_variants(command: str):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
-    # Escaped-whitespace variant: normalization turns `my\ repo` into the two words `my repo`, so an
-    # option value spelled that way (`git -C my\ repo push --force`) left a stray word between the
-    # option and the subcommand. Keep each `\<space>` inside its word with a non-space placeholder;
-    # `\\` pairs are consumed first so an escaped backslash before a real space stays a separator.
-    if re.search(r"\\[ \t]", command):
-        joined = re.sub(r"\\(.)", lambda m: "_" if m.group(1) in " \t" else m.group(0), command, flags=re.DOTALL)
+    # Escaped-word-char variant: normalization turns `my\ repo` into the two words `my repo` and `\"`
+    # into a bare quote, so an option value spelled that way (`git -C my\ repo push --force`,
+    # `-c user.name="a \"b\" c"`) left a stray word between the option and the subcommand. Keep each
+    # escaped space or quote inside its word with a placeholder (see _join_escaped_word_chars).
+    if re.search(r"\\[ \t\"'`]", command):
+        joined = _join_escaped_word_chars(command)
         joined_variant = _normalize_command_for_detection(_mask_quoted_newlines(joined))
         if fresh(joined_variant):
             yield joined_variant

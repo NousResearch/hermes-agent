@@ -58,6 +58,14 @@ BRANCH_FORCE_DELETE_LONG = "git branch force delete (long flags)"
         ("git -c user.name=a\\ b clean -fd", CLEAN_FORCE),
         ("git -C /tmp/my\\\tdir branch -D old", BRANCH_FORCE_DELETE),
         ('git -C "/a b c" -c "user.name=a b" reset --hard', RESET_HARD),
+        # An escaped quote stays inside its word, in a double-quoted value or a bare one.
+        ('git -c user.name="John \\"Big John\\" Doe" reset --hard', RESET_HARD),
+        ("git -c user.name=O\\'Brien push --force", FORCE_PUSH),
+        ("git -c user.name=a\\`b reset --hard", RESET_HARD),
+        # A command substitution is one word even unquoted.
+        ("git -C $(git rev-parse --show-toplevel) push --force", FORCE_PUSH),
+        ("git -C `git rev-parse --show-toplevel` reset --hard", RESET_HARD),
+        ("git -C /tmp/r branch --force --delete old", "git branch force delete (long flags, force-first)"),
     ],
 )
 def test_git_global_options_do_not_hide_the_subcommand(command, description):
@@ -82,6 +90,7 @@ def test_git_global_options_do_not_hide_the_subcommand(command, description):
         "git -C'/tmp/my repo with spaces' clean -n",
         "git --git-dir='/tmp/my repo with spaces/.git' commit -m wip",
         "git -C my\\ repo push origin main",
+        "git -C $(git rev-parse --show-toplevel) push origin main",
     ],
 )
 def test_safe_git_global_option_forms_stay_safe(command):
@@ -118,7 +127,8 @@ command = f"git {run}-C /tmp/r push --force origin x"
 assert detect_dangerous_command(command)[0] is True, command[:60]
 for prefix in ("git", "git -C /tmp/r", "git --git-dir=/tmp/r/.git"):
     for bulk in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58,
-                 "-C'/tmp/a b' -c 'k=v' " * 58, "-C /a\\ b\\ c -c k=v\\ w " * 58):
+                 "-C'/tmp/a b' -c 'k=v' " * 58, "-C /a\\ b\\ c -c k=v\\ w " * 58,
+                 "-C " + "$(pwd)" * 58 + " "):
         assert detect_dangerous_command(f"{prefix} {bulk}log --oneline")[0] is False, prefix
 '''
     env = {**os.environ, "PYTHONPATH": REPO_ROOT}

@@ -1,3 +1,4 @@
+import { SESSION_ID_RE } from '@/lib/session-ids'
 import type { PluginInstallLegacyHint } from '@/store/plugin-install-request'
 
 export interface DeepLinkPayload {
@@ -14,6 +15,10 @@ export type DeepLinkAction =
   | { type: 'skill-install'; identifier: string }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'connection-done'; op: string; status: string }
+  /** `hermes://session/<stored-id>[?profile=<name>]` — a CLI `/handoff desktop`, a
+   *  dashboard row or a companion tool handing a conversation to the app. The id must
+   *  be the stored-session shape; `profile` is only a routing hint. */
+  | { type: 'open-session'; sessionId: string; profile: string | null }
   | { type: 'ignore' }
 
 function truthyParam(value: string | undefined, defaultValue = false): boolean {
@@ -26,6 +31,31 @@ function truthyParam(value: string | undefined, defaultValue = false): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
+// Only a well-formed stored id opens a session: the link is whatever an external
+// process put on the command line, so a malformed name is dropped rather than
+// routed into the session resolver.
+function resolveSessionLink(payload: DeepLinkPayload): DeepLinkAction {
+  const sessionId = (payload.name || '').trim()
+  const profile = (payload.params?.profile || '').trim()
+
+  return SESSION_ID_RE.test(sessionId) ? { type: 'open-session', sessionId, profile: profile || null } : { type: 'ignore' }
+}
+
+function resolveSkillLink(payload: DeepLinkPayload): DeepLinkAction {
+  const identifier = payload.params?.identifier
+
+  return payload.name === 'install' && identifier && identifier === identifier.trim()
+    ? { type: 'skill-install', identifier }
+    : { type: 'ignore' }
+}
+
+// Kinds whose verdict depends on nothing but their own payload. A Map, not an object
+// literal: the kind is external input, so `toString`/`__proto__` must not resolve.
+const KIND_RESOLVERS = new Map<string, (payload: DeepLinkPayload) => DeepLinkAction>([
+  ['session', resolveSessionLink],
+  ['skill', resolveSkillLink]
+])
+
 export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefined): DeepLinkAction {
   if (!payload?.kind) {
     return { type: 'ignore' }
@@ -33,6 +63,12 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
 
   if (payload.kind === 'blueprint' && payload.name) {
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
+  }
+
+  const byKind = KIND_RESOLVERS.get(payload.kind)
+
+  if (byKind) {
+    return byKind(payload)
   }
 
   // The browser leg of a connection came back (hermes://connections/done?op=…&status=…). The op id
@@ -49,14 +85,6 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
   // never a git-path install of whatever else the link carried.
   if (payload.kind === 'plugin' && payload.name === 'install' && payload.params?.catalog !== undefined) {
     return { type: 'plugin-catalog-install', name: payload.params.catalog.trim() }
-  }
-
-  if (payload.kind === 'skill') {
-    const identifier = payload.params?.identifier
-
-    return payload.name === 'install' && identifier && identifier === identifier.trim()
-      ? { type: 'skill-install', identifier }
-      : { type: 'ignore' }
   }
 
   const repo = (

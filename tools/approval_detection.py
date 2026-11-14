@@ -19,8 +19,8 @@ from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
+from tools.approval_env_split import _env_split_payload, _split_env_string  # re-exported
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
-from tools.approval_env_split import _split_env_string
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
@@ -121,7 +121,8 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data. Every run is possessive so a failed
 # match never re-splits a whitespace / path / busybox run (cubic on blank-line runs; re.search holds the GIL), and only
 # the last newline of a whitespace run starts a match (earlier ones reach the same word, rescanning once per newline).
-_CMD_PATH = r'(?:/?+(?:[^\s/)]++/)*+)?+'
+# A segment holds no `=` / `<` / `>`: `HERMES_HOME=/tmp/x hermes` and `socat>/tmp/log` are not program paths.
+_CMD_PATH = r'(?:/?+(?:[^\s/)=<>]++/)*+)?+'
 _MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
 
 # Every run is possessive: a failed command-name match must not re-split a whitespace run between the
@@ -1638,43 +1639,6 @@ def _shell_command_segment(command: str, start: int) -> str:
             end = i
             break
     return command[start:end].strip()
-
-
-def _env_split_payload(tokens: list[str], _depth: int = 0) -> str | None:
-    from tools.approval_wrappers import _short_bundle
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--" or not token.startswith("-"):
-            return None
-        option, equals, value = token.partition("=")
-        if option == "--split-string":
-            attached = value if equals else None
-        elif token.startswith("--"):
-            index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
-            continue
-        else:
-            # getopt bundle: the first valued option owns the rest of the word (`-iS'nice'`, `-uS`).
-            _, owner, rest = _short_bundle("env", token)
-            if owner != "-S":
-                index += 2 if owner and not rest else 1
-                continue
-            attached = rest or None
-        if attached is None:
-            index += 1
-        payload = attached if attached is not None else (tokens[index] if index < len(tokens) else "")
-        args = _split_env_string(payload)
-        if args is None:
-            return None
-        rebuilt = args + tokens[index + 1:]
-        # env re-parses a split string that starts with options (`-S '-S reboot'`).
-        if rebuilt and rebuilt[0].startswith("-") and _depth < 8:
-            nested = _env_split_payload(["env", *rebuilt], _depth + 1)
-            if nested is not None:
-                return nested
-        # Protect literal separators: only a real shell -c carrier may turn these argv bytes into code.
-        return shlex.join(rebuilt)
-    return None
 
 
 def _dequoted_escape(char: str, quote: str | None) -> str:

@@ -1,29 +1,31 @@
 name: hermes-browser-extension
 title: Hermes Browser Extension
 repo: https://github.com/abundantbeing/hermes-browser-extension
-sha: 34e99b9a3c71a7d437f6593a222d55f74116ef61
+sha: 438460d460e67855d1183f6fc7a149292f3f722f
 subdir: companion-plugin
-version: "0.4.0"
+version: "0.4.1"
 description: >-
   Connects Hermes to the separately installed Hermes Browser Extension for
-  user-shared page context and opt-in control of explicitly attached browser
-  tabs. Browser control requires Chromium; Firefox supports chat and page
-  context. Serves authenticated routes on the Hermes API server and stores
-  bounded redacted receipts and screenshots in profile-scoped plugin data.
+  user-shared page context, opt-in control of explicitly attached browser
+  tabs, and opt-in background task tabs that a local gateway chat opens in its
+  own Chrome tab group. Full browser control requires Chromium; Firefox
+  supports chat, page context and restricted control. Serves authenticated
+  routes on the Hermes API server and stores bounded redacted receipts and
+  screenshots in profile-scoped plugin data.
 maintainer: abundantbeing
 tier: community
 category: web
 requires_hermes: ">=0.22"
-docs_url: https://github.com/abundantbeing/hermes-browser-extension/blob/34e99b9a3c71a7d437f6593a222d55f74116ef61/companion-plugin/install.md
-image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/34e99b9a3c71a7d437f6593a222d55f74116ef61/assets/readme/release-v0.4.0.jpg
+docs_url: https://github.com/abundantbeing/hermes-browser-extension/blob/438460d460e67855d1183f6fc7a149292f3f722f/companion-plugin/install.md
+image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/a97e191dc4670222a3689a0dc4092ea20d391c37/assets/readme/catalog-cover.jpg
 screenshots:
-  - https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/34e99b9a3c71a7d437f6593a222d55f74116ef61/assets/readme/hermes-browser-control.png
+  - https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/438460d460e67855d1183f6fc7a149292f3f722f/assets/readme/hermes-browser-control.png
 readme: true
 platforms: []
 known_issues:
   - Install the browser extension separately; this entry installs only the Hermes-side plugin. The API server must be enabled, and gateway routes load at startup.
   - Remove the older hermes-browser-companion plugin before installing this renamed plugin to avoid duplicate context-tool registrations.
-  - On a multiplexed gateway, named-profile control needs per-profile plugin-route dispatch. Without it, use the default profile. Host-isolated plugins cannot register the API-server routes.
+  - On a multiplexed gateway, Hermes Control and plugin status for a named profile need Hermes to serve that profile's own plugin routes under /p/<profile>/api/plugins/ (#147703); until then use the default profile there. Host-isolated plugins cannot register the API-server routes.
 capabilities:
   provides_tools:
     - browser_context_status

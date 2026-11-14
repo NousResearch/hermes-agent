@@ -113,6 +113,38 @@ def refuse_planted_state_db_link(path: Path) -> None:
         raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
 
 
+def _chmod_pinned_inode(path: Path, mode: int) -> None:
+    """Tighten ``path`` without following a link swapped in after the lstat().
+
+    A bare chmod(2) on the path re-resolves the name, so a replacement symlink
+    racing between validation and chmod could change the mode of an unrelated
+    target (#109857). On Linux the validated inode is pinned with an O_PATH
+    descriptor and reached through ``/proc/self/fd/<fd>``; an O_PATH descriptor
+    holds no POSIX locks, so closing it stays lock-neutral for live SQLite
+    connections. Platforms without O_PATH (macOS/BSD) use the no-follow chmod,
+    which applies to the link itself, never to a swapped-in target.
+    """
+    if hasattr(os, "O_PATH"):
+        # O_PATH|O_NOFOLLOW pins a swapped-in symlink itself instead of failing.
+        fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            st_mode = os.fstat(fd).st_mode
+            if stat.S_ISLNK(st_mode):
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+            if not stat.S_ISREG(st_mode):
+                return
+            try:
+                os.chmod(f"/proc/self/fd/{fd}", mode)
+            except FileNotFoundError:
+                # No /proc (minimal chroot/sandbox): leave the mode as is rather
+                # than fall back to a pathname chmod that could follow a swap.
+                logger.debug("state db: /proc unavailable; not tightening %s", path)
+        finally:
+            os.close(fd)
+    else:
+        os.chmod(path, mode, follow_symlinks=False)
+
+
 def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
     """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
     never-closed fd (rebound when the path names a new inode); Windows reads plainly, since

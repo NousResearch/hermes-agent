@@ -1,5 +1,5 @@
 """``platforms.api_server.tool_progress_events: false`` drops the custom
-``hermes.tool.progress`` SSE frames from streaming Chat Completions (#12020)."""
+``hermes.tool.progress`` and ``hermes.status`` SSE frames from streaming Chat Completions (#12020)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +21,7 @@ def _stream_body(platform_cfg):
     async def run():
         stream_q = ThreadSafeAsyncQueue()
         stream_q.put_nowait(("__tool_progress__", {"tool": "terminal", "toolCallId": "c1", "status": "running"}))
+        stream_q.put_nowait(("__status__", {"kind": "lifecycle", "text": "retrying in 2s"}))
         stream_q.put_nowait("done")
         stream_q.put_nowait(None)
         agent_task = asyncio.ensure_future(fake_agent())
@@ -39,10 +40,12 @@ def _stream_body(platform_cfg):
 def test_tool_progress_frames_emitted_by_default():
     body = _stream_body({"enabled": True, "token": "k"})
     assert "event: hermes.tool.progress" in body
+    assert "event: hermes.status" in body
     assert '"content": "done"' in body
 
 
 def test_tool_progress_events_false_suppresses_frames_but_keeps_content():
     body = _stream_body({"enabled": True, "token": "k", "tool_progress_events": False})
-    assert "hermes.tool.progress" not in body
+    # Strict clients parse every data frame as a chunk: no named Hermes frame may remain.
+    assert "event:" not in body
     assert '"content": "done"' in body

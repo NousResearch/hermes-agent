@@ -1,0 +1,18 @@
+name: hermes-creator-forge
+repo: https://github.com/zemhoutepro-beep/hermes-creator-forge
+sha: d6a9d1ad5058a98580b3e5dd0d7f700daef858f6
+subdir: ""
+description: Four Hermes skills for authoring and reviewing skills, workspace operations, and host-provided Python execution.
+maintainer: zemhoutepro-beep
+tier: community
+category: general
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "No license file is included in v0.1.0."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -19,7 +19,7 @@ import {
   focusedRosterOwner,
   rosterWatermarks
 } from './bot-state'
-import { ensureBotMetadata } from './canonical-chat'
+import { ensureBotProfile } from './canonical-chat'
 import {
   $botMeta,
   BOT_META_V1_KEY,
@@ -33,7 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
+import { aliasMetaFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -233,6 +233,13 @@ function serverReportedTitle(bot: RosterRow, server: BotMeta | null): string | u
   return typeof bot.title === 'string' ? bot.title.trim() : undefined
 }
 
+/** The record a server overlay starts from. A first record for a configured
+ *  alias's row starts from the alias's record: botRosterMeta prefers the direct
+ *  key once it exists, so a server-only record would hide the alias's look. */
+function overlayBase<T extends BotMeta>(bot: RosterRow, key: string, meta: Record<string, T>): Partial<T> {
+  return meta[key] || aliasMetaFor(bot, meta) || {}
+}
+
 /** Server ui_meta (per roster row) beats local storage for the compact
  *  fields it carries; local-only fields (avatar image data URL, extracted
  *  pet icon) are PRESERVED — the server copy never includes them, so a
@@ -280,7 +287,7 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
         continue
       }
 
-      const mine = next[key] || {}
+      const mine = overlayBase(bot, key, next)
 
       const merged = {
         ...mine,
@@ -343,8 +350,8 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
 
 /** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
  *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
-export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
-  await ensureBotMetadata(bot)
+export async function duplicateBot(source: RosterRow, roster: RosterRow[]) {
+  const bot = await ensureBotProfile(source)
   const base = bot.name
   const ownerRoute = botConnectionRoute(bot)
   const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null
@@ -379,6 +386,12 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
     clone_from: base,
     description: bot.description || ''
   })
+
+  // Prefs a deleted profile left under the copy's name must not become its.
+  // Older builds without the door keep them, as before.
+  if (typeof host.dropLeftoverProfilePrefs === 'function') {
+    host.dropLeftoverProfilePrefs(name, ownerRoute?.connectionId)
+  }
 
   // Same look: avatar shape/color/image and a "(copy)" title so the two
   // are tellable apart in the roster until the user renames. Do not copy

@@ -49,8 +49,8 @@ import {
   AUTOMATION_SESSION_SOURCES,
   NO_MATCHING_SESSION_SOURCE,
   SOURCE_CONFIG,
-  SessionFilterCategory,
-  SourceSelectionsByCategory,
+  type SessionFilterCategory,
+  type SourceSelectionsByCategory,
   isAutomationSource,
   sourceBelongsToCategory,
   sourceLabel,
@@ -932,7 +932,7 @@ export default function SessionsPage() {
     };
   }, [loading, setAfterTitle, total]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setEnd(
       <Button
         outlined

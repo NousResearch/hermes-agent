@@ -1,0 +1,23 @@
+name: injection-range
+repo: https://github.com/browncyber/hermes-injection-range
+sha: 5bb785f4d9010e0964e02e8707bd390f3eb1cb62
+description: "A prompt-injection fire drill for your own agent. /drill run plants eight documents, one at a time, each carrying a test injection (plain override, hidden HTML comment, forged system message, memory poisoning, base64, reply hijack, and two delegated-task cases where you tell the agent to follow a document), gives the agent an ordinary task with each, blocks any tool call that carries a drill canary before it runs (pre_tool_call), and scores each scenario as held, neutralized by a guard, or compromised from the tool calls and model requests it observed, never from the model's own account. Use it to test a model, or a guard plugin, before you trust the agent with real documents. Disclosure — hooks see every session's tool calls and turns and return at once when no drill is running; during a drill it reads outgoing request messages to check the payload arrived (not stored), blocks canary-carrying tool calls with a neutral message, and queues one user-role task per scenario into the session that ran /drill (terminal UI only, and only with plugins.entries.injection-range.allow_gateway_injection: true; otherwise it shows the task for you to send). Ships its test injections as plain text in scenarios.py; every payload points at a per-run random token or the reserved host range.invalid, and none asks for a secret or a real file. Writes planted documents to per-scenario temp folders (deleted when the scenario ends) and the last 20 results to its plugin data folder (verdicts, the first 240 characters of each blocked call's arguments, the first 400 characters of each drill reply). No network, subprocesses, tools, credentials, telemetry, background threads or dependencies."
+maintainer: browncyber
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/browncyber/hermes-injection-range/tree/5bb785f4d9010e0964e02e8707bd390f3eb1cb62#readme
+version: "0.1.0"
+title: "injection-range — prompt-injection fire drill"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_api_request
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

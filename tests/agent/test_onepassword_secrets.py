@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources import onepassword as op  # noqa: E402
+from agent.secret_sources import onepassword as op
 
 
 @pytest.fixture(autouse=True)
@@ -310,3 +310,33 @@ def test_apply_never_overrides_token_var(monkeypatch, tmp_path):
 
 
 
+
+
+def test_apply_never_sets_launch_only_key(monkeypatch, tmp_path):
+    """#135200: an ``op://`` item named ``HERMES_MANAGED_DIR`` must not repoint managed scope."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setattr(op, "find_op", lambda binary_path="": fake_op)
+    monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin")
+    monkeypatch.setattr(op.subprocess, "run", lambda *a, **k: _ok("/user/controlled"))
+
+    result = op.apply_onepassword_secrets(
+        enabled=True, env={"HERMES_MANAGED_DIR": "op://V/I/F"}, cache_ttl_seconds=0,
+    )
+    assert "HERMES_MANAGED_DIR" in result.skipped
+    assert os.environ["HERMES_MANAGED_DIR"] == "/launch/admin"
+
+
+def test_apply_never_sets_lowercase_launch_only_key(monkeypatch, tmp_path):
+    """Case-variant of the above: on Windows ``hermes_managed_dir`` sets the real key."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setattr(op, "find_op", lambda binary_path="": fake_op)
+    monkeypatch.delenv("hermes_managed_dir", raising=False)
+    monkeypatch.setattr(op.subprocess, "run", lambda *a, **k: _ok("/user/controlled"))
+
+    result = op.apply_onepassword_secrets(
+        enabled=True, env={"hermes_managed_dir": "op://V/I/F"}, cache_ttl_seconds=0,
+    )
+    assert "hermes_managed_dir" in result.skipped
+    assert "hermes_managed_dir" not in os.environ

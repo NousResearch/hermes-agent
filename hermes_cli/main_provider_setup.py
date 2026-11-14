@@ -60,11 +60,11 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("voice_chat", "Voice chat", "spoken voice-mode replies"),
-    ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
-    ("curator", "Curator", "skill-usage review pass")]
+    ("curator", "Curator", "skill-usage review pass"),
+    ("group_router", "Group router", "who answers in auto-routed Group Chats")]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full
@@ -164,10 +164,13 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
         provider = "" if provider == "auto" else provider
     else:
         entry = _ensure_dict_section(_ensure_dict_section(cfg, "auxiliary"), task)
+    from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
+    clear_aux_credentials_on_route_change(entry, provider, base_url)
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
+    from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
+    entry["api_key"] = secret_ref_for(aux_api_key_env(task), api_key or "")
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
         entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
@@ -210,6 +213,11 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", auto}:
             entry["provider"] = auto
             changed = True
+        # The reset route's key pointers must not wait in the block for the next provider pick,
+        # which would hand them to that provider (#141832). api_key is reset with the fields below.
+        for field in ("key_env", "api_key_env", "api_mode"):
+            if entry.pop(field, None):
+                changed = True
         for field in ("model", "base_url", "api_key", "reasoning_effort"):
             # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
             default = str((defaults.get(task) or {}).get(field) or "") if isinstance(defaults.get(task), dict) else ""
@@ -234,7 +242,7 @@ def _aux_config_menu() -> None:
     while True:
         cfg = load_config()
         _say("", "  Auxiliary models — side-task routing", "",
-             "  Side tasks (vision, compression, web extraction, etc.) default",
+             "  Side tasks (vision, compression, title generation, etc.) default",
              '  to your main chat model.  "auto" means "use my main model" —',
              "  Hermes only falls back to a lightweight backend (OpenRouter,",
              "  Nous Portal) if the main model is unavailable.  Override a",
@@ -372,7 +380,12 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     effort = (_prompt_aux_reasoning_effort(task, _aux_effort_word(task_cfg))
               if _aux_task_takes_reasoning(task) else None)
 
-    _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key, reasoning_effort=effort)
+    try:
+        _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key,
+                         reasoning_effort=effort)
+    except ValueError as exc:  # .env write-locked: the refusal names the variable, never the key
+        print(f"  ✗ {exc}")
+        return
     print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else "")
           + (f" · reasoning {effort}" if effort else ""))
 
@@ -492,7 +505,10 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
                           key_env=""):
     """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
     existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    already wrote the key to ``.env``; the entry references it instead of inlining the secret. A
+    literal *api_key* for a NEW entry is written to ``.env`` under the endpoint's name and the entry
+    gets ``key_env`` (#77471); a ``${VAR}`` reference is kept as given and existing entries are
+    never migrated.
 
     See #69449.
     """
@@ -529,6 +545,9 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
     name = name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
+    if api_key and not key_env:
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
+        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
     if key_env:
         entry["key_env"] = key_env
     elif api_key:
@@ -639,24 +658,32 @@ def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_la
     return tail_values[idx - n]
 
 
-def _offer_reasoning_after_pick(model_before: str) -> None:
-    """Post-flow effort step for ``select_provider_and_model``: when a flow saved a different
-    ``model.default`` (every flow persists through ``_save_model_choice``), offer the effort for
-    the new model + provider. A flow that made no change (cancel, "No change.") never prompts."""
+def _model_choice_save_count() -> int:
+    """Snapshot taken by ``select_provider_and_model`` before a flow runs (see below)."""
+    from hermes_cli.auth_model_picker import model_choice_save_count
+    return model_choice_save_count()
+
+
+def _offer_reasoning_after_pick(model_before: str, saves_before: int) -> None:
+    """Post-flow effort step for ``select_provider_and_model``, like the chat ``/model`` picker:
+    every flow persists through ``_save_model_choice``, so whenever one saved a pick (or
+    ``model.default`` changed) offer the effort for the saved model + provider, including a
+    provider switch that keeps the same model ID or a re-pick of the current model. Cancel /
+    "No change." never prompts."""
     from hermes_cli.config import load_config
     model_cfg = load_config().get("model")
     if not isinstance(model_cfg, dict):
         return
     model = str(model_cfg.get("default") or "").strip()
-    if not model or model == model_before:
-        return  # same model re-picked or nothing saved: the "Reasoning effort" row covers that
+    if not model or (model == model_before and _model_choice_save_count() == saves_before):
+        return
     _prompt_main_reasoning_effort(model, str(model_cfg.get("provider") or ""))
 
 
 def _prompt_main_reasoning_effort(model: str, provider: str) -> None:
     """The effort step every ``hermes model`` flow shares: after a main-model pick, offer the
-    model's supported levels (Copilot publishes a per-model set; everything else gets the full
-    ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
+    model's supported levels (a profile may declare a per-model set via ``setup_reasoning_efforts``;
+    everything else gets the full ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
     no reasoning control; "Skip" leaves the current value alone."""
     from hermes_cli.config import load_config, save_config
     from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
@@ -676,9 +703,11 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
     """Levels to offer for *model* on *provider*: None when the route has no reasoning control."""
     from hermes_constants import VALID_REASONING_EFFORTS
     slug = (provider or "").strip().lower()
-    if slug == "copilot":
-        from hermes_cli.models import github_model_reasoning_efforts
-        return github_model_reasoning_efforts(model) or None
+    from providers import get_provider_profile
+    profile = get_provider_profile(slug) if slug else None
+    declared = profile.setup_reasoning_efforts(model) if profile and profile.setup_reasoning_efforts else None
+    if declared is not None:
+        return list(declared) or None
     try:
         from agent.models_dev import get_model_capabilities
         meta = get_model_capabilities(slug, model)

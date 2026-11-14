@@ -68,7 +68,9 @@ function retriedRow(target: CatalogTarget, result: AgentPluginInstallResult): Ca
       alreadyInstalled: false,
       enabled: result.enabled ?? null,
       missingEnv: result.missingEnv ?? [],
-      serverErrors: servers.filter(server => !server.connected).map(({ error, name }) => ({ error: error ?? '', name })),
+      serverErrors: servers
+        .filter(server => !server.connected)
+        .map(({ error, name }) => ({ error: error ?? '', name })),
       skill: result.skillIds?.[0] ?? null
     },
     detail: '',
@@ -192,7 +194,8 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
     const approved = catalog.approved
 
     const result = await installAgentPlugin(
-      (method, params, timeoutMs) => requestGatewayForAgent(owner.connectionId, owner.profile, method, params, timeoutMs),
+      (method, params, timeoutMs) =>
+        requestGatewayForAgent(owner.connectionId, owner.profile, method, params, timeoutMs),
       {
         catalogName: target.name,
         enable: approved?.enable,

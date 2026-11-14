@@ -13,6 +13,9 @@ JSON-RPC channel every other Settings surface uses. Contracts:
   scrubbed with ``scrub_secret_from_text`` before they leave the handler.
 - ``vault.remove`` → {removed: bool}.
 - ``vault.sources`` / ``vault.source.set`` → external password-manager status and enable toggle.
+- ``vault.preview.fill`` → the Browser bar's key button: fill a saved login (identifier + password) into
+  the in-app browser tab the renderer pinned. The secret is resolved here and written through
+  ``preview.act`` server requests on the calling socket; the result carries counts and the origin only.
 - ``vault.unlock`` / ``vault.lock`` → per-session unlock of a manager from Settings; the master
   password is consumed by the manager CLI through its non-interactive channel and never stored
   or logged.
@@ -180,6 +183,52 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, str(e))
 
 
+@method("vault.preview.fill")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Fill login ``handle`` into the in-app browser tab the renderer pinned as ``target``. Same vault path
+    as the agent's ``browser_vault`` fill (origin guard before any secret read, re-asserted in the page;
+    nonce-bound fields; redaction registration); never submits. Each page script travels as a session-less
+    ``preview.act`` request on THIS socket, so only the window that asked can answer it."""
+    import json as _json
+
+    from tools.browser_vault_preview import run_preview_vault
+    from tools.browser_vault_tool import browser_vault_fill
+    from tui_gateway import server_requests
+    from tui_gateway.transport import current_transport
+
+    from agent.vault_backends import UnlockRequired, backend_for_handle
+
+    handle, target = str(params.get("handle") or ""), str(params.get("target") or "")
+    if not handle or not target:
+        return _err(rid, 5095, "handle and target are required")
+    backend = backend_for_handle(handle)
+    try:
+        meta = backend.get_meta(handle) if backend is not None else None
+    except UnlockRequired:
+        return _ok(rid, {"success": False, "error_type": "unlock_required",
+                         "error": f"Unlock {backend.display_name} first."})
+    if meta is None or meta.kind != "login":
+        return _err(rid, 5095, "no saved login with this handle")
+
+    caller = current_transport()
+
+    def ask(payload: dict):
+        # Pinned to the socket that asked: only the window that minted ``target`` gets the scripts.
+        answer = server_requests.send("preview.act", "", dict(payload), timeout=30, transport=caller)
+        return (answer or {}).get("value", "")
+
+    raw = run_preview_vault(ask, lambda: browser_vault_fill(handle, task_id="desktop-browser-bar", with_identifier=True),
+                            target=target)
+    out = _json.loads(raw)
+    return _ok(rid, {key: out[key] for key in ("success", "filled_fields", "origin", "error", "error_type") if key in out})
+
+
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
+    # ``vault.preview.fill`` round-trips page scripts through the renderer; ``vault.list`` can now
+    # prepare the real-profile snapshot and launch Chrome (up to ~30 s) the first time the browser
+    # login source is listed. Both must run on the RPC pool, never the socket's ordered request
+    # reader, or they hold later requests — Stop included — behind that work.
+    server._LONG_HANDLERS = server._LONG_HANDLERS | {"vault.preview.fill", "vault.list"}

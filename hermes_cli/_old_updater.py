@@ -112,11 +112,16 @@ def _run_child(request: dict) -> tuple[int, dict]:
     root = Path(__file__).resolve().parents[1]
     home = os.environ.get("HERMES_HOME")
     constants = sys.modules.get("hermes_constants")
+    # The running process may hold any historical hermes_constants: older ones keep the override in
+    # a module ContextVar, newer ones behind get_hermes_home_override() (the runtime scope state).
     override = vars(constants).get("_HERMES_HOME_OVERRIDE") if constants else None
     if override is not None:
         value = override.get()
-        if isinstance(value, (str, Path)) and value:
-            home = str(value)
+    else:
+        read_override = getattr(constants, "get_hermes_home_override", None) if constants else None
+        value = read_override() if callable(read_override) else None
+    if isinstance(value, (str, Path)) and value:
+        home = str(value)
     request.update(root=str(root), home=home, argv=list(sys.argv))
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("PYTHON", "UV_")) and key != "VIRTUAL_ENV"}
@@ -156,7 +161,7 @@ def _run_in_custody(argv: list, root: Path, **kwargs) -> int:
         # the rest of a committed update (sync + build), and it holds the checkout lock fd, so the
         # checkout stays locked for as long as it runs, even past this updater's death.
         # health: allow HX006 -- unbounded by design: the update's own supervised child
-        return subprocess.run(argv, **kwargs, **_checkout_custody(root)).returncode
+        return subprocess.run(argv, **kwargs, **_checkout_custody(root)).returncode  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     proc = subprocess.Popen(argv, creationflags=lock.CREATE_SUSPENDED, **kwargs)
     try:
         refusal = bind(proc)

@@ -75,6 +75,7 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     if not profile_home:
         return None
     from tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
+    from tools.environments.local_env_policy import _secret_source_bootstrap_env
     base = hermes_subprocess_env(inherit_credentials=True)
     routed = _is_routed_home(profile_home)
     if routed:
@@ -82,6 +83,9 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
         # credential, so no scrub list sees it; the target's own value is overlaid from its .env.
         base.pop("GH_CONFIG_DIR", None)
     env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=True)
+    # The profile overlay re-adds a vault bootstrap token from the target's .env; gh never uses it.
+    for name in _secret_source_bootstrap_env():
+        env.pop(name, None)
     if routed and not (env.keys() & {"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}):
         # HOME/XDG_CONFIG_HOME are still the launch process's: without a login of its own the
         # child would fall through to ~/.config/gh/hosts.yml — the ambient login. Pin gh's config
@@ -121,9 +125,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
-            baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
-                json.dumps(owner), json.dumps(name), number)
+        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.

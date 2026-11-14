@@ -48,6 +48,8 @@ class AuditEvent(enum.Enum):
     WS_TICKET_REJECTED = "ws_ticket_rejected"
     TOKEN_AUTH_SUCCESS = "token_auth_success"
     TOKEN_AUTH_FAILURE = "token_auth_failure"
+    # A peer pass holder's control action forwarded by ``/api/peer``, with the Portal user.
+    PEER_CONTROL = "peer_control"
     # RFC 8252 native-app (system-browser + loopback + PKCE) flow.
     NATIVE_AUTHORIZE_START = "native_authorize_start"
     NATIVE_CODE_ISSUED = "native_code_issued"
@@ -99,7 +101,7 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
     but never raise — auth must not fail because the audit logger broke."""
     try:
         entry = {
-            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "ts": _dt.datetime.now(_dt.UTC).isoformat(),
             "event": event.value,
             **{k: _bounded_value(v) for k, v in fields.items() if k not in _REDACTED_FIELDS}}
         line = json.dumps(entry, separators=(",", ":")) + "\n"

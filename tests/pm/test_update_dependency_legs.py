@@ -1,19 +1,26 @@
 """Optional dependency refreshes run in PM's repository with its installed tools."""
 from argparse import Namespace
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import sys
 import tempfile
+import threading
+from types import SimpleNamespace
 
 import pytest
 
 from pm import cli, paths, registry
 from pm.lock import Facts, Lockfile
 from pm.package import Package
-from pm.packages import Nodejs, Npm, Python, Uv
+from pm.packages import Nodejs, Pnpm, Python, Uv
 from pm.store import current_target, tree_digest
 
 
@@ -99,7 +106,7 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     syncs = []
     ensure = importlib.import_module('pm.install')
     monkeypatch.setattr(ensure, 'sync_venv', lambda **kw: syncs.append(kw))
-    args = Namespace(names=['manual-fixture'], target=None, check=True, uv=True, npm=False, termux=False)
+    args = Namespace(names=['manual-fixture'], target=None, skip_target=[], check=True, uv=True, pnpm=False, termux=False)
     assert cli.cmd_update(args) == 0
     assert not (repo / 'uv.lock').exists()
     assert not syncs
@@ -126,8 +133,10 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     assert 'Python lock refresh failed' in capsys.readouterr().out
 
 
-@pytest.mark.platforms('windows', 'posix')
-def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, capsys):
+@contextmanager
+def pnpm_project(monkeypatch):
+    """A temporary project whose PM-installed pnpm is the real tool; yields what the tests check."""
+    pnpm_tool = Path(shutil.which('pnpm') or pytest.fail('canonical test environment requires pnpm'))
     # Keep the real tool's argv clear of the harness's hermes-update guard.
     temp_root = Path(os.environ['LOCALAPPDATA']) / 'Temp' if os.name == 'nt' else Path('/tmp')
     with tempfile.TemporaryDirectory(prefix='pm-deps-', dir=temp_root) as temporary, monkeypatch.context() as scoped:
@@ -136,7 +145,7 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         repo, caller, lock = project(root, monkeypatch)
         user = root / 'user'
         user.mkdir()
-        for key in ('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'):
+        for key in ('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'):
             monkeypatch.setenv(key, str(user))
         target = current_target()
         runtime = root / 'store'
@@ -147,74 +156,139 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         if os.name != 'nt':
             node_binary.chmod(0o755)
         facts = Facts(runtime / 'facts.json')
-        node, npm = Nodejs(), Npm()
+        node, pnpm = Nodejs(), Pnpm()
         monkeypatch.setitem(registry._packages, 'node', node)
-        monkeypatch.setitem(registry._packages, 'npm', npm)
+        monkeypatch.setitem(registry._packages, 'pnpm', pnpm)
         lock.set_pin('node', 'fixture', {target: {'url': 'https://example.invalid/node', 'sha256': '1' * 64}})
         facts.record('node', 'fixture', str(node_entry), node.env(node_entry, target), runtime,
                      target=target, artifacts=['1' * 64])
-        lock.save()
-        npm_entry = runtime / 'npm-fixture'
-        cli_script = npm_entry / 'lib/npm_cli.py'
-        cli_script.parent.mkdir(parents=True)
-        cli_script.write_text(
-            "import json\n"
-            "from pathlib import Path\n"
-            "try:\n"
-            "    package = json.loads(Path('package.json').read_text(encoding='utf-8'))\n"
-            "    Path('package-lock.json').write_text(json.dumps({\n"
-            "        'name': package['name'], 'lockfileVersion': 3,\n"
-            "    }), encoding='utf-8')\n"
-            "except Exception as error:\n"
-            "    raise SystemExit(str(error))\n",
-            encoding='utf-8',
-        )
+        # The real executable: a native binary that needs no node to refresh a lockfile.
+        pnpm_entry = runtime / 'pnpm-fixture'
+        pnpm_binary = pnpm.binary(pnpm_entry, target)
+        pnpm_binary.parent.mkdir(parents=True)
+        # A developer run finds PM's own pnpm under the real Hermes home, which a test may not read
+        # (copy) or resolve (symlink): on POSIX the fixture execs it, so only the child touches it.
         if os.name == 'nt':
-            (npm_entry / 'npm.cmd').write_text(
-                f'@echo off\r\n"{sys.executable}" "%~dp0lib\\npm_cli.py" %*\r\n', encoding='utf-8')
+            shutil.copy2(pnpm_tool.resolve(), pnpm_binary)
         else:
-            npm_binary = npm_entry / 'bin/npm'
-            npm_binary.parent.mkdir()
-            npm_binary.write_text(
-                f'#!/bin/sh\nexec "{sys.executable}" "{cli_script}" "$@"\n',
-                encoding='utf-8',
-            )
-            npm_binary.chmod(0o755)
-        version = 'fixture'
-        lock.set_pin('npm', version, {target: {'url': 'https://example.invalid/npm', 'sha256': '2' * 64}})
-        facts.record('npm', version, str(npm_entry), npm.env(npm_entry, target), runtime,
+            pnpm_binary.write_text(f'#!/bin/sh\nexec {shlex.quote(str(pnpm_tool))} "$@"\n', encoding='utf-8')
+            pnpm_binary.chmod(0o755)
+        lock.set_pin('pnpm', 'fixture', {target: {'url': 'https://example.invalid/pnpm', 'sha256': '2' * 64}})
+        facts.record('pnpm', 'fixture', str(pnpm_entry), pnpm.env(pnpm_entry, target), runtime,
                      target=target, artifacts=['2' * 64])
         lock.save()
+        yield SimpleNamespace(monkeypatch=monkeypatch, root=root, repo=repo, caller=caller, lock=lock, user=user, pnpm_binary=pnpm_binary)
+
+
+@pytest.mark.platforms('windows', 'posix')
+def test_pnpm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, capsys):
+    with pnpm_project(monkeypatch) as ctx:
+        root, repo, caller, lock, user, pnpm_binary = ctx.root, ctx.repo, ctx.caller, ctx.lock, ctx.user, ctx.pnpm_binary
+        monkeypatch = ctx.monkeypatch
         (repo / 'package.json').write_text(json.dumps({'name': 'pm-leg-proof', 'version': '1.0.0', 'private': True}), encoding='utf-8')
-        (repo / '.npmrc').write_text('offline=true\naudit=false\nfund=false\nignore-scripts=true\n', encoding='utf-8')
+        # An exclude for a version the refreshed lock does not hold.
+        (repo / 'pnpm-workspace.yaml').write_text(
+            'minimumReleaseAge: 20160\nminimumReleaseAgeExclude:\n  - unlocked-fixture@1.0.0  # why\n', encoding='utf-8')
         monkeypatch.setenv('PATH', str(Path(os.environ.get('SYSTEMROOT', '/')) / 'System32') if os.name == 'nt' else '/usr/bin:/bin')
-        monkeypatch.setenv('NODE_OPTIONS', '--invalid-option-to-be-scrubbed')
-        monkeypatch.setenv('npm_config_cache', str(root / 'ambient-cache'))
+        monkeypatch.setenv('pnpm_config_store_dir', str(root / 'ambient-store'))
         before = dict(os.environ)
         before_lock = lock.path.read_bytes()
-        args = Namespace(names=['manual-fixture'], target=None, check=True, uv=False, npm=True, termux=False)
+        args = Namespace(names=['manual-fixture'], target=None, skip_target=[], check=True, uv=False, pnpm=True, termux=False)
         assert cli.cmd_update(args) == 0
-        assert not (repo / 'package-lock.json').exists()
+        assert not (repo / 'pnpm-lock.yaml').exists()
         args.check = False
         assert cli.cmd_update(args) == 0, capsys.readouterr().out
-        assert json.loads((repo / 'package-lock.json').read_text(encoding='utf-8'))['name'] == 'pm-leg-proof'
-        assert not (caller / 'package-lock.json').exists()
+        assert "lockfileVersion: '9.0'" in (repo / 'pnpm-lock.yaml').read_text(encoding='utf-8')
+        # The refresh leaves no stale exclude for the next install to remove.
+        assert 'unlocked-fixture' not in (repo / 'pnpm-workspace.yaml').read_text(encoding='utf-8')
+        assert not (caller / 'pnpm-lock.yaml').exists()
         assert dict(os.environ) == before
         assert lock.path.read_bytes() == before_lock
-        assert not (root / 'ambient-cache').exists()
-        lock_bytes = (repo / 'package-lock.json').read_bytes()
+        # pnpm's store is Hermes-owned under the Hermes root: neither the ambient setting nor the user's dirs.
+        assert (root / 'home' / 'cache' / 'pnpm' / 'store').is_dir()
+        assert not (root / 'ambient-store').exists()
+        # pnpm's per-user lock dirs follow the LocalAppData known folder on Windows, which
+        # no pnpm setting moves (on POSIX they go to $XDG_RUNTIME_DIR or /tmp).
+        allowed = r'AppData/Local/pnpm-[a-z-]+-locks/[^/]+' if os.name == 'nt' else r'(?!)'
+        files = [path.relative_to(user).as_posix() for path in user.rglob('*') if path.is_file()]
+        assert [path for path in files if not re.fullmatch(allowed, path)] == []
+        assert os.name == 'nt' or list(user.iterdir()) == []
+        lock_bytes = (repo / 'pnpm-lock.yaml').read_bytes()
         (repo / 'package.json').write_text('not json', encoding='utf-8')
         assert cli.cmd_update(args) == 1
-        assert (repo / 'package-lock.json').read_bytes() == lock_bytes
-        assert 'npm update failed' in capsys.readouterr().out
+        assert (repo / 'pnpm-lock.yaml').read_bytes() == lock_bytes
+        assert 'pnpm update failed' in capsys.readouterr().out
 
-        node_binary.rename(node_binary.with_suffix('.held'))
+        pnpm_binary.unlink()
         assert cli.cmd_update(args) == 1
-        assert (repo / 'package-lock.json').read_bytes() == lock_bytes
-        assert 'not installed' in capsys.readouterr().out
-        node_binary.with_suffix('.held').rename(node_binary)
-        npm.binary(npm_entry, target).unlink()
-        assert cli.cmd_update(args) == 1
-        assert (repo / 'package-lock.json').read_bytes() == lock_bytes
+        assert (repo / 'pnpm-lock.yaml').read_bytes() == lock_bytes
         assert 'not installed' in capsys.readouterr().out
         assert dict(os.environ) == before and lock.path.read_bytes() == before_lock
+
+
+@contextmanager
+def young_release_registry():
+    """A registry on loopback serving `aging-fixture` 1.0.0 (2020) and 1.1.0 (published now)."""
+    published = {'1.0.0': '2020-01-01T00:00:00.000Z',
+                 '1.1.0': datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S.000Z')}
+
+    class Registry(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.strip('/') != 'aging-fixture':
+                self.send_response(404)
+                self.end_headers()
+                return
+            url = f'http://127.0.0.1:{self.server.server_port}/aging-fixture/-/aging-fixture'
+            body = json.dumps({
+                'name': 'aging-fixture', 'dist-tags': {'latest': '1.1.0'},
+                'versions': {v: {'name': 'aging-fixture', 'version': v,
+                                 'dist': {'tarball': f'{url}-{v}.tgz', 'integrity': 'sha512-' + 'A' * 86 + '=='}}
+                             for v in published},
+                'time': {'created': published['1.0.0'], 'modified': published['1.1.0'], **published},
+            }).encode()
+            self.send_response(200)
+            self.send_header('content-type', 'application/json')
+            self.send_header('content-length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Registry) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            yield f'http://127.0.0.1:{server.server_port}/'
+        finally:
+            server.shutdown()
+
+
+@pytest.mark.platforms('windows', 'posix')
+def test_pnpm_refresh_prunes_unlocked_excludes_and_names_too_young_picks(monkeypatch, capsys):
+    with pnpm_project(monkeypatch) as ctx, young_release_registry() as registry_url:
+        repo, monkeypatch = ctx.repo, ctx.monkeypatch
+        monkeypatch.setenv('PATH', str(Path(os.environ.get('SYSTEMROOT', '/')) / 'System32') if os.name == 'nt' else '/usr/bin:/bin')
+        (repo / '.npmrc').write_text(f'registry={registry_url}\n', encoding='utf-8')
+        manifest = {'name': 'pm-age-proof', 'version': '1.0.0', 'private': True, 'dependencies': {'aging-fixture': '^1.0.0'}}
+        (repo / 'package.json').write_text(json.dumps(manifest), encoding='utf-8')
+        (repo / 'pnpm-workspace.yaml').write_text(
+            'minimumReleaseAge: 20160\nminimumReleaseAgeExclude:\n'
+            '  - gone-fixture@2.0.0  # reason for gone\n'
+            '  - aging-fixture@1.0.0  # reason for aging\n', encoding='utf-8')
+        args = Namespace(names=['manual-fixture'], target=None, skip_target=[], check=False, uv=False, pnpm=True, termux=False)
+        assert cli.cmd_update(args) == 0, capsys.readouterr().out
+        assert 'aging-fixture@1.0.0' in (repo / 'pnpm-lock.yaml').read_text(encoding='utf-8')
+        # The unlocked entry leaves with its own reason; the locked one keeps its.
+        assert (repo / 'pnpm-workspace.yaml').read_text(encoding='utf-8') == (
+            'minimumReleaseAge: 20160\nminimumReleaseAgeExclude:\n  - aging-fixture@1.0.0  # reason for aging\n')
+        capsys.readouterr()
+
+        # A range only a too-young release satisfies: the hint names the entry to add, and the
+        # listing run leaves the project's files as they were.
+        manifest['dependencies']['aging-fixture'] = '^1.1.0'
+        (repo / 'package.json').write_text(json.dumps(manifest), encoding='utf-8')
+        before = {name: (repo / name).read_bytes() for name in ('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml')}
+        assert cli.cmd_update(args) == 1
+        out = capsys.readouterr().out
+        assert '- aging-fixture@1.1.0  # ' in out, out
+        assert {name: (repo / name).read_bytes() for name in before} == before

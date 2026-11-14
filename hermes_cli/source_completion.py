@@ -37,12 +37,13 @@ def complete_source_checkout(
     completion_message: str | None = None,
     announce: str | None = None,
     followups: list[tuple[str, str]] | None = None,
-    before_build=None,
+    after_dependencies=None,
 ) -> bool:
     """Publish commands, build the products, then run post-build maintenance.
 
-    ``before_build`` (an update's paused-gateway restart) runs once the launchers are published:
-    dependencies are already synced, the long product builds have not started.
+    ``after_dependencies`` (an update's launch-file refresh and paused-gateway restart) runs once
+    the launchers are published and the Python and Node dependencies prepared, before the long
+    product builds start (``build_update_products``).
 
     Every step runs even when an earlier one failed; each failure is printed as ``⚠``,
     recorded on the open update receipt and appended to ``followups`` as ``(step, reason)``.
@@ -74,7 +75,7 @@ def complete_source_checkout(
             pre_update_snapshot_id=pre_update_snapshot_id,
             pre_update_version=pre_update_version,
             completion_message=completion_message, announce=announce, followups=followups,
-            before_build=before_build,
+            after_dependencies=after_dependencies,
         )
     finally:
         lock.release()
@@ -91,7 +92,7 @@ def _complete_locked(
     completion_message: str | None,
     announce: str | None,
     followups: list[tuple[str, str]] | None = None,
-    before_build=None,
+    after_dependencies=None,
 ) -> bool:
     """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
@@ -104,7 +105,7 @@ def _complete_locked(
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.
         expose_pm_git(root)
-    except Exception as exc:  # noqa: BLE001 — git-less steps below still complete
+    except Exception as exc:
         print(f"⚠ Could not provide git for the source completion: {exc}", file=sys.stderr)
     owed: list[tuple[str, str]] = []
 
@@ -121,9 +122,7 @@ def _complete_locked(
             owed.append((name, reason))
 
     step("launchers", lambda: publish_launchers(root))
-    if before_build is not None:
-        before_build()  # never raises: a failed restart stays owed and is retried after the build
-    step("build", lambda: build_update_products(root, desktop=desktop))
+    step("build", lambda: build_update_products(root, desktop=desktop, after_dependencies=after_dependencies))
     if announce:
         print(announce)
     verdict: list[bool] = []

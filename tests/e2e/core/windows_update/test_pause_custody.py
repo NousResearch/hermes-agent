@@ -239,14 +239,14 @@ time.sleep(600)
 """)
     out["drain_asked"] = _await_line(updater, log, "asked")
     # The updater dies with the stop request on disk (its venv launcher and the interpreter under it).
-    subprocess.run(["taskkill", "/PID", str(updater.pid), "/T", "/F"], capture_output=True, timeout=60)
+    subprocess.run(["taskkill", "/PID", str(updater.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
     updater.wait(timeout=60)
     out["drain_updater"] = _text(log)
     out["drain_live_before"] = psutil.pid_exists(live)
     out["drain_launch_while"] = _launch(machine, "while-draining")
     out["drain_live_after_launch"] = psutil.pid_exists(live)
     out["drain_owed_while"] = _owed(machine)
-    subprocess.run(["taskkill", "/PID", str(live), "/F"], capture_output=True, timeout=60)
+    subprocess.run(["taskkill", "/PID", str(live), "/F"], capture_output=True, timeout=60, check=False)
     deadline = time.monotonic() + 30
     while psutil.pid_exists(live) and time.monotonic() < deadline:
         time.sleep(0.2)

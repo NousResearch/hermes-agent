@@ -1,0 +1,27 @@
+name: hostbook
+title: hostbook
+repo: https://github.com/Timidan/hostbook
+sha: 4d4630f0a60254ac6941103c3d028b2c1f994985
+description: "A dashboard for the machines and services on your home network, inside Hermes, plus tools so Hermes can check and fix them from chat under a rule per machine (read only, asks before changes, open). Disclosure — Connects over SSH (your existing keys or ssh-agent, accepting a new machine's host key on first connect) only to machines you add, and runs scripts there when asked in chat, after hostbook's per-machine rules and Hermes's approvals; can create a no-agent Hermes cron job (hostbook-scan) for scheduled read-only scans when you turn scheduling on; its pre_tool_call hook can block or require approval for other tools that use ssh or touch hostbook's files; keeps the last 20 chat sender ids locally for the setup page; one model call only when you click \"Get AI help\". No telemetry."
+maintainer: Timidan
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Timidan/hostbook/blob/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/guide.md
+version: "0.2.1"
+image: https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/machines.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/services.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/setup.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/discover.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/schedule-people.png
+platforms: [linux, macos]
+known_issues:
+  - Machines must be Linux hosts that the Hermes machine can reach over SSH with a key (ssh-copy-id, ssh-agent or an SSH config Host); usage numbers need /proc.
+  - The per-person limits and the change check are guardrails, not a sandbox. For people you don't fully trust, also limit which Hermes tools they can use.
+capabilities:
+  provides_tools: [host_run, host_services, service_action, hostbook_setup]
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

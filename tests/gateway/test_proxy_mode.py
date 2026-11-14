@@ -17,7 +17,6 @@ def _make_runner(proxy_url=None):
     runner.config = MagicMock()
     runner.config.streaming = StreamingConfig()
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner._session_model_overrides = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = None
@@ -42,12 +41,14 @@ class _FakeSSEResponse:
         self._sse_chunks = sse_chunks or []
         self._error_text = error_text
         self.content = self
+        self.chunks_requested = 0
 
     async def text(self):
         return self._error_text
 
     async def iter_any(self):
         for chunk in self._sse_chunks:
+            self.chunks_requested += 1
             if isinstance(chunk, str):
                 chunk = chunk.encode("utf-8")
             yield chunk
@@ -165,13 +166,13 @@ class TestMacosProxyProbeCache:
 
     @pytest.fixture(autouse=True)
     def _isolate(self):
-        import gateway.platforms.base as base
+        from gateway.platforms import base
         base.reset_macos_proxy_cache()
         yield
         base.reset_macos_proxy_cache()
 
     def _count_forks(self, monkeypatch):
-        import gateway.platforms.base as base
+        from gateway.platforms import base
         calls = []
 
         def fake(*a, **kw):
@@ -391,6 +392,10 @@ class TestStreamingResilience:
                     )
 
         assert result["final_response"] == "Hello"
+
+        # Fetching the next chunk already waits on the peer; dropping it after
+        # arrival is too late when the peer leaves the completed stream open.
+        assert resp.chunks_requested == 2
 
     @pytest.mark.asyncio
     async def test_residual_buffer_flushed_after_eof(self, monkeypatch):

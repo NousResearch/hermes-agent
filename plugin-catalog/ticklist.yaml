@@ -1,0 +1,25 @@
+name: ticklist
+repo: https://github.com/mchevatheachiever/hermes-ticklist
+sha: 464c69a3c2734e4359d8c6159f91eb824deefa66
+description: "A checklist the user ticks, in a Desktop pane — every tick, untick, add and removal is announced to the agent as it happens."
+maintainer: mchevatheachiever
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "1.8.6"
+title: "TickList"
+readme: true
+platforms: []
+known_issues:
+  - "Every row is drawn, so a list of a couple of thousand rows will feel heavy."
+capabilities:
+  provides_tools:
+    - tick_add
+    - tick_set
+    - tick_list
+    - tick_remove
+    - tick_clear
+    - tick_delete_list
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

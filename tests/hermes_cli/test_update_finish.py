@@ -1,7 +1,7 @@
 """Historical takeover completion in a fresh, dependency-selected process.
 
 PM preparation has its own worker tests. Here the tool provisioner supplies
-the real test Node/npm and icons are pre-prepared. npm ci, both compilers,
+the real test Node/pnpm and icons are pre-prepared. pnpm install, both compilers,
 application imports, maintenance/config migration and receipts are real.
 Only fleet discovery/restarts and machine-wide post-update repairs are seams.
 """
@@ -44,7 +44,7 @@ def completion(tmp_path, monkeypatch):
     # in the working checkout is modified, even by import-time self-heals.
     for path in ROOT.glob("*.py"):
         shutil.copy2(path, source / path.name)
-    for name in ("hermes_cli", "hermes_platform", "pm", "agent", "gateway", "tools", "cron"):
+    for name in ("hermes_cli", "hermes_platform", "hermes_agent", "pm", "agent", "gateway", "tools", "cron"):
         shutil.copytree(ROOT / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__", "web_dist", "tui_dist"))
     shutil.copytree(ROOT / "scripts/build", source / "scripts/build",
@@ -62,7 +62,7 @@ def completion(tmp_path, monkeypatch):
     python.parent.mkdir(parents=True)
     python.symlink_to(Path(sys._base_executable).resolve())
     _put(tmp_path / "store", "facts.json", json.dumps({"packages": {"python": {"entry": "python"}}}))
-    # A real venv: isolated build children (icon generation, npm lifecycle scripts) run on the
+    # A real venv: isolated build children (icon generation, pnpm lifecycle scripts) run on the
     # selected generation's own interpreter, not on the store Python that hosts the completion.
     generation = install_state_dir(source) / "environments/prepared"
     subprocess.run([str(python), "-m", "venv", "--without-pip", str(generation)],
@@ -80,14 +80,14 @@ def completion(tmp_path, monkeypatch):
     _put(home / ".hermes", "config.yaml",
          f"_config_version: {DEFAULT_CONFIG['_config_version'] - 1}\nmodel:\n  default: retained-model\n")
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("HERMES_", "PYTHON", "PYTEST_", "VIRTUAL_ENV", "npm_", "NPM_"))}
+           if not key.startswith(("HERMES_", "PYTHON", "PYTEST_", "VIRTUAL_ENV", "npm_", "NPM_", "pnpm_", "PNPM_"))}
     env.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"),
                HERMES_RUNTIME_DIR=str(tmp_path / "store"),
                PYTHONPATH="/obsolete/pre-pm/site-packages", PYTHONHOME="/obsolete/python",
-               NPM_CONFIG_OFFLINE="true", NPM_CONFIG_CACHE=str(tmp_path / "npm-cache"))
+               pnpm_config_offline="true")
     probe = subprocess.run([str(python), "-I", "-c",
                             "import importlib.util; assert importlib.util.find_spec('yaml') is None"],
-                           env=env, capture_output=True, text=True)
+                           env=env, capture_output=True, text=True, check=False)
     assert probe.returncode == 0, probe.stderr
     request = {
         "root": str(source), "desktop": False, "assume_yes": True, "gateway_mode": False,
@@ -166,10 +166,10 @@ def completion(tmp_path, monkeypatch):
 
                     from pm.environments import project_python
 
-                    def provision(name, *, base_env, explicit):
-                        assert name == 'npm' and explicit
+                    def provision(name, *, base_env, explicit, verify=True):
+                        assert name == 'pnpm' and explicit and not verify
                         assert shutil.which('node', path=base_env['PATH'])
-                        assert shutil.which('npm', path=base_env['PATH'])
+                        assert shutil.which('pnpm', path=base_env['PATH'])
                         assert base_env['HERMES_PYTHON'] == str(project_python(root))
                         assert base_env['PYTHON'] == base_env['HERMES_PYTHON']
                         (root / 'build-environment.json').write_text(json.dumps({
@@ -196,6 +196,9 @@ def completion(tmp_path, monkeypatch):
                     macos_tcc_anchor.ensure_tcc_anchor = lambda: None
                     maint._print_post_update_notices_and_self_heals = lambda: None
                     maint._sync_profiles_after_update = lambda: None
+                    # A detached git writer would outlive the test in its deleted tmp checkout.
+                    from hermes_cli import git_commit_graph
+                    git_commit_graph.spawn_commit_graph_refresh = lambda root: False
                     maint._print_bundled_skills_sync_report = lambda: None
                     fleet_verify._print_legacy_units_warning = lambda: None
                     maint._refresh_dashboard_after_update = lambda **kwargs: None
@@ -243,7 +246,7 @@ def completion(tmp_path, monkeypatch):
     '''))
     def run(fault=""):
         return subprocess.run([str(python), "-I", "-B", str(runner), str(context), str(result), fault],
-                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90, check=False)
     return source, home / ".hermes", request, context, result, run
 
 
@@ -290,7 +293,7 @@ def test_failure_preserves_original_receipt_before_build(completion, fault):
 def test_refused_gateway_resume_after_commit_is_a_followup_not_exit_1(completion):
     """C3 for the historical takeover child: the code is committed, so a Windows gateway resume
     that the service manager refuses is an owed ``windows_resume`` follow-up, never exit 1."""
-    source, home, request, context, result, run = completion
+    _source, home, request, context, result, run = completion
     request["gateway_mode"] = True
     # A real start time names the run's archive file, so the running and terminal records share one
     # file (the fixture's placeholder falls back to the clock and can split them across a second).
@@ -315,7 +318,7 @@ def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion)
     """Review P3 (invariant 3): the takeover child's restart/verify run after the commit point, so
     a raising fleet restart is an owed ``gateway_restart`` follow-up and exit 0, never exit 1 with a
     ``failed`` receipt and a gateway watcher told 1."""
-    source, home, request, context, result, run = completion
+    _source, home, request, context, _result, run = completion
     request["gateway_mode"] = True
     request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
     context.write_text(json.dumps(request), encoding="utf-8")
@@ -333,7 +336,7 @@ def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion)
 def test_interrupt_after_verification_closed_the_run_keeps_gateway_status_0(completion):
     """Review regression 3: verification already finalized the takeover's run as ``success``; an
     interrupt landing after it must not rewrite the gateway /update status to 1."""
-    source, home, request, context, result, run = completion
+    _source, home, request, context, _result, run = completion
     request["gateway_mode"] = True
     request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
     context.write_text(json.dumps(request), encoding="utf-8")
@@ -353,7 +356,7 @@ def test_interrupt_after_verification_closed_the_run_keeps_gateway_status_0(comp
     (True, None, True),
 ])
 def test_missing_desktop_observation_uses_installed_products(completion, captured, installed, expected):
-    source, home, request, context, result, run = completion
+    source, _home, request, context, result, run = completion
     request["desktop"] = captured
     context.write_text(json.dumps(request), encoding="utf-8")
     if installed == "renderer":
@@ -371,37 +374,36 @@ def test_missing_desktop_observation_uses_installed_products(completion, capture
     assert json.loads(result.read_text())["receipt_handled"] is True
 
 
-def _npm_graph(source):
+def _pnpm_graph(source):
     # Use the same prepared compilers as the JS builder acceptance suite,
-    # while npm itself installs a tiny, entirely local workspace graph.
+    # while pnpm itself installs a tiny, entirely local workspace graph.
     tools = {}
-    node = shutil.which("node")
-    assert node, "source completion acceptance requires Node and npm"
-    for name in ("esbuild", "typescript", "vite"):
+    node, pnpm = shutil.which("node"), shutil.which("pnpm")
+    assert node and pnpm, "source completion acceptance requires Node and pnpm"
+    # Each compiler resolves from the workspace that declares it, as the builders resolve it.
+    for name, workspace in (("esbuild", "ui-tui"), ("typescript", "web"), ("vite", "web")):
         probe = subprocess.run([node, "-p", f"require.resolve('{name}/package.json')"],
-                               cwd=ROOT, capture_output=True, text=True)
+                               cwd=ROOT / workspace, capture_output=True, text=True, check=False)
         if probe.returncode:
-            # The Python lane runs without `npm ci`. The real completion path runs in the
+            # The Python lane runs without the JS install. The real completion path runs in the
             # install E2E workflow (source updates rebuild the products there).
             pytest.skip(f"source completion acceptance requires {name} from the checkout's node_modules")
         tools[name] = str(Path(probe.stdout.strip()).parent)
     root = {"name": "completion-graph", "version": "1.0.0", "private": True, "type": "module",
-            "workspaces": ["ui-tui", "web", "packages/value"],
             "scripts": {"postinstall": "node prepare-tools.mjs"}}
-    packages = {"": root}
+    _put(source, "pnpm-workspace.yaml", "packages:\n  - ui-tui\n  - web\n  - packages/value\n")
     for directory, name in (("ui-tui", "fixture-tui"), ("web", "fixture-web"),
                             ("packages/value", "fixture-value")):
         manifest = {"name": name, "version": "1.0.0", "type": "module"}
         if name == "fixture-value":
             manifest["exports"] = "./index.js"
         else:
-            manifest["dependencies"] = {"fixture-value": "*"}
+            manifest["dependencies"] = {"fixture-value": "workspace:*"}
         _put(source, f"{directory}/package.json", json.dumps(manifest))
-        packages[directory] = manifest
-        packages[f"node_modules/{name}"] = {"resolved": directory, "link": True}
     _put(source, "package.json", json.dumps(root))
-    _put(source, "package-lock.json", json.dumps({"name": root["name"], "version": "1.0.0",
-                                                 "lockfileVersion": 3, "packages": packages}))
+    subprocess.run([pnpm, "install", "--lockfile-only", "--ignore-scripts", "--offline"], cwd=source, check=True,
+                   capture_output=True, env={**os.environ, **{f"pnpm_config_{name}_dir": str(source.parent / "pnpm" / name)
+                                                              for name in ("store", "cache", "state")}})
     _put(source, "prepare-tools.mjs", textwrap.dedent(f'''
         import {{ mkdirSync, symlinkSync, writeFileSync }} from 'node:fs';
         import {{ execFileSync }} from 'node:child_process';
@@ -411,13 +413,16 @@ def _npm_graph(source):
           mkdirSync(workspace + '/node_modules', {{recursive: true}});
           symlinkSync(target, workspace + '/node_modules/' + name, 'dir');
         }}
-        // A real npm lifecycle child, not an assertion about a constructed env.
-        writeFileSync('npm-python.json', execFileSync(process.env.HERMES_PYTHON,
+        // A real pnpm lifecycle child, not an assertion about a constructed env.
+        writeFileSync('lifecycle-python.json', execFileSync(process.env.HERMES_PYTHON,
           ['-I', '-c', 'import json, os, sys, selected_dependency; print(json.dumps(dict(python=sys.executable, configured=os.environ["PYTHON"])))']));
     '''))
     _put(source, "packages/value/index.js", "export const value = 'compiled local graph';\n")
     _put(source, "packages/value/index.d.ts", "export const value: string;\n")
     _put(source, "ui-tui/src/entry.tsx", "import { value } from 'fixture-value'; console.log(value);\n")
+    # Runtime Python helpers the TUI product ships beside its bundle.
+    for helper in ("gateway_bootstrap.py", "clipboard_image.py"):
+        _put(source, f"ui-tui/scripts/{helper}", "")
     _put(source, "web/src/main.ts", "import { value } from 'fixture-value'; document.body.textContent = value;\n")
     _put(source, "web/index.html", '<html><body><script type="module" src="/src/main.ts"></script></body></html>')
     _put(source, "web/tsconfig.json", json.dumps({"compilerOptions": {
@@ -435,7 +440,7 @@ def test_selected_child_builds_and_finalizes_under_parent_lock(completion):
     import hermes_yaml
 
     source, home, request, context, result, run = completion
-    node = _npm_graph(source)
+    node = _pnpm_graph(source)
     before = context.read_bytes()
     with UpdateLock() as lock:
         assert lock.acquired
@@ -451,8 +456,8 @@ def test_selected_child_builds_and_finalizes_under_parent_lock(completion):
     assert (source / "node_modules/.hermes-node-deps").is_file()
     environment = json.loads((source / "build-environment.json").read_text())
     assert "repairing the recorded dependency environment" not in child.stderr
-    npm_python = json.loads((source / "npm-python.json").read_text())
-    assert npm_python["python"] == npm_python["configured"] == environment["python"]
+    lifecycle_python = json.loads((source / "lifecycle-python.json").read_text())
+    assert lifecycle_python["python"] == lifecycle_python["configured"] == environment["python"]
     assert environment["parent"] == os.getpid()
     assert environment["old_module"] is False
     assert environment["argv"] == [str(source / "hermes"), "update"]
@@ -483,14 +488,14 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     import hermes_yaml
 
     source, home, request, context, result, run = completion
-    _npm_graph(source)
+    _pnpm_graph(source)
     # A real TypeScript error: dependency installation and TUI succeed; the web product fails.
     _put(source, "web/src/main.ts", "const broken: string = 42; document.body.textContent = broken;\n")
     context_before = context.read_bytes()
     child = run()
     assert child.returncode == 0, child.stdout + child.stderr
     assert "TypeScript build failed" in child.stdout + child.stderr
-    assert (source / "npm-python.json").is_file()
+    assert (source / "lifecycle-python.json").is_file()
     assert (source / "ui-tui/dist/entry.js").is_file()
     assert not (source / "hermes_cli/web_dist/index.html").exists()
     # Maintenance and the fleet restart were not skipped by the build failure.
@@ -516,7 +521,7 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("argument, code", [("--help", 0), ("--no-such-update-option", 2)])
 def test_pre_pull_restart_enters_current_cli_with_original_arguments(completion, argument, code):
-    source, home, request, context, result, run = completion
+    source, _home, request, context, result, run = completion
     # Exercise the REAL parser without contacting a repository or supervisor.
     # The full update command's apply path is covered by its own tests.
     request.update(restart_update=True, argv=[str(source / "hermes"), "update", argument])

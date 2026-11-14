@@ -7,6 +7,7 @@ silently replaced by the nested one. Both overwrite whatever legacy gateway.json
 """
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -57,6 +58,11 @@ _BRIDGED_ALLOW_ALL_USERS = False
 def bridged_allow_all_users() -> Optional[str]:
     """``os.environ['GATEWAY_ALLOW_ALL_USERS']`` when it is the bridge's own write, else None."""
     return os.environ.get("GATEWAY_ALLOW_ALL_USERS") if _BRIDGED_ALLOW_ALL_USERS else None
+
+
+def _set_bridged_allow_all(owned: bool) -> None:
+    global _BRIDGED_ALLOW_ALL_USERS
+    _BRIDGED_ALLOW_ALL_USERS = owned
 
 
 def drop_bridged_env(env: dict) -> dict:
@@ -214,7 +220,7 @@ _SHARED_KEYS: tuple = (
     ("allowed_chats", _TELEGRAM, None),
     ("group_allowed_chats", _TELEGRAM, None),
     ("allowed_topics", _TELEGRAM, None),
-    *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions"),
+    *_plain("free_response_channels", "mention_patterns", "voice_mention_patterns", "exclusive_bot_mentions"),
     ("observe_unmentioned_group_messages", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",
@@ -244,10 +250,15 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_blo
     return bridged
 
 
-def shared_loop_targets(registry) -> list:
-    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging)."""
+def shared_loop_targets(registry, entries=None) -> list:
+    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging).
+
+    *entries* are the plugin entries to bridge (``load_yaml_layer`` passes only the configured
+    ones, see ``gateway.platform_activation``); None means every registered plugin platform."""
     targets: list = list(Platform)
-    for entry in registry.plugin_entries() if registry is not None else ():
+    if entries is None:
+        entries = registry.plugin_entries() if registry is not None else ()
+    for entry in entries:
         with contextlib.suppress(ValueError, KeyError):
             if (plat := Platform(entry.name)) not in targets:
                 targets.append(plat)
@@ -379,14 +390,16 @@ def bridge_platform_shared_keys(
 def apply_plugin_yaml_hooks(
     yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry,
     warned: Optional[set] = None, authored: Optional[dict] = None, managed_extra: Optional[dict] = None,
+    entries: Optional[list] = None,
 ) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
-    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
+    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``.
+    *entries* limits the dispatch to those platforms (None = every registered entry)."""
     if registry is None:
         return
     if authored is None:
         authored = snapshot_authored_extra(platforms_data)
-    for entry in registry.all_entries():
+    for entry in registry.all_entries() if entries is None else entries:
         # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
         # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
         # no-op when a hook already set their env var) → ``_apply_env_overrides()`` after
@@ -407,6 +420,8 @@ def apply_plugin_yaml_hooks(
         try:
             seeded = entry.apply_yaml_config_fn(yaml_cfg, effective)
         except Exception as e:
+            from gateway.platforms._shared import cancel_yaml_env_refresh
+            cancel_yaml_env_refresh()
             logger.debug("apply_yaml_config_fn for %s raised: %s", entry.name, e)
             continue
         if isinstance(seeded, dict) and seeded:
@@ -431,9 +446,10 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
     global _BRIDGED_ALLOW_ALL_USERS
-    from gateway.platforms._shared import profile_scoped
+    from gateway.platforms._shared import bridge_env_skipped, record_yaml_env_prior, yaml_env_setter
 
-    skip_env_bridge = profile_scoped()
+    skip_env_bridge = bridge_env_skipped()
+    set_env = yaml_env_setter(fallback=True)
     gateway_section = yaml_cfg.get("gateway")
     allow_all = yaml_cfg.get("allow_all_users")
     if allow_all is None and isinstance(gateway_section, dict):
@@ -442,6 +458,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # false + reload); an operator's explicit env var still wins. Only a truthy grant is exported:
     # presence-based readers treat any non-empty value as "auth configured".
     if not skip_env_bridge and (_BRIDGED_ALLOW_ALL_USERS or not os.getenv("GATEWAY_ALLOW_ALL_USERS")):
+        record_yaml_env_prior("GATEWAY_ALLOW_ALL_USERS", functools.partial(_set_bridged_allow_all, _BRIDGED_ALLOW_ALL_USERS))
         _BRIDGED_ALLOW_ALL_USERS = str(allow_all).lower() in {"true", "1", "yes"}
         if _BRIDGED_ALLOW_ALL_USERS:
             os.environ["GATEWAY_ALLOW_ALL_USERS"] = "true"
@@ -462,8 +479,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
         # which only runs when a telegram config block exists — can't cover the no-telegram-block case
         # (#3979).
-        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-            os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
+        set_env("TELEGRAM_REQUIRE_MENTION", str(tl_require_mention).lower())
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
     # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
@@ -473,8 +489,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
         sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
         sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
-        if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+        set_env("SIGNAL_REQUIRE_MENTION", str(signal_cfg["require_mention"]).lower())
 
 
 def read_yaml_layers(home: Path) -> dict:
@@ -486,15 +501,12 @@ def read_yaml_layers(home: Path) -> dict:
     (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
     ``load_gateway_config()`` on which files count.
     """
-    config_yaml_path = home / "config.yaml"
-    yaml_cfg: dict = {}
-    if config_yaml_path.exists():
-        # The installer seeds config.yaml by copying cli-config.yaml.example (~120 KB, almost all
-        # comments), and nothing caches this loader — so the pure-Python parser dominates the load.
-        from utils import fast_safe_load
+    from hermes_cli.config_backend import config_exists, read_config_doc
 
-        with open(config_yaml_path, encoding="utf-8-sig") as f:
-            yaml_cfg = fast_safe_load(f) or {}
+    config_path = Path(home) / "config.yaml"
+    yaml_cfg: dict = {}
+    if config_exists(config_path):
+        yaml_cfg = read_config_doc(config_path) or {}
 
     from hermes_cli.config import _expand_env_vars
 
@@ -511,6 +523,14 @@ def read_yaml_layers(home: Path) -> dict:
 
 
 def load_yaml_layer(home: Path, gw_data: dict) -> None:
+    """Overlay YAML and retract missing bridge-owned settings only after a successful load."""
+    from gateway.platforms._shared import yaml_env_refresh
+
+    with yaml_env_refresh():
+        _load_yaml_layer(home, gw_data)
+
+
+def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     """Overlay ``read_yaml_layers`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
     yaml_cfg = read_yaml_layers(home)
     if not yaml_cfg:
@@ -526,10 +546,22 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry as registry
     except Exception as e:
-        logger.debug("plugin discovery skipped: %s", e)
+        from gateway.platforms._shared import cancel_yaml_env_refresh
+        cancel_yaml_env_refresh()
+        logger.debug("plugin discovery skipped: %s", e, exc_info=True)
         registry = None
 
-    targets = shared_loop_targets(registry)
+    # Only platforms this profile configures (a block above, a gateway.json row, their env/.env) are
+    # materialized: importing every deferred adapter to read its hooks cost each cold start ~0.5 s.
+    entries = None
+    if registry is not None:
+        from gateway.platform_activation import activation_predicate
+        entries, unresolved = registry.configured_load(activation_predicate(
+            yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
+        if unresolved:  # a configured platform that did not load has not had its settings deleted
+            from gateway.platforms._shared import cancel_yaml_env_refresh
+            cancel_yaml_env_refresh()
+    targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
     # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
     authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
@@ -539,5 +571,16 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
-                            warned=warned, authored=authored, managed_extra=managed_extra)
+                            warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)
+
+
+def load_gateway_config_file(gateway_config_file: str):
+    """``gateway --config <file>``: a ``GatewayConfig`` from an explicit local YAML file. Refused
+    when the config backend has no file tooling (Remote Config: config comes only from the plane)."""
+    import hermes_yaml as yaml
+    from gateway.config import GatewayConfig
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("gateway --config <file>")
+    with open(gateway_config_file, encoding="utf-8-sig") as f:
+        return GatewayConfig.from_dict(yaml.safe_load(f) or {})

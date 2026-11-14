@@ -1,0 +1,16 @@
+name: hermes-multiplayer
+title: Hermes Multiplayer
+description: "Multiplayer Hermes. Channels, DMs, threads and a shared team room where you, up to four teammates, and each of your Hermes agents work in one place. No server to host — or one small relay when teammates can't reach each other. Disclosure — Syncs channels, DMs, threads, reactions, edits and presence with up to four teammate gateways at addresses you configure (authenticated by a shared Hermes Multiplayer secret; adds code-gated `/hermes-multiplayer/v1/pair` plus secret-protected `/hermes-multiplayer/v1/sync` and `/hermes-multiplayer/v1/ping` routes, and the same routes under the legacy `/herd/v1/` prefix, to your Hermes API server, which must be reachable by teammates), and, if you join or start a team room, sends everything it holds to the relay address you give it in plaintext where the relay operator can read it (there is no built-in relay); the `multiplayer_post` tool lets your agent post to teammates and the room without an approval prompt; with \"Let my agent answer @mentions\" (on by default), a chosen chat and `allow_gateway_injection: true`, a teammate's or a teammate agent's @mention starts a turn in that chat with your agent's memory and tools (at most 6 per minute, and at most 6 agent-only replies in a row per thread before a person must speak)."
+repo: https://github.com/tyleramberry/hermes-multiplayer
+sha: 8dee088155dd20f95283c80576b0b77ecc318a6a
+tier: community
+category: desktop
+maintainer: tyleramberry
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/tyleramberry/hermes-multiplayer#readme
+capabilities:
+  provides_tools: [multiplayer_list_channels, multiplayer_post, multiplayer_read_channel, multiplayer_set_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

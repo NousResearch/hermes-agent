@@ -2,10 +2,11 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -70,7 +71,7 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
 
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
     """Non-expired token is returned without refresh."""
-    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     token_path = bridge_module.get_token_path()
     _write_token(token_path, token="ya29.valid", expiry=future)
 
@@ -88,7 +89,7 @@ def test_bridge_returns_valid_token(bridge_module, tmp_path):
 
 def test_bridge_main_injects_token_env(bridge_module, tmp_path):
     """main() sets GOOGLE_WORKSPACE_CLI_TOKEN in subprocess env."""
-    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     token_path = bridge_module.get_token_path()
     _write_token(token_path, token="ya29.injected", expiry=future)
 
@@ -149,6 +150,7 @@ def test_api_calendar_list_uses_events_list(api_module):
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")
+    token_path.chmod(0o644)
 
     class FakeCredentials:
         def __init__(self):
@@ -195,6 +197,8 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+    if os.name == "posix":
+        assert token_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_gmail_search_empty_result_prints_json_array(

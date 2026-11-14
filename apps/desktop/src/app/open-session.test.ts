@@ -36,6 +36,7 @@ vi.mock('./routes', () => ({
 }))
 
 import { $activeSessionId, $selectedStoredSessionId, $sessionResumeRequest } from '@/store/session'
+import { _resetUserSessionOpenForTests, currentUserSessionOpen } from '@/store/session-open-intent'
 
 import { openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
@@ -282,7 +283,7 @@ describe('openSession', () => {
     openSessionFromPicker('s2', navigate)
 
     expect($sessionResumeRequest.get()?.sessionId).toBe('s2')
-    expect(($sessionResumeRequest.get()?.sequence ?? 0)).toBeGreaterThan(1)
+    expect($sessionResumeRequest.get()?.sequence ?? 0).toBeGreaterThan(1)
   })
 
   it('window pops out when the bridge supports it', () => {
@@ -303,5 +304,30 @@ describe('openSession', () => {
     openSession('', navigate)
     expect(navigate).not.toHaveBeenCalled()
     expect(focusOpenSession).not.toHaveBeenCalled()
+  })
+})
+
+// The launch restore yields to this revision (store/connections.ts), so a real
+// open has to move it at once, and a pop-out (another window) must not.
+describe('openSession marks a chat the person opened', () => {
+  const navigate = vi.fn()
+
+  beforeEach(() => {
+    _resetUserSessionOpenForTests()
+    focusOpenSession.mockReturnValue(null)
+    canOpenSessionWindow.mockReturnValue(true)
+  })
+
+  it('bumps the user-open revision synchronously for an in-window open', () => {
+    const before = currentUserSessionOpen()
+    openSession('s1', navigate)
+    expect(currentUserSessionOpen()).toBe(before + 1)
+  })
+
+  it('leaves it alone for a native pop-out', () => {
+    const before = currentUserSessionOpen()
+    openSession('s1', navigate, 'window')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
+    expect(currentUserSessionOpen()).toBe(before)
   })
 })

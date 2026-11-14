@@ -22,6 +22,8 @@ from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
     classify_jwks_lookup_error)
 
+_log = logging.getLogger(__name__)
+
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
 TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
@@ -33,49 +35,6 @@ JSON_HEADERS = {"Accept": "application/json"}
 # drift seen in the field (#47815) without meaningfully extending token lifetime.
 DEFAULT_TOKEN_LEEWAY_SECONDS = 60.0
 
-# Defense against a hostile/compromised IdP serving unbounded responses to the
-# dashboard auth providers: refuse to buffer past this size (issue #55121).
-_OIDC_RESPONSE_BODY_LIMIT_BYTES = 1 * 1024 * 1024
-_OIDC_RESPONSE_CHUNK_BYTES = 64 * 1024
-
-
-def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Response:
-    """``httpx.request`` that never buffers an unbounded IdP response body.
-
-    Content-Length is prechecked when declared; the streamed body is capped
-    chunk-by-chunk either way (a lying/absent header cannot bypass the bound).
-    Returns a fully-read ``httpx.Response`` with the same status/headers.
-    """
-    with httpx.stream(method, url, **kwargs) as response:
-        declared = response.headers.get("content-length")
-        if declared:
-            try:
-                if int(declared) > _OIDC_RESPONSE_BODY_LIMIT_BYTES:
-                    raise ProviderError(
-                        f"endpoint response exceeds {_OIDC_RESPONSE_BODY_LIMIT_BYTES} bytes"
-                    )
-            except ValueError:
-                pass  # malformed header — the chunk cap below still bounds the read
-
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in response.iter_bytes(chunk_size=_OIDC_RESPONSE_CHUNK_BYTES):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > _OIDC_RESPONSE_BODY_LIMIT_BYTES:
-                raise ProviderError(
-                    f"endpoint response exceeds {_OIDC_RESPONSE_BODY_LIMIT_BYTES} bytes"
-                )
-            chunks.append(chunk)
-
-        return httpx.Response(
-            status_code=response.status_code,
-            headers=response.headers,
-            content=b"".join(chunks),
-            request=response.request,
-        )
-
 
 # ---- Config / env resolution ----
 
@@ -86,7 +45,7 @@ def load_config_section(logger: logging.Logger, tag: str, *path: str) -> dict:
         from hermes_cli.config import cfg_get, load_config
 
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         logger.debug("%s: load_config() raised %s; falling back to env-only configuration", tag, exc)
         return {}
     section = cfg_get(cfg, *path, default=None)
@@ -190,7 +149,7 @@ def pkce_login_start(authorize_url: str, *, client_id: str, scope: str, redirect
         cookie_payload={"hermes_session_pkce": f"state={state};verifier={code_verifier}"})
 
 
-def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
+def parse_json_body(response: httpx.Response) -> dict[str, Any]:
     """JSON object body, or ``{}`` for non-JSON content-type / parse error / non-dict."""
     if not response.headers.get("content-type", "").startswith("application/json"):
         return {}
@@ -202,8 +161,8 @@ def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
 
 
 def exchange_token(
-    url: str, data: Dict[str, str], *, headers: Optional[Dict[str, str]] = None, bad_request_exc: type[Exception],
-    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, Dict[str, Any]]:
+    url: str, data: dict[str, str], *, headers: Optional[dict[str, str]] = None, bad_request_exc: type[Exception],
+    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, dict[str, Any]]:
     """POST a token grant and return ``(token, payload)``.
 
     A 400 (OAuth-shaped error envelope) raises ``bad_request_exc`` — ``InvalidCodeError``
@@ -213,8 +172,7 @@ def exchange_token(
     deliberately NOT followed: the body carries an auth code / refresh token.
     """
     try:
-        response = _request_limited_response(
-            "POST", url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
+        response = httpx.post(url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
     except httpx.RequestError as exc:
         raise ProviderError(f"{endpoint} unreachable: {exc}") from exc
     if response.status_code == 400:
@@ -232,7 +190,7 @@ def exchange_token(
     return token, payload
 
 
-def refresh_token_from(payload: Dict[str, Any], fallback: str = "") -> str:
+def refresh_token_from(payload: dict[str, Any], fallback: str = "") -> str:
     """The token response's refresh token, or ``fallback`` when absent/non-string
     (the session then behaves as access-token-only until expiry)."""
     rt = payload.get("refresh_token")
@@ -240,7 +198,7 @@ def refresh_token_from(payload: Dict[str, Any], fallback: str = "") -> str:
 
 
 def session_from_claims(
-    provider: str, claims: Dict[str, Any], *, access_token: str, refresh_token: str,
+    provider: str, claims: dict[str, Any], *, access_token: str, refresh_token: str,
     label: str = "token", email: str = "", display_name: str = "", org_id: str = "") -> Session:
     """Map verified JWT claims onto a Session; ``sub`` is mandatory."""
     user_id = str(claims.get("sub", ""))
@@ -248,7 +206,8 @@ def session_from_claims(
         raise ProviderError(f"{label} missing 'sub' (user_id) claim")
     return Session(
         user_id=user_id, email=email, display_name=display_name, org_id=org_id, provider=provider,
-        expires_at=int(claims["exp"]), access_token=access_token, refresh_token=refresh_token)
+        expires_at=int(claims["exp"]), access_token=access_token, refresh_token=refresh_token,
+        issuer=str(claims.get("iss") or ""))
 
 
 # ---- JWT verification ----
@@ -266,51 +225,44 @@ def make_jwks_client(jwks_url: str) -> Any:
 def verify_jwt(
     token: str, jwks_client: Any, *, algorithms: list[str], audience: str, issuer: str, label: str,
     leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Verify ``token`` against ``jwks_client`` with pinned ``aud``/``iss``.
 
     ``leeway`` is seconds of clock-skew tolerance on the time claims (default
     60 — the previous zero-leeway made any issuer-ahead skew fail login, #47815).
 
-    Unreachable JWKS → ``ProviderError`` (503); a bearer that is not one of our JWTs
-    (opaque peer key, foreign kid) → ``InvalidCodeError`` (None / next provider); folding
-    both into 503 broke peer-key bearers. Expiry and not-yet-valid (``iat``/``nbf`` in
-    the future beyond the leeway — a *token* failure, not a transport failure) raise
-    ``InvalidCodeError`` (verify_session maps it to None); any other claim failure raises
-    ``ProviderError`` with the unverified iss/aud appended so operators can spot config
-    drift.
+    Only an unreachable (or malformed) JWKS is ``ProviderError`` (503). Every other failure (not a JWT,
+    unknown kid, expired, not yet valid, bad signature, wrong aud/iss, missing claim) is
+    ``InvalidCodeError``: the token is not ours (verify_session -> None -> 401 / next
+    provider). Folding "not ours" into 503 produced #94558 (opaque bearers) and #47815
+    (clock skew), and answered a Portal token minted for another client with "unreachable".
+    A wrong aud/iss is logged with the token's and the configured values, because it is also
+    what config drift (wrong client_id / portal URL) looks like.
     """
     import jwt  # lazy — keeps startup fast for the ungated path
 
     try:
         signing_key = jwks_client.get_signing_key_from_jwt(token)
     except Exception as exc:
-        # Unreachable JWKS -> ProviderError (503); a bearer that is not one of our JWTs (opaque peer key,
-        # foreign kid) -> InvalidCodeError (None / next provider). Folding both into 503 produced #94558.
         raise classify_jwks_lookup_error(exc) from exc
     try:
         return jwt.decode(
             token, signing_key.key, algorithms=algorithms, audience=audience, issuer=issuer, leeway=leeway,
             options={"require": ["exp", "iat", "aud", "iss", "sub"]})
-    except jwt.ExpiredSignatureError as exc:
-        raise InvalidCodeError(f"{label} expired: {exc}") from exc
-    except jwt.ImmatureSignatureError as exc:
-        # iat/nbf ahead of now beyond the leeway = clock skew or a bad token — the
-        # provider is *reachable*, so this must NOT surface as ProviderError/503
-        # (which discarded rotated refresh tokens and forced re-login, #47815).
-        raise InvalidCodeError(f"{label} not yet valid: {exc}") from exc
+    except (jwt.InvalidAudienceError, jwt.InvalidIssuerError) as exc:
+        # Raised only after the signature verified, so only a real IdP-signed token gets here:
+        # a foreign client's token, or config drift (wrong client_id / portal URL). Log it, since
+        # the caller only sees a 401. The re-decode is for diagnostics only; values are capped.
+        unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+        message = (
+            f"{label} verification failed: {exc} [token iss={str(unverified.get('iss'))[:128]!r} "
+            f"aud={str(unverified.get('aud'))[:128]!r}; expected iss={issuer!r} aud={audience!r}]")
+        _log.warning("dashboard-auth: %s", message)
+        raise InvalidCodeError(message) from exc
     except jwt.InvalidTokenError as exc:
-        # Decoding without verification is safe here: verification already failed and
-        # these values are surfaced for diagnostics only, never trusted.
-        details = ""
-        try:
-            unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
-            details = (
-                f" [token iss={unverified.get('iss')!r} aud={unverified.get('aud')!r}; "
-                f"expected iss={issuer!r} aud={audience!r}]")
-        except Exception:
-            pass
-        raise ProviderError(f"{label} verification failed: {exc}{details}") from exc
+        # Expired, not yet valid, bad signature, wrong alg, malformed payload: not logged, since
+        # the last two need no valid signature and a caller would control the line.
+        raise InvalidCodeError(f"{label} verification failed: {exc}") from exc
 
 
 # ---- Shared provider skeletons ----
@@ -334,7 +286,8 @@ class JwtOAuthProvider(DashboardAuthProvider):
     """Authorization-code + PKCE provider whose session token is a JWT we verify ourselves
     (nous: Portal access token; self-hosted: OIDC ID token). Subclasses set ``_client_id`` and
     implement: ``_jwks_uri() -> str``; ``_claims_for(token) -> claims`` (raises
-    ``InvalidCodeError`` on expiry/foreign token, ``ProviderError`` otherwise);
+    ``InvalidCodeError`` for a token that is not ours, ``ProviderError`` for an outage or a
+    provider-wide contract failure);
     ``_grant(data, *, bad_request_exc, headers=None, previous_refresh_token="") -> Session``;
     ``_refresh_request(refresh_token) -> (form_data, extra_headers)``;
     ``_session(token, refresh_token, claims) -> Session``."""
@@ -358,8 +311,14 @@ class JwtOAuthProvider(DashboardAuthProvider):
         if not refresh_token:
             raise RefreshExpiredError("no refresh token present in session")
         data, headers = self._refresh_request(refresh_token)
-        return self._grant(
-            data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
+        try:
+            return self._grant(
+                data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
+        except InvalidCodeError as exc:
+            # The grant succeeded but the token it minted does not verify here (foreign aud,
+            # unknown kid): this provider rejects the RT, so the refresh scan moves on instead
+            # of raising.
+            raise RefreshExpiredError(str(exc)) from exc
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
         # None on expiry/invalidity (middleware then tries refresh); a ProviderError

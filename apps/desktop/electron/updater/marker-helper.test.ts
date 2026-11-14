@@ -102,7 +102,10 @@ describe.skipIf(process.platform === 'win32')('runMarkerHelper against a real sc
     assert.deepEqual(await runMarkerHelper('reclaim', { updateRoot: root, hermesHome: home, isWindows: false }), {
       kind: 'absent'
     })
-    assert.equal(fs.readFileSync(path.join(home, 'helper-calls.log'), 'utf8'), `--marker-op reclaim --install-root ${root}\n`)
+    assert.equal(
+      fs.readFileSync(path.join(home, 'helper-calls.log'), 'utf8'),
+      `--marker-op reclaim --install-root ${root}\n`
+    )
   })
 
   test.each([

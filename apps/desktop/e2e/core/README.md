@@ -72,6 +72,9 @@ A small, deterministic Electron suite that guards three issue classes end to end
   enough profiles to condense the sidebar rail; the profile menu lists the
   ACTIVE gateway's default (checked, home glyph) on both sides of a switch
   (#106017, #131632).
+- **Transcript images** — `transcript-image-frame.spec.ts`: a portrait image
+  reply, reloaded so it mounts cold in its reserved 4:3 frame, scales into the
+  frame instead of painting over the text below it (#154409).
 - **Packaged build** — `packaged-smoke.spec.ts`: asarUnpack contract of the
   `electron-builder --dir` output (#121097) and the packaged binary booting to
   a first chat (≤60 s to interactive, main-process log tail on failure). It
@@ -94,11 +97,11 @@ by the turn's own marker), no visual baselines, `retries: 0`, one worker,
 sandboxed `HOME`/`HERMES_HOME`/user-data per test, all `HERMES_*` and
 credential env stripped from the spawned app.
 
-Run locally (Linux, after `npm run build` in `apps/desktop`):
+Run locally (Linux, after `pnpm run build` in `apps/desktop`):
 
 ```sh
 cd apps/desktop
-xvfb-run -a npx playwright test -c e2e/core/playwright.config.ts
+xvfb-run -a pnpm exec playwright test -c e2e/core/playwright.config.ts
 ```
 
 `HERMES_E2E_CORE_ROOT` picks the sandbox parent dir (default: OS tmpdir);

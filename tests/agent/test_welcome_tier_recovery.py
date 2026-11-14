@@ -292,7 +292,8 @@ class TestFreeTierCooldownCutoff:
             is_rate_limited=True, error_msg="429", api_kwargs=None, api_messages=[], messages=[],
             conversation_history=[], api_call_count=1, approx_tokens=10, provider="nous", base_url=WELCOME,
             model="nous/welcome")
-        assert "resets in ~2 min" in result["final_response"]
+        assert "refreshes in about 2 minutes" in result["final_response"]
+        assert result["free_tier"]["kind"] == "rate_limited"
 
     def test_a_subagent_of_a_desktop_session_keeps_waiting(self):
         """The child runs in a copy of the parent's context, so it reads the parent's source."""
@@ -303,6 +304,14 @@ class TestFreeTierCooldownCutoff:
             assert free_tier_cooldown_ends_turn(_agent(platform="subagent"), _plain_429(90), WELCOME) is False
         finally:
             clear_session_vars(tokens)
+
+    def test_a_gateway_admitted_finite_cli_turn_keeps_waiting(self):
+        """``hermes chat -q`` over the daemon carries its one-shot fact on the admission, not in env."""
+        from agent.turn_recovery import free_tier_cooldown_ends_turn
+        from gateway.session_finite import finite_turn_scope
+        with finite_turn_scope(True):
+            assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is False
+        assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is True
 
     @pytest.mark.parametrize("platform", ["cron", None])
     def test_an_unattended_run_keeps_waiting_and_is_told_the_reset(self, platform):

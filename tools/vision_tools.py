@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
 from urllib.parse import urlparse
 import httpx
+from hermes_dir_acl import make_user_dir
 
 # ``agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
 # module attributes so tests can patch ``tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
@@ -120,7 +121,8 @@ async def _run_encode_on_cpu_executor(fn, *args, **kwargs):
     """Run a sync encode/resize callable on the bounded vision CPU executor (never the LLM call)."""
     import functools
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_vision_cpu_executor, functools.partial(fn, *args, **kwargs))
+    from agent.memory_provider import ctx_bound
+    return await loop.run_in_executor(_vision_cpu_executor, ctx_bound(functools.partial(fn, *args, **kwargs)))
 
 
 async def _validate_image_url_async(url: str) -> bool:
@@ -215,7 +217,7 @@ def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
         return cache_dir
     # mode= is honored only for the leaf and is not further masked by umask
     # for the bits we care about; _secure_dir reconciles anything unusual.
-    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
     try:
         from hermes_cli.config import _secure_dir
 
@@ -556,7 +558,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
-def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
     """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
     (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
     results are known to carry media or the per-model capability lookup (config override → catalog incl. the
@@ -569,7 +571,7 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[st
     return _lookup_supports_vision(provider, model, cfg) is True
 
 
-def _native_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+def _native_tool_result_images(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
     """THE gate for every tool that can hand the main model pixels (``vision_analyze``, browser and
     ``computer_use`` screenshots, MCP ``ImageContent``): image routing resolves to ``native``
     (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, the catalog) AND the
@@ -593,7 +595,7 @@ def _should_use_native_vision_fast_path() -> bool:
 def _build_native_vision_tool_result(
     image_url: str, question: str, image_data_url: str, image_size_bytes: int,
     scale_note: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Multimodal tool-result envelope. The text part is intentionally minimal (the model already
     has the question); ``text_summary`` is the fallback for providers without multimodal tool results."""
     text_part = (
@@ -642,6 +644,10 @@ async def _prepare_image(
     into immutable history would 400 on every resume. The crop runs BEFORE any downscale so the
     region keeps the full resolution budget. On error no temp file is left."""
     from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_processing"):
+        # Hosted: decoding, conversion and the temp file would all happen on this host.
+        raise _ImagePrepError("Image processing is not available to a hosted agent.")
     try:
         resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
     except ImageResolutionError as exc:
@@ -865,7 +871,7 @@ async def _run_analysis(
         debug_call_data.update(success=True, analysis_length=analysis_length)
         return finish(result)
     except Exception as e:
-        error_msg = f"Error analyzing {kind}: {str(e)}"
+        error_msg = f"Error analyzing {kind}: {e!s}"
         logger.error("%s", error_msg, exc_info=True)
         err_str = str(e).lower()
         template = next(
@@ -885,7 +891,7 @@ async def _run_analysis(
 
 
 async def vision_analyze_tool(
-    image_url: str, user_prompt: str, model: str = None,
+    image_url: str, user_prompt: str, model: str | None = None,
     task_id: Optional[str] = None, region: Optional[list] = None) -> str:
     """Describe an image (URL, local path, data: URL) with the auxiliary vision LLM. ``user_prompt``
     is pre-formatted by the caller. Temp images live under $HERMES_HOME/cache/vision/."""
@@ -944,8 +950,8 @@ def check_video_requirements() -> bool:
 
 
 def check_vision_requirements() -> bool:
-    """Image gate (``vision_analyze``, ``browser_vision``): an aux vision client OR the native fast
-    path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
+    """Image gate (``vision_analyze``): an aux vision client OR the native fast
+    path. The handler attaches pixels straight to a vision-capable main model, so a main model on a
     provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
     ``video_analyze`` keeps the aux-only gate — its handler has no native path.
     """
@@ -1009,7 +1015,7 @@ def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
 
 
-async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
+async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:
     image_url, question, region = args.get("image_url", ""), args.get("question", ""), args.get("region")
     task_id = kw.get("task_id")
     # No concurrency gate around the whole analysis — the CPU burst is bounded inside the
@@ -1033,7 +1039,8 @@ registry.register(
     handler=_handle_vision_analyze,
     check_fn=check_vision_requirements,
     is_async=True,
-    emoji="👁️")
+    emoji="👁️",
+    self_checked_args=("question",))  # the native-image route loads the image without one
 
 
 # --- video_analyze --------------------------------------------------------
@@ -1070,10 +1077,14 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     """Local video path for a terminal-backend path, local file, or HTTP(S) URL. Only files created
     here are appended to ``temp_paths`` — never user-provided paths. Terminal-backend reads use the
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
-    (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, 50MB cap)."""
+    (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
     from tools.image_source import (
-        ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
+        ImageResolutionError, ResolveContext, _is_local_terminal_backend, local_source_spelling,
+        resolve_image_source,
     )
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_processing"):
+        raise ValueError("Video processing is not available to a hosted agent.")  # it would cache here
     source = video_url.removeprefix("file://")
     local_path = Path(os.path.expanduser(source))
     lowered = (video_url or "").strip().lower()
@@ -1093,6 +1104,8 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
         return path
+    if path_like:
+        local_path = Path(await asyncio.to_thread(local_source_spelling, str(local_path)))
     if local_path.is_file():
         from agent.file_safety import raise_if_read_blocked
         raise_if_read_blocked(str(local_path))
@@ -1119,7 +1132,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
 
 
 async def video_analyze_tool(
-    video_url: str, user_prompt: str, model: str = None, task_id: Optional[str] = None) -> str:
+    video_url: str, user_prompt: str, model: str | None = None, task_id: Optional[str] = None) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
         temp_video_path = await _materialize_video(video_url, task_id, temp_paths)
@@ -1171,7 +1184,7 @@ VIDEO_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _handle_video_analyze(args: dict[str, Any], **kw: Any) -> Awaitable[str]:
     video_url, question = args.get("video_url", ""), args.get("question", "")
     full_prompt = (
         "Fully describe and explain everything happening in this video, "
@@ -1188,4 +1201,5 @@ registry.register(
     handler=_handle_video_analyze,
     check_fn=check_video_requirements,
     is_async=True,
-    emoji="🎬")
+    emoji="🎬",
+    self_checked_args=("question",))

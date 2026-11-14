@@ -123,3 +123,99 @@ def test_api_server_profile_callback_resolves_routed_profile_adapter_fail_closed
         _api_request_profile.reset(token)
     # No prefix: the primary map, unchanged.
     assert api._get_platform_callback_adapter(request, "google_chat") is default
+
+
+@pytest.mark.asyncio
+async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_homes):
+    from gateway.platforms.webhook_delivery import snapshot_destination
+
+    default, secondary = _target(), _target()
+    adapter = _webhook(_Runner({Platform.SLACK: default}, {"sec": {Platform.SLACK: secondary}}, profile_homes))
+    delivery = snapshot_destination(adapter, {"deliver": "slack", "deliver_extra": {}, "profile": "sec"})
+    assert delivery == {"deliver": "slack", "deliver_extra": {"chat_id": "SEC-HOME"}, "profile": "sec"}
+    adapter._delivery_info["retained"] = delivery
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
+    result = await adapter.send("retained", "answer")
+    assert result.success
+    assert secondary.send.await_args.args[0] == "SEC-HOME"
+    default.send.assert_not_awaited()
+    adapter.gateway_runner._profile_adapters["sec"].clear()
+    assert not (await adapter.send("retained", "answer")).success
+    default.send.assert_not_awaited()
+
+
+def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
+    from hermes_constants import get_hermes_home
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
+
+    (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
+    adapter = _webhook(_Runner({}, {}, profile_homes))
+    with pytest.raises(RuntimeStoreError):
+        snapshot_destination(adapter, {"deliver": "slack", "deliver_extra": {}, "profile": "sec"})
+    for profile in ([], {}, 1):
+        with pytest.raises(RuntimeStoreError):
+            validate_destination({"deliver": "log", "deliver_extra": {}, "profile": profile})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("own", [{}, {Platform.LOCAL: object()}], ids=["no-adapters", "local-only"])
+async def test_shared_bot_satellite_webhook_egress_is_route_scoped(profile_homes, tmp_path, own):
+    """``sec`` owns no bot; one route maps slack:ROUTED to it. Its ``/p/sec/`` webhook rides the
+    primary bot only to a target a route maps to ``sec`` (the cron rule, #147602): the routed chat
+    succeeds, an unrouted chat and the home-channel fallback fail closed with no outbound send."""
+    from unittest.mock import patch
+
+    from gateway.profile_routing import parse_profile_routes
+
+    profile_homes.multiplex_profiles = True
+    profile_homes.profile_routes = parse_profile_routes(
+        [{"name": "sec-room", "platform": "slack", "profile": "sec", "chat_id": "ROUTED"}])
+    primary = _target()
+    webhook = _webhook(_Runner({Platform.SLACK: primary}, {"sec": dict(own)}, profile_homes))
+
+    async def deliver(extra):
+        return await webhook._deliver_cross_platform(
+            "slack", "hi", {"deliver": "slack", "deliver_extra": extra, "profile": "sec"})
+
+    with patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]):
+        assert (await deliver({"chat_id": "ROUTED"})).success
+        assert primary.send.await_args.args[0] == "ROUTED"
+        primary.send.reset_mock()
+        for extra in ({"chat_id": "UNROUTED"}, {}):  # {} → SEC-HOME home channel, also unrouted
+            res = await deliver(extra)
+            assert not res.success and "not routed" in res.error
+        primary.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shared_bot_satellite_cannot_escape_routed_chat_via_thread_id(profile_homes, tmp_path):
+    """Discord resolves ``thread_id`` as a global channel id, so a routed chat_id paired with a
+    payload-rendered foreign ``thread_id`` must not ride the shared bot; a thread the route pins does.
+    Telegram topic ids are chat-scoped, so a routed chat's topic still delivers (#147602)."""
+    from unittest.mock import patch
+
+    from gateway.profile_routing import parse_profile_routes
+
+    profile_homes.multiplex_profiles = True
+    profile_homes.profile_routes = parse_profile_routes([
+        {"name": "d", "platform": "discord", "profile": "sec", "chat_id": "111"},
+        {"name": "dt", "platform": "discord", "profile": "sec", "chat_id": "222", "thread_id": "333"},
+        {"name": "t", "platform": "telegram", "profile": "sec", "chat_id": "-100"},
+    ])
+    discord, telegram = _target(), _target()
+    webhook = _webhook(_Runner({Platform.DISCORD: discord, Platform.TELEGRAM: telegram}, {"sec": {}}, profile_homes))
+
+    async def deliver(platform, extra):
+        return await webhook._deliver_cross_platform(
+            platform, "hi", {"deliver": platform, "deliver_extra": extra, "profile": "sec"})
+
+    with patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]):
+        for extra in ({"chat_id": "111", "thread_id": "999"}, {"chat_id": "111", "message_thread_id": "999"}):
+            res = await deliver("discord", extra)
+            assert not res.success and "not routed" in res.error
+        discord.send.assert_not_awaited()
+        assert (await deliver("discord", {"chat_id": "222", "thread_id": "333"})).success
+        assert discord.send.await_args.kwargs["metadata"] == {"thread_id": "333"}
+        assert (await deliver("telegram", {"chat_id": "-100", "message_thread_id": "42"})).success

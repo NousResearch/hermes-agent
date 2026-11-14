@@ -46,6 +46,8 @@ def _pm_source(project, home):
     root = Path(__file__).resolve().parents[2]
     for relative in (
         "hermes", "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
+        "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
+        "hermes_agent/compat/moves.py",
         "pm/environments.py", "pm/filesystem.py", "hermes_cli/runtime_state.py",
         "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
         "hermes_cli/venv_sync.py", "hermes_cli/steward.py", "hermes_cli/stderr_timestamp.py",
@@ -100,7 +102,7 @@ def test_pm_fix_publishes_a_generation_aware_launcher(tmp_path, monkeypatch, cap
 
     assert "Fixed 1 issue" in capsys.readouterr().out
     assert not command.is_symlink()
-    result = subprocess.run([str(command)], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([str(command)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "selected"
     assert stale.is_file()

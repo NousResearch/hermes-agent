@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
+
 
 # Import the module under test via an import-time side-effect check path.
 # We need to be able to reset its state between tests, so we import it
@@ -96,6 +98,7 @@ class TestWindowsBehavior:
             [sys.executable, "-c", script],
             capture_output=True,
             timeout=15,
+            check=False,
         )
         assert result.returncode == 0, (
             f"Child crashed printing non-ASCII despite UTF-8 bootstrap:\n"
@@ -179,10 +182,10 @@ class TestStdioReconfigureErrorHandling:
 
 
 
-@pytest.mark.parametrize("path", [
+@pytest.mark.parametrize("path", [current_path(entry) for entry in (
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
-])
+)])
 def test_entrypoint_executes_bootstrap_before_application_imports(tmp_path, path):
     import subprocess
     from pathlib import Path
@@ -224,7 +227,7 @@ else:
 """
     result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root), str(entry)],
                             cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "bootstrap-before-app"
 
@@ -248,7 +251,7 @@ def test_library_imports_of_dual_use_entry_modules_stay_side_effect_free(tmp_pat
     env.update({"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PYTHONPATH": str(repo),
                 "HERMES_HOME": str(tmp_path / "home"), "PYTHONDONTWRITEBYTECODE": "1"})
     child = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=env,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=120, check=False)
     assert child.returncode == 0, child.stderr
     assert child.stdout.splitlines()[-1] == '{"bootstrapped": false, "changed": []}'
 
@@ -284,15 +287,16 @@ print('reached-pm')
 """
     result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root)],
                             cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "reached-pm"
 
 
-@pytest.mark.parametrize("path", [
+@pytest.mark.parametrize("path", [current_path(entry) for entry in (
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
-])
+    "agent/managed_worker.py", "hermes_cli/kanban_worker_client.py",
+)])
 @pytest.mark.parametrize("bootstrap,expected", [
     (None, "proceeded"),
     ("import hermes_missing_dependency_probe\n", "raised hermes_missing_dependency_probe"),
@@ -329,7 +333,7 @@ except ModuleNotFoundError as exc:
     print('raised', exc.name)
 """
     result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(fake_root), str(entry)],
-                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
 
@@ -381,7 +385,9 @@ class TestHardenImportPath:
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
 
-    def test_env_var_used_when_no_arg(self):
+    def test_inherited_src_root_never_redirects_imports(self):
+        """A checkout's dev shell exports HERMES_PYTHON_SRC_ROOT; an install started from it
+        must still put its own tree first."""
         hb = _fresh_import()
         original = sys.path[:]
         original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
@@ -389,7 +395,8 @@ class TestHardenImportPath:
             sys.path[:] = ["", "/cwd/proj", "/usr/lib"]
             os.environ["HERMES_PYTHON_SRC_ROOT"] = "/env/hermes"
             hb.harden_import_path()
-            assert sys.path[0] == "/env/hermes"
+            assert sys.path[0] == os.path.dirname(os.path.abspath(hb.__file__))
+            assert "/env/hermes" not in sys.path
         finally:
             sys.path[:] = original
             if original_env is None:
@@ -426,6 +433,7 @@ class TestEnableWindowsVt:
             [sys.executable, "-c", script, root],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
             timeout=120,
+            check=False,
         )
         if result.returncode == 4:
             pytest.skip("this session cannot create a console")

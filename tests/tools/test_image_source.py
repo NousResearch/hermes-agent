@@ -100,6 +100,108 @@ class TestLocalBackend:
         assert res.origin == "file"
 
 
+class TestBoundedHostRead:
+    """Host reads stay within the ingest cap DURING the read, not after buffering the file."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_file_rejected_without_opening_it(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        big = tmp_path / "big.png"
+        with big.open("wb") as fh:  # sparse: stat says cap+1, no disk used
+            fh.write(PNG)
+            fh.truncate(isrc._MAX_HOST_READ_BYTES + 1)
+        opened = []
+        real_open = Path.open
+        monkeypatch.setattr(Path, "open", lambda self, *a, **k: opened.append(self.name) or real_open(self, *a, **k))
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(str(big), isrc.ResolveContext())
+        assert "big.png" not in opened
+
+    @pytest.mark.asyncio
+    async def test_read_is_capped_when_stat_under_reports(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "pic.png"
+        img.write_bytes(PNG)
+        real_stat, real_open, reads = Path.stat, Path.open, []
+
+        def zero_size_stat(self, **kw):  # procfs-style: size 0, content streams
+            st = real_stat(self, **kw)
+            if self.name != "pic.png":
+                return st
+            return SimpleNamespace(**{**{a: getattr(st, a) for a in dir(st) if a.startswith("st_")}, "st_size": 0})
+
+        class _Recording:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def read(self, n=-1):
+                reads.append(n)
+                return self._fh.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+
+        def recording_open(self, *a, **kw):
+            fh = real_open(self, *a, **kw)
+            return _Recording(fh) if self.name == "pic.png" else fh
+
+        monkeypatch.setattr(Path, "stat", zero_size_stat)
+        monkeypatch.setattr(Path, "open", recording_open)
+        res = await isrc.resolve_image_source(str(img), isrc.ResolveContext())
+        assert res.data == PNG
+        assert reads and all(0 <= n <= isrc._MAX_HOST_READ_BYTES + 1 for n in reads)
+
+    @pytest.mark.asyncio
+    async def test_small_file_read_never_reserves_the_cap(self, tmp_path, monkeypatch):
+        # BufferedReader.read(n) allocates n bytes up front, so read(cap+1) reserved 250 MiB of
+        # address space per screenshot and raised MemoryError under RLIMIT_AS / strict overcommit.
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "pic.png"
+        img.write_bytes(PNG)
+        real_open, reads = Path.open, []
+
+        class _Recording:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def read(self, n=-1):
+                reads.append(n)
+                return self._fh.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+
+        monkeypatch.setattr(Path, "open", lambda self, *a, **kw: (
+            _Recording(real_open(self, *a, **kw)) if self.name == "pic.png" else real_open(self, *a, **kw)))
+        res = await isrc.resolve_image_source(str(img), isrc.ResolveContext())
+        assert res.data == PNG
+        assert reads and all(0 <= n <= len(PNG) + 1 for n in reads)
+
+    @pytest.mark.asyncio
+    async def test_video_host_read_keeps_the_50_mib_budget(self, tmp_path, monkeypatch):
+        # Videos are never downscaled and video_analyze refuses >50 MB of base64, so the 250 MiB
+        # image budget must not let a cached video be read and copied before that refusal.
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        clip = home / "cache" / "video" / "inbound.mp4"
+        clip.parent.mkdir(parents=True)
+        with clip.open("wb") as fh:  # sparse: stat says 50 MiB + 1
+            fh.write(b"\0\0\0\x18ftypmp42")
+            fh.truncate(isrc._MAX_INGEST_BYTES + 1)
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(str(clip), isrc.ResolveContext(), permitted=("video",))
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""
@@ -229,6 +331,25 @@ class TestExecReadSafety:
         assert f"head -c {isrc._MAX_INGEST_BYTES + 1} < " in captured["cmd"]
         assert "'-i-etc-shadow.png'" in captured["cmd"] or "-i-etc-shadow.png" in captured["cmd"]
 
+    @pytest.mark.asyncio
+    async def test_exec_read_refuses_a_file_over_50_mib(self, tmp_path, monkeypatch):
+        """The exec-read returns base64 on stdout (~4x the file in this process), so it keeps a
+        50 MiB budget even though host-file reads allow 250 MiB."""
+        import re
+
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        sandbox_file = PNG + b"\0" * (60 * 1024 * 1024)
+
+        def fake_execute(cmd, **kw):  # behaves like the real `head -c N < f | base64`
+            limit = int(re.search(r"head -c (\d+)", cmd).group(1))
+            return {"returncode": 0, "output": base64.b64encode(sandbox_file[:limit]).decode()}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            with pytest.raises(isrc.SourceTooLarge):
+                await isrc.resolve_image_source("/workspace/big.png", isrc.ResolveContext(task_id="t1"))
+
 
     @pytest.mark.asyncio
     async def test_exec_read_retries_cold_start_then_succeeds(self, tmp_path, monkeypatch):
@@ -314,7 +435,7 @@ class TestSvgNormalization:
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
         with patch.object(vt, "_rasterize_svg_to_png", return_value=False):
-            path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
+            path, _mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
         assert path is None
         assert "rasterizer" in err
 
@@ -542,7 +663,7 @@ class TestHeicDetection:
             return real_import(name, *args, **kwargs)
 
         with patch.object(builtins, "__import__", side_effect=_no_heif):
-            path, mime, err = vt._normalize_to_supported_image(heic, "image/heic")
+            path, _mime, err = vt._normalize_to_supported_image(heic, "image/heic")
         assert path is None
         assert "pillow-heif" in err
 
@@ -592,6 +713,6 @@ class TestHeicDetection:
         broken = tmp_path / "broken.avif"
         broken.write_bytes(AVIF_HEADER)
 
-        path, mime, err = vt._normalize_to_supported_image(broken, "image/avif")
+        path, _mime, err = vt._normalize_to_supported_image(broken, "image/avif")
         assert path is None
         assert "AV1" in err or "Pillow" in err

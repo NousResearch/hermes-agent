@@ -1,0 +1,33 @@
+name: wake-me-when
+title: Wake Me When
+repo: https://github.com/kruxarth/wake-me-when
+sha: 77e827a03053102c3af28049384521853b0caab8
+description: "Wakes you the moment something happens in live audio or video that has no feed: a keynote reaching pricing, an earnings call giving guidance, a Twitch boss fight, a council agenda item, a launch at T-minus 1 or a scrub. /wakeme <url> when <condition> (or just ask the agent) watches YouTube Live, Twitch, HLS, RTSP or a bundled demo:// stream with local speech recognition (faster-whisper, Hermes's own stt-whisper extra), on-screen OCR and an optional vision check, and posts an alert in the same chat with the quote, the stream time and a jump-in link; replying 'clip' hands you the moment as a video, 'not it' teaches the judge and keeps watching, 'every time …' alerts on each occurrence, /wakeme catchup summarises what you missed, and /wakeme <recording> <question> searches recordings for timestamps; one slash command in all. Cheap cue matching runs first; one LLM judge call (its own auxiliary task, wakeme_judge) confirms, citing transcript rows so times never come from the model; a per-watch hourly budget falls back to unconfirmed cue alerts instead of missing silently. Disclosure — runs one ffmpeg (plus streamlink for Twitch, HLS and web-media links) per active watch in its own process group, killed on stop, unload and exit, and one shared speech-recognition thread; contacts only the stream hosts you give it (via yt-dlp, streamlink, ffmpeg), Hugging Face once for the Whisper model, and Hermes's package index when it installs the stt-whisper extra; sends transcript excerpts, on-screen text and (only for visual conditions) keyframes to your configured model through ctx.llm; external tools (ffmpeg, yt-dlp, streamlink, tesseract, a JS runtime for yt-dlp) are user-installed and detected, never bundled; subprocesses use argv lists, -- before user URLs, an explicit ffmpeg -protocol_whitelist per source and a minimal environment (PATH, HOME, TMPDIR, locale, XDG and proxy/CA settings; no API keys or tokens); refuses private network addresses, including the stream URLs yt-dlp and streamlink resolve a link to, unless allow_private_network is on; direct HLS and web-media links are fetched by streamlink through a loopback proxy on 127.0.0.1 (random port, per-source random credentials) that checks every connection, playlist entries and redirects included, and dials the address it checked, unless you set your own proxy; and local files from messaging chats unless they are in allowed_media_dirs; keeps a 3-minute media buffer per watch, clips for 2 days and transcripts for 7 days under its plugin-data; while a chat has watches, its pre_llm_call hook adds a one-line note naming them to the user's turn; optional allow_gateway_injection (off by default) lets it ask the agent to attach the clip right after an alert (one agent turn on your main model) and hand an alert it could not post to the agent; DRM streams are not supported; no telemetry."
+maintainer: kruxarth
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+image: https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/screenshots/demo-keynote.jpg
+  - https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/screenshots/twitch-alert.jpg
+  - https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/screenshots/youtube-live-alert.jpg
+  - https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/screenshots/catchup.jpg
+  - https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/screenshots/not-it.jpg
+  - https://raw.githubusercontent.com/kruxarth/wake-me-when/77e827a03053102c3af28049384521853b0caab8/docs/screenshots/pipeline.jpg
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - wakeme_watch
+    - wakeme_find
+    - wakeme_list
+    - wakeme_stop
+    - wakeme_catchup
+    - wakeme_clip
+    - wakeme_feedback
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -90,7 +90,7 @@ def voice_live_turn_note(context: str = "") -> str:
     return f"{VOICE_LIVE_TURN_NOTE}\n[Recent spoken conversation, newest last:\n{context}]"
 
 
-def _voice_section() -> Dict[str, Any]:
+def _voice_section() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         voice = load_config().get("voice")
@@ -99,19 +99,19 @@ def _voice_section() -> Dict[str, Any]:
     return voice if isinstance(voice, dict) else {}
 
 
-def _live_section(voice: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _live_section(voice: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     section = (voice if voice is not None else _voice_section()).get("gpt_live")
     return section if isinstance(section, dict) else {}
 
 
-def voice_chat_mode(voice: Optional[Dict[str, Any]] = None) -> str:
+def voice_chat_mode(voice: Optional[dict[str, Any]] = None) -> str:
     """``chained`` (default) or ``gpt-live``. Accepts the underscore spelling too."""
     raw = (voice if voice is not None else _voice_section()).get("voice_chat_mode")
     mode = str(raw or CHAINED_MODE).strip().lower().replace("_", "-")
     return GPT_LIVE_MODE if mode in {GPT_LIVE_MODE, "gptlive", "live"} else CHAINED_MODE
 
 
-def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:
+def _resolve_credentials(live: dict[str, Any]) -> tuple[str, str]:
     """``(api_key, base_url)`` — ``voice.gpt_live.api_key`` first, else the same OpenAI audio
     chain the STT/TTS providers use (``VOICE_TOOLS_OPENAI_KEY`` → ``OPENAI_API_KEY`` → pool).
 
@@ -123,12 +123,12 @@ def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:
     return api_key, base_url
 
 
-def live_instructions(live: Optional[Dict[str, Any]] = None) -> str:
+def live_instructions(live: Optional[dict[str, Any]] = None) -> str:
     extra = str((live if live is not None else _live_section()).get("instructions") or "").strip()
     return f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
 
 
-def resolve_gpt_live_status() -> Dict[str, Any]:
+def resolve_gpt_live_status() -> dict[str, Any]:
     """Non-secret readiness verdict for the client: which mode is selected and whether GPT-Live
     can start (a key resolves). Never returns the key."""
     voice = _voice_section()
@@ -144,11 +144,11 @@ def resolve_gpt_live_status() -> Dict[str, Any]:
     }
 
 
-def build_session_config(history: Optional[list] = None) -> Dict[str, Any]:
+def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
     transport negotiates the audio format, so none is set)."""
     live = _live_section()
-    config: Dict[str, Any] = {
+    config: dict[str, Any] = {
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
         "instructions": live_instructions(live),
         "audio": {"output": {"voice": str(live.get("voice") or DEFAULT_LIVE_VOICE)}},
@@ -159,7 +159,7 @@ def build_session_config(history: Optional[list] = None) -> Dict[str, Any]:
     return config
 
 
-def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> Dict[str, Any]:
+def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dict[str, Any]:
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",

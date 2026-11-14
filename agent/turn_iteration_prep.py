@@ -34,9 +34,14 @@ def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
     if msg.get("content") == user_message:
         return True
     from agent.context_compressor import user_originated_turn_view
+    from agent.turn_context import row_carries_user_message
 
     view = user_originated_turn_view(msg)
-    return view is not None and view.get("content") == user_message
+    if view is not None and view.get("content") == user_message:
+        return True
+    # A row that absorbed this turn's text through alternation repair (a marker
+    # welded onto the event, #140650) still anchors the turn.
+    return row_carries_user_message(msg, user_message)
 
 ITERATION_BUDGET_WARNING_TEMPLATE = (
     "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "

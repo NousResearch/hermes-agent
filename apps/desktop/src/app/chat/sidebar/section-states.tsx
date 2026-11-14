@@ -77,7 +77,11 @@ export function SidebarPinnedEmptyState({ archived, filtered }: { archived: bool
   const { t } = useI18n()
 
   return (
-    <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
+    <div
+      className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)"
+      data-filtered={filtered || archived ? '' : undefined}
+      data-slot="sidebar-pinned-empty"
+    >
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>

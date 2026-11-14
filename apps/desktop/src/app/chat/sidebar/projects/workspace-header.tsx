@@ -89,7 +89,7 @@ export function WorkspaceShowMoreRow({
   onClick: () => void
 }) {
   return (
-    <SidebarRowShell>
+    <SidebarRowShell data-slot="sidebar-show-more">
       <SidebarRowBody
         className="group/more w-full text-(--ui-text-tertiary) hover:text-foreground"
         disabled={disabled}
@@ -281,6 +281,7 @@ export function WorkspaceHeader({
         'group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem]',
         emphasis ? 'font-semibold text-(--ui-text-secondary)' : 'font-medium text-(--ui-text-tertiary)'
       )}
+      data-slot="sidebar-workspace-header"
       ref={ref}
       {...rest}
     >

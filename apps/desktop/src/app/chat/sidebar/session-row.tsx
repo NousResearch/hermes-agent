@@ -31,7 +31,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { $sessionDotStateById, hasLiveTurn, type SessionDotState, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -391,7 +391,7 @@ function SidebarSessionRowImpl({
           className
         )}
         data-glass-opaque={dragging ? '' : undefined}
-        data-working={liveTurn ? 'true' : undefined}
+        {...rowStateAttributes(dotState, { isPinned, isSelected, openUnfocused, unread })}
         // The row runs BOTH drags off one press, and each declines outside its
         // own region — so no timing/arbitration rule is needed and neither can
         // steal the other's gesture. Over the sidebar only the reorder has a
@@ -688,3 +688,29 @@ function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): bo
 }
 
 export const SidebarSessionRow = memo(SidebarSessionRowImpl, rowPropsEqual)
+
+interface RowStateFlags {
+  isPinned: boolean
+  isSelected: boolean
+  openUnfocused: boolean
+  unread: boolean
+}
+
+const flag = (on: boolean) => (on ? '' : undefined)
+
+/**
+ * The row's state as attributes: the styling contract for themes and plugins,
+ * so none of them has to match the Tailwind classes that paint it today.
+ * `data-status` is the same resolved state the dot paints.
+ */
+function rowStateAttributes(dotState: SessionDotState, flags: RowStateFlags) {
+  return {
+    'data-open-elsewhere': flag(flags.openUnfocused),
+    'data-pinned': flag(flags.isPinned),
+    'data-selected': flag(flags.isSelected),
+    'data-session-row': '',
+    'data-status': dotState,
+    'data-unread': flag(flags.unread),
+    'data-working': hasLiveTurn(dotState) ? 'true' : undefined
+  }
+}

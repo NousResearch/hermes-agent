@@ -59,7 +59,7 @@ _DASHBOARD_UPDATABLE_FIELDS = frozenset({
     "name", "prompt", "schedule", "deliver", "failure_deliver", "skills", "skill", "repeat",
     "enabled", "model", "provider", "base_url", "reasoning_effort", "pinned", "script",
     "monitor_script", "monitor_url", "interpreter", "context_from", "enabled_toolsets",
-    "attach_to_session", "workdir", "no_agent", "timezone", "grace_minutes", "catch_up",
+    "attach_to_session", "workdir", "no_agent", "timezone", "grace_minutes", "catch_up", "wrap_response",
 })
 
 

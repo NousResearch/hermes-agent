@@ -35,6 +35,7 @@ from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants, validate_schedule_knobs
+from cron.jobs_tristate import normalize_catch_up as _normalize_catch_up, normalize_wrap_response
 from cron.jobs_model_pin import _main_model_pin
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
@@ -1744,22 +1745,6 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
 
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
-def _normalize_catch_up(value: Any) -> Optional[bool]:
-    """``catch_up``: True runs one catch-up for missed slots, False skips them, None = default."""
-    if value is None or isinstance(value, bool):
-        return value
-    raise ValueError("catch_up must be true, false, or null (use the default).")
-
-
-def _normalize_wrap_response(value: Any) -> Optional[bool]:
-    """``wrap_response``: True wraps delivered output, False delivers it raw, None inherits the
-    global ``cron.wrap_response``. Strict like ``catch_up``: ``bool("false")`` is True, so a string
-    must never be coerced into an override."""
-    if value is None or isinstance(value, bool):
-        return value
-    raise ValueError("wrap_response must be true, false, or null (inherit cron.wrap_response).")
-
-
 _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "model": _normalize_job_optional_text,
     "provider": _normalize_job_optional_text,
@@ -1776,7 +1761,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
-    "wrap_response": _normalize_wrap_response,
+    "wrap_response": normalize_wrap_response,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1791,7 +1776,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
-    "wrap_response": _normalize_wrap_response,
+    "wrap_response": normalize_wrap_response,
 }
 
 

@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from cron.jobs import _normalize_wrap_response, get_job
+from cron.jobs import get_job
+from cron.jobs_tristate import normalize_wrap_response
 from tools.cronjob_tools import cronjob
 
 
@@ -44,13 +45,13 @@ def test_new_job_inherits_by_default():
 
 @pytest.mark.parametrize("value,expected", [(True, True), (False, False), (None, None)])
 def test_normaliser_accepts_only_bool_or_null(value, expected):
-    assert _normalize_wrap_response(value) is expected
+    assert normalize_wrap_response(value) is expected
 
 
 @pytest.mark.parametrize("value", ["false", "true", "off", 0, 1])
 def test_normaliser_rejects_strings_and_ints(value):
     with pytest.raises(ValueError):
-        _normalize_wrap_response(value)
+        normalize_wrap_response(value)
 
 
 def test_string_false_is_not_stored_as_wrap_on():

@@ -88,6 +88,19 @@ def bash_argv(cmd_string: str, login: bool = False) -> list[str]:
     return ["bash", "-l", "-c", cmd_string] if login else ["bash", "-c", cmd_string]
 
 
+# The shell that runs a command must not carry the command's text in its argv: ``pkill -f 'sleep 9'``
+# matches the wrapper ``bash -c "pkill -f 'sleep 9'; …"`` too and SIGTERMs it mid-command (no output,
+# rc -15), and ``pgrep -f`` reports the wrapper as a phantom match. Backends with an env channel carry
+# the text in this variable instead; the shell unsets it before running it, so nothing inherits it.
+COMMAND_ENV_VAR = "HERMES_RUN_COMMAND"
+_EVAL_COMMAND_ENV = f'eval "unset {COMMAND_ENV_VAR}; ${COMMAND_ENV_VAR}"'
+
+
+def bash_env_argv(login: bool = False) -> list[str]:
+    """``bash [-l] -c`` argv tail that runs the command held in ``COMMAND_ENV_VAR``."""
+    return bash_argv(_EVAL_COMMAND_ENV, login)
+
+
 def ensure_lazy_dep(extra: str) -> None:
     """Lazy-install an optional SDK's pm extra (idempotent). Install failures
     surface as ``ImportError``."""

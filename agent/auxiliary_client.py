@@ -3664,6 +3664,18 @@ def _refresh_xai_oauth_credentials() -> bool:
     return _creds_have_api_key(resolve_xai_oauth_runtime_credentials(force_refresh=True))
 
 
+def _refresh_meta_oauth_credentials() -> bool:
+    """Pool-level refresh first, then the singleton auth-store resolver."""
+    pool = load_pool("meta-oauth")
+    if pool and pool.has_credentials():
+        pool.select()
+        refreshed = pool.try_refresh_current()
+        if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
+            return True
+    from hermes_cli.auth import resolve_meta_oauth_runtime_credentials
+    return _creds_have_api_key(resolve_meta_oauth_runtime_credentials(force_refresh=True))
+
+
 def _refresh_vertex_credentials() -> bool:
     """Mirrors run_agent's Vertex refresh; the cache key ignores the rotating bearer, so
     without the eviction that follows, a ~1h-expired aux Vertex client 401s forever."""
@@ -3677,6 +3689,7 @@ _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
     "openai-codex": _refresh_codex_credentials,
     "nous": _refresh_nous_credentials, "anthropic": _refresh_anthropic_credentials,
     "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
+    "meta-oauth": _refresh_meta_oauth_credentials,
 }
 
 

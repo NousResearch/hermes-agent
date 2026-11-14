@@ -87,6 +87,7 @@ def start_device_authorization(client: Any = None) -> dict[str, Any]:
 
 def poll_for_identity_token(
     client: Any, device_code: str, *, expires_in: int, poll_interval: int,
+    cancelled: Any = None,
 ) -> str:
     """Poll Meta's device token endpoint and return the identity bearer token."""
     from hermes_cli.auth_device_flow import _poll_device_token_generic
@@ -99,7 +100,7 @@ def poll_for_identity_token(
             )
 
     def _error(response: Any, payload: dict[str, Any]) -> Exception:
-        error = _clean(payload.get("error")) or _clean(response.text) or "unknown error"
+        error = _clean(payload.get("error")) or _clean(response.text)[:200] or "unknown error"
         terminal = error in {"access_denied", "expired_token", "invalid_grant"}
         return _meta_error(
             f"Meta device-code token polling failed: {error}." + (f" {_RELOGIN}" if terminal else ""),
@@ -128,12 +129,42 @@ def poll_for_identity_token(
         on_timeout=lambda: _meta_error(
             "Timed out waiting for Meta device authorization.", "device_code_timeout",
         ),
+        cancelled=cancelled,
     )
     return _clean(result.get("access_token"))
 
 
-def mint_meta_api_key(identity_token: str, client: Any = None) -> dict[str, Any]:
-    """Mint a 24-hour Meta Model API key from the device-flow identity token."""
+def _server_expiry_ms(payload: dict[str, Any]) -> Optional[int]:
+    """Expiry the mint response itself declares, in epoch ms (None = undeclared)."""
+    value = payload.get("expires_at_ms")
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    value = payload.get("expires_at")
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value) if value > 10**12 else int(value * 1000)
+    expires_in = _positive_number(payload.get("expires_in"))
+    if expires_in:
+        return int(time.time() * 1000) + int(expires_in * 1000)
+    return None
+
+
+def _is_paywall_payload(payload: dict[str, Any]) -> bool:
+    return (
+        payload.get("require_payment") is True
+        or payload.get("is_subs_active") is False
+        or payload.get("subscription_active") is False
+    )
+
+
+def mint_meta_api_key(identity_token: str, client: Any = None, *, onboard: bool = False) -> dict[str, Any]:
+    """Mint a Meta Model API key from the device-flow identity token.
+
+    ``onboard`` is sent only for a login's first mint; re-mints (refresh)
+    must not re-onboard. Expiry prefers what the server declares, falling
+    back to the 24h lifetime only when it declares nothing.
+    """
+    import json
+
     from hermes_cli.auth_constants import META_API_KEY_LIFETIME_MS, META_API_KEY_MINT_URL
 
     identity_token = _clean(identity_token)
@@ -150,9 +181,15 @@ def mint_meta_api_key(identity_token: str, client: Any = None) -> dict[str, Any]
                 "Content-Type": "application/json",
                 "x-api-version": "1.0.0",
             },
-            content=b"{}",
+            content=json.dumps({"onboard": True} if onboard else {}).encode(),
         )
         payload = _safe_json(response)
+        if response.status_code == 403 and _is_paywall_payload(payload):
+            action_url = _trusted_http_url(payload.get("action_url"))
+            suffix = f" Complete setup at {action_url}." if action_url else ""
+            raise _meta_error(
+                f"Meta subscription is not active.{suffix}", "meta_subscription_inactive",
+            )
         if response.status_code in {401, 403}:
             raise _meta_error(
                 f"Meta session expired (HTTP {response.status_code}{_error_detail(payload)}). {_RELOGIN}",
@@ -173,7 +210,7 @@ def mint_meta_api_key(identity_token: str, client: Any = None) -> dict[str, Any]
         return {
             "access_token": key,
             "refresh_token": identity_token,
-            "expires_at_ms": int(time.time() * 1000) + META_API_KEY_LIFETIME_MS,
+            "expires_at_ms": _server_expiry_ms(payload) or int(time.time() * 1000) + META_API_KEY_LIFETIME_MS,
         }
     finally:
         if own_client:
@@ -181,13 +218,15 @@ def mint_meta_api_key(identity_token: str, client: Any = None) -> dict[str, Any]
 
 
 def _trusted_http_url(value: Any) -> Optional[str]:
+    """Only https URLs on meta.com (or a subdomain) may be shown/opened."""
     if not isinstance(value, str) or not value:
         return None
     try:
         parsed = urlparse(value)
     except Exception:
         return None
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (host == "meta.com" or host.endswith(".meta.com")):
         return None
     return value
 
@@ -198,7 +237,7 @@ def _error_detail(payload: Any) -> str:
     for key in ("error_description", "detail", "message", "error"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            return f": {value.strip()}"
+            return f": {value.strip()[:200]}"
     return ""
 
 
@@ -272,18 +311,21 @@ def _quarantine_meta_oauth_tokens(exc: AuthError) -> None:
 
     logger = logging.getLogger("hermes_cli.auth")
     try:
-        store = _load_auth_store()
-        state = _load_provider_state(store, META_OAUTH_PROVIDER_ID) or {}
-        tokens = dict(state.get("tokens") or {})
-        tokens.pop("access_token", None)
-        tokens.pop("refresh_token", None)
-        state["tokens"] = tokens
-        state["last_auth_error"] = _last_auth_error_marker(
-            META_OAUTH_PROVIDER_ID, exc, reason="runtime_refresh_failure",
-            default_code="meta_refresh_failed",
-        )
-        _store_provider_state(store, META_OAUTH_PROVIDER_ID, state, set_active=False)
-        _save_auth_store(store)
+        from hermes_cli.auth import _auth_store_lock
+
+        with _auth_store_lock():
+            store = _load_auth_store()
+            state = _load_provider_state(store, META_OAUTH_PROVIDER_ID) or {}
+            tokens = dict(state.get("tokens") or {})
+            tokens.pop("access_token", None)
+            tokens.pop("refresh_token", None)
+            state["tokens"] = tokens
+            state["last_auth_error"] = _last_auth_error_marker(
+                META_OAUTH_PROVIDER_ID, exc, reason="runtime_refresh_failure",
+                default_code="meta_refresh_failed",
+            )
+            _store_provider_state(store, META_OAUTH_PROVIDER_ID, state, set_active=False)
+            _save_auth_store(store)
     except Exception as save_exc:
         logger.debug("Meta OAuth: failed to persist quarantined state: %s", save_exc)
 
@@ -336,7 +378,7 @@ def _meta_oauth_device_code_login(
             client, str(device["device_code"]),
             expires_in=int(device["expires_in"]), poll_interval=int(device["interval"]),
         )
-        minted = mint_meta_api_key(identity, client)
+        minted = mint_meta_api_key(identity, client, onboard=True)
     return {
         "tokens": {
             "access_token": minted["access_token"], "refresh_token": minted["refresh_token"],

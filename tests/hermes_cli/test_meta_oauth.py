@@ -254,7 +254,7 @@ def test_meta_device_code_login_mints_and_returns_tokens(monkeypatch):
         "interval": 1, "expires_in": 600,
     })
     monkeypatch.setattr(meta, "poll_for_identity_token", lambda client, code, **kwargs: "identity-token")
-    monkeypatch.setattr(meta, "mint_meta_api_key", lambda identity, client=None: {
+    monkeypatch.setattr(meta, "mint_meta_api_key", lambda identity, client=None, **_k: {
         "access_token": "at-minted", "refresh_token": identity, "expires_at_ms": 9_999_999,
     })
     monkeypatch.setattr("hermes_cli.auth_device_flow.time.sleep", lambda _s: None)
@@ -463,7 +463,7 @@ def test_meta_runtime_provider_resolves_oauth(tmp_path, monkeypatch):
 
 
 def test_meta_oauth_transport_carries_retention():
-    import agent.transports.codex  # noqa: F401
+    import agent.transports.codex
     from agent.transports import get_transport
 
     transport = get_transport("codex_responses")

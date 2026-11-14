@@ -416,14 +416,14 @@ def _meta_device_poller(session_id: str, sess: dict[str, Any]) -> None:
             client, sess["device_code"], expires_in=max(60, int(sess["expires_at"] - time.time())),
             poll_interval=int(sess["interval"]),
         )
-        tokens = auth_meta.mint_meta_api_key(identity_token, client)
+        tokens = auth_meta.mint_meta_api_key(identity_token, client, onboard=True)
     with _profile_scope(sess.get("profile")), _oauth_sessions_lock:
         if sess.get("cancelled"):
             sess["status"] = "cancelled"
             return
         auth_meta._save_meta_oauth_tokens(
             tokens, set_active=False,
-            last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            last_refresh=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
         mark_provider_active_if_unset("meta-oauth")
         # The singleton auth-store entry seeds the credential pool. A second dashboard pool entry

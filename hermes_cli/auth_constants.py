@@ -78,7 +78,6 @@ META_DEVICE_AUTHORIZATION_URL = "https://auth.meta.com/oidc/device/authorization
 META_DEVICE_TOKEN_URL = "https://auth.meta.com/oidc/device/token/"
 META_API_KEY_MINT_URL = "https://api.meta.ai/muse-code/key"
 META_API_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000
-META_OAUTH_SCOPE = ""
 DEFAULT_META_OAUTH_BASE_URL = "https://api.meta.ai/v1"
 META_OAUTH_REFRESH_SKEW_SECONDS = 6 * 60 * 60
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"

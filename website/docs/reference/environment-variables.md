@@ -107,7 +107,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `MODEL_API_KEY` | Meta Model API key ([dev.meta.ai](https://dev.meta.ai)). Takes precedence over the `meta-oauth` subscription login when set. |
 | `META_API_KEY` | Convenience alias for `MODEL_API_KEY`. |
 | `META_MODEL_API_KEY` | Convenience alias for `MODEL_API_KEY`. |
-| `META_BASE_URL` | Override Meta base URL (default: `https://api.meta.ai/v1`) |
+| `META_BASE_URL` | Override Meta base URL (default: `https://api.meta.ai/v1`); `HERMES_META_BASE_URL` takes precedence when both are set |
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
 | `AWS_PROFILE` | AWS named profile for Bedrock authentication (reads `~/.aws/credentials`). Leave unset to use default boto3 credential chain. |

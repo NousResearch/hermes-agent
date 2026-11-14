@@ -142,7 +142,7 @@ The `meta` / `muse` / `muse-spark` shortcuts keep resolving to the API-key provi
 | `MODEL_API_KEY` | Explicit Meta Model API key (Meta's documented variable). Takes precedence over the subscription login when set. |
 | `META_API_KEY` | Convenience alias for the same key. |
 | `META_MODEL_API_KEY` | Convenience alias for the same key. |
-| `META_BASE_URL` | Override the default `https://api.meta.ai/v1` endpoint (rarely needed). |
+| `META_BASE_URL` | Override the default `https://api.meta.ai/v1` endpoint (rarely needed). `HERMES_META_BASE_URL` takes precedence when both are set. |
 
 To select Meta as the active provider, set `model.provider: meta-oauth` in `config.yaml` (use `hermes setup` for the guided flow) or pass `--provider meta-oauth` for a single invocation.
 

@@ -469,9 +469,13 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         logger.info("Pillow cannot open image for resizing: %s", exc)
         return _raw()
 
-    # JPEG cannot encode alpha/palette modes (force_jpeg routes PNGs here).
+    # JPEG cannot encode alpha/palette modes (force_jpeg routes PNGs here). A bare convert("RGB") drops
+    # alpha and keeps the hidden colour under it (usually black), so a dark logo on a transparent PNG
+    # reaches the model as black on black: composite onto white instead.
     if not is_png and img.mode not in {"RGB", "L"}:
-        img = img.convert("RGB")
+        rgba = img.convert("RGBA")
+        img = Image.new("RGB", rgba.size, (255, 255, 255))
+        img.paste(rgba, mask=rgba.getchannel("A"))
     quality_steps = (None,) if is_png else (85, 70, 50)
     orig_dims = prev_dims = (img.width, img.height)
     candidate = None

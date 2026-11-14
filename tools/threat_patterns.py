@@ -117,6 +117,7 @@ INVISIBLE_CHARS = frozenset(
 # legitimate use of TAG chars. Only those three are exempt: a generic "flag-shaped" exemption lets a
 # run of fake flags carry a smuggled sentence a few tag letters at a time.
 _RGI_SUBDIVISION_FLAGS = ("gbeng", "gbsct", "gbwls")
+_FLAG_LEN = 7  # U+1F3F4 + five tag letters + CANCEL TAG
 EMOJI_TAG_SEQUENCE_RE = re.compile(
     "|".join("\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in code) + "\U000E007F" for code in _RGI_SUBDIVISION_FLAGS))
 
@@ -144,9 +145,12 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
-    content = content[:MAX_SCAN_CHARS]
+    # Flags are matched with a look-ahead past the cut so one straddling MAX_SCAN_CHARS stays exempt;
+    # only chars before the cut are reported.
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    raw_chars = set(EMOJI_TAG_SEQUENCE_RE.sub("", content))
+    raw_chars = set(EMOJI_TAG_SEQUENCE_RE.sub(
+        lambda m: " " * len(m[0]), content[:MAX_SCAN_CHARS + _FLAG_LEN - 1])[:MAX_SCAN_CHARS])
+    content = content[:MAX_SCAN_CHARS]
     findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in raw_chars & INVISIBLE_CHARS]
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.

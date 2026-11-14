@@ -8,7 +8,8 @@ import {
   KEYBIND_ACTIONS,
   KEYBIND_READONLY,
   keybindAction,
-  keybindActionAllowedInEditableTarget
+  keybindActionAllowedInEditableTarget,
+  readonlyKeybindsFor
 } from './actions'
 import { canonicalizeCombo } from './combo'
 
@@ -133,5 +134,19 @@ describe('view.tabSlot.N layers over profile.switch.N on ⌘1…⌘9 (#92569)', 
 
     expect(firstTabSlot).toBeGreaterThanOrEqual(0)
     expect(firstProfileSwitch).toBeGreaterThan(firstTabSlot)
+  })
+})
+
+describe('composer readonly keybind modes', () => {
+  it('resolves composer and shared shortcuts from one mode-aware helper', () => {
+    const defaultMap = readonlyKeybindsFor(true)
+    const multilineMap = readonlyKeybindsFor(false)
+
+    expect(defaultMap.find(shortcut => shortcut.id === 'composer.send')?.keys).toEqual(['enter', 'mod+enter'])
+    expect(multilineMap.find(shortcut => shortcut.id === 'composer.send')?.keys).toEqual(['mod+enter'])
+    expect(multilineMap.find(shortcut => shortcut.id === 'composer.newline')?.keys).toEqual(['enter'])
+    expect(defaultMap.find(shortcut => shortcut.id === 'view.selectionToComposer')).toEqual(
+      multilineMap.find(shortcut => shortcut.id === 'view.selectionToComposer')
+    )
   })
 })

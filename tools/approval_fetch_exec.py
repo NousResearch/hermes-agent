@@ -46,7 +46,7 @@ class DownloadThenRunMatcher:
             # `command -v`/`-V` only looks the name up (`&& command -v tool` after installing tool).
             r"(?:;|&&|\|\||\n)\s*+(?:(?:sudo|env|exec|nohup|command(?!(?:\s+-[a-uw-zA-UW-Z]+)*\s+-[a-zA-Z]*[vV]))"
             r"\s++(?:-\S++\s++|\w++=\S*+\s++)*+)*+"
-            rf"(?:(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})\s++(?P<flags>(?:-\S++\s++)*+)|(?:source|\.)\s++)?"
+            rf"(?:(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})\s++(?P<flags>(?:-\S++[^\S\n]++)*+)|(?:source|\.)\s++)?"
             rf"['\"]?(?:\./)?(?P<file>[^\s;&|<>'\"`()]++){_TERMINATOR}",
             re.IGNORECASE,
         )

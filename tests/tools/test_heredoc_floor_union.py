@@ -70,6 +70,7 @@ def test_code_heredoc_body_stays_visible_to_dangerous_scan(command):
     f"cat > 'job.sh' <<'EOF'\n{RM_ROOT}\nEOF\nbash job.sh",
     f"cat > /tmp/j <<'EOF'\n{RM_ROOT}\nEOF\ncd /tmp; sh j",
     f"cat > j <<'EOF'\n{RM_ROOT}\nEOF\nsudo -E env A=1 nohup bash 'j'",
+    f"cat > j.sh <<'EOF'\n{RM_ROOT}\nEOF\nbash -n\n./j.sh",
 ])
 def test_heredoc_written_then_run_keeps_its_body_on_the_floors(gate_mode, command):
     # The body lands in a file the same string runs: it is code, not data.

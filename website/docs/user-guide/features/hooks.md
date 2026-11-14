@@ -489,6 +489,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). A command the classic CLI, TUI or Desktop sends to the gateway through `slash.exec` or `command.dispatch` fires it once, in the gateway, with `surface` and `platform` both `"cli"` as before (Ink and Desktop fired it through the CLI slash worker) and `session_key` the session id. A recognized command the classic CLI runs itself is reported to the gateway (`command.observe`) once it has run, and so are these TUI commands: `/help`, `/history`, `/clear`, `/new`, `/tools` (not `enable`/`disable`), `/usage` and `/reasoning` (a level once the gateway accepts it). The gateway fires it there after replying, so neither client loads plugin code; a command either client refuses fires nothing. This is a deliberate change from the classic CLI before the unified gateway, which fired it for every recognized command just before dispatch: now a command fires it only if it runs, so one that is refused or that the client has no handler for (`/handoff` in a gateway session, `/start`) fires nothing. A TUI change the gateway applies, such as `/reasoning high`, fires it once the gateway accepts the change, so after the change has taken effect. A gateway older than the client fires no hook for those commands (the classic CLI prints a one-time notice). Known gap: Desktop's own pickers, actions and dedicated RPCs (commands it answers without `slash.exec`) fire nothing yet, and neither do the other commands the TUI answers itself or through a dedicated gateway call, such as `/title`, `/undo`, `/retry`, `/model`, `/compress`, `/branch`, `/save`, `/copy`, `/queue`, `/steer`, `/bg`, `/btw`, `/skin`, `/yolo`, `/busy`, `/fast`, `/verbose`, `/rollback`, `/reload-mcp`, `/quit` and `/reasoning --global`. During a local session's turn every command that still runs fires it except `/stop`, `/approve` and `/deny`; a command that is refused (rejected while busy, or named as unavailable on the gateway) fires nothing. Each callback is timeout-bounded (`plugins.hook_callback_timeout`); each delivery waits on a thread of its own, never a worker shared with other sessions or the event loop's executor. One session's commands reach it in order, and a callback still running for that session (hung) is skipped for its later commands instead of running out of order, without holding up other sessions. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
+| [`pre_approval_bypass`](#pre_approval_bypass) | Directive/control | Before anything switches approvals off for a caller: `/yolo` on a messaging platform, `config.set yolo` (session, `global` or sessionless) and `config.set approvals.mode off` over the TUI gateway, `slash.exec /yolo`, the session service's `yolo` control; and before a stored session bypass is re-armed (`session.resume`, a messaging turn). Never when approvals go back on. The first valid `{"action": "block", "message": ...}` refuses with that message and nothing is written. | `surface`, `scope`, `session_key`, `identity`, `platform`, `user_id`, `session_owner` | Login and sender identifiers. |
 | `on_human_input_request` | Observer | The agent is about to block on a person — sudo password prompt, `clarify` question, or dangerous-command approval — on CLI, Ink TUI/Desktop, ACP and gateway platforms; return ignored. | `kind` (`"sudo"` \| `"clarify"` \| `"approval"`), `request_id`, `session_id`, `session_key`, `platform`, `prompt` | `prompt` is always force-redacted; the typed password or answer is never passed. |
 | `on_human_input_resolved` | Observer | Exactly once per `on_human_input_request`, when the wait ends (answered, skipped, timed out, withdrawn, or failed); return ignored. | Same as the request plus `outcome` | Outcome only — never the answer itself. |
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
@@ -1596,6 +1597,54 @@ def log_decision(command, choice, session_key, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
+```
+
+---
+
+### `pre_approval_bypass`
+
+Fires before anything switches approvals off for a caller, so a plugin can decide who may. On a gateway several people reach (a shared team bot, dashboard sign-ins), `/yolo` otherwise lets anyone who can send it skip every approval prompt of their session.
+
+It is asked by every path that turns a bypass **on**: a messaging `/yolo`, the TUI gateway's `config.set yolo` (the session toggle, `scope: "global"`, which writes `approvals.mode: off`, and a sessionless call, which sets the process-wide `HERMES_YOLO_MODE`), `config.set approvals.mode off`, `slash.exec /yolo` (a toggle the slash worker runs, so it is asked whichever way it would flip), and the session service's `yolo` control. It is also asked before a stored session bypass is re-armed: when a client resumes a chat whose row recorded `/yolo`, and when a messaging turn restores its routing entry's flag. It is never asked when approvals go back on, and it does not cover the launch flag (`hermes chat --yolo`) or a hand edit of `config.yaml`.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    surface: str,
+    scope: str,
+    session_key: str,
+    identity: dict | None,
+    platform: str,
+    user_id: str,
+    session_owner: str,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `surface` | `str` | `"command"` (a messaging `/yolo`), `"rpc"` (TUI gateway `config.set` / `slash.exec`), `"session_api"` (the session service's `yolo` control), or `"restore"` (re-arming a stored bypass) |
+| `scope` | `str` | `"session"`, `"global"` (`approvals.mode: off` for the profile) or `"process"` (`HERMES_YOLO_MODE` for the gateway process) |
+| `session_key` | `str` | The session whose bypass would switch on; empty for `global` and `process` |
+| `identity` | `dict \| None` | The connection's server-verified login, `{"user_id", "provider"}`, for `rpc` and `session_api`; `None` for a local client with no login |
+| `platform` / `user_id` | `str` | The messaging sender, for `command` and a messaging `restore`; empty otherwise |
+| `session_owner` | `str` | The resumed chat's stored owner (the session row's `user_id`), for a `session.resume` restore |
+
+**Return value:** `None` (or anything else) to allow; `{"action": "block", "message": "<sentence>"}` to refuse. The first block wins. The sentence is what the person sees: the TUI gateway answers JSON-RPC error `4030` with it, the session service `permission_denied` with it as `detail`, a messaging `/yolo` replies with it (without one, the gateway's own "blocked by a hook" line). A refused restore leaves the bypass off. Shell hooks block the same way (`{"action": "block"}` or `{"decision": "block"}`).
+
+```python
+ADMINS = {"telegram": {"111"}, "slack": {"U0ADMIN"}}
+
+def only_admins(surface, platform, user_id, identity, **kwargs):
+    if identity is None and not platform:
+        return None  # the local operator
+    if platform and user_id in ADMINS.get(platform, ()):
+        return None
+    return {"action": "block", "message": "Only an admin can turn off approvals here."}
+
+def register(ctx):
+    ctx.register_hook("pre_approval_bypass", only_admins)
 ```
 
 ---

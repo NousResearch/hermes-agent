@@ -1062,9 +1062,8 @@ def _(rid, params: dict) -> dict:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
-        from hermes_state import SessionDB
-        from tools.approval_yolo import restore_session_yolo  # a fresh backend starts with an empty set
-        restore_session_yolo(ctx.target, SessionDB.session_yolo_enabled(ctx.found))
+        from tools.approval_yolo import restore_stored_session_yolo  # a fresh backend starts with an empty set
+        restore_stored_session_yolo(ctx.target, ctx.found)
         if ctx.lazy:
             return _resume_lazy(ctx)
         return _resume_eager(ctx) if ctx.eager_build else (

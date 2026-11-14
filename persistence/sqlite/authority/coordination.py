@@ -16,7 +16,10 @@ import weakref
 from collections.abc import Sequence
 from typing import Any, Optional
 
-from persistence import DelegationId, JsonValue, PersistenceError, SessionId, StoreContention, StoreReplaced
+from persistence import (
+    AuthorityRefusal, DelegationId, JsonValue, PersistenceError, SessionId, StoreContention, StoreReplaced,
+)
+from persistence.core.errors import HandoffUnsettled
 from persistence.authority.coordination import (
     DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS, DELEGATION_MAX_DELIVERY_ATTEMPTS,
     DELEGATION_MAX_DURABLE_PENDING, DELEGATION_MAX_RETAINED_TERMINAL, DELEGATION_ORPHAN_STALE_SECONDS,
@@ -46,6 +49,24 @@ _setup_done: weakref.WeakKeyDictionary[Any, tuple[Any, set[Any]]] = weakref.Weak
 _setup_lock = threading.Lock()
 
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
+
+
+def _require_settled(holder, conn, session_id: str) -> None:
+    """Refuse a handoff while durable work owns ``session_id``'s runtime lineage: a queued, started or unknown
+    admission, a live worker, or a live turn lease or compression lock, checked on the caller's write."""
+    from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
+
+    from ..workers._runtime_workers import runtime_lineage
+    from ._runtime_guards import require_idle
+    try:
+        require_idle(holder, conn, sorted(runtime_lineage(conn, session_id)))
+    except (SessionTurnLeaseLostError, SessionCompressionInProgressError):
+        raise HandoffUnsettled("session_busy") from None
+    except AuthorityRefusal as exc:
+        if exc.reason not in ("session_busy", "unknown_execution"):
+            raise
+        raise HandoffUnsettled(exc.reason) from None
+
 
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> tuple[bool, Optional[str]]:
@@ -307,14 +328,22 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs):
 
     # ── handoffs ────────────────────────────────────────────────────────────
 
-    def request_handoff(self, *, session_id: SessionId, platform: str) -> bool:
+    def request_handoff(self, *, session_id: SessionId, platform: str, require_settled: bool = False) -> bool:
+        holder = self._store.holder()
+        def _do(conn):
+            if require_settled:
+                _require_settled(holder, conn, session_id)
+            return conn.execute(
+                "UPDATE sessions SET handoff_state = 'pending', handoff_platform = ?, handoff_error = NULL "
+                "WHERE id = ? AND (handoff_state IS NULL OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id)).rowcount
         with translated():
-            return self._store.holder()._write_rowcount(
-                "UPDATE sessions SET handoff_state = 'pending',     handoff_platform = ?, "
-                "    handoff_error = NULL WHERE id = ? AND (handoff_state IS NULL "
-                "                  OR handoff_state IN ('completed', 'failed'))",
-                (platform, session_id),
-            ) > 0
+            return holder._execute_write(_do) > 0
+
+    def check_handoff_settled(self, *, session_id: SessionId) -> None:
+        holder = self._store.holder()
+        with translated():
+            holder._execute_write(lambda conn: _require_settled(holder, conn, session_id))
 
     def claim_handoff(self, *, session_id: SessionId) -> bool:
         with translated():

@@ -122,6 +122,31 @@ function resolveLocalFile(sketchDir, requestUrl) {
   return fs.statSync(file).isFile() ? file : null;
 }
 
+// Request-interception listener: serve SKETCH_ORIGIN from sketchDir, let every other origin through.
+// A file that cannot be read (permissions, >2 GiB) fails only its own request, as it did under file://;
+// a throw here would escape main()'s catch and end the export.
+function sketchRequestHandler(sketchDir) {
+  return (req) => {
+    if (!req.url().startsWith(SKETCH_ORIGIN + '/')) {
+      req.continue();
+      return;
+    }
+    const file = resolveLocalFile(sketchDir, req.url());
+    let body = null;
+    try {
+      body = file && fs.readFileSync(file);
+    } catch {
+      body = null;
+    }
+    if (!body) {
+      req.respond({ status: 404, contentType: 'text/plain', body: 'Not found' });
+      return;
+    }
+    const contentType = MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
+    req.respond({ status: 200, contentType, body });
+  };
+}
+
 // Parse CLI arguments
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -183,19 +208,7 @@ async function main() {
 
   const sketchDir = path.dirname(inputPath);
   await page.setRequestInterception(true);
-  page.on('request', (req) => {
-    if (!req.url().startsWith(SKETCH_ORIGIN + '/')) {
-      req.continue();
-      return;
-    }
-    const file = resolveLocalFile(sketchDir, req.url());
-    if (!file) {
-      req.respond({ status: 404, contentType: 'text/plain', body: 'Not found' });
-      return;
-    }
-    const contentType = MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
-    req.respond({ status: 200, contentType, body: fs.readFileSync(file) });
-  });
+  page.on('request', sketchRequestHandler(sketchDir));
 
   await page.setViewport({
     width: opts.width,
@@ -261,7 +274,7 @@ async function main() {
   await browser.close();
 }
 
-module.exports = { chromeArgs, resolveLocalFile, SKETCH_ORIGIN };
+module.exports = { chromeArgs, resolveLocalFile, sketchRequestHandler, SKETCH_ORIGIN };
 
 if (require.main === module) {
   main().catch(err => {

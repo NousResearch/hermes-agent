@@ -1,6 +1,7 @@
 """Behaviour of the p5js skill's headless exporter launch policy (issue #145361)."""
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,8 +27,10 @@ def test_unrestricted_host_keeps_chrome_protections():
     assert weakening.isdisjoint(args)
 
 
-def test_sandbox_bypass_only_on_hosts_that_need_it():
-    args = _node("m.chromeArgs({isRoot: true})")
+@pytest.mark.parametrize("fact", ["isRoot", "inDocker", "apparmorUserns"])
+def test_sandbox_bypass_only_on_hosts_that_need_it(fact):
+    facts = {"isRoot": False, "inDocker": False, "apparmorUserns": False, fact: True}
+    args = _node(f"m.chromeArgs({json.dumps(facts)})")
     assert "--no-sandbox" in args
     assert "--disable-web-security" not in args
 
@@ -50,3 +53,29 @@ def test_local_assets_resolve_only_inside_sketch_dir(tmp_path):
         assert resolve(escaping) is None, escaping
     other = _node(f"m.resolveLocalFile({json.dumps(str(sketch_dir))}, 'http://example.com/sketch.html')")
     assert other is None
+
+
+def _serve(sketch_dir: Path, url_path: str) -> dict:
+    """Run the interception listener on one fake request; return what it answered."""
+    req = (
+        "(() => { const out = {}; const url = m.SKETCH_ORIGIN + " + json.dumps(url_path) + ";"
+        " m.sketchRequestHandler(" + json.dumps(str(sketch_dir)) + ")({url: () => url,"
+        " continue: () => { out.continued = true; },"
+        " respond: (r) => { out.status = r.status; out.body = String(r.body); }}); return out; })()"
+    )
+    return _node(req)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root reads mode-000 files")
+def test_unreadable_asset_fails_only_its_own_request(tmp_path):
+    sketch_dir = tmp_path / "sketch"
+    sketch_dir.mkdir()
+    (sketch_dir / "ok.txt").write_text("fine")
+    locked = sketch_dir / "locked.png"
+    locked.write_bytes(b"x")
+    locked.chmod(0)
+    try:
+        assert _serve(sketch_dir, "/locked.png") == {"status": 404, "body": "Not found"}
+        assert _serve(sketch_dir, "/ok.txt") == {"status": 200, "body": "fine"}
+    finally:
+        locked.chmod(0o600)

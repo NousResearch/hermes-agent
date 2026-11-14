@@ -69,5 +69,5 @@ def test_acp_agent_receives_custom_provider_request_body(acp_env, monkeypatch):
     assert sm._make_agent(session_id="s1", cwd=".").kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
     same = sm._make_agent(session_id="s2", cwd=".", base_url="https://proxy.example/v1")
     assert same.kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
-    other = sm._make_agent(session_id="s3", cwd=".", base_url="https://elsewhere.example/v1")
+    other = sm._make_agent(session_id="s3", cwd=".", base_url="https://proxy.example/other/v1")
     assert "request_overrides" not in other.kwargs

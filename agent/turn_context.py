@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
-from agent.memory_context import build_memory_context_block
+from agent.memory_context import build_memory_context_block, sanitize_context
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
@@ -28,6 +28,7 @@ from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
 from agent.message_metadata import (
     PERSISTENCE_ONLY_MESSAGE_FIELDS, PRE_LLM_BLOCK_WITHHELD_PROMPT, append_message, stamp_message_timestamp,
+    TYPED_ASK, stamp_typed_ask, typed_ask_fields, typed_ask_text, REQUEST_REASONING_TOKENS, stamped_reasoning_tokens,
 )
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -182,6 +183,23 @@ def consume_skills_index_note(agent: Any) -> str:
     return _pop_turn_note(agent, "_skills_index_note")
 
 
+def _stamp_typed_ask_once(agent: Any, turn_user_msg: dict) -> None:
+    """Record the ask of a multimodal turn before injected context is appended to its parts: the
+    persisted row flattens parts into one string, so ``previous_message`` reads the ask from here.
+    Taken from the human-authored view of what the row will persist (a list persist override drops
+    API-only parts; turn-start compaction may have wrapped the row or folded a todo snapshot onto it)."""
+    from agent.context_compressor import user_originated_turn_view
+    from agent.conversation_compression import _strip_stale_todo_snapshot
+    from agent.session_persistence import durable_user_row_content
+
+    content = turn_user_msg.get("content")
+    if typed_ask_text(turn_user_msg) is not None or not isinstance(content, list):
+        return
+    persisted, _ = durable_user_row_content(agent, turn_user_msg, content, None)
+    if (view := user_originated_turn_view({**turn_user_msg, "content": persisted})) is not None:
+        stamp_typed_ask(turn_user_msg, _memory_query_text(_strip_stale_todo_snapshot(view.get("content"))))
+
+
 def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bool:
     """Append must-deliver notes as a durable text part on a multimodal (list) user
     message (the sidecar path returns ``None`` for non-string content)."""
@@ -208,6 +226,9 @@ def _maybe_title_session_at_turn_start(
         return
     platform = str(getattr(agent, "platform", "") or "").lower()
     if platform in _UNTITLED_PLATFORMS:
+        return
+    from agent.oneshot_footprint import agent_is_oneshot
+    if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request
         return
     try:
         from agent.message_content import flatten_message_text
@@ -319,6 +340,39 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
         if fallback < 0:
             fallback = i
     return fallback
+
+
+def history_before_current_turn(
+    messages: Any, current_turn_user_idx: Any, fallback: Any = None,
+) -> list[Any]:
+    """The pre-turn boundary: the conversation history BEFORE the current turn's user row.
+
+    Hands a refused turn's caller a CLEAN in-memory history (the refused request + its tool rounds
+    dropped), robust to in-place compaction. The loop's ``conversation_history`` is the flush
+    baseline, which in-place compaction rewrites into ``list(messages)`` — the WHOLE poisoned working
+    set, including the current (refused) turn (#149708 review). ``messages`` is already the compacted
+    working set and ``current_turn_user_idx`` the re-anchored index of this turn's user row, so the
+    slice before it is the real clean prefix. Falls back to ``fallback`` only when the index is
+    unusable.
+    """
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx <= len(messages)):
+        return list(messages[:current_turn_user_idx])
+    return list(fallback) if isinstance(fallback, list) else []
+
+
+def refused_turn_boundary_row_id(messages: Any, current_turn_user_idx: Any) -> Optional[int]:
+    """The durable row id that STARTED the current (refused) turn, or ``None``.
+
+    The owner uses it to soft-delete the EXACT refused run from the transcript: the newest user turn
+    is the wrong target when a mid-turn steer appended a newer user row, or the refused input was a
+    hidden/internal row (#149708 review). Reads the committed row id of this turn's user message.
+    """
+    from agent.persisted_turn_receipt import committed_row_id
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx < len(messages)):
+        return committed_row_id(messages[current_turn_user_idx])
+    return None
 
 
 def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
@@ -611,6 +665,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     # the aggregate incomplete count so a visible partial resets it (#67321).
     ("_codex_reasoning_only_streak", 0),
     ("_thinking_prefill_retries", 0), ("_post_tool_empty_retried", False),
+    ("_empty_response_retry_hint", None),
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_reused_response_text", None),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
@@ -829,6 +884,9 @@ def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: A
         withheld = _content_with_turn_override(turn_user_msg, content, PRE_LLM_BLOCK_WITHHELD_PROMPT)
     metadata = turn_user_msg.get("display_metadata")
     metadata = {**(metadata if isinstance(metadata, dict) else {}), WITHHELD_PROMPT: str(_durable_content(typed) or "")}
+    # The vetoed text never reaches providers: the typed-ask stamp goes from the dict and (a null merges
+    # as a delete) from the row.
+    metadata.pop(TYPED_ASK, None)
     agent._persist_user_message_override = PRE_LLM_BLOCK_WITHHELD_PROMPT
     with _persist_lock(agent):
         turn_user_msg["content"] = withheld
@@ -841,7 +899,7 @@ def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: A
         try:
             # A submit-time row is addressed under the session that wrote it (a rotation may follow).
             _db.set_user_message_content(turn_user_msg.get("_submit_row_session_id") or agent.session_id,
-                                         _row_id, withheld, metadata)
+                                         _row_id, withheld, {**metadata, TYPED_ASK: None})
         except Exception:
             logger.warning("withheld-prompt rewrite failed for session=%s", agent.session_id or "none", exc_info=True)
 
@@ -932,6 +990,7 @@ def _merge_gateway_notes(
         else None
     )
     if isinstance(_gw_turn_content, list):
+        _stamp_typed_ask_once(agent, messages[current_turn_user_idx])
         append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
         return plugin_user_context
     return (
@@ -963,8 +1022,43 @@ def _memory_query_text(original_user_message: Any) -> str:
     return ""
 
 
+def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> str:
+    """Semantic text of the last real user message in the history a turn starts from (``""`` on a first turn).
+    The contract providers see is ``MemoryProvider.on_turn_start``; this is how the value is found.
+
+    Read before the turn appends its own message or turn-start compaction rebinds the history: in-place
+    compaction hands back a list that already ends in this turn's message, and rotation hands back none.
+    Flagged scaffolding is skipped first (the canonical view cannot see flags), then the gateway timestamp
+    comes off (replay renders one on every user row, scaffolding included) and a /steer row is matched by
+    its marker (replay drops its type). A compaction carrier yields the ask it wraps; an image-only turn ends
+    the search with ``""``. A multimodal turn's injected context sits in its parts, so its ask is read from
+    the ``TYPED_ASK`` stamp; an older row without one has only the memory fence stripped."""
+    from agent.context_compressor import user_originated_turn_view
+    from agent.conversation_compression_scaffolding import has_scaffolding_flag, is_user_role_scaffolding
+    from agent.prompt_builder import STEER_MARKER_OPEN
+    from gateway.message_timestamps import strip_leading_message_timestamps
+
+    for message in reversed(conversation_history or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        if has_scaffolding_flag(message):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and (clean := strip_leading_message_timestamps(content)[0]) != content:
+            message = {**message, "content": clean}
+        if flatten_message_text(message.get("content")).lstrip().startswith(STEER_MARKER_OPEN):
+            continue
+        if not is_user_role_scaffolding(message) and (live_view := user_originated_turn_view(message)) is not None:
+            ask = typed_ask_text(message)
+            if ask is None:
+                ask = _memory_query_text(live_view.get("content"))
+            # A gateway renders the timestamp into the live text, so a carrier's ask or the stamp can carry one.
+            return sanitize_context(strip_leading_message_timestamps(ask)[0]).strip()
+    return ""
+
+
 def _memory_turn_start_and_prefetch(
-    agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]] = None,
+    agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]], previous_message: str,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
@@ -977,8 +1071,10 @@ def _memory_turn_start_and_prefetch(
     with suppress(Exception):
         agent._memory_manager.on_turn_start(
             agent._user_turn_count, _query,
+            model=getattr(agent, "model", "") or "",
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
+            previous_message=previous_message,
         )
     ext_prefetch_cache = ""
     with suppress(Exception):
@@ -1056,7 +1152,11 @@ def _append_multimodal_context(
     ``_row_id``-under-lock protocol as the string sidecar backfill; the row keeps its writer's
     shape (compaction inserted the raw parts, a flush the text projection)."""
     _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
-    if not append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx):
+    if _mm_ctx:
+        _stamp_typed_ask_once(agent, turn_user_msg)
+    # A stamp means injected context landed on the parts (here or as gateway notes): backfill either way.
+    appended = append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx)
+    if not appended and typed_ask_text(turn_user_msg) is None:
         return
     from agent.session_persistence import _durable_content, _persist_lock
 
@@ -1068,7 +1168,7 @@ def _append_multimodal_context(
         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
         content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
         try:
-            _db.set_user_message_content(agent.session_id, _row_id, content)
+            _db.set_user_message_content(agent.session_id, _row_id, content, typed_ask_fields(turn_user_msg))
         except Exception:
             logger.warning("multimodal context backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 
@@ -1168,6 +1268,9 @@ def build_turn_context(
         _turn_args.append(_turn_origin)
     logger.info(_turn_fmt, *_turn_args)
 
+    # Before this turn's message is appended and compaction rebinds the history.
+    previous_user_message = _previous_user_message_text(conversation_history) if agent._memory_manager else ""
+
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
     user_msg, pending_cli_message = _stage_turn_user_message(
@@ -1262,7 +1365,7 @@ def build_turn_context(
     _bind_interrupt_scope(agent, ra)
     # A vetoed prompt never leaves the host: no external-memory prefetch, no titling call.
     ext_prefetch_cache = "" if plugin_block_message else _memory_turn_start_and_prefetch(
-        agent, original_user_message, turn_author)
+        agent, original_user_message, turn_author, previous_user_message)
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
@@ -1363,6 +1466,9 @@ def build_api_messages(
         _api_content = api_msg.pop("api_content", None)
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             api_msg.pop(key, None)
+        # display_metadata just went; keep its replay price for the request estimate (popped after it).
+        if isinstance(api_msg, dict) and (_replay_tokens := stamped_reasoning_tokens(msg)):
+            api_msg[REQUEST_REASONING_TOKENS] = _replay_tokens
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.

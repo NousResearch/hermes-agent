@@ -108,7 +108,7 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, base))
     base_m = measurer.measure(base, base_paths)
     head_m = measurer.measure(head, head_paths)
-    findings = compare(base_m, head_m, changes)
+    findings = compare(base_m, head_m, changes, gitio.tree_moves(repo, head))
     apply_allows(findings, head_m)
     blocking, advisory = verdict(findings)
     failed = bool(blocking) and mode == "blocking"

@@ -1,11 +1,11 @@
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 import * as ClipboardModule from '../lib/clipboard.js'
 import * as Osc52Module from '../lib/osc52.js'

@@ -291,15 +291,39 @@ def _install_session_record_factory() -> None:
 _install_session_record_factory()
 
 
+def canonical_logger_name(name: str) -> str:
+    """*name* without the ``hermes_agent.`` package prefix, so a module's logger keeps its component
+    and diagnostics scope whether it runs under its top-level name or inside the package."""
+    return name.removeprefix("hermes_agent.")
+
+
+def display_record(record: logging.LogRecord) -> logging.LogRecord:
+    """*record* as Hermes log formats print it: with its canonical logger name. ``record.name`` itself,
+    which filters and third-party handlers read, is left unchanged."""
+    shown = canonical_logger_name(record.name)
+    if shown == record.name:
+        return record
+    record = copy.copy(record)
+    record.name = shown
+    return record
+
+
+class DisplayNameFormatter(logging.Formatter):
+    """``logging.Formatter`` whose ``%(name)s`` is the canonical logger name."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        return super().formatMessage(display_record(record))
+
+
 class _ComponentFilter(logging.Filter):
-    """Only pass records whose logger name starts with one of *prefixes*."""
+    """Only pass records whose canonical logger name starts with one of *prefixes*."""
 
     def __init__(self, prefixes: Sequence[str]) -> None:
         super().__init__()
         self._prefixes = tuple(prefixes)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.name.startswith(self._prefixes)
+        return canonical_logger_name(record.name).startswith(self._prefixes)
 
 
 # Logger name prefixes per component; used by _ComponentFilter and ``hermes logs --component``.

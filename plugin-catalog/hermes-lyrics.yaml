@@ -1,0 +1,19 @@
+name: hermes-lyrics
+repo: https://github.com/amitamit10/hermes-lyrics
+sha: 12c318d21ede7674b69512bfc3204cd866d950b4
+title: Lyrics
+description: 'Time-synced lyrics for the song playing on Spotify: a Hermes Desktop page that highlights and centres the current line as the song plays, click any line to seek, with a per-user sync offset. Lyrics from the public LRCLIB API; playback through the official spotify plugin.'
+maintainer: amitamit10
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/amitamit10/hermes-lyrics
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/amitamit10/hermes-lyrics/12c318d21ede7674b69512bfc3204cd866d950b4/assets/screenshot.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

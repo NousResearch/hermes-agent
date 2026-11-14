@@ -1,0 +1,17 @@
+name: mood-engine
+repo: https://github.com/NiceStackApple/hermes-mood-engine
+sha: 12af563b844fd8cec5bb2f2f046bb5de236f599c
+description: "Dynamic 4-axis mood engine (energy, warmth, patience, focus) with async post-turn evaluation, passive decay, and zero-token neutral baseline. Disclosure — in auto/llm mode each user turn runs one background ctx.llm.complete_structured() call on your active provider (or configured auxiliary.mood_eval model); set evaluator_mode to heuristic for zero extra tokens; stores mood state locally in profile-scoped ctx.state."
+maintainer: NiceStackApple
+tier: community
+category: general
+requires_hermes: ">=0.20.1"
+docs_url: https://github.com/NiceStackApple/hermes-mood-engine#readme
+version: "1.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -44,7 +44,8 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
         if before_pull is not None:
             before_pull()
         return _reclone_plugin_update(target, source, install_record.get("revision"),
-                                      force=force, scan_decision_cb=scan_decision_cb, surface_gate=surface_gate)
+                                      force=force, scan_decision_cb=scan_decision_cb, surface_gate=surface_gate,
+                                      allow_removed=install_record.get("allow_removed") is True)
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
@@ -54,13 +55,14 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
 
 
 def _reclone_plugin_update(target: Path, source: str, previous_revision: object, *, force: bool = False,
-                           scan_decision_cb=None, surface_gate=None) -> str:
+                           scan_decision_cb=None, surface_gate=None, allow_removed: bool = False) -> str:
     """Update a subdirectory install by re-cloning its source and atomically replacing the tree.
 
     These installs carry no local ``.git``, so the staged replacement also carries user-owned
     config/data from *target* before publication instead of silently deleting it (#122006).
     Replacing the tree needs the install core's ``force``; accepting a caution scan is a separate
-    decision (*force* / *scan_decision_cb*), the same as the git-pull path.
+    decision (*force* / *scan_decision_cb*), the same as the git-pull path. *allow_removed* is the
+    install record's saved ``--allow-removed`` exemption; the core re-records it on publication.
     """
     from hermes_cli.plugins_cmd_catalog import _carry_user_files
 
@@ -74,6 +76,7 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object,
         force=True,
         accept_caution=force,
         scan_decision_cb=scan_decision_cb,
+        allow_removed=allow_removed,
         before_swap=_before_swap,
     )
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
@@ -156,7 +159,10 @@ def cmd_update(name: str, *, interactive: bool = True, force: bool = False) -> N
     console = _pc()._console()
     target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
     try:
-        update_one(name, target, console, interactive=interactive, force=force)
+        if update_one(name, target, console, interactive=interactive, force=force):
+            # Like install/enable: load it in the running gateway and say what is live (#153300).
+            from hermes_cli.plugins_activation import report_activation
+            report_activation(console, target.name)
     except RepinConsentRequired as exc:
         _pc()._fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
     except _pc().PluginScanBlocked as exc:

@@ -1,0 +1,18 @@
+name: tinfoil-sandbox
+title: Tinfoil Container
+repo: https://github.com/counterposition/tinfoil-hermes-provider
+sha: cae6859a2ea568602a40425baf34d504a3f19c4c
+subdir: sandbox
+description: "A tinfoil terminal backend: Hermes' terminal, file and code tools run inside your own Tinfoil Container, an attested enclave, reached over the Tinfoil CLI's attested SSH tunnel. Select it with terminal.backend: tinfoil and terminal.tinfoil_container. Needs a Tinfoil organization with Containers enabled; the public template https://github.com/counterposition/hermes-tinfoil-workspace sets up a suitable workspace. Dangerous-command approval stays on, and the plugin never creates, starts, stops or bills containers. Disclosure — every tool call runs the user's installed tinfoil CLI (tinfoil ssh) and OpenSSH client as subprocesses; the CLI contacts Tinfoil's control plane to look the container up, then the enclave. The plugin passes TINFOIL_API_KEY, read through Hermes' secret scope, to the CLI as the tunnel key, and the admin key when set (TINFOIL_ADMIN_KEY, or an admin_ key in TINFOIL_API_KEY, which the CLI also accepts); beyond those the CLI and ssh get only an allowlist of Hermes' environment (PATH, home, temp, user, locale, SSH agent socket, certificate and HTTP proxy settings, the CLI's TINFOIL_CONTROLPLANE_URL and TINFOIL_CONFIG, Windows system directories). It never reads the CLI's saved login, and strips TINFOIL_API_KEY, TINFOIL_TUNNEL_API_KEY and TINFOIL_ADMIN_KEY from the environment of commands the agent runs. An SSH control socket under the system temp directory (hermes-tinfoil/) keeps the verified connection open for five idle minutes. A pre_tool_call hook rewrites a leading ~ in the path argument of read_file, write_file, patch and search_files to the container's home directory, only while terminal.backend is tinfoil, because Hermes otherwise expands it to the host's home. No telemetry."
+maintainer: counterposition
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/counterposition/tinfoil-hermes-provider#run-tools-in-a-tinfoil-container
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -60,10 +60,12 @@ _MAX_CLONE_TIMEOUT_SECONDS = 3600
 _CLONE_TIMEOUT_HINT = "On a slow connection, raise plugins.clone_timeout_seconds in config.yaml."
 
 
-@functools.lru_cache(maxsize=1)
 def _resolve_git_executable() -> Optional[str]:
-    """Resolve a git binary for subprocess use when ``PATH`` may be minimal."""
-    found = shutil.which("git")
+    """The git plugin operations run: PM's pinned git, then PATH, then the usual install dirs
+    (``PATH`` may be minimal)."""
+    from hermes_cli.boot_bootstrap import _git_binary
+
+    found = _git_binary()
     if found:
         return found
     if os.name == "nt":
@@ -638,9 +640,12 @@ def _selection_lock() -> threading.Lock:
 
 
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
-    """Submit the command's delta with the version of the selection it read."""
+    """Submit the command's delta with the version of the selection it read. Enabling a non-bundled plugin
+    on the kill list raises :class:`PluginOperationError`; the `hermes plugins` picker checks it itself."""
     from pm.plugins_state import read_home_selection
 
+    if enable:
+        _refuse_recalled_entry(_find_plugin_entry(name))
     with _selection_lock():
         expected_config = _plugin_selection_version()
         config = read_home_selection(get_hermes_home()) or {}
@@ -652,6 +657,16 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
                                    expected_config=expected_config, plugin=name if enable else None,
                                    settled=(name, *aliases))
+
+
+def _refuse_recalled_entry(entry: Optional[tuple]) -> None:
+    """``PluginOperationError`` when the kill list recalls the non-bundled plugin *entry* (a
+    :func:`_find_plugin_entry` tuple). Judged on the load-time gate's inputs, its manifest name and its own
+    directory: re-resolving the bare leaf could read another plugin's install record (a nested
+    ``obs/x`` beside a top-level ``x``)."""
+    if entry is not None and entry[3] != "bundled":
+        from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+        refuse_if_installed_removed(entry[0], entry[4])
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -735,9 +750,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     _refuse_legacy_relay(key)
     if source != "bundled":
         # Activating recalled code is the same act as installing it (`plugins/AGENTS.md`: kill list).
-        from hermes_cli import plugins_cmd_catalog as catalog
         try:
-            catalog.refuse_if_installed_removed(key, _user_installed_plugin_dir(key.rsplit("/", 1)[-1]))
+            _refuse_recalled_entry(_find_plugin_entry(key))
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
@@ -1021,7 +1035,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, PluginOperationError) as exc:
         return {
             "ok": False,
             "error": str(exc),
@@ -1112,6 +1126,11 @@ def _action_pack(args):
     pack_command(args)
 
 
+def _action_idle_tasks(args):
+    from hermes_cli.plugins_idle_tasks import cmd_idle_tasks
+    cmd_idle_tasks(args.name, pause=args.pause, resume=args.resume)
+
+
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
 _PLUGIN_ACTIONS = {
     "install": lambda args: cmd_install(
@@ -1142,6 +1161,7 @@ _PLUGIN_ACTIONS = {
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
+    "idle-tasks": _action_idle_tasks,
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),

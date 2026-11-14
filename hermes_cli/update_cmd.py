@@ -97,7 +97,8 @@ from hermes_cli.update_cmd_git import (
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
-    _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
+    _damaged_checkout_message, _discard_lockfile_churn, _enclosing_repo_of_checkout, _ensure_non_trampoline_git,
+    _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
@@ -200,9 +201,10 @@ def _map_ssl_cert_file_for_git(git_cmd) -> None:
     os.environ["GIT_SSL_CAINFO"] = bundle
 
 
-# Compiled before (preflight) and after (post-pull guard, ZIP gate) every tree move. The first rows
-# are what the launcher and ``hermes_bootstrap`` import before any application code (review G3);
-# test_update_post_pull_syntax_guard derives that set from the real entry paths and pins it here.
+# Startup files of a tree that does not declare its own (pyproject ``[tool.hermes]
+# update-startup-files``, read by ``update_cmd_commit.startup_files``): every release before the
+# declaration has this layout, so the list stays as it is when files move. The first rows are what
+# the launcher and ``hermes_bootstrap`` import before any application code (review G3).
 _UPDATE_CRITICAL_FILES = (
     "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
     "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
@@ -346,28 +348,6 @@ def _validate_python_files_syntax(
             except OSError as exc:
                 return False, str(path), f"could not read: {exc}"
     return True, None, None
-
-
-def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
-    """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
-
-    These are the files imported on every ``hermes`` startup; if any of them
-    has a syntax error (orphan merge-conflict markers, bad ref to a name
-    that no longer exists, etc.) the CLI can't bootstrap at all. We validate
-    them after a successful ``git pull`` so we can auto-roll-back instead of
-    leaving the user with a bricked install.
-
-    The compiled ``.pyc`` is written to a temp directory rather than the
-    source tree's ``__pycache__/`` so we don't race with concurrent test
-    workers that walk the same dir, and so we don't leave a stale pyc
-    behind in production if the next interpreter run picks a different
-    Python version. The pyc is discarded on function return either way —
-    we only care about the compile-or-not signal.
-
-    Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
-    file parsed cleanly.
-    """
-    return _validate_python_files_syntax(root, _UPDATE_CRITICAL_FILES)
 
 
 # Modules imported on every agent startup. Unlike _UPDATE_CRITICAL_FILES (which
@@ -556,7 +536,7 @@ def _log_only_write(text: str) -> None:
 
     During ``hermes update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
     mirrors to both the terminal and ``update.log``. Loud, low-signal
-    subprocess output (npm installs, the Electron/vite build, the cua-driver
+    subprocess output (pnpm installs, the Electron/vite build, the cua-driver
     installer's "Next steps" wall) should be captured and tucked into the log
     so failures stay debuggable, without flooding the user's terminal. This
     reaches past the mirroring stream straight to the underlying log handle.
@@ -710,19 +690,6 @@ def _is_shallow_checkout(git_cmd) -> bool:
 def _tip_shas(git_cmd, target_ref: str, base: str = "HEAD") -> tuple[str, str]:
     """``(<base> sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
     return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in (base, target_ref))
-
-
-def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
-    """Report ``--check``'s verdict: up to date, N commits behind, or behind by an unknown count."""
-    if behind == 0:
-        print("✓ Already up to date.")
-        return
-    if behind is not None:
-        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
-    else:
-        print(f"☤ Update available (behind {compare_branch}).")
-    from hermes_cli.config import recommended_update_command
-    print(f"  Run '{recommended_update_command()}' to install.")
 
 
 def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
@@ -923,17 +890,12 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
 
 
 def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=None, _windows_gateway_resume=None) -> None:
-    """Post-pull syntax guard: roll back to *pre_pull_sha* and ``sys.exit(1)`` when a critical
-    file no longer compiles (a bad admin-merge past CI must not brick the CLI)."""
-    pyproject = Path(_m().PROJECT_ROOT) / "pyproject.toml"
-    if pyproject.is_file() and _commit.requires_other_python(pyproject.read_bytes()):
-        # A newer Python's syntax: judged by an installed interpreter the target admits (N15).
-        broken = _commit.tree_syntax_error(_m().PROJECT_ROOT, _UPDATE_CRITICAL_FILES)
-        syntax_ok, failing_path, syntax_error = (broken is None, *(broken or (None, None)))
-    else:
-        syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(_m().PROJECT_ROOT)
-    if not syntax_ok:
-        _roll_back_broken_update(git_cmd, pre_pull_sha, failing_path, syntax_error, rollback_branch=rollback_branch,
+    """Post-pull syntax guard: roll back to *pre_pull_sha* and ``sys.exit(1)`` when a startup file
+    the pulled tree declares is missing or no longer compiles (a bad admin-merge past CI must not
+    brick the CLI), judged by an interpreter the tree's ``requires-python`` admits (N15)."""
+    broken = _commit.tree_syntax_error(_m().PROJECT_ROOT, _UPDATE_CRITICAL_FILES)
+    if broken is not None:
+        _roll_back_broken_update(git_cmd, pre_pull_sha, *broken, rollback_branch=rollback_branch,
                                  _windows_gateway_resume=_windows_gateway_resume)
 
 
@@ -1624,6 +1586,12 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
     # swap in a real binary up front so git survives instead of degrading to ZIP.
     # See #87876.
     git_cmd = _ensure_non_trampoline_git(git_cmd)
+    if git_dir.exists() and (enclosing := _enclosing_repo_of_checkout(git_cmd, _m().PROJECT_ROOT)):
+        print(f"✗ git resolves this checkout to the enclosing repository {enclosing}; refusing to"
+              " stash, reset or clean it.")
+        print(_damaged_checkout_message(_m().PROJECT_ROOT))
+        _record_stop("not_git_checkout")
+        sys.exit(1)
 
     # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
     # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.

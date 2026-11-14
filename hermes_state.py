@@ -49,9 +49,9 @@ from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
     _register_test_instance, _set_last_init_error, get_last_init_error,
 )
-from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for, note_read_pool_exhausted
 from hermes_state_sessions import SessionSessionsMixin
-from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
+from hermes_state_fts import SessionFtsSetupMixin
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_profile_repair import SessionProfileRepairMixin
@@ -59,6 +59,7 @@ from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
 from hermes_state_lockowners import log_write_lock_holders
+from hermes_state_write import WriterMutexTimeout, maintain_after_commit, write_site, writer_mutex_until
 from hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
@@ -635,9 +636,7 @@ class SessionDB(
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
-        # _fts_cjk_loaded: tokenizer on the writer connection; _fts_cjk_available: messages_fts_cjk
-        # is queryable AND not marked stale.
-        self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
+        self._fts_unavailable_warned = False
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
@@ -797,7 +796,7 @@ class SessionDB(
             raise sqlite3.DatabaseError(msg)
 
     def _open_writer_conn(self) -> sqlite3.Connection:
-        """Connect + WAL/pragma/tokenizer setup for a writer connection (no schema init). Short timeout:
+        """Connect + WAL/pragma setup for a writer connection (no schema init). Short timeout:
         jittered application-level retry handles contention, not SQLite's busy handler;
         isolation_level=None: explicit BEGIN IMMEDIATE."""
         conn = _connect_tracked_db(
@@ -816,7 +815,6 @@ class SessionDB(
             _secure_state_db_files(self.db_path)
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
-            self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
         except BaseException:
             self._close_connection_quietly(conn)
             raise
@@ -876,19 +874,14 @@ class SessionDB(
                 return None
         # Permit BEFORE the open: openers race for permits, not descriptors.
         if not self._read_budget.acquire(self):
-            logger.debug(
-                "read pool at capacity (%d) for %s; serving this read from the "
-                "locked writer connection", _READ_POOL_MAX, self.db_path,
-            )
+            note_read_pool_exhausted(self.db_path)
             return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:
             conn = self._connect_read_only(timeout=_READ_BUSY_TIMEOUT_S)
             apply_database_pragmas(conn, db_label="state.db")
-            if self._fts_cjk_loaded:  # registers in the connection, not the file: ro is fine
-                load_fts5_cjk_extension(conn)
         except BaseException as exc:
-            # A half-open connection (open ok, extension load failed) is a live tracked descriptor,
+            # A half-open connection (open ok, pragmas failed) is a live tracked descriptor,
             # the leak shape this pool exists to fix; a stranded permit would shrink the read
             # path by one slot forever. (Not _close_read_conn: callers release their own permit.)
             if conn is not None:
@@ -930,13 +923,19 @@ class SessionDB(
             return self._get_read_conn()
 
     @contextmanager
-    def _read_ctx(self, *, reopen: bool = True) -> Iterator[sqlite3.Connection]:
+    def _read_ctx(self, *, reopen: bool = True, pooled_only: bool = False) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
         degradation: slower beats EMFILE, which the supervisor cannot see.
         ``reopen=False``: a read after ``close()`` raises instead of reopening the
-        writer (an optional reader must not hold a home that is being deleted)."""
+        writer (an optional reader must not hold a home that is being deleted). Inside this thread's
+        ``transcript_read_snapshot``: its connection, so every read there sees one generation.
+        ``pooled_only``: None instead of the writer connection when no pooled reader is available."""
+        pinned = self._pinned_read_conn()
+        if pinned is not None:
+            yield pinned
+            return
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -954,6 +953,9 @@ class SessionDB(
                     # close() drained the pool (or queue.Full: unreachable while
                     # permits == maxsize, load-bearing if they drift): surplus.
                     self._close_read_conn(conn)
+            return
+        if pooled_only:
+            yield None
             return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
@@ -1040,7 +1042,7 @@ class SessionDB(
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
             try:
-                with self._lock:
+                with writer_mutex_until(self._lock, deadline, db=self, site=write_site(fn)):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
@@ -1056,12 +1058,11 @@ class SessionDB(
                             pass
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
-                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
-                    self._try_incremental_merge_fts()
+                maintain_after_commit(self)
                 return result
+            except WriterMutexTimeout:
+                # No transaction began; preserve local contention attribution and never replay it.
+                raise
             except SessionCompressionInProgressError:
                 # Transient (see _COMPRESSION_BUSY_WAIT_S): a steer landing mid-compression must not abort.
                 # A live foreign compression lock is transient: the compressor publishes in a couple of

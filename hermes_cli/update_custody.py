@@ -322,9 +322,20 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
 _DRAIN_SECONDS = 5
 
 
+# Variables that point git at a repository other than its cwd.
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+
+
 def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess.CompletedProcess:
     """THE updater git runner: custody config in argv, the lock fd only into local mutators,
     Windows job binding inside an update. ``kwargs`` are ``subprocess.run``'s."""
+    # An inherited GIT_DIR/GIT_WORK_TREE points every stash/reset/clean at the user's other repo
+    # instead of the checkout the caller's cwd names (#146032).
+    env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
+    for key in _GIT_LOCATION_ENV:
+        env.pop(key, None)
+    kwargs["env"] = env
     argv = git_argv(git_cmd, args)
     mutator = is_local_mutator(argv[1:])
     if mutator:
@@ -495,7 +506,7 @@ def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> Non
 # (argv[2]) — run_contained captures the child's stderr, so stderr alone is not seen (m1) — and
 # exits; the updater logs the notice, notes it in the receipt and raises CustodyRefused.
 # The command also runs in a kill-on-close job of the launcher's own, nested in the update job
-# (review C3): once the command exits, the launcher terminates that job — whatever npm / the
+# (review C3): once the command exits, the launcher terminates that job — whatever pnpm / the
 # builder started and left running — and waits until no process of it is left before it
 # returns, so the caller never releases the checkout while a build descendant still writes.
 # Only the command's tree: the update job also holds the update's other children. The Windows
@@ -622,7 +633,7 @@ def _join_launcher_python() -> str:
 
 
 # POSIX twin of the launcher (N13, review L1/L6). Node marks the donated lock fd close-on-exec,
-# so nothing node starts (npm, esbuild, sh) keeps the checkout locked: custody of them rests on
+# so nothing node starts (pnpm, esbuild, sh) keeps the checkout locked: custody of them rests on
 # this stdlib parent, which holds the fd until no descendant of the command is left.
 # * The command stays in the CALLER's process group: every group kill that stops a build (a
 #   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches node and everything

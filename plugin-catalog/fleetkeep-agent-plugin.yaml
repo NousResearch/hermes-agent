@@ -1,0 +1,18 @@
+name: fleetkeep-agent-plugin
+title: Fleetkeep import review
+repo: https://github.com/jlucwright/fleetkeep-agent-plugin
+sha: 67c7334d21895cf38586d110d3dcc3c4e6cedeb9
+version: "1.0.0"
+description: "Review a supplied vehicle CSV for missing and ambiguous Fleetkeep import values. Agent Plugins v1 package with one local skill; it does not connect to Fleetkeep or change an account. Disclosure: the skill reads only material the user supplies to Hermes; no plugin code, install scripts, network calls, credentials, background processes or telemetry. Material supplied to Hermes remains subject to the user's Hermes and model-service settings."
+maintainer: Studea Limited
+tier: community
+category: tools
+docs_url: https://github.com/jlucwright/fleetkeep-agent-plugin#readme
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

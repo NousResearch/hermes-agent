@@ -127,3 +127,19 @@ def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker)
     assert store.set_user_message_content('owned', foreign, 'overwritten') == 0
     assert store.set_message_api_content('owned', foreign, 'private', 'injected') == 0
     assert newest_user('foreign') == ('private', None)
+
+
+def test_a_row_rewrite_merges_display_metadata_through_the_worker_like_direct(worker):
+    """The prologue's row rewrite merges its metadata into the row's (a null deletes a key), so a
+    reaction that landed on a submit-time row survives on the managed facade too."""
+    db, store = worker
+    db.create_session('direct', 'cli')
+    stored = {}
+    for sid, sdb in (('direct', db), ('owned', store)):
+        row_id = db.append_message(sid, 'user', 'look', display_metadata={'typed_ask': 'old', 'keep': 1})
+        db.set_message_reaction(sid, row_id, '👍')
+        assert sdb.set_user_message_content(sid, row_id, 'look', {'typed_ask': None, 'withheld_prompt': 'x'}) == 1
+        meta = db.get_messages_as_conversation(sid)[-1]['display_metadata']
+        stored[sid] = {k: v for k, v in meta.items() if k != db.REACTIONS_METADATA_KEY}
+        assert [r['emoji'] for r in meta[db.REACTIONS_METADATA_KEY]] == ['👍']
+    assert stored['owned'] == stored['direct'] == {'keep': 1, 'withheld_prompt': 'x'}

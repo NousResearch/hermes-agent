@@ -1,0 +1,18 @@
+name: aftercare
+title: Aftercare
+repo: https://github.com/salch-cred/aftercare
+sha: 3ffaade14854bab1ad19d945436b158889979c08
+description: "Your agent checks its own work after the fact. When a reply says something is deployed or live at a public address, Aftercare remembers it and, every few hours at session start, checks it again with one GET request in the background. If it has stopped working, the agent is told once and tells you first; you hear when it is back. /aftercare lists and checks, and hermes aftercare check runs from cron. Never checks private networks or runs commands. Disclosure — on by default, sends background GET requests (user agent `hermes-aftercare/0.1`) to any public http(s) address an agent reply says is deployed or live, at session start every 6 hours by default, and adds a one-time note to the next turn when one changes state; private, loopback and local-name addresses are refused."
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salch-cred/aftercare
+version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/aftercare/df2d75f39539b585a6edd9479dde5cf8da5e687d/docs/assets/catalog.jpg
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [post_llm_call, on_session_start, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

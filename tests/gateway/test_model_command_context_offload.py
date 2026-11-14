@@ -77,7 +77,6 @@ def _runner_with_store(tmp_path, monkeypatch):
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
-    runner._pending_one_turn_model_restores = {}
     runner._running_agents = {}
     _store = MagicMock()
     _store.set_model_override = AsyncMock()

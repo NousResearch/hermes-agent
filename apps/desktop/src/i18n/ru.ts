@@ -27,6 +27,11 @@ import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
 export const ruOverrides = {
+  gatewayGroupOpen: {
+    opening: "Открываем групповой чат…",
+    lookupFailed: "Не удалось найти эту группу на шлюзе. Попробуйте ещё раз.",
+    missing: "Этот групповой чат больше не существует."
+  },
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
@@ -931,7 +936,10 @@ export const ruOverrides = {
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах',
       voiceShortcutHintTitle: 'Горячая клавиша записи голоса',
       voiceShortcutHintDesc:
-        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.'
+        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.',
+      desktopReadAloudTitle: 'Зачитывать ответы в этом приложении',
+      desktopReadAloudDesc:
+        'Зачитывает каждый готовый ответ в Desktop. Тот же переключатель, что и в поле ввода; действует во всех открытых окнах, а выключение останавливает ответ на полуслове. «Зачитывать ответы вслух» ниже относится к мессенджерам и CLI.'
     },
     hudModifier: {
       title: 'Вызов HUD коротким нажатием',
@@ -1336,6 +1344,13 @@ export const ruOverrides = {
       clearDirFailed: 'Не удалось очистить папку по умолчанию'
     },
     toolsets: {
+      browserRealProfile: {
+        reimportSignins: 'Импортировать входы заново',
+        signinsImportedTitle: 'Входы во встроенном браузере',
+        signinsImported: count => `Встроенный браузер вошёл с cookie из профиля браузера: ${count}.`,
+        signinsRemote: 'Этот бэкенд работает на другом компьютере, поэтому его профиль браузера не импортируется во встроенный браузер.',
+        signinsFailed: 'Не удалось импортировать входы во встроенный браузер',
+      },
       loadingConfig: 'Загрузка конфигурации',
       savedTitle: 'Учётные данные сохранены',
       savedMessage: key => `${key} обновлён.`,
@@ -1761,7 +1776,10 @@ export const ruOverrides = {
       backup: 'Создать резервную копию',
       backupDesc: 'Сжатие конфигурации, памяти, навыков и сеансов в zip',
       debugShare: 'Поделиться отладкой',
-      debugShareDesc: 'Загрузка анонимизированного отчёта + журналов, получение ссылок (автоудаление через 6 ч)',
+      debugShareDesc: 'Загрузка сводки (версии, ключи конфигурации, счётчики ошибок; без текста журналов), получение ссылки (автоудаление через 6 ч)',
+      debugShareConfirm: 'Загрузить отладочный отчёт в публичный paste-сервис?',
+      debugShareConfirmDesc:
+        'Загружает сводку в публичный paste-сервис: версии Hermes, Python и ОС, имена подключённых платформ и наборов инструментов, ключи конфигурации (без значений) и счётчики предупреждений/ошибок. Строк журналов и текста сообщений в ней нет. Пасты автоматически удаляются через 6 часов; если paste.rs недоступен, резервный dpaste.com хранит их публично 1 день, и удалить их раньше нельзя.',
       debugShareRunning: 'Загрузка отладочного отчёта...',
       debugShareLinks: 'Ссылки для шаринга',
       debugShareFailed: 'Ошибка шаринга отладки',
@@ -2072,6 +2090,14 @@ export const ruOverrides = {
     fieldSkillsPlaceholder: 'имена навыков через запятую (необязательно)',
     fieldDeliver: 'Доставить в',
     fieldDeliverOnly: 'Доставлять только payload',
+    fieldSignature: 'Подпись',
+    fieldSignatureHint: 'Единственная схема подписи, которую принимает этот маршрут. Доставкам GitHub, GitLab и Linear нужна своя схема.',
+    signatureOptions: {
+      generic: 'Общая (с меткой времени)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Промпт',
     fieldPromptPlaceholder: 'Инструкции для агента при срабатывании этого вебхука (необязательно)',
     nameRequired: 'Имя обязательно',
@@ -2667,7 +2693,7 @@ export const ruOverrides = {
       '/topup': 'Показать баланс Nous и управлять оплатой',
       '/platform': 'Приостановить, возобновить или перечислить сбоящие платформы шлюза',
       '/version': 'Показать версию Hermes Agent',
-      '/debug': 'Загрузить отчёт отладки с данными системы и журналами и получить ссылку',
+      '/debug': 'Отладочный отчёт (версии, ключи конфигурации, счётчики ошибок; без текста журналов): сначала уведомление о конфиденциальности; /debug upload делится ссылками',
       '/model': 'Переключить модель для этого сеанса'
     },
     hotkeyDescs: {
@@ -3581,6 +3607,7 @@ export const ruOverrides = {
       readAloud: 'Зачитать вслух',
       copyFullResponse: 'Копировать весь ответ',
       readAloudFullResponseHint: 'Shift+клик: прочитать весь ответ',
+      contentRefusedNotice: 'Это сообщение отклонено фильтром безопасности модели — попробуйте другой запрос.',
       editMessage: 'Изменить сообщение',
       expandMessage: 'Развернуть сообщение',
       scrollToBottom: 'Прокрутить вниз',

@@ -43,7 +43,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |
-| `/rewind [N \| fork N]` | **Backtrack** (classic CLI; also `Esc Esc` on an idle, empty prompt). Opens a picker of your earlier prompts, newest first, with a preview of the selected one. `Enter` puts it back in the composer for editing: sending the edit cuts the session back to just before that prompt (the later messages are archived, as with `/undo`) and sends the new text; cancelling with `Esc Esc`, `Ctrl+C` or an empty submit removes nothing. `f` forks instead: a new branched session holding only the history before that prompt, with the prompt prefilled (not sent); the original session is kept as it was. `/rewind N` edits prompt N directly and `/rewind fork N` forks before it. |
+| `/rewind [N \| fork N]` | **Backtrack** (classic CLI; also `Esc`, `Esc` on an idle, empty prompt: the first shows `esc again to edit previous message`). Opens a transcript browser of your prompts and replies with the latest prompt selected in reverse video: `←`/`→` (`h`/`l`) pick a prompt, `↑`/`↓` (`k`/`j`) and `PgUp`/`PgDn` scroll. `Enter` puts it back in the composer for editing: sending the edit cuts the session back to just before that prompt (the later messages are archived, as with `/undo`) and sends the new text; cancelling with `Esc Esc`, `Ctrl+C` or an empty submit removes nothing. `f` forks instead: a new branched session holding only the history before that prompt, with the prompt prefilled (not sent); the original session is kept as it was. `Esc` or `q` closes. `/rewind N` edits prompt N directly and `/rewind fork N` forks before it. |
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
 | `/compress [here [N] \| focus topic]` | Manually compress conversation context (flush memories + summarize). `/compress here [N]` summarizes everything except the most recent N exchanges (default 2), kept verbatim — pick your own compression boundary. A focus topic narrows what a full summary preserves. |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
@@ -144,7 +144,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/paste` | Attach a clipboard image |
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
-| `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
+| `/debug [upload\|nous upload\|local]` | Debug report. Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads to a public paste and returns shareable links, `/debug nous upload` uploads to Nous-internal storage (classic CLI only: messaging, the TUI and the desktop app refuse it and point to `hermes debug share --nous` or Desktop's Send diagnostics), `/debug local` prints the report without uploading. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/profile` | Show active profile name and home directory |
 
@@ -309,7 +309,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
-| `/debug` | Upload debug report (system info + logs) and get shareable links. |
+| `/debug [upload]` | Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads an allowlisted summary (versions, config key names, error counts; no log or message text) to a public paste and returns a shareable link; full logs go only to private storage via `hermes debug share --nous`. |
 | `/help` | Show messaging help. |
 | `/<skill-name>` | Invoke any installed skill by name. |
 

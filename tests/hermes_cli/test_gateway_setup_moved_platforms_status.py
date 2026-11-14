@@ -14,7 +14,6 @@ _CREDENTIALS = {
     "weixin": {"WEIXIN_ACCOUNT_ID": "acct@im.bot", "WEIXIN_TOKEN": "tok"},
     "bluebubbles": {"BLUEBUBBLES_SERVER_URL": "http://127.0.0.1:1234", "BLUEBUBBLES_PASSWORD": "pw"},
     "qqbot": {"QQ_APP_ID": "1", "QQ_CLIENT_SECRET": "s"},
-    "yuanbao": {"YUANBAO_APP_ID": "a", "YUANBAO_APP_SECRET": "s"},
     "whatsapp_cloud": {"WHATSAPP_CLOUD_PHONE_NUMBER_ID": "1", "WHATSAPP_CLOUD_ACCESS_TOKEN": "t"},
 }
 

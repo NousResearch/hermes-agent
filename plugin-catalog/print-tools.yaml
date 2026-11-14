@@ -1,0 +1,19 @@
+name: print-tools
+title: "CUPS Print Tools"
+description: "Printer-agnostic Linux CUPS printing for Hermes: queue status, files, wrapped text, and styled one-page letters. Disclosure — every print tool call sends a real job to a CUPS queue installed on this machine (local or network printer, 1-5 copies, at most 20 pages) with no approval prompt; `print_file` reads a model-chosen JPEG/PNG/PDF/TXT/MD file under your home or temp directory (20 MB limit) and sends it to that printer; runs `lpstat`, `lp`, Ghostscript (`gs -dSAFER`), the CUPS `texttopdf` filter, `fc-match` and a Pillow letter renderer as child processes with a minimal environment (no Hermes keys forwarded); no network calls of its own, no telemetry, no credentials."
+repo: https://github.com/alxspiker/hermes-print-tools
+sha: babc0815a2bb6a86d09dbcdae503a7ce7f24da9d
+version: "1.0.1"
+maintainer: alxspiker
+tier: community
+category: tools
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - printer_status
+    - print_file
+    - print_text
+    - print_letter
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

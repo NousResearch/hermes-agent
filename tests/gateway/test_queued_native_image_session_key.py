@@ -95,7 +95,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -241,7 +240,7 @@ async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
         assert adapter._pending_messages[session_key] is pending_event, (
             "the exact native event must survive for the post-reset adapter drain"
         )
-        assert runner._queued_events[session_key] == [overflow_event], (
+        assert runner._session_state(session_key).conversation.queued_events == [overflow_event], (
             "deferral must not promote or reorder later FIFO events"
         )
     else:
@@ -249,4 +248,4 @@ async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
         # ahead of the queued event instead of vanishing with the exhausted turn.
         head = adapter._pending_messages[session_key]
         assert head.text == leftover_steer
-        assert runner._queued_events[session_key] == [pending_event, overflow_event]
+        assert runner._session_state(session_key).conversation.queued_events == [pending_event, overflow_event]

@@ -75,7 +75,7 @@ def wake_runs(executed):
 @pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
 async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_restart(monkeypatch, busy):
     from gateway.platforms.event import MessageEvent
-    from gateway.run_runtime import recover_profile_native_sessions
+    from gateway.run_runtime import recover_profile_native_sessions, settle_gateway_runtime
     from gateway.wake import deliver_wake
 
     executed, hold = [], Hold() if busy else None
@@ -89,13 +89,13 @@ async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_res
             what="the human turn to settle",
         )
     await asyncio.wait_for(deliver_wake(adapter, text=WAKE, source=source), 10)  # receipt: no retry
-    runner._draining = True  # /restart begins before the wake's turn is claimed
+    runner._draining = True  # /restart begins; a claim whose guard already passed may still commit
     if hold is not None:
         hold.finish.set()
-    await async_wait_until(
-        lambda: admissions(runner, authority, source)[0] == ("messaging", "terminal", "completed"),
-        what="the human turn to settle",
-    )
+    # A real stop joins the old owner's authority tasks before the successor can take the profile: a
+    # wake claimed just before the drain runs (and settles) here, not under the successor's epoch.
+    await settle_gateway_runtime(runner)
+    assert admissions(runner, authority, source)[0] == ("messaging", "terminal", "completed")
     wake_row = admissions(runner, authority, source)[-1]
     assert wake_row[0] == "automation"
     assert wake_row[1] == "queued" or (wake_row[1:] == ("terminal", "completed") and wake_runs(executed) == ["owner"])
@@ -107,3 +107,32 @@ async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_res
         what="the wake to run",
     )
     assert len(wake_runs(executed)) == 1  # ran once, on whichever gateway claimed it
+
+
+@pytest.mark.asyncio
+async def test_a_wake_claimed_just_before_a_drain_runs_rather_than_settling_unrun(monkeypatch):
+    """The drain begins after the wake's claim committed (its admission gate already passed): the
+    old owner holds the only claim, so it must run the wake, not answer it with the drain notice."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.run_runtime import settle_gateway_runtime
+    from gateway.wake import deliver_wake
+
+    executed = []
+    runner, adapter, authority, source = await authority_route(monkeypatch, "owner", executed)
+    await adapter.handle_message(MessageEvent(text="A", source=source, message_id="A"))
+    await async_wait_until(
+        lambda: admissions(runner, authority, source) == [("messaging", "terminal", "completed")],
+        what="the human turn to settle",
+    )
+    stamp = authority._stamp_claim
+
+    def drain_begins_after_commit(ref, live, row):
+        if row:
+            runner._draining = True
+        return stamp(ref, live, row)
+
+    monkeypatch.setattr(authority, "_stamp_claim", drain_begins_after_commit)
+    await asyncio.wait_for(deliver_wake(adapter, text=WAKE, source=source), 10)
+    await settle_gateway_runtime(runner)
+    assert admissions(runner, authority, source)[-1] == ("automation", "terminal", "completed")
+    assert wake_runs(executed) == ["owner"]

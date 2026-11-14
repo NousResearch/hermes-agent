@@ -1,0 +1,19 @@
+name: shotlane
+title: Shotlane
+repo: https://github.com/shotlane/shotlane
+subdir: hermes
+sha: 26e288a89a5ed8e858c9bf608d741400b02c8017
+version: "1.0.0"
+description: "A real browser for your agent: screenshots, phone, tablet and desktop checks, pages as Markdown and HTML to PDF, from Shotlane's hosted MCP server (https://shotlane.dev). Disclosure — connects to Shotlane's hosted MCP server at https://shotlane.dev/mcp (declared trust: untrusted, so write-capable calls ask first); every tool call, with its URL or HTML, goes to shotlane.dev with the API key in SHOTLANE_API_KEY as a Bearer header, and successful calls spend the account's Shotlane credits; the tool set is served by the remote server at runtime and is not covered by the pinned sha; the bundled skill also teaches the agent to call Shotlane's REST API directly with its script (URLs or local HTML files sent to shotlane.dev, results written to files you name), to use keyless shotlane.dev/md/ and /shot/ fetches, and to sign you up for a key by sending the email address you give it to shotlane.dev."
+maintainer: Shotlane
+tier: community
+category: web
+docs_url: https://shotlane.dev/docs/mcp
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [SHOTLANE_API_KEY]

@@ -18,7 +18,8 @@ from pm.paths import lockfile_path
 from pm.registry import walk
 from pm.store import current_target
 
-_ROOTS = {"python": ["uv"], "node": ["npm"], "all": ["npm", "uv"]}
+# npm stays beside pnpm: website/ and the sidecars are standalone npm projects.
+_ROOTS = {"python": ["uv"], "node": ["npm", "pnpm"], "all": ["npm", "pnpm", "uv"]}
 
 
 def parse_package_list(value: str) -> list[str]:
@@ -31,10 +32,18 @@ def parse_package_list(value: str) -> list[str]:
     return sorted({name.strip() for name in value.split(",")})
 
 
-def packages(toolchain: str, extra: list[str] | None = None) -> list[str]:
+def roots(toolchain: str, lock: Lockfile) -> list[str]:
+    """The toolchain's roots plus the developer tools (just) this lockfile pins."""
+    from pm.testenv import developer_tools
+
+    return _ROOTS[toolchain] + developer_tools(lock.names())
+
+
+def packages(toolchain: str, extra: list[str] | None = None, lock: Lockfile | None = None) -> list[str]:
     # walk() resolves the deps-first closure, so an extra tool's dependencies
     # (ffmpeg -> none) come along without listing them.
-    return sorted(package.name for package in walk(_ROOTS[toolchain] + (extra or [])))
+    lock = lock or Lockfile(lockfile_path())
+    return sorted(package.name for package in walk(roots(toolchain, lock) + (extra or [])))
 
 
 def file_commands(destination: str, values: dict) -> None:
@@ -69,7 +78,7 @@ def prepare(args) -> None:
     home = args.home.resolve()
     lock = Lockfile(lockfile_path())
     target = current_target()
-    names = packages(args.toolchain, args.packages)
+    names = packages(args.toolchain, args.packages, lock)
     values = {
         "packages": json.dumps(names), "target": target, "arch": target.split("-")[1],
         "store": str(home / "tools"),
@@ -119,7 +128,9 @@ def archive_inputs(args) -> None:
     from scripts.ci.archive_inputs import Archive, pinned_inputs, stage_inputs
     from scripts.releases import r2
 
-    pins = pinned_inputs(repo_root(), target=current_target(), packages=set(packages(args.toolchain, args.packages)))
+    lock = Lockfile(repo_root() / "pm/lock.json")
+    pins = pinned_inputs(repo_root(), target=current_target(),
+                         packages=set(packages(args.toolchain, args.packages, lock)))
     stage_inputs(pins, archive=Archive(*r2.credentials()), store=Store(args.home.resolve() / "tools"))
 
 
@@ -181,7 +192,7 @@ def install(args) -> None:
     repaired = restore_cygwin_symlinks(store_root())
     if repaired:
         print(f"Restored {repaired} Cygwin symlink(s) in the cached PM store")
-    for name in _ROOTS[args.toolchain] + args.packages:
+    for name in roots(args.toolchain, Lockfile(lockfile_path())) + args.packages:
         ensure(name, explicit=True, progress=_live_progress(name))
     facts = Facts(facts_path())
     target = current_target()
@@ -216,11 +227,21 @@ def install(args) -> None:
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
     if "npm" in names:
+        # Outside any checkout, so a project package.json or .npmrc in the
+        # caller's cwd can neither change the answer nor fail the query.
         cache = subprocess.check_output(
             [str(binaries["npm"]), "config", "get", "cache"],
-            env=environment, text=True, encoding="utf-8", timeout=60,
+            cwd=args.home.resolve(), env=environment, text=True, encoding="utf-8", timeout=60,
         ).strip()
         outputs["npm-cache-path"] = cache
+    if "pnpm" in names:
+        # pnpm hard-links from its store only within one drive and copies across
+        # drives; on Windows its default store is on the profile's drive, not the
+        # checkout's. The runner's temp dir, which holds this home, sits beside
+        # the workspace.
+        store = args.home.resolve() / "cache" / "pnpm" / "store"
+        exported["pnpm_config_store_dir"] = store
+        outputs["pnpm-store-path"] = str(store)
     file_commands("GITHUB_ENV", exported)
     file_commands("GITHUB_OUTPUT", outputs)
     add_path(path)

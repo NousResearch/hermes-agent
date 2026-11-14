@@ -10,7 +10,7 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from agent.usage_pricing import normalize_usage
+from agent.usage_pricing import normalize_usage, reasoning_tokens_reported
 
 _SENSITIVE_HOOK_KEYS = {"api_key", "authorization", "proxy_authorization", "cookie", "set_cookie"}
 
@@ -46,6 +46,7 @@ class ApiRequestHooksMixin:
         summary.pop("raw_usage", None)
         summary["prompt_tokens"] = cu.prompt_tokens
         summary["total_tokens"] = cu.total_tokens
+        summary["reasoning_tokens_reported"] = reasoning_tokens_reported(raw_usage)
         return summary
 
     @staticmethod

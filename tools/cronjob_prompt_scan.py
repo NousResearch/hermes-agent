@@ -7,7 +7,7 @@ import re
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
 from tools.threat_patterns import EMOJI_TAG_SEQUENCE_RE as _EMOJI_TAG_SEQUENCE_RE
-from tools.threat_patterns import FORGET_RULES_RE, mask_negated_forget
+from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # Logger parity with the origin module (these functions used to log there).
@@ -37,7 +37,7 @@ _CRON_THREAT_PATTERNS = [
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
     # User prompt only (after the [:4] slice below): "forget" is ordinary prose in skill bodies, which
     # skills_guard already scans with this same rule at install time.
-    (FORGET_RULES_RE, "forget_rules"),
+    (FORGET_RULES_RAW_RE, "forget_rules"),
 ]
 
 # Looser set for the assembled prompt: command-shape patterns are dropped because skill

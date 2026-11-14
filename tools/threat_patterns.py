@@ -33,7 +33,16 @@ _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # negate). `_` (Markdown emphasis) counts as punctuation, not as part of the neighbouring word.
 _NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
             r"|cannot|not|never)")
-FORGET_RULES_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’']){{1,64}}[ \t]{{1,64}}"
+# FORGET_RULES_RAW_RE is the unbounded rule for the raw-line scanners (tools/skills_guard.py,
+# tools/cronjob_prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
+FORGET_RULES_RAW_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’'])+[ \t]+"
+                       r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]*)"
+                       r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
+                       r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)(?![^\W_])")
+# FORGET_RULES_RE is the same rule bounded for the chunked scan_for_threats (width under _CHUNK_OVERLAP). The
+# `{64}` alternative anchors on the tail of a word longer than 64 chars, which the lookbehind branch cannot start in.
+FORGET_RULES_RE = (rf"(?:(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’']){{1,64}}|(?:[^\W_]|[’']){{64}})"
+                   r"[ \t]{1,64}"
                    r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]{0,64})"
                    r"forget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
                    r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)(?![^\W_])")

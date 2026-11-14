@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
-from tools.threat_patterns import FORGET_RULES_RE, mask_negated_forget
+from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
 
 SCANNER_VERSION = "skills-guard-v16"
@@ -279,7 +279,7 @@ THREAT_PATTERNS = [
      "disregard_rules", "critical", "injection", "instructs agent to disregard its rules"),
     # High, not critical: "forget" is ordinary English in migration notes ("forget your old rules for v1"), so a
     # hit is a caution that --force can override rather than an unoverridable dangerous verdict.
-    (FORGET_RULES_RE, "forget_rules", "high", "injection", "instructs agent to forget its instructions"),
+    (FORGET_RULES_RAW_RE, "forget_rules", "high", "injection", "instructs agent to forget its instructions"),
     (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection", "attempts to extract the system prompt"),
     (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',

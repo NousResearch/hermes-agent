@@ -1735,6 +1735,15 @@ def _command_detection_variants(command: str):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
+    # Escaped-whitespace variant: normalization turns `my\ repo` into the two words `my repo`, so an
+    # option value spelled that way (`git -C my\ repo push --force`) left a stray word between the
+    # option and the subcommand. Keep each `\<space>` inside its word with a non-space placeholder;
+    # `\\` pairs are consumed first so an escaped backslash before a real space stays a separator.
+    if re.search(r"\\[ \t]", command):
+        joined = re.sub(r"\\(.)", lambda m: "_" if m.group(1) in " \t" else m.group(0), command, flags=re.DOTALL)
+        joined_variant = _normalize_command_for_detection(_mask_quoted_newlines(joined))
+        if fresh(joined_variant):
+            yield joined_variant
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]

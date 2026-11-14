@@ -52,6 +52,12 @@ BRANCH_FORCE_DELETE_LONG = "git branch force delete (long flags)"
         ("sudo git -C /tmp/r push --force origin x", FORCE_PUSH),
         ("cd /tmp && git -C /tmp/r push --force origin x", FORCE_PUSH),
         ("GIT -C /tmp/r PUSH --FORCE origin x", FORCE_PUSH),
+        # A backslash-escaped space keeps the value one shell word (what tab completion inserts).
+        ("git -C my\\ repo push --force", FORCE_PUSH),
+        ("git -C /a\\ b\\ c reset --hard", RESET_HARD),
+        ("git -c user.name=a\\ b clean -fd", CLEAN_FORCE),
+        ("git -C /tmp/my\\\tdir branch -D old", BRANCH_FORCE_DELETE),
+        ('git -C "/a b c" -c "user.name=a b" reset --hard', RESET_HARD),
     ],
 )
 def test_git_global_options_do_not_hide_the_subcommand(command, description):
@@ -75,6 +81,7 @@ def test_git_global_options_do_not_hide_the_subcommand(command, description):
         "git -C'/tmp/my repo with spaces' branch -d merged",
         "git -C'/tmp/my repo with spaces' clean -n",
         "git --git-dir='/tmp/my repo with spaces/.git' commit -m wip",
+        "git -C my\\ repo push origin main",
     ],
 )
 def test_safe_git_global_option_forms_stay_safe(command):
@@ -111,7 +118,7 @@ command = f"git {run}-C /tmp/r push --force origin x"
 assert detect_dangerous_command(command)[0] is True, command[:60]
 for prefix in ("git", "git -C /tmp/r", "git --git-dir=/tmp/r/.git"):
     for bulk in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58,
-                 "-C'/tmp/a b' -c 'k=v' " * 58):
+                 "-C'/tmp/a b' -c 'k=v' " * 58, "-C /a\\ b\\ c -c k=v\\ w " * 58):
         assert detect_dangerous_command(f"{prefix} {bulk}log --oneline")[0] is False, prefix
 '''
     env = {**os.environ, "PYTHONPATH": REPO_ROOT}

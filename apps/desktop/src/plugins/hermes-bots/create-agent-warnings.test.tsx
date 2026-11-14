@@ -283,6 +283,45 @@ describe('profile creation warnings', () => {
     }
   })
 
+  it('pins Configure model to the creating connection when the roster does not list the bot after a switch', async () => {
+    mocks.activeConnection.value = 'gateway-a'
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
+      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    const configure = vi.fn()
+    const dialog = await renderDialog(true, configure)
+    await showNotifications()
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    dialog.unmount()
+    mocks.activeConnection.value = 'gateway-b'
+    const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
+    await act(async () => clearResumeToasts(undefined))
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
+    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true }))
+  })
+
+  it('drops the warnings of a bot a target change discarded during readiness', async () => {
+    mocks.connections.mockResolvedValue([{ id: 'local', label: 'This Mac' }, { id: 'studio', label: 'Studio' }])
+    const base = mocks.request.getMockImplementation()!
+    let finishReadiness!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'profiles.create'
+      ? Promise.resolve({ warnings })
+      : method === 'setup.runtime_check'
+        ? new Promise(resolve => { finishReadiness = () => resolve({ ok: true }) })
+        : base(method, params)
+    )
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(finishReadiness).toBeTypeOf('function'))
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    await act(async () => finishReadiness())
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    expect(mocks.notify.mock.calls.filter(([notice]) => notice.message === warnings.join('\n'))).toEqual([])
+  })
+
   it('explicit Clear all dismisses persistent creation and needs-model cards', async () => {
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'profiles.create'

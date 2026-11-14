@@ -1,6 +1,6 @@
 name: hermes-unlimited
 repo: https://github.com/rrglab/hermes-unlimited
-sha: ddaa349575519280175f7ab1a1562fc55c99ada2
+sha: b535550cdfabd170344c9968d9802743e322dc0f
 description: "AI-native company operating tools with scoped Hermes Kanban tasks, missions, memory and economic evaluation. Disclosure — Uses the local Hermes Kanban CLI, configured SQLite storage and a loopback JustYou validator. Consent-gated feedback hooks record aggregate local usage data only; publication is separately opt-in. External model work requires an explicitly host-provisioned, authorized worker and independent verifier. No live payment settlement or independently verified customer fulfillment."
 maintainer: rrglab
 tier: community

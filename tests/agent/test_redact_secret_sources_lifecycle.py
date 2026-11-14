@@ -54,7 +54,7 @@ def test_another_profiles_values_do_not_classify_this_profiles_config(tmp_path, 
         if registry == "vault":
             register_vault_redaction_value("workspace")
         else:
-            redact_secret_sources.publish_secret_source_values(home_a, {"API_SECRET": "workspace"})
+            redact_secret_sources.publish_secret_source_values(home_a, {"DB_PASSWORD": "workspace"})
         assert "workspace" not in redact_sensitive_text(PATH)  # A's registry is live while B publishes
         redact_secret_sources.publish_secret_source_values(home_b, {"PROJECT_DIR": PATH})
     with _profile(home_b):
@@ -107,3 +107,19 @@ def test_removing_or_disabling_every_source_unmasks_its_values(tmp_path, monkeyp
     with _profile(home):
         assert redact_secret_sources.redact_secret_source_values(f"x {OPAQUE}") == f"x {OPAQUE}"
 
+
+
+def test_removed_routed_source_releases_mask(tmp_path, monkeypatch):
+    # unsupportedpastels review on #155274: the routed no-config return must unregister too.
+    home = _home(tmp_path, "routed")
+    _source(monkeypatch, [{"VENDOR_TOKEN": OPAQUE}])
+    assert env_loader.hydrate_profile_secret_sources(home) == {"VENDOR_TOKEN": OPAQUE}
+    with _profile(home):
+        assert OPAQUE not in redact_sensitive_text(f"bare {OPAQUE}")
+
+    env_loader.reset_secret_source_cache(home)
+    (home / "config.yaml").write_text("", encoding="utf-8")
+    assert env_loader.hydrate_profile_secret_sources(home) == {}
+
+    with _profile(home):
+        assert redact_sensitive_text(f"bare {OPAQUE}") == f"bare {OPAQUE}"

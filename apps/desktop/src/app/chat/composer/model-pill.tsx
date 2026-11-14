@@ -213,6 +213,19 @@ export function ModelPill({
             className={pillClass}
             data-tour={tourMarker}
             disabled={disabled}
+            onClick={event => {
+              if (event.button === 0 && !event.ctrlKey) {
+                setMenuOpen(!open)
+              }
+            }}
+            onPointerDown={event => {
+              // Radix opens on pointerdown. A menu mounted under the pointer
+              // can then select a row on that same release (#153073).
+              // Wait for the completed click; keyboard opening stays with Radix.
+              if (event.button === 0 && !event.ctrlKey) {
+                event.preventDefault()
+              }
+            }}
             type="button"
             variant="ghost"
           >

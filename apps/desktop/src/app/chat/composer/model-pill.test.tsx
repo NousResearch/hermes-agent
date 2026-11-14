@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { useContext } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
@@ -265,5 +266,72 @@ describe('ModelPill label providers', () => {
 
     expect(screen.getByText('first wins')).toBeTruthy()
     expect(second).not.toHaveBeenCalled()
+  })
+})
+
+// #153073: the opening press must not expose a row to that same release.
+// Use the real Radix menu so a stray pointerup can synthesize its own click.
+describe('ModelPill opening gesture', () => {
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false
+    Element.prototype.releasePointerCapture ??= () => undefined
+    Element.prototype.scrollIntoView ??= () => undefined
+  })
+
+  it('does not select a row on the opening release, but accepts the next click', async () => {
+    const select = vi.fn()
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          modelMenuContent: <DropdownMenuItem onSelect={select}>Another model</DropdownMenuItem>
+        })}
+      />
+    )
+    const trigger = screen.getByRole('button')
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+
+    // A row mounted under the pointer receives pointerup without pointerdown.
+    // jsdom has no hit testing; deliver to the exposed row, as in the report.
+    const exposedRow = screen.queryByRole('menuitem', { name: 'Another model' })
+    fireEvent.pointerUp(exposedRow ?? trigger, { button: 0, pointerType: 'mouse' })
+
+    if (!exposedRow) {
+      fireEvent.click(trigger)
+    }
+
+    expect(select).not.toHaveBeenCalled()
+    const row = await screen.findByRole('menuitem', { name: 'Another model' })
+    fireEvent.pointerDown(row, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(row, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(row)
+    expect(select).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+
+  it('preserves keyboard opening, selection and Escape dismissal', async () => {
+    const select = vi.fn()
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          modelMenuContent: <DropdownMenuItem onSelect={select}>Another model</DropdownMenuItem>
+        })}
+      />
+    )
+    const trigger = screen.getByRole('button')
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    const row = await screen.findByRole('menuitem', { name: 'Another model' })
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(select).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    const menu = await screen.findByRole('menu')
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(select).toHaveBeenCalledTimes(1)
   })
 })

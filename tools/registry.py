@@ -594,6 +594,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, ToolEntry] = {}  # built-in / process-global registrations
+        self._unknown_tool_resolvers: list[Callable[..., Optional[str]]] = []  # see register_unknown_tool_resolver
         # Plugin overlays keyed by resolved HERMES_HOME; a profile sees its overlay first.
         self._scoped_tools: dict[str, dict[str, ToolEntry]] = {}
         # Plugin namespace -> operator opt-in for built-in override (lifecycle-managed);
@@ -1081,6 +1082,33 @@ class ToolRegistry:
             f"Tool handler returned unsupported result type: {result_type}",
             error_type="tool_result_contract", tool=name, result_type=result_type)
 
+    def register_unknown_tool_resolver(self, resolver: Callable[..., Optional[str]]) -> None:
+        """Add a source of precise verdicts for names this registry lacks.
+        ``resolver(name, scope=<the dispatch scope or None>)`` returns a replacement message when
+        it recognises the name, or None to defer; the first non-empty answer wins, in
+        registration order.
+
+        "Unknown tool: X" is a claim about CAPABILITY the registry cannot always support: an MCP
+        server that parked deregisters its tools, but the model's schema is byte-stable for the
+        life of the conversation (prompt caching), so it still calls them — and reads "Unknown
+        tool" as proof the capability does not exist. A registration hook rather than an import,
+        so this module keeps its no-dependencies invariant."""
+        if callable(resolver) and resolver not in self._unknown_tool_resolvers:
+            self._unknown_tool_resolvers.append(resolver)
+
+    def _describe_unknown_tool(self, name: str, scope: Optional[str] = None) -> str:
+        """Best available explanation for a name this registry does not have. A resolver that
+        raises or answers nothing defers; dispatch is never broken by one."""
+        for resolver in list(self._unknown_tool_resolvers):
+            try:
+                described = resolver(name, scope=scope)
+            except Exception:
+                logger.debug("unknown-tool resolver %r failed for %s", resolver, name, exc_info=True)
+                continue
+            if isinstance(described, str) and described.strip():
+                return described
+        return f"Unknown tool: {name}"
+
     def dispatch(
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
@@ -1090,7 +1118,7 @@ class ToolRegistry:
             return tool_error(refusal)
         entry = self.get_entry(name, scope=scope)
         if not entry:
-            return tool_error(f"Unknown tool: {name}")
+            return tool_error(self._describe_unknown_tool(name, scope))
         from tools.arg_validation import check_tool_args, flag_unknown_args
         refusal, unknown, valid = check_tool_args(entry, args)
         if refusal is not None:

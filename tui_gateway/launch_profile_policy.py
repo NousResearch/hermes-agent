@@ -43,6 +43,24 @@ def capture_launch_env() -> dict[str, str]:
         return dict(_snapshot)
 
 
+def revoke_launch_env_write(name: str, written: str, prior: str | None) -> None:
+    """Take a revoked secret-source write back out of the frozen launch env.
+
+    The snapshot copies ``os.environ``, so a value a source wrote before activation sits in it as
+    if the operator had set it, and ``launch_secret_scope`` kept serving it after the source was
+    removed or disabled. ``env_loader`` revokes such a write from ``os.environ`` and calls this with
+    the same record: only while the snapshot still holds exactly *written*, it gets back *prior*
+    (the value before the source's first write) or loses the name. A value the operator set and a
+    source merely also supplied was never written (``skipped_existing``), so it is never here."""
+    with _lock:
+        if _snapshot is None or _snapshot.get(name) != written:
+            return
+        if prior is None:
+            _snapshot.pop(name, None)
+        else:
+            _snapshot[name] = prior
+
+
 def activate_multi_profile_hosting() -> None:
     """This process now hosts a profile home other than its launch home: freeze the launch env
     and make unscoped credential reads fail closed (``get_secret`` raises instead of borrowing)."""

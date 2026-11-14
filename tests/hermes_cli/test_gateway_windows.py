@@ -688,6 +688,43 @@ def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch)
     assert printed == []
 
 
+def test_install_scheduled_task_registers_the_xml_principal_only(monkeypatch, tmp_path):
+    """#152218: ``/RU <user> /NP`` on top of ``/XML`` replaced the template's InteractiveToken +
+    LeastPrivilege principal with S4U, which an elevated install ran at High integrity in session 0.
+    The task must be created from the XML alone, and that XML must carry the user's principal."""
+    creates: list[list[str]] = []
+    xml_seen: dict[str, str] = {}
+
+    def fake_schtasks(args):
+        if args[0] == "/Create":
+            creates.append(list(args))
+            xml_seen["text"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "SUCCESS", "")
+
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, _detail = gateway_windows._install_scheduled_task("Hermes_Gateway", tmp_path / "gateway.cmd")
+
+    assert ok is True
+    assert len(creates) == 1
+    assert not {"/RU", "/RP", "/NP", "/IT", "/RL"} & set(creates[0])
+    assert "<UserId>PC\\me</UserId>" in xml_seen["text"]
+    assert "<LogonType>InteractiveToken</LogonType>" in xml_seen["text"]
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_seen["text"]
+
+
+def test_scheduled_task_drift_flags_an_s4u_principal():
+    """An install registered before #152218 (S4U principal) is drift, so ``start()`` / ``hermes
+    update`` re-register it; an export that omits LogonType is not."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    s4u = template.replace("<LogonType>InteractiveToken</LogonType>", "<LogonType>S4U</LogonType>")
+    assert s4u != template
+    assert gateway_windows.compare_scheduled_task_drift(s4u, template) == ["LogonType S4U"]
+    no_logon = template.replace("<LogonType>InteractiveToken</LogonType>", "")
+    assert gateway_windows.compare_scheduled_task_drift(no_logon, template) == []
+
+
 def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_path):
     """The Windows sibling of ``refresh_systemd_unit_if_needed`` (#113670): a pre-hardening
     registration is deleted and re-created from the current template (so ``RestartOnFailure`` and the

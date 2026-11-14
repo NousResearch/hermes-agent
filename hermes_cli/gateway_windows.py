@@ -654,15 +654,13 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
-    base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
-    variants = [[*base, "/RU", user, "/NP", "/IT"], base] if user else [base]
-    last_code, last_err = 1, ""
+    # The XML alone carries the principal: adding /RU /NP on top of /XML makes schtasks register an
+    # S4U logon that an elevated install runs at High integrity in session 0 (#152218).
     try:
-        for argv in variants:
-            code, out, err = _exec_schtasks(argv)
-            if code == 0:
-                return (True, f"Created Scheduled Task {task_name!r}")
-            last_code, last_err = code, (err or out or "")
+        code, out, err = _exec_schtasks(["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)])
+        if code == 0:
+            return (True, f"Created Scheduled Task {task_name!r}")
+        last_code, last_err = code, (err or out or "")
     finally:
         try:
             xml_path.unlink(missing_ok=True)
@@ -1518,6 +1516,9 @@ _TASK_DRIFT_LEAVES = {
     "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
     "Task/Actions/Exec/Arguments": "launcher arguments",
 }
+# Compared only when the export carries it, so an export that omits the element cannot loop the
+# repair. Pre-#152218 elevated installs registered S4U, which runs High integrity in session 0.
+_TASK_LOGON_TYPE_LEAF = "Task/Principals/Principal/LogonType"
 
 
 def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list[str]:
@@ -1534,6 +1535,9 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     if missing:
         drift.append(f"missing: {', '.join(missing)}")
     drift.extend(f"{label} differs" for label in differs)
+    live_logon = live.get(_TASK_LOGON_TYPE_LEAF)
+    if live_logon and live_logon != want.get(_TASK_LOGON_TYPE_LEAF):
+        drift.append(f"LogonType {live_logon}")
     if live["Task@version"] != want["Task@version"]:
         drift.append(f"version {live['Task@version']} vs {want['Task@version']}")
     return drift

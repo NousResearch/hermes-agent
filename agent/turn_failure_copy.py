@@ -262,6 +262,13 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.guardrail_blocked.value: (
+        "{label}'s prompt-injection guardrail rejected this request before it reached any model, so "
+        "the key is fine — a scanner judged the request payload (tool output is scanned too, not "
+        "just what you type), and retrying won't help. On OpenRouter: Workspaces → Guardrails → set "
+        "Prompt injection detection to Redact or Flag, or allowlist the phrase under Settings → "
+        "Privacy; the matched pattern names are in the error details."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
@@ -299,6 +306,7 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
+    FailoverReason.guardrail_blocked.value: "the AI model service's prompt-injection guardrail rejected the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (

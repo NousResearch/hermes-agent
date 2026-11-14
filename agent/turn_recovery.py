@@ -1010,6 +1010,7 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
+    FailoverReason.guardrail_blocked: "The provider's prompt-injection guardrail rejected this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
@@ -1026,6 +1027,14 @@ def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model
         return suggest_prefixed_model_id(str(provider or ""), str(model or ""))
     except Exception:
         return None
+
+
+def _guardrail_matched_patterns(api_error: Any) -> str:
+    """Comma-joined ``metadata.patterns`` from an OpenRouter guardrail 403 body; '' when absent."""
+    # Bodies arrive both as raw JSON ("patterns": [...]) and as the SDK's Python repr
+    # of it ('patterns': [...]) — match either quote style.
+    match = re.search(r"['\"]patterns['\"]\s*:\s*\[([^\]]*)\]", str(api_error))
+    return match.group(1).strip() if match else ""
 
 
 def nonretryable_client_error_result(
@@ -1096,6 +1105,19 @@ def nonretryable_client_error_result(
             agent,
             f"   💡 {CONTENT_POLICY_NEXT_STEPS}",
             "      To route future blocks to another provider automatically: hermes fallback add",
+        )
+    # Prompt-injection guardrail (OpenRouter Guardrails #155460): an account-level content filter
+    # judged the payload before any model ran, so the fix is a dashboard setting — never
+    # key/retry/User-Agent advice.
+    if classified.reason == FailoverReason.guardrail_blocked:
+        _matched = _guardrail_matched_patterns(api_error)
+        _matched_note = f" Matched patterns: {_matched}." if _matched else ""
+        _vlines(
+            agent,
+            f"   💡 {_plabel}'s prompt-injection guardrail rejected the request before it reached any",
+            f"      model — the key is fine.{_matched_note}",
+            "      On OpenRouter: Workspaces → Guardrails → set Prompt injection detection to Redact",
+            "      or Flag, or allowlist the phrase under Settings → Privacy. Retrying won't help.",
         )
     # TLS certificate failures are environment problems — name the knobs for each cause.
     if classified.reason == FailoverReason.ssl_cert_verification:

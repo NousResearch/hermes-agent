@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~85 tools — 4 browser tools (`browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault`), 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~85 tools — 4 browser tools (`browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault`), 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`, and the onboarding-only `setup_beat`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
@@ -288,6 +288,16 @@ the model's schema, so the agent is never told about a surface it isn't allowed
 to use. Like every schema change, that lands on the next session — a running
 conversation keeps the toolset it started with, and the app declines the call in
 the meantime.
+
+## `onboarding` toolset
+
+Folded into the agent build only for the first-run onboarding chat, and only when that chat runs in the
+Hermes desktop app (`tui_gateway/methods_onboarding.py` runs the flow; `toolsets.py` scopes the toolset to
+`desktop`). Absent from every other session — other CLI/TUI chats, messaging and cron.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `setup_beat` | Run the first-run onboarding in this chat: show a beat's card and wait for the user, then return their answer and what to do next. `beat` is one of `next` (the next unfinished beat), `name`, `theme`, `layout`, `connectors`, `plugins`, `tour`, `build`, or `done`. `question` sets the line above the card; `value` records an answer the user gave in words (no card); `skip` records that they skipped the beat in words; `suggest` (connectors only) pins connector slugs as *Suggested*; `options` (build only) carries up to four `{id, label}` picks from the list the reminder names. Nothing here ends onboarding early — only the user's Skip setup button does. | Hermes desktop app + a live onboarding chat |
 
 ## `todo` toolset
 

@@ -2,6 +2,7 @@
 file-tool shell-rc gate with its own approval key (#85321)."""
 
 import json
+import time
 
 import pytest
 
@@ -70,6 +71,15 @@ class TestCreateAndLinkIntoSensitivePaths:
         "touch -d now ~/.bashrc",
         'touch "$HOME/.bashrc"',
         "touch ~/.hermes/.env",
+        # A redirect glued to or following the target does not end the create/link.
+        "touch ~/.bashrc>/dev/null",
+        "touch ~/.netrc>x",
+        "ln -sf /tmp/evil ~/.bashrc>/dev/null",
+        "ln -sf /tmp/evil ~/.bashrc 2>/dev/null",
+        "ln -sf x ~/.netrc 2>/dev/null",
+        "ln -sf /tmp/e ~/.bashrc </dev/null",
+        "ln -sf /tmp/evil ~/.ssh/authorized_keys 2>&1",
+        "ln -sf /tmp/evil ~/.bashrc 2>/dev/null && echo ok",
     ])
     def test_flagged(self, command):
         assert detect_dangerous_command(command)[0] is True, command
@@ -95,6 +105,12 @@ class TestCreateAndLinkIntoSensitivePaths:
     ])
     def test_not_flagged(self, command):
         assert detect_dangerous_command(command) == (False, None, None), command
+
+    def test_trailing_redirect_scan_is_linear(self):
+        # A `(\s*[<>]\S+)*` redirect tail backtracks polynomially on `>a>a>…` (n=24: seconds).
+        start = time.monotonic()
+        detect_dangerous_command("ln -s x ~/.bashrc >" + "a>" * 24 + "a q")
+        assert time.monotonic() - start < 1.0
 
 
 class TestQuotedHomePrefixHardline:

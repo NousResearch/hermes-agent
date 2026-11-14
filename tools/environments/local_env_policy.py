@@ -190,16 +190,56 @@ def _registered_adapter_secret_env() -> frozenset:
     return _registry_adapter_secret_env() | _home_adapter_secret_env()
 
 
+_HOME_DECLARED_KEY_ENV_CACHE: dict[str, tuple] = {}
+
+
+def _home_declared_key_env() -> frozenset:
+    """Env names the bound profile's config.yaml points a credential at, upper-folded: pointer
+    fields (``key_env``, ``api_key_env``, ``keyEnv``, ... :func:`_config_declared_key_envs`) and
+    ``${VAR}`` refs in credential fields (:func:`_config_credential_env_refs`), ``mcp_servers``
+    skipped. A custom endpoint's key lives under a name the operator chose, which neither
+    ``PROVIDER_REGISTRY`` nor ``OPTIONAL_ENV_VARS`` can know, so it reached terminal children and
+    the persisted session snapshot (#147329). Provider tier, not internal: a credentialed child
+    still drives the endpoint.
+
+    The raw file, not ``load_config``: the merged config holds expanded values, not names, and
+    loading it creates the home as a side effect of a scrub. Per home, recomputed only when the
+    read-only raw reader hands back a new object (it caches on the file signature), so an edit
+    takes effect on the next spawn. An unreadable file falls back to the newest ``good`` backup and
+    keeps the names this home already denied instead of reopening the leak."""
+    from hermes_cli.config import FailedConfigRead, get_config_path, read_raw_config_readonly
+    from hermes_cli.config_backups import load_newest_good_backup
+    from hermes_constants import hermes_home_key
+
+    key = hermes_home_key()
+    raw = read_raw_config_readonly()
+    cached = _HOME_DECLARED_KEY_ENV_CACHE.get(key)
+    if cached is not None and cached[0] is raw:
+        return cached[1]
+    failed = isinstance(raw, FailedConfigRead)
+    source = (load_newest_good_backup(get_config_path()) or {}) if failed else raw
+    source = {k: v for k, v in source.items() if k != "mcp_servers"}
+    names = frozenset(n.upper() for n in _config_declared_key_envs(source) | _config_credential_env_refs(source))
+    if failed and cached is not None:
+        names |= cached[1]
+    _HOME_DECLARED_KEY_ENV_CACHE[key] = (None if failed else raw, names)
+    return names
+
+
 def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
-    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). Loops pass
-    ``_registered`` so the registry is read once per env, not once per key."""
+    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). The per-profile names
+    (adapter secrets, config-declared key holders) default to :func:`_registered_adapter_secret_env`
+    | :func:`_home_declared_key_env`; loops pass ``_registered`` so they are read once per env, not
+    once per key."""
     upper = name.upper()
     if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
         return True
-    return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
+    if _registered is None:
+        _registered = _registered_adapter_secret_env() | _home_declared_key_env()
+    return upper in _registered
 
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
@@ -363,6 +403,12 @@ def _is_hermes_internal_secret(key: str) -> bool:
 _CONFIG_KEY_ENV_FIELD_RE = re.compile(r"(?:^|_)(?:key|token|secret|password)_env$", re.IGNORECASE)
 
 
+def _snake_field(key: Any) -> str:
+    """*key* with camelCase folded to snake_case: the provider readers accept ``keyEnv`` /
+    ``apiKeyEnv`` / ``apiKey`` for ``key_env`` / ``api_key`` (``config_providers._CAMEL_ALIASES``)."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+
+
 def _config_declared_key_envs(node: Any) -> set:
     """Every env name a credential-pointer field (:data:`_CONFIG_KEY_ENV_FIELD_RE`) anywhere in
     *node* points at. The readers (``model``, ``custom_providers[]``, ``providers.*``,
@@ -374,7 +420,7 @@ def _config_declared_key_envs(node: Any) -> set:
     if not isinstance(node, dict):
         return set()
     names = {str(v).strip() for k, v in node.items()
-             if isinstance(v, str) and _CONFIG_KEY_ENV_FIELD_RE.search(str(k))}
+             if isinstance(v, str) and _CONFIG_KEY_ENV_FIELD_RE.search(_snake_field(k))}
     names.discard("")
     return names.union(*(_config_declared_key_envs(value) for value in node.values()))
 
@@ -404,7 +450,7 @@ def _config_credential_env_refs(node: Any) -> set:
             return set()
         names = set()
         for key, value in item.items():
-            if isinstance(value, str) and _CONFIG_CREDENTIAL_FIELD_RE.search(str(key)):
+            if isinstance(value, str) and _CONFIG_CREDENTIAL_FIELD_RE.search(_snake_field(key)):
                 names |= ref_name(value)
             else:
                 names |= walk(value)

@@ -27,7 +27,8 @@ from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST,
     _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
-    _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
+    _home_adapter_secret_env, _home_declared_key_env, _matches_terminal_first_party_prefix,
+    _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
@@ -288,7 +289,7 @@ def _filter_secret_env(
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
-    registered = _registered_adapter_secret_env()
+    registered = _registered_adapter_secret_env() | _home_declared_key_env()
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
@@ -383,7 +384,7 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
     home_secrets = _home_adapter_secret_env()  # one manifest stamp per scrub
     strip_folded = _ALWAYS_STRIP_FOLDED | {k.upper() for k in _plugin_terminal_env_strip_keys()} | home_secrets
-    registered = _registry_adapter_secret_env()  # home_secrets already strip above
+    registered = _registry_adapter_secret_env() | _home_declared_key_env()  # home_secrets already strip above
     drop_bridge_markers(env)
     for key in list(env):
         if (key.upper() in strip_folded

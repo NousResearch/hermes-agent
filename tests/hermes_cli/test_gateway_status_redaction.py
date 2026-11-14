@@ -1,48 +1,57 @@
+"""`hermes gateway status` must not print child-process argv credentials (#143938).
+
+systemctl's own CGroup tree lists every child's full command line, so the status path runs a
+real stand-in ``systemctl`` process and asserts on what reaches the terminal.
+"""
 from __future__ import annotations
 
 import secrets
-import subprocess
 import sys
 
 import pytest
 
-from hermes_cli.gateway_systemctl import print_systemctl_status
+from hermes_cli import gateway
+
+pytestmark = pytest.mark.platforms("linux")
+
+_FAKE_SYSTEMCTL = """\
+import os, sys
+if "status" in sys.argv[1:]:
+    print("● hermes-gateway.service - Hermes Agent Gateway")
+    print("     CGroup: /user.slice/hermes-gateway.service")
+    print(os.environ["FAKE_TREE_LINE"])
+    print(os.environ["FAKE_TREE_LINE"], file=sys.stderr)
+elif "is-active" in sys.argv[1:]:
+    print("active")
+"""
 
 
-@pytest.mark.parametrize("stream", ["stdout", "stderr"])
-def test_status_output_redacts_credentials_from_a_real_child_process(capsys, stream):
+@pytest.fixture
+def fake_systemctl(tmp_path, monkeypatch):
+    script = tmp_path / "fake_systemctl.py"
+    script.write_text(_FAKE_SYSTEMCTL, encoding="utf-8")
+    unit = tmp_path / "hermes-gateway.service"
+    unit.write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(gateway, "_systemctl_cmd", lambda system=False: [sys.executable, str(script)])
+    monkeypatch.setattr(gateway, "_select_systemd_scope", lambda system=False: system)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit)
+    monkeypatch.setattr(gateway, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: False)
+    monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: True)
+    monkeypatch.setattr(gateway, "_print_runtime_health", lambda: None)
+    monkeypatch.setattr(gateway, "_read_systemd_unit_properties", lambda system=False: {})
+    monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (True, ""))
+    return monkeypatch
+
+
+def test_status_process_tree_masks_mcp_credential_argv(fake_systemctl, capfd):
     credential = secrets.token_hex(16)
-    line = f"└─4242 node /opt/mcp/server.js --email ops@example.com --api-key {credential}"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys; print(sys.argv[1], file=getattr(sys, sys.argv[2]))",
-            line,
-            stream,
-        ],
-        capture_output=True,
-        encoding="utf-8",
-        check=True,
-        timeout=5,
-    )
-    print_systemctl_status(result)
-    captured = capsys.readouterr()
-    output = captured.out if stream == "stdout" else captured.err
-    assert "--api-key [REDACTED]" in output
+    fake_systemctl.setenv("FAKE_TREE_LINE", f"  └─4242 node /opt/mcp/server.js --api-key {credential}")
+
+    gateway.systemd_status()
+
+    captured = capfd.readouterr()
     assert credential not in captured.out + captured.err
-    assert "ops@example.com" not in output
-    assert "└─4242 node /opt/mcp/server.js" in output
-
-
-def test_status_without_output_prints_nothing_extra(capsys):
-    result = subprocess.run(
-        [sys.executable, "-c", "pass"],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=5,
-    )
-    print_systemctl_status(result)
-    captured = capsys.readouterr()
-    assert captured.out == captured.err == ""
+    assert "└─4242 node /opt/mcp/server.js --api-key" in captured.out
+    assert "--api-key" in captured.err
+    assert "gateway service is running" in captured.out

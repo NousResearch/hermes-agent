@@ -1497,7 +1497,8 @@ _CREDENTIAL_STORE_RES = (
         re.MULTILINE,
     ),
     re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{4}})(\S[^\r\n]*)", re.MULTILINE),
-    re.compile(r"(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(\S+)"),
+    # npm expands ``${NAME}`` / ``${NAME?}`` here: that reference names a variable, it is not the secret.
+    re.compile(r'(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(?!"?\$\{\w+\??\}"?(?:\s|$))(\S+)'),
 )
 # INI ``password = X`` (``.pypirc``, ``~/.aws/credentials``): the anchored config pass only accepts
 # ``key=value`` with no spaces around ``=``. The value runs to end of line: configparser keeps

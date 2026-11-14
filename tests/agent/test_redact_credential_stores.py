@@ -48,6 +48,13 @@ class TestCredentialStoreReads:
         assert self.WEAK not in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
         assert self.WEAK not in redact_terminal_output(text, f"cat {path}", force=True)
 
+    @pytest.mark.parametrize("value", ["${NPM_TOKEN}", '"${NPM_TOKEN}"', "${NPM_TOKEN?}"])
+    def test_npmrc_env_reference_stays_readable(self, value):
+        # npm expands ``${NAME}`` in .npmrc: the reference names a variable, not a stored token.
+        text = f"//registry.npmjs.org/:_authToken={value}\n"
+        assert value in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
+        assert value in redact_terminal_output(text, "cat .npmrc", force=True)
+
     def test_lookalikes_and_shell_rc_lines_are_left_alone(self):
         # ``credentials`` alone is too generic: only the ``.aws`` parent makes it a store.
         for path in ("docs/credentials", "~/credentials", "~/config", "notes/netrc.md"):

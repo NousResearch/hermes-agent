@@ -1,5 +1,6 @@
 """``hermes update --force`` stops the update's gateways at once instead of draining them."""
 
+import json
 import signal
 import subprocess
 import sys
@@ -77,3 +78,72 @@ def test_force_kills_the_unit_when_its_stop_job_outlives_the_gateway(monkeypatch
             "unit": "hermes-gateway.service"}
     force_stop.force_stop_gateways({}, [gone])
     assert kills == ["hermes-gateway.service"]
+
+
+def _sleeper() -> subprocess.Popen:
+    """A background tool process the gateway left behind: its own session, as a scope would be."""
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def test_force_sweeps_the_background_processes_a_killed_gateway_left_behind(monkeypatch, tmp_path, capsys,
+                                                                            no_record):
+    """A SIGKILLed gateway never runs ``process_registry.kill_all``: the processes its checkpoint
+    names are stopped for it, and a recorded PID now held by another process is never signalled."""
+    from gateway.status import get_process_start_time
+    from tests.waiting import wait_until
+    gateway, left, stranger = _child(ignore_term=True), _sleeper(), _sleeper()
+    try:
+        wait_until(lambda: get_process_start_time(left.pid) and get_process_start_time(stranger.pid))
+        (tmp_path / "processes.json").write_text(json.dumps([
+            {"session_id": "proc_left", "pid": left.pid, "pid_scope": "host", "systemd_unit": "",
+             "host_start_time": get_process_start_time(left.pid), "persist_on_release": True,
+             "command": "sleep 900"},
+            {"session_id": "proc_recycled", "pid": stranger.pid, "pid_scope": "host", "systemd_unit": "",
+             "host_start_time": get_process_start_time(stranger.pid) + 1, "command": "sleep 900"}]))
+        monkeypatch.setattr(force_stop, "FORCE_KILL_AFTER_S", 0.5)
+        monkeypatch.setattr(force_stop, "_live_work", lambda entry: [])
+        force_stop.force_stop_gateways({}, [{"pid": gateway.pid, "home": str(tmp_path), "ct": None}])
+        assert gateway.wait(timeout=5) == -signal.SIGKILL
+        wait_until(lambda: left.poll() is not None, timeout=10, what="the left-behind process to be stopped")
+        assert stranger.poll() is None, "a recycled PID (start time mismatch) was signalled"
+        assert f"gateway PID {gateway.pid}: also stopped 1 background process(es) it left behind" \
+            in capsys.readouterr().out
+    finally:
+        for proc in (gateway, left, stranger):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+
+def test_an_unsettled_force_stop_aborts_before_the_checkout_moves(monkeypatch, tmp_path, no_record):
+    """The unit's stop job outlives the force deadline and its kill: nothing may be started behind
+    it, so the commit point refuses (no swap), nothing is resumed now, and the record stays owed."""
+    import threading
+    from hermes_cli import update_pause_record as pause_record
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    released = threading.Event()
+    unit = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway.service", "pid": 2 ** 22 + 9,
+            "home": str(tmp_path), "cgroup": None}
+    monkeypatch.setattr(posix_pause, "_discover_systemd", lambda: [dict(unit)])
+    monkeypatch.setattr(posix_pause, "_discover_launchd", list)
+    monkeypatch.setattr(posix_pause, "_left_running", lambda units, jobs: (units, jobs, []))
+    monkeypatch.setattr(posix_pause, "_discover_bare", lambda service_pids: ([], []))
+    monkeypatch.setattr(posix_pause, "_stop_at_once", lambda entry: released.wait(30))
+    monkeypatch.setattr(posix_pause, "resume_paused_set",
+                        lambda token: pytest.fail("a start was queued behind a stop still running"))
+    monkeypatch.setattr(force_stop, "_kill", lambda entry: None)
+    monkeypatch.setattr(force_stop, "_live_work", lambda entry: [])
+    monkeypatch.setattr(force_stop, "FORCE_KILL_AFTER_S", 0.2)
+    monkeypatch.setattr(force_stop, "_STOP_JOB_SETTLE_S", 0.2)
+    token = {**posix_pause._empty_token(), "force": True}
+    monkeypatch.setattr(posix_pause, "_RUN", token)
+    try:
+        refused = posix_pause.pause_at_commit_point()
+    finally:
+        released.set()
+    assert refused and "hermes-gateway.service" in refused, f"no refusal naming the unit: {refused!r}"
+    assert not token["resume_needed"], "this process would start the unit behind its stop job at exit"
+    owed = pause_record.read()
+    assert owed and owed["token"]["resume_needed"], "the stopped unit is no longer owed a restart"
+    assert [u["unit"] for u in owed["token"]["posix_units"]] == ["hermes-gateway.service"]

@@ -60,6 +60,11 @@ class PauseRefused(RuntimeError):
     """The pause could not be completed; everything it stopped was started again."""
 
 
+class StopUnsettled(PauseRefused):
+    """A ``--force`` stop is still running (a supervisor's stop job, a gateway that outlived
+    SIGKILL): nothing may be started behind it, so the update stops before the checkout moves."""
+
+
 def _empty_token() -> dict:
     return {"platform": "posix", "resume_needed": False, "profiles": {}, "unmapped_pids": [],
             "unmapped": [], "posix_units": []}
@@ -590,7 +595,8 @@ def pause_at_commit_point() -> str | None:
     Never refuses the update: the pause is protection, not a gate. When it cannot complete
     (discovery or the durable record fails, a stop fails), the gateways run through the swap and
     the post-commit restart refreshes them, which is how POSIX updated before the pause existed.
-    Always ``None``; the caller's refusal branch stays for the contract it shares with Windows."""
+    ``None``, except under ``--force`` when a stop has not settled (``StopUnsettled``): then the
+    refusal, sticky for the run, which the caller turns into an exit before git writes a file."""
     token = _RUN
     if token is None:
         return None
@@ -651,6 +657,8 @@ def _pause(token: dict) -> str | None:
     token["posix_stopped"] = True
     try:
         _stop_gateways(token, supervised + bare)
+    except StopUnsettled as exc:
+        return _abort_unsettled(token, str(exc))
     except Exception as exc:  # health: allow BLE001 -- roll back: restart the stopped set, update unpaused
         print(f"  ⚠ Could not pause every gateway ({exc}); restarting them, the update continues without the pause")
         try:
@@ -664,6 +672,20 @@ def _pause(token: dict) -> str | None:
     pause_record.sync(token)
     print(f"  ⏸ Paused for the update: {_describe(token)} (restarted once the dependencies are synced)")
     return None
+
+
+def _abort_unsettled(token: dict, why: str) -> str:
+    """The commit point's refusal for a ``--force`` stop still in flight. A rollback start would
+    queue behind that stop (or race the gateway still exiting) and the swap would follow, so neither
+    runs: this process restarts nothing; the durable record stays owed for the next launch's
+    recovery, which holds an entry until its process has exited."""
+    from hermes_cli import update_pause_record as pause_record
+    token["resume_needed"] = False  # no exit resume in this process (it would start behind the stop)
+    token["resume_deferred"] = why  # ``sync`` keeps the record owed for the next launch
+    pause_record.sync(token)
+    return (f"--force could not finish stopping the gateways: {why}. The update stopped before "
+            "changing the checkout; the stopped gateways restart at the next `hermes` command once "
+            "their stop has completed, then run `hermes update --force` again")
 
 
 # --------------------------------------------------------------------------- resume

@@ -14,10 +14,17 @@ marker + SIGTERM. Either way the gateway enters ``stop()`` at once: running turn
 tool and background processes killed (``process_registry.kill_all``) and background delegations
 interrupted as resumable (``async_delegation.interrupt_all``). Gateways are stopped concurrently,
 each against its own deadline measured from its own stop request.
+
+A gateway that had to be killed never ran that ``kill_all``: its background processes live in
+their own systemd scopes or sessions, so they outlive it. :func:`_sweep_left_behind` stops what its
+process checkpoints still name. A stop that does not settle (the supervisor's stop job still
+running, or the gateway still alive after the kill) raises ``StopUnsettled``, which aborts
+the update before the checkout moves: a rollback start would queue behind that stop job.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import threading
@@ -32,6 +39,50 @@ FORCE_KILL_AFTER_S = 12.0
 _SETTLE_S = 5.0
 #: After the kill: how long the supervisor's stop job gets to settle once its unit is empty.
 _STOP_JOB_SETTLE_S = 30.0
+
+
+def _checkpoint_homes(entry: dict) -> list[Path]:
+    """Homes whose ``processes.json`` this gateway's processes are recorded in: its own and, for the
+    host multiplexer, every profile it serves (a served profile's turn checkpoints in that home).
+    Read while the gateway is alive: the host record names only a live owner."""
+    homes = [Path(entry["home"])] if entry.get("home") else []
+    with suppress(Exception):
+        from gateway.host_topology import host_gateway_topology
+        from hermes_cli.profiles import get_profile_dir
+        topology = host_gateway_topology()
+        if topology is not None and topology.pid == entry["pid"]:
+            homes += [get_profile_dir(name) for name in topology.profiles]
+    unique: dict[str, Path] = {}
+    for home in homes:
+        unique.setdefault(os.path.realpath(home), home)
+    return list(unique.values())
+
+
+def _sweep_one(record: dict) -> bool:
+    """Stop one checkpointed process (its tree, then its scope); True when it was ours and is gone.
+    A PID whose start time does not match the recorded one was recycled and is never signalled."""
+    from tools.process_registry import ProcessRegistry, _stop_systemd_unit
+    pid, born = record.get("pid"), record.get("host_start_time")
+    ours = isinstance(pid, int) and born is not None and ProcessRegistry._host_pid_is_ours(pid, born)
+    if ours:
+        ProcessRegistry._terminate_host_pid(pid, born)
+    if record.get("systemd_unit"):
+        _stop_systemd_unit(record["systemd_unit"])  # reaps double-forked descendants in the scope
+    return ours and not ProcessRegistry._host_pid_is_ours(pid, born)
+
+
+def _sweep_left_behind(homes: list[Path]) -> int:
+    """What the killed gateway's ``stop()`` would have killed (``kill_all(source="gateway_shutdown")``:
+    persisted jobs included): every host process its checkpoints name. How many were stopped."""
+    records = []
+    for home in homes:
+        with suppress(OSError, ValueError):
+            listed = json.loads((home / "processes.json").read_text(encoding="utf-8-sig"))
+            records += [r for r in listed if isinstance(r, dict) and (r.get("pid_scope") or "host") == "host"]
+    if not records:
+        return 0
+    with ThreadPoolExecutor(max_workers=min(8, len(records)), thread_name_prefix="update-force-sweep") as pool:
+        return sum(pool.map(_sweep_one, records))
 
 
 def _live_work(entry: dict) -> list | None:
@@ -94,12 +145,13 @@ def _describe(entry: dict, work: list | None) -> str:
     return f"  ⏹ {name}: stopped by --force, interrupting {len(work)} unit(s): {units}"
 
 
-def _stop_one(token: dict, entry: dict, lock: threading.Lock) -> str | None:
+def _stop_one(token: dict, entry: dict, lock: threading.Lock) -> tuple[bool, str] | None:
     """Stop *entry* within its own deadline. ``None`` when it is gone (and, if supervised, its
-    supervisor is stopped), else why it is not."""
+    supervisor is stopped), else ``(unsettled, why)``: *unsettled* when its stop is still running."""
     from hermes_cli import update_pause_record as pause_record
-    from hermes_cli.update_cmd_posix_pause import _stop_at_once, _wait_gone
+    from hermes_cli.update_cmd_posix_pause import _names, _stop_at_once, _wait_gone
     work = _live_work(entry)
+    homes = _checkpoint_homes(entry)
     with lock:  # the pause record is one file shared by every entry
         pause_record.mark_stop_sent(token, entry["pid"])  # before the request: a crash keeps it owed
     supervisor, failed = None, []
@@ -125,24 +177,42 @@ def _stop_one(token: dict, entry: dict, lock: threading.Lock) -> str | None:
         print(f"  ⚠ gateway PID {entry['pid']} still stopping {FORCE_KILL_AFTER_S:.0f}s after the stop — killing it",
               flush=True)
         _kill(entry)  # a unit: SIGKILL to every process in its cgroup, so the stop job can settle
+        if swept := _sweep_left_behind(homes):  # its own scopes/sessions: outside that cgroup
+            print(f"  ⏹ {_names([entry])}: also stopped {swept} background process(es) it left behind", flush=True)
         if _wait_gone([entry["pid"]], _SETTLE_S, born):
-            return f"gateway PID {entry['pid']} did not stop"
+            return True, (f"gateway PID {entry['pid']} is still running after SIGKILL "
+                          f"(check `ps -o pid,stat,cmd -p {entry['pid']}`; a D-state process waits on I/O)")
     if supervisor is not None:
         # Keep ownership of the stop job until it settles: a rollback start would queue behind it.
         supervisor.join(_STOP_JOB_SETTLE_S)
         if supervisor.is_alive():
-            return f"the supervisor of gateway PID {entry['pid']} did not finish stopping it"
-    return failed[0] if failed else None
+            return True, f"{_supervisor_name(entry)} is still stopping gateway PID {entry['pid']} ({_check_hint(entry)})"
+    return (False, failed[0]) if failed else None
+
+
+def _supervisor_name(entry: dict) -> str:
+    return f"systemd's stop job for {entry['unit']}" if entry.get("kind") == "systemd" \
+        else f"launchd's bootout of {entry.get('label')}"
+
+
+def _check_hint(entry: dict) -> str:
+    if entry.get("kind") == "systemd":
+        user = " --user" if entry.get("scope") == "user" else ""
+        return f"check `systemctl{user} status {entry['unit']}` and `systemctl{user} list-jobs`"
+    return f"check `launchctl print {entry.get('domain')}/{entry.get('label')}`"
 
 
 def force_stop_gateways(token: dict, entries: list[dict]) -> None:
     """Stop every entry now, concurrently; kill each survivor ``FORCE_KILL_AFTER_S`` after its own
-    stop request. Raises ``PauseRefused`` naming every entry that is not stopped."""
-    from hermes_cli.update_cmd_posix_pause import PauseRefused
+    stop request. Raises ``StopUnsettled`` when any stop is still running (the update must not
+    restart or swap past it), else ``PauseRefused`` naming every entry that is not stopped."""
+    from hermes_cli.update_cmd_posix_pause import PauseRefused, StopUnsettled
     if not entries:
         return
     lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=len(entries), thread_name_prefix="update-force") as pool:
         refusals = [r for r in pool.map(lambda e: _stop_one(token, e, lock), entries) if r]
+    if unsettled := [why for still_running, why in refusals if still_running]:
+        raise StopUnsettled("; ".join(unsettled))
     if refusals:
-        raise PauseRefused("; ".join(refusals))
+        raise PauseRefused("; ".join(why for _, why in refusals))

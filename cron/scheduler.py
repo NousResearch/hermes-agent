@@ -2077,7 +2077,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
 
         final_response = repair_explicit_computer_use_media_paths(
             final_response, result.get("messages", []))
-    if final_response.strip() == "(No response generated)":
+    if final_response.strip() == NO_RESPONSE_PLACEHOLDER:
         final_response = ""
     # The "⚠️ No reply" turn-completion explainer would be delivered as a cron warning; detect it
     # via the same formatter and treat as empty so cron stays silent on abnormal empty turns.
@@ -2614,7 +2614,7 @@ def run_job(
             # agent-declared failure marker keep their first-line/whole-response contract.
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
+        logged_response = final_response if final_response else NO_RESPONSE_PLACEHOLDER
         # Text-file reads normalize newlines; count the same characters the
         # context_from reader sees so quoted markers can never become boundaries.
         framed_prompt = _normalize_newlines(prompt)
@@ -4379,7 +4379,7 @@ from cron.scheduler_script import (
 from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
-    _job_doc_header, _parse_wake_gate,
+    NO_RESPONSE_PLACEHOLDER, _job_doc_header, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

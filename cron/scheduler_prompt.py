@@ -73,6 +73,8 @@ _PROMPT_HEADING = "## Prompt\n\n"
 _RESPONSE_HEADING = "## Response\n\n"
 _PROMPT_SEPARATOR = "\n\n"  # writer's blank line after the prompt body
 _RESPONSE_TERMINATOR = "\n"  # writer's trailing newline after the response body
+# Archive text for a run whose agent produced no reply (nothing is delivered for it).
+NO_RESPONSE_PLACEHOLDER = "(No response generated)"
 _PROMPT_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
 _RESPONSE_FRAME_RE = re.compile(
@@ -101,9 +103,9 @@ def _archive_answer(archive: str) -> str | None:
     heading (a skill documenting its response format, an injected previous answer
     quoting it), so an early split would re-inject the prompt noise this
     extraction exists to drop.
-    ``None`` marks "no usable answer" — a blank or silent response (any form the
-    delivery lane itself suppresses) — so the caller falls through to an older
-    archive instead of injecting prompt noise the job already has.
+    ``None`` marks "no usable answer" — a blank, empty-reply placeholder, or silent
+    response (any form the delivery lane itself suppresses) — so the caller falls
+    through to an older archive instead of injecting prompt noise the job already has.
     """
     # New writers stamp the prompt length outside user-owned text. Jump past
     # that prompt instead of searching its quoted markers for a response frame.
@@ -122,7 +124,8 @@ def _archive_answer(archive: str) -> str | None:
         return archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()
-    if not answer or _sched._is_cron_silence_response(answer):
+    if (not answer or answer == NO_RESPONSE_PLACEHOLDER
+            or _sched._is_cron_silence_response(answer)):
         return None
     return answer
 

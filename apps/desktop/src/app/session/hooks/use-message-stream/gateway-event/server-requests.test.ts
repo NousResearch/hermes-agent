@@ -5,18 +5,27 @@ import { registerPreviewPageReader } from '@/app/chat/right-rail/preview-reader'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { runTour } from '@/lib/tour'
+import { runTour, startTour } from '@/lib/tour'
+import { readLocalSetupEligibility } from '@/store/local-setup-offer'
 import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
+import { deferred } from '@/test/deferred'
 import type { SessionInfo } from '@/types/hermes'
 
 import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
 
-vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
+vi.mock('@/lib/tour', () => ({
+  runTour: vi.fn(async () => ({ ok: true })),
+  startTour: vi.fn(async () => ({ success: true }))
+}))
+vi.mock('@/store/local-setup-offer', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  readLocalSetupEligibility: vi.fn(async () => ({ checkedAt: 0, fit: null, reason: 'test' }))
+}))
 
 const hasLivePreviewSurface = vi.hoisted(() => vi.fn((_owner?: unknown): boolean => false))
 
@@ -482,25 +491,36 @@ describe('preview requests act for the session that asked (#73890)', () => {
     setActiveSessionId('rt-a')
     setSelectedStoredSessionId('stored-a')
     $sessionTiles.set([{ dir: 'right', runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+    const reboundState = createClientSessionState('stored-b')
+    deps.sessionStateByRuntimeIdRef.current.set('rt-b', reboundState)
+    deps.sessionStateByRuntimeIdRef.current.set('rt-b-next', reboundState)
+    publishSessionState('rt-b-next', reboundState)
   })
 
   afterEach(() => {
     noteActiveTreeGroup(null)
     $layoutTree.set(null)
     $sessionTiles.set([])
+    dropSessionState('rt-b-next')
+    deps.sessionStateByRuntimeIdRef.current.delete('rt-b')
+    deps.sessionStateByRuntimeIdRef.current.delete('rt-b-next')
     setActiveSessionId(null)
     setSelectedStoredSessionId(null)
     closeRightRail()
     hasLivePreviewSurface.mockReturnValue(false)
   })
 
-  // Tile B holds focus while the primary session A's agent is the one asking.
+  // Tile B holds focus while the route-driven primary still names session A.
   const focusTileB = () => {
     $layoutTree.set(group(['session-tile:stored-b'], { active: 'session-tile:stored-b', id: 'grp-b' }))
     noteActiveTreeGroup('grp-b')
   }
 
-  it("drives the requesting session's page, not the focused tile's", async () => {
+  it.each([
+    ['rt-b', false],
+    ['rt-b-next', false],
+    ['rt-b-next', true]
+  ] as const)("drives the focused tile's own page (runtime=%s, queued replay=%s)", async (runtimeId, replayed) => {
     openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')
     openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
     const [a, b] = $previewTabs.get()
@@ -513,32 +533,158 @@ describe('preview requests act for the session that asked (#73890)', () => {
     ]
 
     focusTileB()
+    const previous = deps.activeSessionIdRef.current
+
+    if (replayed) {
+      deps.activeSessionIdRef.current = null
+      $sessionTiles.set([])
+    }
 
     try {
-      const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-a' }, 'rt-a')
+      const { decline, respond } = deliver(
+        'preview.act',
+        { action: 'back', session_id: runtimeId },
+        replayed ? null : 'rt-a',
+        replayed
+      )
+
+      if (replayed) {
+        $sessionTiles.set([{ dir: 'right', runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+        deps.activeSessionIdRef.current = 'rt-a'
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+
+      expect(decline).not.toHaveBeenCalled()
 
       await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
       expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
-      expect(backA).toHaveBeenCalledTimes(1)
-      expect(backB).not.toHaveBeenCalled()
+      expect(backA).not.toHaveBeenCalled()
+      expect(backB).toHaveBeenCalledTimes(1)
     } finally {
+      deps.activeSessionIdRef.current = previous
       unbind.forEach(stop => stop())
     }
   })
 
-  it("runs a preview tour against the requesting session's tabs", async () => {
+  it("runs a preview tour against the focused tile's own tabs", async () => {
     focusTileB()
     vi.mocked(runTour).mockClear()
 
-    const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
+    const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-b', surface: 'preview' }, 'rt-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
     expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', {
       profile: 'default',
-      runtimeId: 'rt-a',
-      sessionId: 'stored-a'
+      runtimeId: 'rt-b',
+      sessionId: 'stored-b'
     })
   })
+
+  it.each(['preview.act', 'tour'])('declines %s from the primary while another chat holds focus', method => {
+    focusTileB()
+    const { decline, respond } = deliver(method, { action: 'elements', session_id: 'rt-a' }, 'rt-a')
+    expect(decline).toHaveBeenCalledTimes(1)
+    expect(respond).not.toHaveBeenCalled()
+  })
+
+  it('does not claim a rebound branch sibling as a hosted tile', () => {
+    setSessions([
+      { id: 'stored-b', _lineage_root_id: 'shared-root' } as SessionInfo,
+      { id: 'stored-c', _lineage_root_id: 'shared-root' } as SessionInfo
+    ])
+    deps.sessionStateByRuntimeIdRef.current.set('rt-b-next', createClientSessionState('stored-c'))
+
+    try {
+      expect(
+        previewSessionRoute({
+          activeSessionId: 'rt-a',
+          method: 'tour',
+          replayed: false,
+          sessionId: 'rt-b-next',
+          storedIdForRuntimeId: id => deps.sessionStateByRuntimeIdRef.current.get(id)?.storedSessionId ?? undefined
+        })
+      ).toBe('ignore')
+    } finally {
+      setSessions([])
+    }
+  })
+
+  it.each(['preview.act', 'tour'])(
+    'does not let an unfocused hosted tile settle %s, even with tours disabled',
+    method => {
+      const enabled = $toursEnabled.get()
+      $toursEnabled.set(false)
+
+      try {
+        const { decline, respond } = deliver(method, { action: 'discover', session_id: 'rt-b' }, 'rt-a')
+        expect(decline).toHaveBeenCalledTimes(1)
+        expect(respond).not.toHaveBeenCalled()
+      } finally {
+        $toursEnabled.set(enabled)
+      }
+    }
+  )
+
+  it.each(['preview.act', 'tour'])('rechecks foreground ownership after replay for %s', async method => {
+    focusTileB()
+    const previous = deps.activeSessionIdRef.current
+
+    try {
+      deps.activeSessionIdRef.current = null
+      const { decline, respond } = deliver(method, { action: 'elements', session_id: 'rt-a' }, null, true)
+      deps.activeSessionIdRef.current = 'rt-a'
+      await vi.waitFor(() => expect(decline).toHaveBeenCalledTimes(1))
+      expect(respond).not.toHaveBeenCalled()
+    } finally {
+      deps.activeSessionIdRef.current = previous
+    }
+  })
+
+  it('scopes theme application to the requesting foreground conversation', () => {
+    focusTileB()
+    const own = deliver('theme.apply', { layout: 'missing-layout', session_id: 'rt-b' }, 'rt-a')
+    expect(own.decline).not.toHaveBeenCalled()
+    expect(JSON.parse(own.respond.mock.calls[0][0].value).error).toContain('Unknown layout')
+    const background = deliver('theme.apply', { layout: 'missing-layout', session_id: 'rt-a' }, 'rt-a')
+    expect(background.decline).toHaveBeenCalledTimes(1)
+    expect(background.respond).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])(
+    'rechecks the real built-in tour after its eligibility wait (focus changed=%s)',
+    async changed => {
+      const pending = deferred<Awaited<ReturnType<typeof readLocalSetupEligibility>>>()
+      vi.mocked(readLocalSetupEligibility).mockClear()
+      vi.mocked(readLocalSetupEligibility).mockReturnValueOnce(pending.promise)
+      vi.mocked(startTour).mockClear()
+      const target = document.createElement('button')
+      target.dataset.tour = 'model-pill'
+      target.getBoundingClientRect = () => new DOMRect(0, 0, 100, 40)
+      document.body.append(target)
+      focusTileB()
+      const previous = deps.activeSessionIdRef.current
+      deps.activeSessionIdRef.current = 'rt-a'
+
+      try {
+        const { respond } = deliver('tour', { action: 'start', preset: 'quick', session_id: 'rt-b-next' }, 'rt-a')
+        await vi.waitFor(() => expect(readLocalSetupEligibility).toHaveBeenCalledTimes(1))
+
+        if (changed) {
+          noteActiveTreeGroup(null)
+          $layoutTree.set(null)
+        }
+
+        pending.resolve({ checkedAt: 0, fit: null, reason: 'test' })
+        await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+        expect(startTour).toHaveBeenCalledTimes(changed ? 0 : 1)
+        expect(JSON.parse(respond.mock.calls[0][0].value).success).toBe(!changed)
+      } finally {
+        pending.resolve({ checkedAt: 0, fit: null, reason: 'test' })
+        deps.activeSessionIdRef.current = previous
+        target.remove()
+      }
+    }
+  )
 
   it('drives the tab its runtime opened before the selection named its stored id', async () => {
     setActiveSessionId('rt-new')
@@ -668,11 +814,10 @@ describe('tour request routing', () => {
     $sessionTiles.set([{ runtimeId: 'runtime-2', storedSessionId: 'stored-tip' } as never])
 
     try {
-      const { respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
+      const { decline, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
 
-      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
-        error: expect.stringContaining('the session the user is looking at')
-      })
+      expect(decline).toHaveBeenCalledTimes(1)
+      expect(respond).not.toHaveBeenCalled()
     } finally {
       $sessionTiles.set([])
       deps.sessionStateByRuntimeIdRef.current.clear()

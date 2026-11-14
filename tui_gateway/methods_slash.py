@@ -443,15 +443,14 @@ def _mirror_personality(sid, session, agent, arg) -> None:
         _apply_personality_to_session(sid, session, new_prompt, pname)
 
 
-_FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
-               "ultrafast": "ultrafast", "ultra": "ultrafast"}
-
-
-def _mirror_fast(sid, session, agent, arg) -> None:
-    if agent:
-        if arg.lower() in _FAST_TIERS:
-            agent.service_tier = _FAST_TIERS[arg.lower()]
-        _emit("session.info", sid, _session_info(agent, session))
+def _mirror_fast(sid, session, agent, arg) -> str:
+    """The live agent's half of a /fast the worker ran. Parse as the worker does, so a word it rejected
+    changes nothing here; a tier it accepted for its own route can still be refused for the live one."""
+    from hermes_cli.cli_commands_mixin import _split_scope_flags
+    word, _ = _split_scope_flags(arg)
+    if not agent or word not in _FAST_WORDS:
+        return ""
+    return (_set_fast(None, {"session_id": sid}, "fast", word, session).get("error") or {}).get("message", "")
 
 
 def _mirror_reload_mcp(sid, session, agent, arg) -> None:

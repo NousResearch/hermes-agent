@@ -19,6 +19,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 from gateway.dead_targets import classify_dead_error
@@ -442,7 +443,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default",
-                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row,
+                                            last_error=last_error))
     return claimed
 
 
@@ -503,6 +505,35 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
                                             flood=is_flood_error(last_error), last_error=last_error))
     return claimed
+
+
+def pending_resume_sessions() -> set[str]:
+    """Sessions whose turn already has a saved reply that is not delivered yet.
+
+    Auto-resume must leave these alone: resuming would generate a second answer while recovery
+    still owes the first. Covers in-flight claims and flood waits as well as failed rows.
+    Read-only and non-blocking, for the synchronous resume pass: it never creates the database
+    and never waits on a writer. A failure is uncertainty, so callers defer the resume.
+    """
+    path = _db_path()
+    if not path.exists():
+        return set()
+    if not _DB_LOCK.acquire(blocking=False):
+        raise RuntimeError("delivery recovery ledger is busy")
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0)) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
+            ).fetchone():
+                return set()
+            return {
+                key for (key,) in conn.execute(
+                    """SELECT DISTINCT session_key FROM delivery_obligations
+                       WHERE state IN ('pending', 'attempting', 'failed')"""
+                )
+            }
+    finally:
+        _DB_LOCK.release()
 
 
 def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:

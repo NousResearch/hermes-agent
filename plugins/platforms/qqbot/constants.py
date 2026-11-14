@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-QQBOT_VERSION = "1.1.0"  # bump on functional changes to the adapter package
+QQBOT_VERSION = "1.2.0"  # bump on functional changes to the adapter package
 # Portal domain is overridable (QQ_PORTAL_HOST) for corporate proxies / test environments.
 PORTAL_HOST = os.getenv("QQ_PORTAL_HOST", "q.qq.com")
 

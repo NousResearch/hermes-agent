@@ -952,20 +952,16 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.providers import cn_twin_lit_only_by_shared_keys
     for cp in CANONICAL_PROVIDERS:
         if _skip(b.seen_slugs, b.excluded, cp.slug):
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
         if cp_config and cp_config.api_key_env_vars:
-            lit = {ev for ev in cp_config.api_key_env_vars if os.environ.get(ev)}
-            has_creds = bool(lit)
-            # A regional "-cn" twin lit only by key vars shared with its non-CN sibling is a
-            # phantom row: hide it unless it is the current provider, and only when it has a
-            # dedicated var of its own the user could set.
-            sib = PROVIDER_REGISTRY.get(cp.slug[:-3]) if cp.slug.endswith("-cn") else None
-            sib_vars = set(sib.api_key_env_vars) if sib else set()
-            if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
+            has_creds = any(os.environ.get(ev) for ev in cp_config.api_key_env_vars)
+            # A regional "-cn" twin lit only by key vars shared with its non-CN sibling is a phantom row.
+            if cn_twin_lit_only_by_shared_keys(cp.slug, b.current_provider):
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug, for_picker=b.for_picker) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))

@@ -251,3 +251,24 @@ def test_kanban_request_review_corrupting_metadata_stays_structured(worker_env, 
     assert metadata is not None
     assert metadata["safe"] == "keep"
     assert secret not in json.dumps(metadata)
+
+
+def test_kanban_complete_list_held_secret_keeps_sibling_fields(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    response = json.loads(kt._handle_complete({
+        "summary": "done",
+        "metadata": {"commands_run": [secret, "ls"], "safe": "keep"},
+    }))
+    assert response["ok"] is True
+    conn = connect()
+    try:
+        metadata = kb.latest_run(conn, worker_env).metadata
+    finally:
+        conn.close()
+    assert metadata["safe"] == "keep"
+    assert metadata["commands_run"][1] == "ls"
+    assert secret not in json.dumps(metadata)

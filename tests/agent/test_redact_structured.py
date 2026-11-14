@@ -166,3 +166,29 @@ def test_token_glued_to_non_ascii_text_is_masked_without_erasing_siblings(glue):
     assert token not in json.dumps(out, ensure_ascii=False)
     assert out["note"].startswith(glue + "sk-")
     assert _settled(out)
+
+
+_ENV_SECRET = "DB_PASSWORD=pw1longer" + "value99"
+
+
+@pytest.mark.parametrize(
+    "payload, expected",
+    [
+        ({"env": [_ENV_SECRET], "safe": "keep"}, {"env": ["***"], "safe": "keep"}),
+        ({"safe": "keep", "env": [_ENV_SECRET]}, {"safe": "keep", "env": ["***"]}),
+        ({"env": [[_ENV_SECRET]], "safe": "keep"}, {"env": [["***"]], "safe": "keep"}),
+        ({"env": (_ENV_SECRET,), "safe": "keep"}, {"env": ("***",), "safe": "keep"}),
+        ([_ENV_SECRET, "keep"], ["***", "keep"]),
+    ],
+)
+def test_env_secret_in_list_item_masks_only_that_item(payload, expected):
+    assert redact_structured(payload) == expected
+
+
+def test_export_assignment_in_list_item_keeps_siblings():
+    secret = "export OPENAI_API_KEY=" + "sk-" + "a" * 30
+    out = redact_structured({"commands_run": [secret, "ls"], "summary": "done"})
+    assert out["summary"] == "done"
+    assert out["commands_run"][1] == "ls"
+    assert "a" * 30 not in json.dumps(out)
+    assert _settled(out)

@@ -52,12 +52,14 @@ def _walk(value: Any, key: Any, *, hard: bool) -> Any:
 
 
 def _redact_leaf(value: str, key: Any) -> str:
-    if key is None:
-        return _redact(value)
-
+    # Keyless leaves (list/tuple items, a bare top-level string) are still
+    # redacted as quoted JSON, the shape _settled sees: an unquoted
+    # "DB_PASSWORD=..." leaf redacts to "DB_PASSWORD=***", whose closing
+    # quote the env pattern swallows again on re-serialization, so the soft
+    # pass never settles and the hard pass masks every sibling field.
     # ensure_ascii=False matches _settled: a \uXXXX escape ending in a letter
     # would hide a token glued to non-ASCII text from the leaf pass.
-    prefix = json.dumps(key, ensure_ascii=False) + ": "
+    prefix = "" if key is None else json.dumps(key, ensure_ascii=False) + ": "
     redacted = _redact(prefix + json.dumps(value, ensure_ascii=False))
     if not redacted.startswith(prefix):
         return _MASK

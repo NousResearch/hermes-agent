@@ -131,3 +131,43 @@ def test_tool_create_reports_partial_registration_failure(
     assert out["retry_create"] is False
     assert out["job_id"]
     assert "private callback URL and token" not in out["error"]
+    # The tool surface gets the human-facing variant: no exception class name either
+    # (#150973 — the model must not be told to re-create a job that exists).
+    assert "RuntimeError" not in out["error"]
+    assert "Saved cron job 'w'" in out["error"]
+    assert "don't re-create it" in out["error"]
+
+
+def test_cli_create_reports_saved_job_on_scheduler_registration_failure(
+    temp_home, monkeypatch, make_cron_provider, capsys
+):
+    """A stored job must not appear absent when its external trigger fails (#150973).
+
+    The CLI headline used to be a red "Failed to create job", which contradicts the body
+    ("the job is kept — don't re-create it") and makes a wrapper script treat a successful
+    creation as a failure.
+    """
+    from types import SimpleNamespace
+
+    import cron.scheduler_provider as sp
+    from cron.jobs import list_jobs
+    from hermes_cli.cron import cron_create
+
+    provider = make_cron_provider(register_job=_fail_registration, name="chronos")
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
+
+    rc = cron_create(SimpleNamespace(
+        schedule="every 5m", prompt="echo hi", name="w", deliver="local",
+    ))
+    output = capsys.readouterr().out
+    jobs = list_jobs()
+
+    assert len(jobs) == 1
+    assert jobs[0]["name"] == "w"
+    assert rc == 1  # The external scheduler is still not registered.
+    assert "Saved cron job 'w'" in output
+    assert "don't re-create it" in output
+    assert f"Job ID: {jobs[0]['id']}" in output
+    assert "Failed to create job" not in output
+    assert "RuntimeError" not in output
+    assert "private callback URL and token" not in output

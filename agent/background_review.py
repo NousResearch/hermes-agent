@@ -1362,6 +1362,17 @@ def _run_review_in_thread(
         )
         _set_thread_approval_callback(None)
         return
+    # Foreground the otherwise invisible fork: the started line rides the same
+    # ``background_review_callback`` rail as the completion summary (tui_gateway emits
+    # it as a ``review.summary`` event; the gateway defers it until after the turn's
+    # response), so a review thread that costs the next turns GPU time announces
+    # itself instead of reading as a latency spike. Gated by display.memory_notifications
+    # exactly like the completion lines.
+    if getattr(agent, "memory_notifications", "on") != "off":
+        agent._safe_print(t("display.review.started_cli"))
+        if agent.background_review_callback:
+            with suppress(Exception):
+                agent.background_review_callback(t("display.review.started_callback"))
     st = _ReviewForkState()
     try:
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every

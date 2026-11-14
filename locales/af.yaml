@@ -3543,6 +3543,8 @@ display:
       user: "Gebruikersprofiel"
     summary_cli: "  💾 Selfverbetering-hersiening: {summary}"
     summary_callback: "💾 Selfverbetering-hersiening: {summary}"
+    started_cli: "  🔍 Selfverbetering-hersiening het begin — antwoorde kan tydelik effens stadiger wees terwyl dit loop"
+    started_callback: "🔍 Selfverbetering-hersiening het begin — antwoorde kan tydelik effens stadiger wees terwyl dit loop"
     aux_failure_label: "agtergrond-hersiening"
   notice:
     uncompressed_context_overflow: "⚠️ Die sessiekonteks (~{tokens} tokens) oorskry die model se konteksvenster (~{context_length} tokens) terwyl kompressie gedeaktiveer is (compression.enabled: false). Gebruik /compact om die geskiedenis te komprimeer of aktiveer kompressie in config.yaml."

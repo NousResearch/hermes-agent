@@ -3543,6 +3543,8 @@ display:
       user: "Próifíl úsáideora"
     summary_cli: "  💾 Athbhreithniú féinfheabhsúcháin: {summary}"
     summary_callback: "💾 Athbhreithniú féinfheabhsúcháin: {summary}"
+    started_cli: "  🔍 Tosaíodh an athbhreithniú féinfeabhsaithe — d’fhéidir go mbeidh freagraí beagán níos moille agus é ag rith"
+    started_callback: "🔍 Tosaíodh an athbhreithniú féinfeabhsaithe — d’fhéidir go mbeidh freagraí beagán níos moille agus é ag rith"
     aux_failure_label: "athbhreithniú cúlra"
   notice:
     uncompressed_context_overflow: "⚠️ Sáraíonn comhthéacs an tseisiúin (~{tokens} comhartha) fuinneog chomhthéacs an mhúnla (~{context_length} comhartha) agus an comhbhrú díchumasaithe (compression.enabled: false). Úsáid /compact chun an stair a chomhbhrú nó cumasaigh an comhbhrú i config.yaml."

@@ -3560,6 +3560,8 @@ display:
       user: "Felhasználói profil"
     summary_cli: "  💾 Önfejlesztési áttekintés: {summary}"
     summary_callback: "💾 Önfejlesztési áttekintés: {summary}"
+    started_cli: "  🔍 Önmegjavító felülvizsgálat elindult — a válaszok futás közben ideiglenesen kissé lassabbak lehetnek"
+    started_callback: "🔍 Önmegjavító felülvizsgálat elindult — a válaszok futás közben ideiglenesen kissé lassabbak lehetnek"
     aux_failure_label: "háttér-áttekintés"
   notice:
     uncompressed_context_overflow: "⚠️ A munkamenet kontextusa (~{tokens} token) meghaladja a modell kontextusablakát (~{context_length} token), miközben a tömörítés ki van kapcsolva (compression.enabled: false). Használd a /compact parancsot az előzmények tömörítéséhez, vagy kapcsold be a tömörítést a config.yaml fájlban."

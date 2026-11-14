@@ -3543,6 +3543,8 @@ display:
       user: "Perfil de usuario"
     summary_cli: "  💾 Revisión de automejora: {summary}"
     summary_callback: "💾 Revisión de automejora: {summary}"
+    started_cli: "  🔍 Revisión de auto-mejora iniciada — las respuestas pueden ser ligeramente más lentas mientras se ejecuta"
+    started_callback: "🔍 Revisión de auto-mejora iniciada — las respuestas pueden ser ligeramente más lentas mientras se ejecuta"
     aux_failure_label: "revisión en segundo plano"
   notice:
     uncompressed_context_overflow: "⚠️ El contexto de la sesión (~{tokens} tokens) supera la ventana de contexto del modelo (~{context_length} tokens) con la compresión desactivada (compression.enabled: false). Usa /compact para comprimir el historial o activa la compresión en config.yaml."

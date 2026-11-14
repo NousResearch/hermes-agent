@@ -3543,6 +3543,8 @@ display:
       user: "ユーザープロファイル"
     summary_cli: "  💾 自己改善レビュー: {summary}"
     summary_callback: "💾 自己改善レビュー: {summary}"
+    started_cli: "  🔍 セルフ改善レビューを開始しました — 実行中は返信が一時的に遅くなることがあります"
+    started_callback: "🔍 セルフ改善レビューを開始しました — 実行中は返信が一時的に遅くなることがあります"
     aux_failure_label: "バックグラウンドレビュー"
   notice:
     uncompressed_context_overflow: "⚠️ セッションのコンテキスト（約{tokens}トークン）が、圧縮が無効（compression.enabled: false）の状態でモデルのコンテキストウィンドウ（約{context_length}トークン）を超えています。/compact で履歴を圧縮するか、config.yaml で圧縮を有効にしてください。"

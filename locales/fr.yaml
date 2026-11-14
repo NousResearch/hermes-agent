@@ -3857,6 +3857,8 @@ display:
       user: "Profil utilisateur"
     summary_cli: "  💾 Revue d'auto-amélioration : {summary}"
     summary_callback: "💾 Revue d'auto-amélioration : {summary}"
+    started_cli: "  🔍 Revue d’auto-amélioration démarrée — les réponses peuvent être légèrement plus lentes pendant son exécution"
+    started_callback: "🔍 Revue d’auto-amélioration démarrée — les réponses peuvent être légèrement plus lentes pendant son exécution"
     aux_failure_label: "revue en arrière-plan"
   notice:
     uncompressed_context_overflow: "⚠️ Le contexte de session (~{tokens} tokens) dépasse la fenêtre de contexte du modèle (~{context_length} tokens) alors que la compression est désactivée (compression.enabled: false). Utilisez /compact pour compresser l'historique ou activez la compression dans config.yaml."

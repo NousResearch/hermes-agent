@@ -3543,6 +3543,8 @@ display:
       user: "الملف التعريفي للمستخدم"
     summary_cli: "  💾 مراجعة التحسين الذاتي: {summary}"
     summary_callback: "💾 مراجعة التحسين الذاتي: {summary}"
+    started_cli: "  🔍 بدأت مراجعة التحسين الذاتي — قد تصبح الردود أبطأ قليلاً أثناء تشغيلها"
+    started_callback: "🔍 بدأت مراجعة التحسين الذاتي — قد تصبح الردود أبطأ قليلاً أثناء تشغيلها"
     aux_failure_label: "المراجعة في الخلفية"
   notice:
     uncompressed_context_overflow: "⚠️ سياق الجلسة (~{tokens} رمزًا) يتجاوز نافذة سياق النموذج (~{context_length} رمزًا) مع تعطيل الضغط (compression.enabled: false). استخدم /compact لضغط السجل أو فعّل الضغط في config.yaml."

@@ -3543,6 +3543,8 @@ display:
       user: "用户画像"
     summary_cli: "  💾 自我改进回顾：{summary}"
     summary_callback: "💾 自我改进回顾：{summary}"
+    started_cli: "  🔍 自我改进审查已开始——审查运行期间回复可能略有变慢"
+    started_callback: "🔍 自我改进审查已开始——审查运行期间回复可能略有变慢"
     aux_failure_label: "后台审查"
   notice:
     uncompressed_context_overflow: "⚠️ 会话上下文（约 {tokens} 个 token）在压缩已禁用（compression.enabled: false）的情况下超出了模型上下文窗口（约 {context_length} 个 token）。请使用 /compact 压缩历史记录，或在 config.yaml 中启用压缩。"

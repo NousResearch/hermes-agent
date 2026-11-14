@@ -3543,6 +3543,8 @@ display:
       user: "Kullanıcı profili"
     summary_cli: "  💾 Kendini geliştirme incelemesi: {summary}"
     summary_callback: "💾 Kendini geliştirme incelemesi: {summary}"
+    started_cli: "  🔍 Öz iyileştirme değerlendirmesi başladı — çalışırken yanıtlar kısa süreliğine biraz yavaşlayabilir"
+    started_callback: "🔍 Öz iyileştirme değerlendirmesi başladı — çalışırken yanıtlar kısa süreliğine biraz yavaşlayabilir"
     aux_failure_label: "arka plan incelemesi"
   notice:
     uncompressed_context_overflow: "⚠️ Oturum bağlamı (~{tokens} token) sıkıştırma devre dışıyken (compression.enabled: false) modelin bağlam penceresini (~{context_length} token) aşıyor. Geçmişi sıkıştırmak için /compact kullanın veya config.yaml içinde sıkıştırmayı etkinleştirin."

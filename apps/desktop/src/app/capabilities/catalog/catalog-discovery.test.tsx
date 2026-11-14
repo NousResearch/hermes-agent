@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import type { CatalogEntry } from './catalog-data'
+import type { CatalogEntry, CatalogKind } from './catalog-data'
 import { CatalogDiscovery } from './catalog-discovery'
 
 const entry = (name: string, category: string, source = 'community') =>
@@ -10,13 +10,13 @@ const entry = (name: string, category: string, source = 'community') =>
 const sections = (container: HTMLElement) =>
   [...container.querySelectorAll('[data-catalog-section]')].map(node => node.getAttribute('data-catalog-section')).filter(id => id !== 'developer')
 
-const renderDiscovery = (entries: CatalogEntry[], byCategory: boolean) =>
+const renderDiscovery = (entries: CatalogEntry[], byCategory: boolean, kind: CatalogKind = 'plugins') =>
   render(
     <CatalogDiscovery
       byCategory={byCategory}
       card={item => <article key={item.id}>{item.name}</article>}
       entries={entries}
-      kind="plugins"
+      kind={kind}
       narrowed={byCategory}
       onCategory={() => {}}
     />
@@ -46,5 +46,54 @@ describe('featured slider', () => {
     expect(many.querySelectorAll('[aria-roledescription=slide]')).toHaveLength(3)
     expect(many.querySelectorAll('.catalog-featured-dot')).toHaveLength(3)
     expect(many.querySelectorAll('[aria-roledescription=slide]:not([inert])')).toHaveLength(1)
+  })
+})
+
+describe('skill discovery shelves', () => {
+  const categoryReads = (categories: number) => {
+    let reads = 0
+
+    const entries = Array.from({ length: 2000 }, (_, index) => {
+      const category = `c${index % categories}`
+
+      return Object.defineProperty(entry(`s${index}`, category), 'category', { get: () => (reads++, category) })
+    })
+
+    renderDiscovery(entries, false, 'skills')
+
+    return reads
+  }
+
+  it('reads the catalog about as much with many categories as with few', () => {
+    // Same entry count with ten times the categories. A rescan per category would multiply the reads.
+    expect(categoryReads(40)).toBeLessThan(categoryReads(4) * 2)
+  })
+
+  it('shows each skill on its own category shelf, most-starred shelf first', () => {
+    const starred = (name: string, category: string, stars: number) => ({ ...entry(name, category), stars })
+
+    // Scrambled on purpose, so the star ranking differs from feed order and from A to Z.
+    const container = renderDiscovery(
+      [
+        starred('w1', 'writing', 5),
+        starred('d1', 'data', 2),
+        entry('m1', 'media'),
+        entry('w2', 'writing'),
+        starred('m2', 'media', 9),
+        entry('d2', 'data')
+      ],
+      true,
+      'skills'
+    )
+
+    const shelf = (category: string) =>
+      [...container.querySelectorAll(`[data-catalog-section="${category}"] article`)]
+        .map(node => node.textContent)
+        .sort()
+
+    expect(sections(container)).toEqual(['media', 'writing', 'data'])
+    expect(shelf('media')).toEqual(['m1', 'm2'])
+    expect(shelf('writing')).toEqual(['w1', 'w2'])
+    expect(shelf('data')).toEqual(['d1', 'd2'])
   })
 })

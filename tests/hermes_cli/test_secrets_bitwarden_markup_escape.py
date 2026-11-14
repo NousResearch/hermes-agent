@@ -168,6 +168,29 @@ class TestSetupAndSyncSurfaces:
         assert "\x1b" not in out and "\x07" not in out
 
 
+
+class TestEgressSetupFromBitwarden:
+    """Same defect in ``hermes egress setup --from-bitwarden`` (proxy_cli)."""
+
+    def test_fetch_error_text_escaped(self, monkeypatch):
+        from agent.secret_sources import bitwarden as bw
+        from hermes_cli import proxy_cli
+
+        monkeypatch.setattr(
+            proxy_cli, "load_config",
+            lambda: {"secrets": {"bitwarden": {"enabled": True, "project_id": "p1",
+                                             "access_token_env": "BWS_ACCESS_TOKEN"}}})
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+
+        def boom(**k):
+            raise RuntimeError("bws exited 1: " + HOSTILE)
+        monkeypatch.setattr(bw, "fetch_bitwarden_secrets", boom)
+        console = _recording_console()
+        assert proxy_cli._bitwarden_env_names(console) is None
+        out = console.export_text(styles=False)
+        assert "[green]Token accepted[/green]" in out
+        assert "\x1b" not in out and "\x07" not in out
+
 class TestStatusAuthoredMarkupBoundary:
     """Only probe-derived lines get escaped; authored markup in the messages
     list (the '0.' prefix warning) must still render as markup."""

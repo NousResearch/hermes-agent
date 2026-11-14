@@ -15,6 +15,7 @@ from rich.table import Table
 
 from agent.proxy_sources import iron_proxy as ip
 from agent.redact import mask_secret
+from hermes_cli._secrets_common import console_safe
 from hermes_cli.config import load_config, load_env, save_config
 
 
@@ -562,7 +563,7 @@ def _bitwarden_env_names(console: Console) -> Optional[list[str]]:
         console.print(f"  Pulled {len(names)} env names from Bitwarden.")
         return names
     except Exception as exc:
-        console.print(f"  [red]✗ Could not enumerate Bitwarden secrets: {exc}[/red]")
+        console.print(f"  [red]✗ Could not enumerate Bitwarden secrets: {console_safe(str(exc))}[/red]")
         console.print(
             "  Either fix the Bitwarden config and retry, or rerun setup "
             "without --from-bitwarden (the proxy will read secrets from the host process env at start time)."

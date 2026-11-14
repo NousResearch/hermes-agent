@@ -14,10 +14,15 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+# Endpoints whose 403 can mean "this feature is not on your plan" rather than
+# "your login cannot see the repo". Matched BEFORE the generic 401/403/404 net.
+_RULES_ENDPOINT = re.compile(r"repos/[^/]+/[^/]+/(?:rules/branches/|branches/[^/]+/protection)")
+_PLAN_GATED = re.compile(r"Upgrade to GitHub Pro|make this repository public", re.IGNORECASE)
 
 
 def validate_contract(value: str | None) -> str:
@@ -29,27 +34,50 @@ def validate_contract(value: str | None) -> str:
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         profile_home: str | None = None) -> Any:
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        # ``--paginate --jq tojson`` emits one compact JSON document per page (NDJSON),
+        # the same shape ``--slurp`` gives, but without needing gh >= 2.51: distro
+        # packages still ship 2.46, where ``--slurp`` dies with "unknown flag" and the
+        # gate dead-ends as infra. --jq has existed since gh 1.x. Exercised on gh
+        # 2.46.0 (optinas apt) and 2.104.0 (optinas ~/.local) — see tests.
+        command += ["--paginate", "--jq", "tojson"]
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
+    except FileNotFoundError:
+        raise _GateInfraError("the gh CLI is not installed on this host") from None
     except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr or ""
+        # A branch-rules read can be refused because the FEATURE is not on the account's
+        # plan (private repo on a free plan), which is not an identity failure: the login
+        # reads the repository fine, GitHub just will not expose required checks. Fall
+        # through as "no repository-required checks visible" (#t_518d9dc1).
+        if _PLAN_GATED.search(stderr) and _RULES_ENDPOINT.match(endpoint):
+            raise _GatePlanError(f"branch rules are unavailable on this repository's plan "
+                                 f"({endpoint.split('?')[0]})") from None
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
-        denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+        denied = re.search(r"HTTP (40[134])", stderr)
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
+        unknown = re.search(r"unknown flag: (--[A-Za-z-]+)", stderr)
+        if unknown:
+            raise _GateInfraError(f"the installed gh CLI does not support {unknown[1]}; "
+                                  "upgrade gh on this host") from None
         raise
-    value = json.loads(result.stdout)
+    if paginate:
+        # One JSON document per page (NDJSON); a single-object paged response stays one page.
+        value: Any = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    else:
+        value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
@@ -59,6 +87,16 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _GatePlanError(RuntimeError):
+    """The branch-rules read was refused because the feature is not on the repo
+    owner's plan (private repo, free plan). Not an identity or infra failure:
+    fall through as "no repository-required checks are visible"."""
+
+
+class _GateInfraError(RuntimeError):
+    """The gh CLI itself is missing or unusable on this host — actionable as infra."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -137,8 +175,14 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _GatePlanError:
+            # Private repo on a free plan: GitHub will not expose branch rules at all,
+            # so required checks are unknowable — the same outcome as "none configured".
+            rules = []
+            receipt["plan_gated"] = True
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -187,6 +231,10 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt.update(classification="auth",
                        detail=f"GitHub refused the acceptance read ({exc}) as {login}; "
                               "fix that profile's GitHub credentials/access to the repository, then retry completion.")
+        return receipt
+    except _GateInfraError as exc:
+        receipt.update(classification="infra",
+                       detail=f"GitHub acceptance evidence unavailable: {exc}; fix the gh install on this host, then retry completion.")
         return receipt
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.

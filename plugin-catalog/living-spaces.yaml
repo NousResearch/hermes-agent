@@ -1,0 +1,38 @@
+name: living-spaces
+title: Living Spaces
+repo: https://github.com/akinduroifedayo/living-spaces
+sha: 98d22cfbf963e145c27eb5385dba134e3a980fb9
+subdir: src/living-spaces
+version: "0.1.0"
+description: "An open canvas for your bots in Hermes Desktop. Ask in chat and your bot builds dashboards, trackers, mini-apps and visual pieces in a Spaces tab. Each Space keeps its data, and you change it by asking."
+maintainer: akinduroifedayo
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/akinduroifedayo/living-spaces/blob/98d22cfbf963e145c27eb5385dba134e3a980fb9/src/living-spaces/README.md
+platforms:
+  - macos
+screenshots:
+  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/98d22cfbf963e145c27eb5385dba134e3a980fb9/docs/design/premium-pass/regeneration/astra-run/shots/research-desktop-overview.png
+  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/98d22cfbf963e145c27eb5385dba134e3a980fb9/docs/design/premium-pass/regeneration/astra-run/shots/sky-desktop-today.png
+  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/98d22cfbf963e145c27eb5385dba134e3a980fb9/docs/design/premium-pass/regeneration/astra-run/shots/pair-desktop-progress.png
+capabilities:
+  provides_tools:
+    - spaces_list
+    - spaces_get
+    - spaces_create
+    - spaces_bind_maintainer
+    - spaces_read_file
+    - spaces_write_files
+    - spaces_edit_file
+    - spaces_query
+    - spaces_write_records
+    - spaces_read_logs
+    - spaces_revisions
+    - spaces_restore
+    - spaces_refresh
+    - spaces_schedule_upkeep
+    - spaces_upkeep
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

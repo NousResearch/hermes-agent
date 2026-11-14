@@ -20,25 +20,32 @@ def test_requires_callback():
     result = json.loads(an.annotate_preview_tool(ref="@e1", callback=None))
     assert "desktop" in result["error"]
 
-@pytest.mark.parametrize("verb", ["add", "remove"])
+@pytest.mark.parametrize("verb", ["remove"])
 def test_marking_one_thing_needs_a_target(verb):
     """A mark with nothing to attach to is a mistake worth naming early."""
     result = json.loads(an.annotate_preview_tool(action=verb, callback=lambda _p: "{}"))
     assert "ref" in result["error"]
 
-def test_speaks_the_renderer_s_verbs():
-    """The overlay knows pin/unpin; the model gets words it can guess at."""
+@pytest.mark.parametrize("verb", ["add", "hold"])
+def test_rejects_agent_owned_visible_marks(verb):
+    sent = []
+
+    result = json.loads(an.annotate_preview_tool(action=verb, ref="@e4", callback=sent.append))
+
+    assert "/design-mode" in result["error"]
+    assert sent == []
+
+def test_remove_speaks_the_renderer_s_cleanup_verb():
+    """Legacy cleanup remains available without creating a visible mark."""
     sent = []
 
     def cb(payload):
         sent.append(payload)
-        return json.dumps({"acted": "pinned Buy now", "success": True})
+        return json.dumps({"acted": "removed Buy now", "success": True})
 
-    an.annotate_preview_tool(action="add", ref="@e4", label="cheapest", callback=cb)
     an.annotate_preview_tool(action="remove", ref="@e4", callback=cb)
 
-    assert sent[0] == {"action": "pin", "ref": "@e4", "text": "cheapest"}
-    assert sent[1] == {"action": "unpin", "ref": "@e4"}
+    assert sent == [{"action": "unpin", "ref": "@e4"}]
 
 def test_clear_sends_no_target_so_the_overlay_drops_them_all():
     """`clear` IS an untargeted unpin — a ref left on it would take down one."""
@@ -52,13 +59,13 @@ def test_clear_sends_no_target_so_the_overlay_drops_them_all():
 
     assert sent == [{"action": "unpin"}]
 
-def test_defaults_to_adding():
+def test_defaults_to_safe_cleanup():
     sent = []
 
     def cb(payload):
         sent.append(payload)
         return json.dumps({"success": True})
 
-    an.annotate_preview_tool(ref="@e2", callback=cb)
+    an.annotate_preview_tool(callback=cb)
 
-    assert sent[0]["action"] == "pin"
+    assert sent == [{"action": "unpin"}]

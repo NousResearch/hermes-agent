@@ -77,6 +77,18 @@ afterEach(() => {
 })
 
 describe('useSlashCompletions', () => {
+  it('offers /design-mode on bare and typed searches when an older gateway does not know it', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(method === 'commands.catalog' ? CATALOG : { items: [] })
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, ''))).toContain('/design-mode')
+    expect(commandsOf(await completions(api, 'des'))).toContain('/design-mode')
+    expect(commandsOf(await completions(api, 'model'))).not.toContain('/design-mode')
+  })
+
   it('serves the bare-slash catalog from cache instead of re-requesting it', async () => {
     const request = vi.fn().mockResolvedValue(CATALOG)
     const api = harness({ request } as unknown as HermesGateway)

@@ -4734,6 +4734,22 @@ export const esOverrides = {
     addToChat: 'Añadir al chat'
   },
   preview: {
+    design: {
+      addSelection: 'Añadir selección al mensaje',
+      description: 'Inspeccionar el navegador actual con capas DOM',
+      dockedOnly: 'Acopla esta pestaña del navegador antes de iniciar el modo diseño.',
+      domOnly: 'Solo DOM · origen no verificado',
+      empty: 'Selecciona un elemento de la página para inspeccionar su ruta DOM.',
+      layerFailed: 'No se pudo seleccionar esa capa DOM.',
+      layers: 'Capas DOM',
+      pageNotReady: 'La página del navegador aún no está lista para seleccionar.',
+      selectedPath: 'Ruta DOM seleccionada',
+      start: 'Modo diseño',
+      startFailed: 'No se pudo iniciar el modo diseño',
+      starting: 'Iniciando modo diseño',
+      stop: 'Salir del modo diseño',
+      wrongConversation: 'Abre una pestaña del navegador de esta conversación para iniciar el modo diseño.'
+    },
     tab: 'Vista previa',
     pin: 'Fijar al espacio de trabajo',
     unpin: 'Desfijar del espacio de trabajo',

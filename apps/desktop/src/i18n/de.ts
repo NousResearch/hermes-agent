@@ -4750,6 +4750,22 @@ export const deOverrides = {
     addToChat: 'Zum Chat hinzufügen'
   },
   preview: {
+    design: {
+      addSelection: 'Auswahl zum Prompt hinzufügen',
+      description: 'Aktuellen Browser mit DOM-Ebenen untersuchen',
+      dockedOnly: 'Docke diesen Browser-Tab an, bevor du den Designmodus startest.',
+      domOnly: 'Nur DOM · Quelle nicht verifiziert',
+      empty: 'Wähle ein Element auf der Seite aus, um seinen DOM-Pfad zu prüfen.',
+      layerFailed: 'Diese DOM-Ebene konnte nicht ausgewählt werden.',
+      layers: 'DOM-Ebenen',
+      pageNotReady: 'Die Browserseite ist noch nicht zur Auswahl bereit.',
+      selectedPath: 'Ausgewählter DOM-Pfad',
+      start: 'Designmodus',
+      startFailed: 'Designmodus konnte nicht gestartet werden',
+      starting: 'Designmodus wird gestartet',
+      stop: 'Designmodus beenden',
+      wrongConversation: 'Öffne einen Browser-Tab dieser Unterhaltung, um den Designmodus zu starten.'
+    },
     tab: 'Vorschau',
     pin: 'An Arbeitsbereich anheften',
     unpin: 'Vom Arbeitsbereich lösen',

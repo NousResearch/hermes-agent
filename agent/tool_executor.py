@@ -58,7 +58,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
-from tools.terminal_tool_lifecycle import get_active_env
+from tools.terminal_tool_lifecycle import ensure_task_env, get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
@@ -1136,16 +1136,22 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
+    # The spill note must name a path the agent's own file tools can read. Under a remote backend
+    # those tools run in the sandbox, which the idle reaper may have unregistered since the last
+    # terminal call (the container itself persists): bring it back, as vision does (#62825),
+    # instead of passing None, which used to be read as "host side" and named a host path.
+    # ensure_task_env is a no-op returning None on the local backend.
+    spill_env = ensure_task_env(effective_task_id)
     if _is_multimodal_tool_result(persisted_result):
         persisted_result = _persist_multimodal_text_parts(
-            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+            persisted_result, function_name, tool_call_id, spill_env, budget,
         )
     else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
             tool_use_id=tool_call_id,
-            env=get_active_env(effective_task_id),
+            env=spill_env,
             config=budget,
         )
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
@@ -1233,7 +1239,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
         return
     batch = messages[-num_tools:]
     contents_before = [message.get("content") for message in batch]
-    enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
+    enforce_turn_budget(batch, env=ensure_task_env(effective_task_id), config=budget)
     plugin_live_notes.keep_after_turn_budget(agent, batch)
     sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)

@@ -185,10 +185,20 @@ def _prune_spillover_once() -> None:
 
 
 def _is_host_side_env(env) -> bool:
-    """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or a backend whose files are the host's. Others resolve ``read_file`` inside the sandbox."""
+    """True when the agent's file tools read host paths: a backend whose files are the host's.
+    ``env=None`` means host-side only when the ACTIVE backend is local; under a remote backend
+    (docker, ssh, ...) ``read_file``/``terminal`` resolve inside the sandbox, so a host path would
+    dangle there even though no sandbox is registered right now (never started, or reaped after
+    ``TERMINAL_LIFETIME_SECONDS`` idle while the persistent container lives on)."""
     if env is None:
-        return True
+        from tools.credential_files import _terminal_backend
+        from tools.terminal_scope import TerminalPolicyUnavailable
+        try:
+            return _terminal_backend() == "local"
+        except TerminalPolicyUnavailable:
+            # The profile's terminal policy can't be read, so the backend is unknown: fail closed
+            # (no host path), the way the terminal tool itself refuses under this scope.
+            return False
     from tools.environments.base import env_uses_host_filesystem
 
     return env_uses_host_filesystem(env)

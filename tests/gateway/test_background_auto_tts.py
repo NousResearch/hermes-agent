@@ -251,7 +251,7 @@ async def test_live_voice_channel_keeps_audio_before_text(tmp_path):
     adapter.send = send
     await adapter._process_message_background(event, build_session_key(event.source))
     assert order == ["audio", "text"]
-    adapter._synthesize_auto_tts.assert_awaited_once_with("reply")
+    adapter._synthesize_auto_tts.assert_awaited_once_with("reply", event.source)
     assert not adapter._background_tasks
     assert not audio.exists()
 

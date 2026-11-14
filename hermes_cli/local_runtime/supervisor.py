@@ -91,11 +91,17 @@ def _stable_api_key() -> str:
     with suppress(OSError):
         existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
+            # Keys persisted before the file was created owner-only keep their umask mode.
+            with suppress(OSError):
+                os.chmod(key_path, 0o600)
             return existing
     key = secrets.token_urlsafe(24)
     try:
         key_path.parent.mkdir(parents=True, exist_ok=True)
-        key_path.write_text(key, encoding="utf-8")
+        # Created 0600 up front: a write-then-chmod leaves a umask-readable window.
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(key)
         with suppress(OSError):
             os.chmod(key_path, 0o600)
     except OSError as exc:
@@ -131,11 +137,13 @@ def _api_key_file_supported(executable: Path) -> bool:
 
 
 def _mask_argv_secrets(cmd: list[str]) -> list[str]:
-    """Redact `--api-key VALUE` pairs for the spawn log; the value must never reach disk."""
+    """Mask the --api-key value (separate or `=`-joined) for the spawn log; it must never reach disk."""
     masked = list(cmd)
-    for i, arg in enumerate(masked[:-1]):
-        if arg == "--api-key":
+    for i, arg in enumerate(masked):
+        if arg == "--api-key" and i + 1 < len(masked):
             masked[i + 1] = "***"
+        elif arg.startswith("--api-key="):
+            masked[i] = "--api-key=***"
     return masked
 
 

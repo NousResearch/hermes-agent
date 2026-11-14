@@ -91,6 +91,8 @@ def test_mask_argv_secrets_covers_repeats_and_trailing_flag():
     ) == ["llama-server", "--api-key", "***", "--api-key", "***"]
     assert supervisor._mask_argv_secrets(["llama-server", "--api-key"]) == \
         ["llama-server", "--api-key"]
+    assert supervisor._mask_argv_secrets(["llama-server", "--api-key=" + "s3cret"]) == \
+        ["llama-server", "--api-key=" + "***"]
     untouched = ["llama-server", "--models-dir", "/home/my user"]
     assert supervisor._mask_argv_secrets(untouched) == untouched
 
@@ -101,3 +103,26 @@ def test_persisted_api_key_is_owner_only(tmp_path, monkeypatch):
     supervisor.api_key_path().unlink(missing_ok=True)
     supervisor._stable_api_key()
     assert supervisor.api_key_path().stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="permission bits are POSIX")
+def test_existing_world_readable_api_key_is_tightened(tmp_path, monkeypatch):
+    """A key persisted by an older build kept its umask mode; reuse must not leave it readable."""
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path / "runtime")
+    path = supervisor.api_key_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("k" * 32, encoding="utf-8")
+    path.chmod(0o644)
+    assert supervisor._stable_api_key() == "k" * 32
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_spawn_log_masks_user_supplied_inline_api_key(tmp_path, monkeypatch):
+    sup, _ = _make_supervisor(tmp_path, monkeypatch, "--api-key-file FNAME")
+    inline = "user-" + "secret" * 4
+    sup.extra_args = ["--api-key=" + inline]
+    try:
+        sup._spawn()
+        assert inline not in _log_text(sup)
+    finally:
+        sup.stop()

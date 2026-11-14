@@ -650,7 +650,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
+        # Fire-and-forget read receipt, only for senders the runner admits: BlueBubbles runs on the owner's
+        # own Apple ID, so a "Read" to a stranger comes from the owner (#149024).
+        if (self.send_read_receipts and session_chat_id
+                and self._is_sender_authorized(sender, chat_type, session_chat_id) is True):
             asyncio.create_task(self.mark_read(session_chat_id))
         return _ok()
 

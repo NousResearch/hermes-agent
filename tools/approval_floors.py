@@ -10,6 +10,7 @@ through it at call time.
 import fnmatch
 import logging
 import re
+import shlex
 import time
 import uuid
 from tools import approval_context as _ctx
@@ -149,12 +150,28 @@ _SUBSCRIPT_EVALUATING_BUILTINS = {
     "unset": None, "read": None, "declare": None, "typeset": None, "local": None, "let": None,
 }
 _ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_SUBSCRIPT_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[.*\]\+?=")  # a[...]=v also evaluates the subscript
+_PREFIX_WORDS = frozenset(("builtin", "command", "time", "!"))
 
 
 def _evaluates_quoted_subscript(command: str) -> bool:
-    words = command.split()
-    while words and (words[0] in ("builtin", "command") or _ASSIGNMENT_WORD_RE.match(words[0])):
-        words = words[1:]
+    # Dequote like bash does, so `'test' '-v'`, `t"es"t`, `\test` cannot dodge the table.
+    try:
+        words = shlex.split(command, posix=True)
+    except ValueError:
+        return True
+    while words:
+        word = words[0]
+        if _SUBSCRIPT_ASSIGNMENT_RE.match(word):
+            return True
+        if word in _PREFIX_WORDS:
+            words = words[1:]
+            while word in ("command", "time") and words and words[0].startswith("-"):
+                words = words[1:]  # command -p, time -p
+        elif _ASSIGNMENT_WORD_RE.match(word):
+            words = words[1:]
+        else:
+            break
     if not words or words[0] not in _SUBSCRIPT_EVALUATING_BUILTINS:
         return False
     required = _SUBSCRIPT_EVALUATING_BUILTINS[words[0]]
@@ -169,10 +186,12 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     active), and any quoted/escaped control character when the command also
     carries a ``-c``/``-e``/``--command``/``--eval``-style option that would
     hand the quoted text to another interpreter, or is a builtin that
-    evaluates an operand as an array subscript (``test -v``, ``[[``, ...)."""
+    evaluates an operand as an array subscript (``test -v``, ``[[``, ...),
+    or contains an unquoted ``${``/``$[`` whose subscript/offset re-expands it."""
     command = command or ""
     quote = None  # None | "'" | '"'
     has_reinterpretable = False
+    param_expansion = False  # unquoted ${...} / $[...] re-expand quoted text in subscripts/offsets
     test_v_mode = _evaluates_quoted_subscript(command)
     i = 0
     n = len(command)
@@ -198,13 +217,15 @@ def _has_allowlist_shell_operator(command: str) -> bool:
             # stays simple, matching the historical `\$\(` behavior).
             if i + 1 < n and command[i + 1] == "(":
                 return True
+            if i + 1 < n and command[i + 1] in "{[":
+                param_expansion = True
         elif ch in _SHELL_CONTROL_CHARS and ch not in "()":
             return True
         i += 1
     # An unterminated quote means we can't reason about the command shape.
     if quote is not None:
         return True
-    if test_v_mode and has_reinterpretable:
+    if (test_v_mode or param_expansion) and has_reinterpretable:
         return True
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 

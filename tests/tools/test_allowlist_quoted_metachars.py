@@ -163,3 +163,52 @@ class TestSubscriptEvaluatingBuiltins:
         assert not _command_matches_permanent_allowlist(f"test -v 'a[{_SUB}]'")
         assert not _command_matches_permanent_allowlist(f"[[ -v 'a[{_TICK}]' ]]")
         assert _command_matches_permanent_allowlist("test -f /etc/hostname")
+
+
+# Review follow-ups: dequoted command names/options, prefixes, and unquoted ${...}/$[...]
+# subscripts that re-expand quoted text with no builtin involved.
+class TestSubscriptEvaluationSpellings:
+    @pytest.mark.parametrize("cmd", [
+        f"test '-v' 'a[{_SUB}]'",
+        f'test "-v" \'a[{_SUB}]\'',
+        f"test \\-v 'a[{_SUB}]'",
+        f"[ '-v' 'a[{_SUB}]' ]",
+        f"printf '-v' 'a[{_SUB}]' x",
+        f"'test' -v 'a[{_SUB}]'",
+        f't"es"t -v \'a[{_SUB}]\'',
+        f"\\test -v 'a[{_SUB}]'",
+        f"VAR='a b' test -v 'a[{_SUB}]'",
+        f"time test -v 'a[{_SUB}]'",
+        f"! test -v 'a[{_SUB}]'",
+        f"command -p test -v 'a[{_SUB}]'",
+        f"x='a[{_SUB}]' declare -i y=x",
+        f"a['{_SUB}']=1",
+        f"ls ${{a['{_SUB}']}}",
+        f"ls ${{#a['{_SUB}']}}",
+        f"echo ${{x:0:'a[{_SUB}]'}}",
+        f"echo $['a[{_SUB}]']",
+    ])
+    def test_reexpanded_quoted_substitution_is_compound(self, cmd):
+        assert _has_allowlist_shell_operator(cmd)
+
+    @pytest.mark.parametrize("cmd", [
+        "read -r line",
+        "printf -v x '%s' 1",
+        "test -f foo",
+        "time test -f foo",
+        "ls ${HOME}",
+        "echo ${x:-'a b'}",
+        "a[0]=1",
+    ])
+    def test_common_forms_stay_simple(self, cmd):
+        assert not _has_allowlist_shell_operator(cmd)
+
+    def test_glob_allowlist_refuses_reexpanded_subscripts(self, monkeypatch):
+        import tools.approval as mod
+        monkeypatch.setattr(mod, "_permanent_approved", {"test *", "ls *", "echo *"})
+        assert not _command_matches_permanent_allowlist(f"test '-v' 'a[{_SUB}]'")
+        assert not _command_matches_permanent_allowlist(f"'test' -v 'a[{_SUB}]'")
+        assert not _command_matches_permanent_allowlist(f"ls ${{a['{_SUB}']}}")
+        assert not _command_matches_permanent_allowlist(f"echo $['a[{_SUB}]']")
+        assert _command_matches_permanent_allowlist("test -f /etc/hostname")
+        assert _command_matches_permanent_allowlist("ls ${HOME}")

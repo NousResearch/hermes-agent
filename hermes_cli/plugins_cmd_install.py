@@ -215,7 +215,7 @@ def _display_after_install(plugin_dir: Path, identifier: str, *, brief: bool = F
     if after_install.exists():
         body, title = Markdown(after_install.read_text(encoding="utf-8-sig")), None
     else:
-        body = f"[green bold]Plugin installed:[/] {identifier}\n[dim]Location:[/] {plugin_dir}"
+        body = f"[green bold]Plugin installed:[/] {_pc()._scrub_git_url(identifier)}\n[dim]Location:[/] {plugin_dir}"
         title = "✓ Installed"
     console.print()
     console.print(Panel(body, border_style="green", title=title, expand=False))
@@ -658,7 +658,7 @@ def cmd_install(
             "Consider using https:// or git@ for production installs.")
 
     if not brief:
-        console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
+        console.print(f"[dim]Cloning {_pc()._scrub_git_url(git_url)}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
     _interactive_scan_decision = interactive_scan_decision(console, "Install")
 
     def _install() -> tuple:

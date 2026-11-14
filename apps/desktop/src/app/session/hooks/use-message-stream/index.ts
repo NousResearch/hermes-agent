@@ -680,6 +680,85 @@ export function useMessageStream({
 
         const streamId = state.streamId
 
+        // #127621: the transport redelivers message.interim (at-least-once
+        // delivery), and a redelivery restates text the turn already holds.
+        // When the live bubble is open, sealing it with those stale words
+        // either twins a sealed bubble — the queued-delta flush in the event
+        // handler can open the live bubble an instant before this runs — or
+        // folds the stale text into the live response next to its own copy.
+        // So when the incoming text is already displayed in this turn
+        // outside the live bubble's own current response, the event adds
+        // nothing and is a no-op. The legitimate seal (streamed text ==
+        // incoming, held nowhere else) still runs below. With no live bubble
+        // open, the #120104 / #93926 refresh-in-place path below keeps its
+        // semantics: the completion path relies on the interim flip it
+        // performs.
+        const liveMessage = streamId != null ? (state.messages.find(message => message.id === streamId) ?? null) : null
+
+        if (liveMessage) {
+          // A queued prompt belongs to the next turn; it is not the boundary of this seal.
+          const lastUserIndex = state.messages.findLastIndex(
+            message => message.role === 'user' && message.id !== `user-queued-${sessionId}`
+          )
+          const normalizedIncoming = authoritativeText.replace(/\s+/g, ' ').trim()
+          const prefixEnd = liveMessage.parts.findLastIndex(part => part.type === 'tool-call')
+
+          const hasNewResponse = liveMessage.parts
+            .slice(prefixEnd + 1)
+            .some(part => (part.type === 'text' || part.type === 'reasoning') && part.text.trim())
+
+          // Only the live bubble's already-sealed prefix counts — and only
+          // when it also holds a newer current response the stale words
+          // would replace. A post-tool interim sealing the pre-tool prefix
+          // with nothing streamed after it is the legitimate tool-turn seal.
+          const normalizedLivePrefix =
+            prefixEnd >= 0 && hasNewResponse
+              ? chatMessageText({ ...liveMessage, parts: liveMessage.parts.slice(0, prefixEnd + 1) })
+                  .replace(/\s+/g, ' ')
+                  .trim()
+              : ''
+
+          // #127661: the current response — everything after the last tool
+          // row — is the only wording this seal restates. When the incoming
+          // text IS that response the seal is legitimate even if a pre-tool
+          // segment happens to read the same: sealing with words already on
+          // screen adds no twin, while dropping it leaves `interim` false and
+          // the completion path then folds only the post-tool segment, painting
+          // the identical prefix as a second bubble.
+          const normalizedCurrentResponse = normalizeWs(partsText(currentResponseParts(liveMessage.parts)))
+
+          const sealRestatesCurrentResponse =
+            normalizedCurrentResponse !== '' && normalizedCurrentResponse === normalizedIncoming
+
+          const stale =
+            !sealRestatesCurrentResponse &&
+            state.messages.some((message, index) => {
+              if (index <= lastUserIndex || message.role !== 'assistant' || message.hidden) {
+                return false
+              }
+
+              const candidate =
+                message.id === liveMessage.id
+                  ? normalizedLivePrefix
+                  : chatMessageText(message).replace(/\s+/g, ' ').trim()
+
+              return candidate === normalizedIncoming
+            })
+
+          // An identical post-tool response still needs its legitimate interim
+          // seal. Dropping that lifecycle transition makes message.complete
+          // merge the pre-tool words into the current reply a second time.
+          const currentResponse = hasNewResponse
+            ? chatMessageText({ ...liveMessage, parts: liveMessage.parts.slice(prefixEnd + 1) })
+                .replace(/\s+/g, ' ')
+                .trim()
+            : ''
+
+          if (stale && !(prefixEnd >= 0 && currentResponse === normalizedIncoming)) {
+            return state
+          }
+        }
+
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
 

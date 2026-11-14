@@ -489,7 +489,8 @@ The rules:
   from your own function. Handing the bare helper to `run_in_executor` leaves no
   plugin frame on the stack, so the call is refused.
 - **Provider origins only.** For `openai-codex` the token is sent only to
-  `https://chatgpt.com` and `https://api.openai.com`. Any other URL raises
+  `https://chatgpt.com` and `https://api.openai.com`, for `nous` only to the Portal's
+  inference hosts (`inference-api` and `welcome-api.nousresearch.com`). Any other URL raises
   `PermissionError` before a request is made. A profile whose Codex credential
   routes to a custom gateway is refused too, because that key belongs to the
   gateway.
@@ -627,7 +628,7 @@ this Hermes understands still loads with a warning.
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
-| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
+| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`, `nous`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
 | `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
 
 ```yaml

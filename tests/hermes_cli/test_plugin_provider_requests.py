@@ -143,3 +143,61 @@ def test_not_signed_in_names_the_sign_in_command(stubs):
     with pytest.raises(ppr.ProviderNotSignedIn, match="hermes auth add openai-codex"):
         _plugin(declares=True).mint(allowed.url)
     assert allowed.seen == []
+
+
+@pytest.fixture
+def nous_stub(monkeypatch):
+    stub = _Stub()
+    origin = ("http", "127.0.0.1", stub.server.server_address[1])
+    origins, resolve = ppr._PROVIDERS["nous"]
+    monkeypatch.setitem(ppr._PROVIDERS, "nous", (origins | {origin}, resolve))
+    yield stub
+    stub.close()
+
+
+def _nous_plugin():
+    root = _home() / "plugins" / "replays"
+    (root / "dashboard").mkdir(parents=True)
+    (root / "plugin.yaml").write_text("name: replays\nrequires_auth: [nous]\n")
+    (root / "dashboard" / "plugin_api.py").write_text(
+        "from hermes_cli.plugin_provider_requests import credentialed_provider_request\n"
+        "def chat(url):\n"
+        "    return credentialed_provider_request('nous', 'POST', url, json={'model': 'm'})\n")
+    spec = importlib.util.spec_from_file_location("hermes_dashboard_plugin_replays", root / "dashboard" / "plugin_api.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_nous_sign_in_is_attached_by_hermes_and_never_returned(nous_stub, monkeypatch):
+    from hermes_cli import auth_nous
+    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+                        lambda **_: {"provider": "nous", "api_key": TOKEN, "base_url": nous_stub.url + "/v1"})
+    result = _nous_plugin().chat(nous_stub.url + "/v1/chat/completions")
+
+    assert result.status == 200
+    assert nous_stub.seen[0]["headers"]["Authorization"] == f"Bearer {TOKEN}"
+    assert TOKEN not in repr(result) and TOKEN not in json.dumps(result.headers)
+
+
+def test_nous_refuses_other_hosts_and_a_custom_endpoint(nous_stub, monkeypatch):
+    from hermes_cli import auth_nous
+    other = _Stub()
+    try:
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+                            lambda **_: {"provider": "nous", "api_key": TOKEN, "base_url": other.url + "/v1"})
+        plugin = _nous_plugin()
+        with pytest.raises(PermissionError, match="Refusing"):
+            plugin.chat(other.url + "/v1/chat/completions")
+        with pytest.raises(PermissionError, match="custom endpoint"):
+            plugin.chat(nous_stub.url + "/v1/chat/completions")
+        assert other.seen == [] and nous_stub.seen == []
+    finally:
+        other.close()
+
+
+def test_nous_not_signed_in_names_the_sign_in_command(nous_stub):
+    with pytest.raises(ppr.ProviderNotSignedIn, match="portal"):
+        _nous_plugin().chat(nous_stub.url + "/v1/chat/completions")
+    assert nous_stub.seen == []

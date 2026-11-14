@@ -6,8 +6,7 @@ tripped the force-push prompt on a plain ``git push``; and they missed three rea
 git's combined short flags (``-qf``), the ``+refspec`` spelling, and a push behind git's own
 global options (``git -C <dir> push -f``).
 
-The patterns are also the approval KEY source: a stored allowlist entry must keep resolving, so
-the pre-change regex-derived key stays an alias of both force-push classes.
+The pre-change approval keys of all git rules are pinned in ``test_approval_git_global_options.py``.
 """
 
 import pytest
@@ -37,6 +36,27 @@ class TestGitForcePushDetected:
         "cd /r && git push -f origin main",
         "git push -q && git push -f",
         "git push origin main; git push -f",
+        # the shell strips quotes, so a quoted flag or refspec still forces.
+        "git push \"-f\" origin main",
+        "git push origin '+main'",
+        # a redirection's `&`/`|` is not a command separator.
+        "git push origin main 2>&1 --force",
+        "git push origin main &>/dev/null -f",
+        # path-valued global options, attached or quoted values.
+        "git --git-dir /x/.git push -f",
+        "git -C/repo push -f",
+        "git -C \"/my repo\" push -f",
+        "git --exec-path /usr/lib/git-core push -f",
+        "git --attr-source HEAD push -f",
+        # a quoted `;`/`&`/`|` is part of an argument, not a command separator.
+        "git push -o 'ci;skip' -f origin main",
+        "git push -o \"a&b\" -f origin main",
+        "git push --push-option='x|y' --force origin main",
+        "git push --receive-pack='a|b' -f origin main",
+        "git push --exec=\"x;y\" -f origin",
+        "git push origin main '&' -f",
+        "git push \"--force\" origin main",
+        "git push -fo ci.skip origin main",
     ])
     def test_force_push_forms_are_dangerous(self, command):
         dangerous, _key, description = detect_dangerous_command(command)
@@ -52,6 +72,10 @@ class TestGitForcePushDetected:
         "git push origin feature+f",
         "git push --follow-tags origin main",
         "git push --receive-pack=/usr/bin/git-receive-pack origin main",
+        # `-o` takes the rest of the cluster as its value: push option "foo", not `-f`.
+        "git push -ofoo origin main",
+        # a flag inside a quoted push option is the option's text.
+        "git push -o 'note -f' origin main",
     ])
     def test_an_ordinary_push_stays_unprompted(self, command):
         assert detect_dangerous_command(command) == (False, None, None)
@@ -66,18 +90,20 @@ class TestGitForcePushScope:
         "git push origin main | grep -f patterns.txt",
         "git push origin main && grep -f patterns.txt log",
         "git push --quiet origin main && git log -f",
+        "git push -q 2>&1 | grep -f patterns.txt",
+        "git push origin main >| log; pkill -f stale-watcher",
+        "git push -o 'a;b' origin main && grep -f patterns.txt",
     ])
     def test_a_later_command_flag_is_not_a_force_push(self, command):
         dangerous, _key, description = detect_dangerous_command(command)
         assert dangerous is False, f"{command!r} -> {description!r}"
 
 
-def test_the_pre_change_approval_key_still_resolves():
-    """An allowlist entry stored under the old regex-derived key still covers a force push."""
-    from tools.approval_detection import _approval_key_aliases
+@pytest.mark.parametrize("unit", [">&", "&>", ">|", "'a' ", '"a" ', "'", '"', "\\", "-c "])
+def test_a_run_inside_the_push_segment_does_not_backtrack_exponentially(unit):
+    """Overlapping push-argument alternatives used to re-split a `>&>&...` run 2**n ways."""
+    import time
 
-    legacy_key = r"git\s+push"
-    for description in ("git force push (rewrites remote history)",
-                        "git force push short flag (rewrites remote history)"):
-        assert legacy_key in _approval_key_aliases(description), description
-        assert description in _approval_key_aliases(legacy_key), description
+    start = time.monotonic()
+    assert detect_dangerous_command("git push origin main " + unit * 200) == (False, None, None)
+    assert time.monotonic() - start < 2

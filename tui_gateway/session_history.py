@@ -298,7 +298,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
-    from agent.message_metadata import withheld_prompt_text
+    from agent.message_metadata import is_inflight_restatement, withheld_prompt_text
 
     messages = []
     tool_call_args = {}
@@ -314,8 +314,9 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if role == "assistant" and m.get("tool_calls"):
             _remember_tool_call_args(m["tool_calls"], tool_call_args)
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch (a held
-        # turn's commentary too: its tool rows still render, labelled from the calls read above).
-        if m.get("display_kind") == "hidden":
+        # turn's commentary too: its tool rows still render, labelled from the calls read above). The
+        # compressor's in-flight-task restatement is the same shape, typed only in display_metadata.
+        if m.get("display_kind") == "hidden" or is_inflight_restatement(m):
             continue
         content_text = _user_image_display_text(m.get("content")) if role == "user" else None
         if content_text is None:

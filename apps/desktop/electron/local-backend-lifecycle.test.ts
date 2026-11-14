@@ -144,6 +144,9 @@ test('the quit barrier cancels real first-run startup and waits for both local a
     await Promise.resolve()
   }
 
+  // The final quit is requested from a macrotask, never from the microtasks of a before-quit emit.
+  assert.equal(finalQuit.mock.calls.length, 0)
+  await new Promise<void>(done => setImmediate(done))
   assert.equal(finalQuit.mock.calls.length, 1)
   assert.equal(quit.begin([]), false)
 })

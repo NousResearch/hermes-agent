@@ -197,8 +197,13 @@ export async function uploadComposerAttachment(
 
       const attachedPath = result.path || path
 
+      // `result.mime` is the canonical staging reply's only trace of the image: that RPC writes the
+      // file and queues nothing, so the property must ride into submit's `attachments`. A legacy
+      // reply carries none and its prompt.submit refuses the key (#148682); taking the reply's value
+      // unconditionally also clears the mime an earlier canonical stage left on this re-staged chip.
       return {
         ...attachment,
+        mime: result.mime,
         attachedSessionId: liveSessionId,
         label: attachedPath ? pathLabel(attachedPath) : attachment.label,
         path: attachedPath,

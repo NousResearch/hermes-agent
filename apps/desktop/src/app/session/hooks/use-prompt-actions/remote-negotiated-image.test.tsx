@@ -61,7 +61,15 @@ test.each(['public-canonical', 'public-legacy', 'native-canonical'] as const)('%
       }
 
       if (frame.method === 'image.attach_bytes') {
-        result = { attached: true, path: '/gateway/cache/images/fixture.png', mime: 'image/png' }
+        // Only the canonical staging RPC reports the staged file's type: it queues nothing, so the
+        // client must declare the image on submit. A legacy `/api/ws` server answers from
+        // `AttachedImageResult` (no `mime`) after queuing the image inside the session, and its
+        // `prompt.submit` refuses `attachments` as version skew (#144186).
+        result = {
+          attached: true,
+          path: '/gateway/cache/images/fixture.png',
+          ...(canonical ? { mime: 'image/png' } : {})
+        }
       }
 
       if (frame.method === 'prompt.submit') {

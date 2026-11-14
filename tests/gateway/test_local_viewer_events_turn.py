@@ -23,7 +23,7 @@ def _turn(platform, published, *, live=None):
         streaming_tts_consumer_holder=[None], stream_consumer_holder=[None],
         interim_assistant_messages_enabled=False, user_config={},
         resolve_display_setting=lambda *a: None, _run_still_current=lambda: True,
-        _voice_ack_guild=[None], _native_slack_task_cards=False, progress_mode='all',
+        _voice_ack_guild=[None], _native_task_cards=False, progress_mode='all',
         session_id='s', progress_queue=None, _live_status_adapter=None, _live_status_mode='off',
         log_queue=None,
     )

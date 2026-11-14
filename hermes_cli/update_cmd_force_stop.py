@@ -61,13 +61,13 @@ def _checkpoint_homes(entry: dict) -> list[Path]:
 def _kill_scope(unit: str) -> None:
     """SIGKILL every process in a worker scope: what a timed-out ``systemctl stop`` left (a detached
     child ignoring SIGTERM). Same user bus and client as ``process_registry._stop_systemd_unit``."""
-    import shutil
     import subprocess
+    from hermes_platform.resolver import locate_command
     from tools.process_registry import systemd_user_bus_env
-    if (binary := shutil.which("systemctl")) is None:
+    if not (found := locate_command("systemctl").command):
         return
     with suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run([binary, "--user", "kill", "--signal=SIGKILL", unit], capture_output=True, timeout=15,
+        subprocess.run([*found, "--user", "kill", "--signal=SIGKILL", unit], capture_output=True, timeout=15,
                        stdin=subprocess.DEVNULL, env=systemd_user_bus_env(), check=False)
 
 

@@ -226,6 +226,16 @@ def _model_cfg() -> dict:
     return model_cfg if isinstance(model_cfg, dict) else {}
 
 
+def bedrock_is_configured_provider() -> bool:
+    """True when ``model.provider`` is Bedrock (or an alias). The doctor then keeps boto3's EC2 metadata
+    lookup: on an instance-role host that is where the Bedrock credential comes from (#153434)."""
+    provider = str(_model_cfg().get("provider") or "").strip()
+    if not provider:
+        return False
+    from hermes_cli.providers import normalize_provider
+    return normalize_provider(provider) == "bedrock"
+
+
 def _apikey_request(key: str, base_env, default_url) -> tuple:
     """(effective base, models URL, headers) for a generic Bearer-auth probe, with the per-vendor rewrites."""
     base = os.getenv(base_env, "") if base_env else ""

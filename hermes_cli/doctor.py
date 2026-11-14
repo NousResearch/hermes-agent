@@ -21,7 +21,9 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
-from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
+from hermes_cli.doctor_connectivity import (
+    _has_healthy_oauth_fallback_for_apikey_provider, bedrock_is_configured_provider, build_probes, run_probes,
+)
 from hermes_cli.doctor_tools import _safe_which
 
 from hermes_cli.doctor_config import (
@@ -101,7 +103,9 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     probes = build_probes()
     # Single status line so users see something happening; ``\r`` clears it once results land.
     print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
-    results = run_probes(probes)
+    # IMDS stays off (a multi-second timeout off EC2) unless Bedrock is the provider: an EC2 instance role is
+    # then the credential, and a credential from env or a profile is found before boto3 ever asks IMDS.
+    results = run_probes(probes, aws_imds=bedrock_is_configured_provider())
     print("\r" + " " * 70 + "\r", end="")
     for r in results:
         for glyph, label, detail in r.lines:

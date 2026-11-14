@@ -29,7 +29,7 @@ const buildCtx = (options: { canonical?: boolean; mutate?: () => Promise<unknown
       }
 
       if (method === 'session.delete') {
-        return { deleted: 'sid-1' }
+        return { deleted: params?.session_id }
       }
 
       return {}
@@ -44,7 +44,7 @@ const buildCtx = (options: { canonical?: boolean; mutate?: () => Promise<unknown
     sid: 'sid-1',
     stale: () => false,
     transcript: { page: vi.fn(), panel: vi.fn(), sys },
-    ui: { destructiveSlashConfirm: false }
+    ui: { destructiveSlashConfirm: false, storedSid: 'stored-1' }
   }
 
   const run = (arg: string) => quit.run(arg, ctx as never, `/quit ${arg}`.trim())
@@ -120,13 +120,31 @@ describe('/quit --delete', () => {
     expect(sys).toHaveBeenCalledWith(t('slashCmd.core.quit.deleteUsage'))
   })
 
-  it('falls back to session.delete on a legacy transport', async () => {
+  it('closes the live session, then deletes the stored id on a legacy transport', async () => {
     const { calls, die, run } = buildCtx({ canonical: false })
 
     run('--delete')
     await flush()
 
-    expect(calls.map(call => call.method)).toEqual(['session.delete'])
+    // `session.delete` takes the stored id and refuses a session still live here (4023), so the
+    // runtime view is closed first — the order the switcher's ^d uses.
+    expect(calls).toEqual([
+      { method: 'session.close', params: { session_id: 'sid-1' } },
+      { method: 'session.delete', params: { session_id: 'stored-1' } }
+    ])
     expect(die).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays in the session when a legacy delete is refused', async () => {
+    const { ctx, die, run, sys } = buildCtx({ canonical: false })
+
+    ctx.gateway.gw.request = vi.fn(async (method: string) =>
+      method === 'session.delete' ? Promise.reject(Object.assign(new Error('live'), { data: { reason: 'live' } })) : {}
+    )
+    run('--delete')
+    await flush()
+
+    expect(die).not.toHaveBeenCalled()
+    expect(sys).toHaveBeenCalledWith(t('slashCmd.core.quit.deleteFailed', 'live'))
   })
 })

@@ -191,17 +191,31 @@ export const coreCommands: SlashCommand[] = [
         ctx.transcript.sys(t('slashCmd.core.quit.deleteFailed', reason))
       }
 
+      // The legacy sidecar's `session.delete` is the stored-row verb: it deletes by the STORED id
+      // (`SessionDeleteParams`), while `ui.sid` is this process's runtime id, and it refuses (4023) a
+      // session this process still holds live. So close the live view first — the `session.close` the
+      // switcher's ^d sends, which pops it out of the live set — then delete the stored row that
+      // leaves behind. A close that fails for its own reasons is not fatal: the delete below is what
+      // reports the outcome, and it succeeds whenever the session was not live after all.
+      const deleteLegacy = async (): Promise<boolean> => {
+        const target = ctx.ui.storedSid || sid
+
+        await gw.request('session.close', { session_id: sid }).catch(() => null)
+
+        const raw = await gw.request<SessionDeleteResponse>('session.delete', { session_id: target })
+
+        return asRpcResult<SessionDeleteResponse>(raw)?.deleted === target
+      }
+
       const finish = () => {
         patchUiState({ status: t('slashCmd.core.quit.deleting') })
 
         // The shared gateway has no `session.delete`: its delete is the revision-fenced
         // `session.mutate operation=delete` over the whole lineage, the same verb the session
-        // picker's delete and the classic CLI send. Legacy transports keep `session.delete`.
+        // picker's delete and the classic CLI send.
         const deleted = gw.isCanonical
           ? mutateCanonical(gw, sid, 'delete', {}, ctx.stale).then(mutation => Boolean(mutation?.result))
-          : gw
-              .request<SessionDeleteResponse>('session.delete', { session_id: sid })
-              .then(raw => asRpcResult<SessionDeleteResponse>(raw)?.deleted === sid)
+          : deleteLegacy()
 
         deleted
           .then(ok => {

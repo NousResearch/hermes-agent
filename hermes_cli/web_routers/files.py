@@ -950,7 +950,7 @@ def upload_managed_file(payload: ManagedFileUpload, request: Request):
         atomic_write_bytes(target, data)
         if owner is not None:  # os.replace swaps in our uid; keep an overwritten file's owner/group
             with contextlib.suppress(OSError):
-                os.chown(target, owner.st_uid, owner.st_gid)
+                os.chown(target, owner.st_uid, owner.st_gid, follow_symlinks=False)  # a swapped-in link: never chown its target
     return _managed_write_result(policy, target, display_path)
 
 

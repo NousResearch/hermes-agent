@@ -77,20 +77,31 @@ def _installed(path: list[str]) -> dict:
     return found
 
 
-def _unmet(specs: Iterable[str], installed: dict, *, extra: str = "") -> list[str]:
+def _unmet(specs: Iterable[str], installed: dict, *, extra: str = "",
+           walked: set[tuple[str, str]] | None = None) -> list[str]:
     from packaging.requirements import Requirement
     from packaging.utils import canonicalize_name
     from packaging.version import InvalidVersion, Version
 
+    walked = set() if walked is None else walked
     missing = []
     for spec in specs:
         requirement = Requirement(spec)
         if requirement.marker is not None and not requirement.marker.evaluate({"extra": extra}):
             continue
-        distribution = installed.get(canonicalize_name(requirement.name))
+        name = canonicalize_name(requirement.name)
+        distribution = installed.get(name)
         if distribution is None:
             missing.append(str(requirement))
             continue
+        # ``dist[feature]`` asks for more than ``dist``: what the installed distribution itself requires
+        # for that feature has to be importable too. *walked* ends cycles between distributions' extras.
+        for feature in sorted(requirement.extras):
+            edge = (name, canonicalize_name(feature))
+            if edge in walked:
+                continue
+            walked.add(edge)
+            missing.extend(_unmet(_feature_requirements(distribution, feature), installed, walked=walked))
         try:
             version = Version(distribution.version)
         except InvalidVersion:
@@ -98,6 +109,21 @@ def _unmet(specs: Iterable[str], installed: dict, *, extra: str = "") -> list[st
         if requirement.specifier and not requirement.specifier.contains(version, prereleases=True):
             missing.append(f"{requirement} (found {distribution.version})")
     return missing
+
+
+def _feature_requirements(distribution, feature: str) -> list[str]:
+    """What *distribution* requires only for *feature*, without the markers that selected it."""
+    from packaging.requirements import Requirement
+
+    wanted = []
+    for spec in distribution.requires or ():
+        requirement = Requirement(spec)
+        marker = requirement.marker
+        if marker is None or marker.evaluate({"extra": ""}) or not marker.evaluate({"extra": feature}):
+            continue
+        requirement.marker = None
+        wanted.append(str(requirement))
+    return wanted
 
 
 def _extra_requirements(extra: str, installed: dict, seen: set[str]) -> list[str] | None:

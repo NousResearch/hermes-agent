@@ -1,6 +1,7 @@
 """A Nix package's environment is admitted against, never rebuilt (pm.nix_admission)."""
 from __future__ import annotations
 
+import shutil
 import json
 import os
 import subprocess
@@ -202,6 +203,35 @@ def test_missing_reports_extras_against_the_installed_core(tmp_path, monkeypatch
     (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["odd-dist>=1", "present-dist>=2"]\n')
     # A version no specifier can be compared with is present, not provably wrong.
     assert nix_admission.missing((), [plugin]) == ["present-dist>=2 (found 1.5) (plugin 'plugin')"]
+
+
+def test_a_requested_extra_of_a_present_distribution_needs_its_own_requirements(tmp_path, monkeypatch):
+    from pm import nix_admission
+
+    site = tmp_path / "site"
+    _distribution(site, "nix-transport", "1.0", [
+        "Provides-Extra: socks",
+        "Provides-Extra: tls",
+        "Requires-Dist: nix-socks-helper>=2; extra == 'socks'",
+        "Requires-Dist: nix-tls-helper>=1; extra == 'tls'",
+        "Requires-Dist: nix-transport[socks]; extra == 'socks'",
+    ])
+    monkeypatch.setenv(nix_admission.APPLICATION_PATH_ENV, str(site))
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["nix-transport[socks]>=1"]\n')
+
+    # Present without the feature's requirement: refused, and only for the feature that was asked for.
+    assert nix_admission.missing((), [plugin]) == ["nix-socks-helper>=2 (plugin 'plugin')"]
+    _distribution(site, "nix-socks-helper", "1.0")
+    assert nix_admission.missing((), [plugin]) == ["nix-socks-helper>=2 (found 1.0) (plugin 'plugin')"]
+    shutil.rmtree(site / "nix_socks_helper-1.0.dist-info")
+    _distribution(site, "nix-socks-helper", "2.0")
+    assert nix_admission.missing((), [plugin]) == []
+
+    # The plain distribution keeps being admitted whatever its extras would need.
+    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["nix-transport>=1"]\n')
+    assert nix_admission.missing((), [plugin]) == []
 
 
 def test_a_member_that_excludes_the_running_python_is_reported(tmp_path, monkeypatch):

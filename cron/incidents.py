@@ -40,7 +40,11 @@ _FAILURE_TYPE_ORDER = (
     ("agent", ("agent", "model", "provider", "inference")),
 )
 MAX_ERROR_CHARS = 500
-_MAX_SIGNATURE_ERROR_CHARS = 200
+# A failing script reports its exit code and traceback, so every exception it raises shares the head;
+# the exception is the last line. The stored text keeps both ends. The signature keeps the head and,
+# for a multi-line error, the start of the last line. Not the tail: a per-request id or a long URL
+# there would split one failure into an incident per run.
+_ERROR_END_CHARS = 200
 # Measured durations ("idle for 603s", "retry in 12.5 seconds") differ run to run for the same
 # failure, so they are masked out of the signature. Status codes and other numbers still count.
 _DURATION_RE = re.compile(
@@ -125,12 +129,29 @@ def _redact_error(error: str) -> str:
         text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:
         pass
-    return text[:MAX_ERROR_CHARS]
+    return _head_and_tail(text, MAX_ERROR_CHARS, " … ")
+
+
+def _head_and_tail(text: str, limit: int, sep: str = "") -> str:
+    """``text`` bounded to ``limit`` chars by dropping the middle (see ``_ERROR_END_CHARS``)."""
+    if len(text) <= limit:
+        return text
+    return text[:_ERROR_END_CHARS] + sep + text[len(text) - (limit - _ERROR_END_CHARS - len(sep)):]
+
+
+def _signature_text(error: str) -> str:
+    return _DURATION_RE.sub("#s", _normalize_error(error))
 
 
 def _error_signature(job_id: str, error: str) -> str:
-    """Dedup key: stable for same job + same normalized error prefix."""
-    normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
+    """Dedup key: stable for same job + same normalized error head; a multi-line error longer than
+    the head (a traceback) also signs the start of its last line."""
+    normalized = _signature_text(error)
+    if len(normalized) > _ERROR_END_CHARS:
+        _, newline, last_line = str(error or "").rstrip().rpartition("\n")
+        normalized = normalized[:_ERROR_END_CHARS]
+        if newline:
+            normalized += "\n" + _signature_text(last_line)[:_ERROR_END_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 

@@ -145,6 +145,67 @@ def test_error_change_mints_new_incident(monkeypatch, tmp_path):
     assert inc.count_incidents() == 2
 
 
+# A failing no_agent script reports its exit code and the traceback, so two different exceptions
+# from the same entry point share every character up to the last line.
+_SCRIPT_TRACEBACK = (
+    "Script exited with code 1\nstderr:\nTraceback (most recent call last):\n"
+    '  File "/srv/jobs/sync_orders.py", line 88, in <module>\n    main()\n'
+    '  File "/srv/jobs/sync_orders.py", line 79, in main\n    sync(since=last_run())\n'
+    '  File "/srv/jobs/sync_orders.py", line 71, in sync\n    rows = fetch_orders(since)\n'
+    '  File "/srv/jobs/sync_orders.py", line 52, in fetch_orders\n'
+    '    page = _get("/orders", since)\n'
+    '  File "/srv/jobs/sync_orders.py", line 40, in _get\n    resp.raise_for_status()\n'
+    "requests.exceptions.HTTPError: "
+)
+_SERVER_ERROR = _SCRIPT_TRACEBACK + "500 Server Error: Internal Server Error for url: /orders"
+_AUTH_ERROR = _SCRIPT_TRACEBACK + "401 Client Error: Unauthorized for url: /orders"
+
+
+def test_error_change_in_the_last_line_mints_new_incident(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+
+    id1, _ = inc.upsert_incident("job-1", _SERVER_ERROR)
+    id2, new2 = inc.upsert_incident("job-1", _AUTH_ERROR)
+
+    assert id1 != id2, "an acked 500 must not silence a later 401 from the same script"
+    assert new2 is True
+
+
+def test_stored_error_keeps_the_exception_line(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+
+    inc_id, _ = inc.upsert_incident("job-1", _AUTH_ERROR)
+
+    stored = inc.get_incident(inc_id)["error"]
+    assert len(stored) <= inc.MAX_ERROR_CHARS
+    assert stored.startswith("Script exited with code 1")
+    assert stored.endswith("401 Client Error: Unauthorized for url: /orders")
+
+
+def test_long_url_on_the_last_line_does_not_hide_the_status(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    url = "https://api.example.invalid/orders?cursor=" + "x" * 300
+    server_error = _SCRIPT_TRACEBACK + "500 Server Error: Internal Server Error for url: " + url
+    auth_error = _SCRIPT_TRACEBACK + "401 Client Error: Unauthorized for url: " + url
+
+    id1, _ = inc.upsert_incident("job-1", server_error)
+    id2, new2 = inc.upsert_incident("job-1", server_error)
+    id3, new3 = inc.upsert_incident("job-1", auth_error)
+
+    assert (id2, new2) == (id1, False)
+    assert id3 != id1 and new3 is True, "the tail is all URL here; the status starts the line"
+
+
+def test_single_line_error_signs_on_its_head_only(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    error = "RuntimeError: provider returned 429: " + "upstream model overloaded, retry later. " * 10
+
+    id1, _ = inc.upsert_incident("job-1", error + "(ref: 00000000-0000-0000-0000-000000000001)")
+    id2, new2 = inc.upsert_incident("job-1", error + "(ref: 00000000-0000-0000-0000-000000000002)")
+
+    assert (id2, new2) == (id1, False), "a per-request id past the head must not mint an incident per run"
+
+
 # ── Redaction / classification ─────────────────────────────────────────────
 
 

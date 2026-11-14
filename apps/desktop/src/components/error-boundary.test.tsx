@@ -318,3 +318,40 @@ describe('ErrorBoundary portal teardown recovery', () => {
     expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(1)
   })
 })
+
+describe('ErrorBoundary resetKey', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('clears a caught error when the key changes, and keeps it while the key is stable', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const box: { error: Error | null } = { error: new Error('boom') }
+    const Bomb = makeBomb(box)
+    const fallback = () => <div>fallback</div>
+
+    const { rerender } = render(
+      <ErrorBoundary fallback={fallback} resetKey="/capabilities">
+        <Bomb />
+      </ErrorBoundary>
+    )
+
+    expect(screen.getByText('fallback')).toBeTruthy()
+
+    box.error = null
+    rerender(
+      <ErrorBoundary fallback={fallback} resetKey="/capabilities">
+        <Bomb />
+      </ErrorBoundary>
+    )
+    expect(screen.getByText('fallback')).toBeTruthy()
+
+    rerender(
+      <ErrorBoundary fallback={fallback} resetKey="/messaging">
+        <Bomb />
+      </ErrorBoundary>
+    )
+    expect(screen.getByText('recovered')).toBeTruthy()
+  })
+})

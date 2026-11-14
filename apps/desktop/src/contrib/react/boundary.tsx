@@ -1,4 +1,5 @@
-import { createElement, type ReactNode } from 'react'
+import { createElement, type ReactNode, useContext } from 'react'
+import { UNSAFE_LocationContext } from 'react-router'
 
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
@@ -36,6 +37,12 @@ export function ContribRender({ render }: ContribRenderProps) {
  * every other failure, not a raw stack dump.
  */
 export function ContribBoundary({ children, id, variant = 'pane' }: ContribBoundaryProps) {
+  // Pane/page contributions (the workspace pane hosts every page) leave their
+  // error state when the user navigates elsewhere. Without this, one crashing
+  // page (Capabilities on a browser missing an API) left every other screen
+  // showing the same error until a full relaunch. Null outside a router.
+  const pathname = useContext(UNSAFE_LocationContext)?.location.pathname
+
   return (
     <ErrorBoundary
       fallback={({ error, reset }) =>
@@ -62,6 +69,7 @@ export function ContribBoundary({ children, id, variant = 'pane' }: ContribBound
         )
       }
       label={`contrib:${id}`}
+      resetKey={pathname}
     >
       {children}
     </ErrorBoundary>

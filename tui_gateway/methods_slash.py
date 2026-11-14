@@ -506,6 +506,8 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
         if is_compress:
             return "pending", "compression still running in the background; the transcript will refresh when it finishes"
         return "failed", f"compute-host {route_name} failed: timed out"
+    except SessionNotOwned:
+        raise  # refused before the host was contacted: every route answers 4090, not a host failure
     except Exception as exc:
         return "failed", f"compute-host {route_name} failed: {exc}"
     if ack.get("type") in {"control.error", "error"}:

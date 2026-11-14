@@ -450,6 +450,8 @@ def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
         return _ok(rid, {"status": "pending", "turn_isolation": True,
                          "message": ("compression still running in the background; "
                                      "the transcript will refresh when it finishes")})
+    except SessionNotOwned:
+        raise  # refused before the host was contacted: the dispatcher answers 4090, not a host failure
     except Exception as exc:
         return _err(rid, 5019, f"compute-host compress failed: {exc}")
     if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:

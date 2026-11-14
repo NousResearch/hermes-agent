@@ -2567,10 +2567,16 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
-    if early is not None:
-        return early
-    from run_agent import AIAgent
+    from cron.scheduler_unrun_session import end_unrun_owner_session
+    try:  # preparation and the agent import run before the main try/finally below
+        early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+        if early is not None:
+            end_unrun_owner_session(owner_execution, job_id)
+            return early
+        from run_agent import AIAgent
+    except BaseException:
+        end_unrun_owner_session(owner_execution, job_id)
+        raise
 
     _cron_session_id = (owner_execution[1] if owner_execution is not None else
                         f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
@@ -2665,6 +2671,8 @@ def run_job(
         if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
                                    workdir=scope.workdir)
+        elif _session_db is None:  # blocked setup or a failure before the agent: nothing else ends it
+            end_unrun_owner_session(owner_execution, job_id)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
         # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held

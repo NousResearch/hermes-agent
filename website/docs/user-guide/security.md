@@ -193,24 +193,23 @@ Deny rules are a shell-command policy, not a complete shell interpreter or an OS
 
 ### Per-Tool Approval Policy (`approvals.tools`)
 
-Command globs cover the terminal, but the agent has many other tools — `send_message`, `write_file`, browser automation, every connected MCP tool. `approvals.tools` lets you set a per-tool permission level, the same three-way control Perplexity Computer ships for its connectors: **allow** (default), **ask** (pause for your approval before every run), or **deny** (never).
+Command globs cover the terminal, but the agent has many other tools: `send_message`, `write_file`, browser automation, every connected MCP tool. `approvals.tools` sets a permission level per tool: **allow** (default), **ask** (pause for your approval before every run), or **deny** (never).
 
 ```yaml
 approvals:
   tools:
-    send_message: ask       # always confirm before messages leave your account
-    "mcp_gmail_*": ask      # globs work — gate a whole MCP connector at once
-    browser_exec: deny      # never allow, even under yolo
+    send_message: ask       # confirm before messages leave your account
+    "mcp_gmail_*": ask      # globs work: gate a whole MCP server at once
+    browser_navigate: deny  # never allow, even under yolo
 ```
 
 Details:
 
 - Keys are tool names or [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs, matched case-insensitively. An exact name beats a glob; globs are checked in the order they appear.
-- Accepted values: `allow` (aliases `auto`), `ask` (aliases `always`, `always_ask`), `deny` (aliases `never`, `block`). Unknown values are ignored.
-- **`ask`** routes through the same approval gate as dangerous commands: interactive prompt on the CLI, native buttons on gateway platforms, with `[o]nce / [s]ession / [a]lways / [d]eny` persistence per tool. Answering "always" for `send_message` never auto-approves any other tool.
-- Because an ask rule is an explicit instruction naming that tool, it fires **even under `--yolo` / `/yolo`** — "run everything unattended, but always ask before this one" is the intended pattern. `deny` likewise beats every bypass.
-- Recurring/unattended contexts: cron jobs follow `approvals.cron_mode` (default `deny`), single-query `-q` runs follow `approvals.single_query_mode`, and a context with no human to answer fails closed.
-- Enforcement happens at the tool dispatcher — the choke point every tool call funnels through — so built-in tools, MCP tools, and plugin tools are all covered. Note the terminal tool has its own richer command-level pipeline; use `approvals.deny` / the dangerous-pattern gate for command granularity, and `terminal: ask` only if you want every shell command gated.
+- Values are exactly `allow`, `ask` or `deny`. An unknown value, a non-mapping `approvals.tools`, or a config read error **blocks** the call with a message naming the problem, so a policy you wrote is never silently skipped.
+- **`ask`** uses the same approval prompt as dangerous commands (CLI prompt, native buttons on messaging platforms). The prompt shows the tool's arguments (secrets redacted), and a `session` / `always` answer covers only that exact call: approving `send_message` to Alice does not approve a message to Bob.
+- An ask rule names the tool explicitly, so it fires **even under `--yolo` / `/yolo` / `approvals.mode: off`**, and it is never auto-approved: cron jobs, `-q` runs and other contexts with nobody to answer block the call (`cron_mode: approve` does not cover it). `deny` beats every bypass too.
+- Both tool dispatch paths enforce the policy on the final arguments (after plugin hooks): the agent loop, and direct calls from `execute_code` scripts, Tool Search `tool_call`, and connector batches. Built-in, MCP and plugin tools are all covered. The terminal tool keeps its own command-level pipeline; use `approvals.deny` for command granularity, and `terminal: ask` only if you want every shell command gated.
 
 ### Approval Timeout
 

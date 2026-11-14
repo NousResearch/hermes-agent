@@ -72,3 +72,18 @@ def test_symlinked_credential_dir_and_file_stay_hidden(home_client):
     resp = client.post("/api/files/upload", json={"path": str(home / "keys" / "authorized_keys"), "data_url": data_url})
     assert resp.status_code == 403, resp.status_code
     assert not (home / "keys" / "authorized_keys").exists()
+
+
+@pytest.mark.platforms("macos")
+def test_case_variant_of_symlinked_store_is_refused(home_client):
+    """APFS opens ``~/KEYS/id_rsa`` for ``~/keys/id_rsa``; realpath keeps the typed case."""
+    client, home = home_client
+    (home / "keys").mkdir()
+    (home / "keys" / "id_rsa").write_text("secret")
+    _link(home / ".ssh", home / "keys", is_dir=True)
+    if not (home / "KEYS" / "id_rsa").exists():
+        pytest.skip("case-sensitive volume")
+
+    for route in ("/api/files/read", "/api/fs/read-text"):
+        resp = client.get(route, params={"path": str(home / "KEYS" / "id_rsa")})
+        assert resp.status_code == 403, (route, resp.status_code)

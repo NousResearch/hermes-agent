@@ -28,8 +28,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from agent.file_safety import (
-    HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, get_nt_namespace_error, get_write_denied_error,
-    is_write_approval_required, resolved_home_credential_stores,
+    HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, deny_key, deny_path_under, get_nt_namespace_error,
+    get_write_denied_error, is_write_approval_required, resolved_home_credential_stores,
 )
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -153,7 +153,7 @@ def _is_local_sensitive_path(
         real = real if real is not None else os.path.realpath(path)
     except (OSError, ValueError):
         return True  # fail closed: a path that cannot be resolved cannot be cleared
-    return real in files or any(real == d or real.startswith(d.rstrip(os.sep) + os.sep) for d in dirs)
+    return deny_key(real) in {deny_key(f) for f in files} or any(deny_path_under(real, d) for d in dirs)
 
 
 def _scan_entry_realpath(base: str, entry: os.DirEntry) -> Optional[str]:

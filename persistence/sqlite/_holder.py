@@ -42,6 +42,7 @@ from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
 from hermes_state_lockowners import log_write_lock_holders
+from hermes_state_write import WriterMutexTimeout, write_site, writer_mutex_until
 from hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement, _read_sqlite_application_id, _stat_sqlite_sidecar_identity, _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, quarantine_cross_process_lock, quarantine_invalid_state_db, RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
@@ -822,7 +823,7 @@ class StoreHolder:
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
             try:
-                with self._lock:
+                with writer_mutex_until(self._lock, deadline, db=self, site=write_site(fn)):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
@@ -844,6 +845,9 @@ class StoreHolder:
                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
                     _try_incremental_merge_fts(self)
                 return result
+            except WriterMutexTimeout:
+                # No transaction began; preserve local contention attribution and never replay it.
+                raise
             except (SessionCompressionInProgressError, CompressionInProgress):
                 # Transient (see _COMPRESSION_BUSY_WAIT_S): a steer landing mid-compression must not abort.
                 # A live foreign compression lock is transient: the compressor publishes in a couple of
@@ -1455,10 +1459,11 @@ class StoreHolder:
             # close() ran: enqueueing would drop the delta silently, so apply inline.
             _apply_token_delta(self, session_id, kwargs)
 
-    def _apply_claimed_batch(self, batch) -> None:
-        """Apply a batch whose ``busy`` flag the caller already claimed, then release."""
+    def _apply_claimed_batch(self, batch) -> bool:
+        """Apply a batch whose ``busy`` flag the caller already claimed, then release. False when part
+        of it was requeued (see ``_apply_token_batch``)."""
         try:
-            self._apply_token_batch(batch)
+            return self._apply_token_batch(batch)
         finally:
             with self._token_queue_cond:
                 self._token_writer_busy = False
@@ -1489,7 +1494,7 @@ class StoreHolder:
                     return False
                 self._token_queue_cond.wait(remaining)
         if batch:
-            self._apply_claimed_batch(batch)
+            return self._apply_claimed_batch(batch)
         return True
 
     def flush_for_read(self) -> bool:
@@ -1525,20 +1530,30 @@ class StoreHolder:
                 self._token_queue.clear()
             self._apply_claimed_batch(batch)
 
-    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
-        """Apply queued deltas in order, coalescing where safe. Never raises."""
+    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> bool:
+        """Apply queued deltas in order, coalescing where safe. Never raises. False when a delta was
+        handed back to the queue: a write refused on the in-process writer mutex (``WriterMutexTimeout``
+        is raised before BEGIN, so nothing ran) goes back to the FRONT with everything after it, in
+        order, for the next pass. Dropping it would lose usage the old unbounded mutex wait kept."""
         try:
             coalesced = self._coalesce_token_deltas(batch)
         except Exception as exc:  # health: allow BLE001 -- coalescing only optimizes; the raw batch applies
             # Coalescing must never kill the writer; the merge is only an optimization.
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
             coalesced = batch
-        for session_id, kwargs in coalesced:
+        for index, (session_id, kwargs) in enumerate(coalesced):
             try:
                 _apply_token_delta(self, session_id, kwargs)
+            except WriterMutexTimeout:
+                with self._token_queue_cond:
+                    self._token_queue.extendleft(reversed(coalesced[index:]))
+                logger.debug("async token accounting: writer mutex busy; %d delta(s) requeued",
+                             len(coalesced) - index)
+                return False
             except Exception as exc:  # health: allow BLE001 -- one failed delta is logged; the batch goes on
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
+        return True
 
     def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across
@@ -1595,7 +1610,16 @@ class StoreHolder:
                 self._token_writer_busy = True
                 self._token_queue.clear()
         if batch:
-            self._apply_claimed_batch(batch)
+            # A requeue here means the writer mutex stayed busy past the write patience; close()
+            # takes that same mutex next without a bound, so retrying keeps the old wait-it-out
+            # behaviour instead of dropping the deltas at shutdown.
+            while not self._apply_claimed_batch(batch):
+                with self._token_queue_cond:
+                    if self._token_writer_busy or not self._token_queue:
+                        return
+                    self._token_writer_busy = True
+                    batch = list(self._token_queue)
+                    self._token_queue.clear()
 
     def _drain_token_queue_at_exit(self) -> None:
         with contextlib.suppress(Exception):  # never fatal at interpreter shutdown

@@ -146,6 +146,15 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
+def _same_existing_file(path: str, other: str) -> bool:
+    """Whether *path* names the existing file *other*: on a case-insensitive filesystem
+    ``Config.YAML`` is ``config.yaml`` even though the strings differ."""
+    try:
+        return os.path.samefile(path, other)
+    except (OSError, ValueError):
+        return False
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     # NT/device-namespace guard on the RAW string, BEFORE the task-base join:
@@ -173,7 +182,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and deny_key(hermes_config) in keys:
+    if hermes_config and (deny_key(hermes_config) in keys or _same_existing_file(candidates[0], hermes_config)):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

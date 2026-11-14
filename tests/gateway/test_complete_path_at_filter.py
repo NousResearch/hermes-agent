@@ -82,6 +82,33 @@ def test_at_file_colon_only_files(tmp_path, monkeypatch):
     assert not any(t == "@file:docs/" for t in texts)
 
 
+def test_unrelatable_entry_does_not_drop_completion_response(tmp_path, monkeypatch):
+    """Windows ``nul`` resolves to a device mount and cannot be made relative to the cwd."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "nul").write_text("device-name candidate")
+    (tmp_path / "normal.txt").write_text("x")
+    real_relpath = server.os.path.relpath
+
+    def windows_relpath(path, start):
+        if server.os.path.basename(path).lower() == "nul":
+            raise ValueError("path is on mount '\\\\.\\nul', start on mount 'C:'")
+        return real_relpath(path, start)
+
+    monkeypatch.setattr(server.os.path, "relpath", windows_relpath)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "complete.path",
+            "params": {"word": "@file:", "cwd": str(tmp_path)},
+        }
+    )
+    texts = [item["text"] for item in resp["result"]["items"]]
+
+    assert "@file:normal.txt" in texts
+    assert "@file:nul" not in texts
+
+
 # ── Non-local terminal backend: the popup must show the backend's tree ──
 
 
@@ -356,5 +383,3 @@ def test_completion_ignores_real_terminal_cwd(tmp_path, monkeypatch):
         f"_completion_cwd resolved to {resolved} instead of {tmp_path} — "
         f"the autouse fixture may not be patching _launch_configured_cwd"
     )
-
-

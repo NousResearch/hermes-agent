@@ -56,3 +56,18 @@ def test_unterminated_heredoc_is_data_until_eof(floors_off):
     command = "cat > notes.txt <<'EOF'\nNever run `rm -rf`."
 
     assert approval.check_all_command_guards(command, "local")["approved"] is True
+
+
+@pytest.mark.parametrize("delimiter,blocked", [("EOF", True), ("'EOF'", False)])
+@pytest.mark.parametrize("nested_command", ["rm notes.txt", "rm -rf /"])
+def test_nested_heredoc_substitution_reaches_command_floors(
+    floors_off, delimiter, blocked, nested_command,
+):
+    command = f"cat > notes.txt <<{delimiter}\n$(printf '%s' `{nested_command}`)\nEOF"
+
+    result = approval.check_all_command_guards(command, "local")
+
+    assert result["approved"] is not blocked
+    assert (approval_floors._match_user_deny_rule(command) is not None) is blocked
+    if nested_command == "rm -rf /":
+        assert detect_hardline_command(command)[0] is blocked

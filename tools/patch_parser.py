@@ -201,6 +201,7 @@ class _Snap(NamedTuple):
     content: Optional[str]
     absent: bool
     sha: Optional[str]
+    oversized: bool = False
 
 
 class _Resolution(NamedTuple):
@@ -281,6 +282,14 @@ def _snapshot_drift(snaps: dict[str, _Snap], file_ops: Any) -> list[str]:
     """Re-read every plan-time disk snapshot. A mismatch refuses; it does not replan."""
     drifted: list[str] = []
     for snap in snaps.values():
+        if snap.oversized:
+            try:
+                digest = file_ops.file_sha256(snap.path)
+            except Exception:  # health: allow BLE001 -- hashing is an untrusted backend boundary
+                digest = None
+            if not digest or digest != snap.sha:
+                drifted.append(f"{snap.path}: source changed after it was read or could not be verified")
+            continue
         try:
             again = file_ops.read_file_raw(snap.path)
         except Exception:  # health: allow BLE001 -- re-read boundary: fail closed with a fixed code; exception text can hold paths/secrets
@@ -328,6 +337,8 @@ class _Overlay:
             return None, "file not found", None
         result = _read_raw(self.file_ops, path)
         _note_disk_read(self.snaps, key, path, result)
+        if getattr(result, "_too_large", False):
+            return None, "file too large", None
         sha = getattr(result, "_content_sha256", None)
         return (None, "READ_ERROR", None) if result.error else (result.content, None, sha)
 
@@ -349,6 +360,8 @@ class _Overlay:
             return "exists"
         if getattr(result, "not_found", False):
             return None
+        if getattr(result, "_too_large", False):
+            return "file too large"
         return "READ_ERROR"
 
     def remove(self, path: str) -> None:
@@ -380,6 +393,17 @@ def _resolve_update(op: PatchOperation, overlay: _Overlay) -> None:
 
 def _resolve_delete(op: PatchOperation, overlay: _Overlay) -> None:
     deleted, delete_err, delete_sha = overlay.read(op.file_path)
+    if delete_err == "file too large":
+        try:
+            delete_sha = overlay.file_ops.file_sha256(op.file_path)
+        except Exception:  # health: allow BLE001 -- fail closed on backend hashing errors
+            delete_sha = None
+        if not delete_sha:
+            overlay.errors.append(f"{op.file_path}: cannot fingerprint oversized file")
+            return
+        key = _overlay_key(op.file_path, overlay.file_ops)
+        overlay.snaps[key] = _Snap(op.file_path, None, False, delete_sha, True)
+        delete_err = None
     if delete_err:
         overlay.errors.append(f"{op.file_path}: file not found for deletion")
         return
@@ -593,6 +617,9 @@ def _commit_planned_update(commit: _Commit, file_ops: Any) -> ApplyResult:
 def _commit_one(commit: _Commit, file_ops: Any) -> tuple[ApplyResult, str, str]:
     """Dispatch a planned mutation. Update never re-enters the planner."""
     op = commit.op
+    if op.operation is OperationType.DELETE and commit.snapshot is None and commit.read_sha:
+        if file_ops.file_sha256(op.file_path) != commit.read_sha:
+            return _fail("oversized source changed or cannot be verified"), "delete", "deleted"
     if op.operation is OperationType.UPDATE:
         return _commit_planned_update(commit, file_ops), "update", "modified"
     handler, verb, bucket = _APPLY_DISPATCH[op.operation]

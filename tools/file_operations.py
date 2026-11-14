@@ -235,6 +235,31 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         self._rg_resolution_cache: dict[str, str] = {}
         self._rg_modified_capability: dict[str, Optional[str]] = {}
 
+    def file_sha256(self, path: str) -> Optional[str]:
+        """Hash regular file bytes without transferring or buffering the file."""
+        path = self._expand_path(path)
+        if self._native_read_enabled():
+            return _native_io.sha256_of(self._native_path(path))
+        quoted = self._escape_shell_arg(path)
+        result = self._exec(f"test -f {quoted} && sha256sum < {quoted}")
+        if result.exit_code != 0:
+            snippet = (
+                "import hashlib, os, stat\n"
+                f"p = {json.dumps(path)}\n"
+                "fd = os.open(p, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))\n"
+                "assert stat.S_ISREG(os.fstat(fd).st_mode)\n"
+                "h = hashlib.sha256()\n"
+                "with os.fdopen(fd, 'rb') as f:\n"
+                "    for chunk in iter(lambda: f.read(1048576), b''):\n"
+                "        h.update(chunk)\n"
+                "print(h.hexdigest())\n"
+            )
+            result = self._exec_python_snippet(snippet)
+        if result.exit_code != 0:
+            return None
+        digest = result.stdout.split()
+        return digest[0] if digest and re.fullmatch(r"[0-9a-f]{64}", digest[0]) else None
+
     def _exec(self, command: str, cwd: str | None = None, timeout: int | None = None,
               stdin_data: str | None = None) -> ExecuteResult:
         """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →

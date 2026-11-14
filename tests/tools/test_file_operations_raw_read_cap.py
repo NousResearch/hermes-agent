@@ -117,7 +117,7 @@ def test_v4a_second_delete_of_an_oversized_file_is_refused(tmp_path, monkeypatch
 def test_v4a_delete_reads_an_oversized_file_once(tmp_path, monkeypatch):
     """Validation keeps the first read's cap verdict instead of reading the file a second time."""
     import tools.file_operations as operations
-    from tools.patch_parser import _validate_operations, parse_v4a_patch
+    from tools.patch_parser import _resolve_operations, parse_v4a_patch
 
     monkeypatch.setattr(operations, "_RAW_READ_MAX_BYTES", 64)
     target = tmp_path / "large.log"
@@ -129,5 +129,5 @@ def test_v4a_delete_reads_an_oversized_file_once(tmp_path, monkeypatch):
     monkeypatch.setattr(ops, "read_file_raw", lambda path: reads.append(path) or real_read(path))
     operations_, err = parse_v4a_patch(f"*** Begin Patch\n*** Delete File: {target}\n*** End Patch\n")
     assert err is None
-    assert _validate_operations(operations_, ops) == []
+    assert _resolve_operations(operations_, ops).errors == []
     assert len(reads) == 1

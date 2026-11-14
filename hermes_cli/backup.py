@@ -27,7 +27,7 @@ from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_integrity import verify_sqlite_integrity
 from hermes_cli.backup_sqlite import _safe_copy_db
-from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
+from hermes_cli.backup_staging import print_backup_residue, prune_backup_staging, staged_backup_file, sweep_backup_folders, warn_legacy_backup_file
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -316,7 +316,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update path so they can never drift.
     """
-    reclaim_backup_staging(hermes_root / _PRE_UPDATE_BACKUPS_DIR)
+    sweep_backup_folders(hermes_root, out_path.parent, _PRE_UPDATE_BACKUPS_DIR)
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
@@ -393,8 +393,8 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
     Staged beside the output zip: /tmp may be a small tmpfs that cannot hold large databases.
     """
     with staged_backup_file(out_path.parent, "snapshot.db") as tmp_db:
+        warn_legacy_backup_file(abs_path)
         if not _snapshot_db(abs_path, tmp_db):
-            warn_legacy_backup_file(abs_path)
             return None
         _write_zip_file(zf, tmp_db, str(rel_path))
         return tmp_db.stat().st_size
@@ -502,7 +502,7 @@ def run_backup(args) -> bool:
 
     try:
         with _backup_operation_lock(hermes_root):
-            return _run_backup_locked(args, hermes_root)
+            return print_backup_residue(_run_backup_locked(args, hermes_root))
     except BackupInProgressError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2) from exc

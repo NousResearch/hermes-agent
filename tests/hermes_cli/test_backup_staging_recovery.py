@@ -539,3 +539,140 @@ def test_failed_stage_creation_preserves_the_existing_path(tmp_path, monkeypatch
         with backup_staging.staged_backup_file(tmp_path, "snapshot.db"):
             pytest.fail("stage creation should fail")
     assert user_file.read_bytes() == b"keep me"
+
+
+def _unmarked_stage(directory: Path) -> Path:
+    """What a hard kill leaves when the run could not lock its stage: a lease with no marker."""
+    stage = directory / (".hermes-backup-stage-" + "a" * 32)
+    stage.mkdir()
+    (stage / "owner.lock").write_bytes(b" ")
+    (stage / "archive.partial").write_bytes(b"stale partial archive")
+    return stage
+
+
+def _run(automatic: bool, output: Path, home: Path) -> None:
+    if automatic:
+        assert backup._write_full_zip_backup(output, home) == output
+    else:
+        assert backup._run_backup_locked(Namespace(output=str(output)), home)
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_unmarked_stage_in_the_home_is_named_and_kept_out_of_the_archive(
+    tmp_path, monkeypatch, caplog, automatic
+):
+    home = _home(tmp_path / "home")
+    stage = _unmarked_stage(home)
+    # A folder that only shares the name is the user's: it has no lease, so it is still archived.
+    lookalike = home / (".hermes-backup-stage-" + "0" * 32)
+    lookalike.mkdir()
+    (lookalike / "archive.partial").write_bytes(b"user data")
+    output = tmp_path / "backup.zip"
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    _run(automatic, output, home)
+    with zipfile.ZipFile(output) as archive:
+        names = archive.namelist()
+    assert not any(stage.name in name for name in names)
+    assert f"{lookalike.name}/archive.partial" in names
+    assert (stage / "archive.partial").read_bytes() == b"stale partial archive"
+    assert str(stage) in caplog.text
+    assert str(lookalike) not in caplog.text
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_a_running_backups_own_unlocked_stage_is_not_reported(tmp_path, monkeypatch, caplog):
+    from hermes_cli import backup_staging
+
+    def refuse_lock(lease):
+        raise OSError(errno.ENOLCK, "locks unavailable")
+
+    monkeypatch.setattr(backup_staging, "_lock", refuse_lock)
+    with backup_staging.staged_backup_file(tmp_path, "snapshot.db") as staged:
+        staged.write_bytes(b"active backup")
+        caplog.clear()
+        assert backup_staging.prune_backup_staging(tmp_path, [staged.parent.name]) == []
+        assert "leftover" not in caplog.text
+        assert staged.read_bytes() == b"active backup"
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_complete_legacy_snapshot_in_the_home_is_named(tmp_path, monkeypatch, caplog, automatic):
+    home = _home(tmp_path / "home")
+    legacy = home / "tmpold123.db"
+    with sqlite3.connect(legacy) as conn:
+        conn.execute("CREATE TABLE data (value TEXT)")
+    output = tmp_path / "backup.zip"
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    _run(automatic, output, home)
+    assert "Possible leftover from an interrupted backup" in caplog.text
+    assert str(legacy) in caplog.text
+    with zipfile.ZipFile(output) as archive:
+        assert legacy.name in archive.namelist()
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_leftovers_outside_the_walk_are_named_and_preserved(
+    tmp_path, monkeypatch, caplog, automatic
+):
+    home = _home(tmp_path / "home")
+    (home / "backups").mkdir()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    leftovers = [
+        home / "backups" / "tmpabc123.db",
+        home / "backups" / ".old.zip.123-456.partial",
+        output_dir / "tmpdef456.db",
+        _unmarked_stage(home / "backups"),
+        _unmarked_stage(output_dir),
+    ]
+    for path in leftovers[:3]:
+        path.write_bytes(b"legacy residue")
+    bystander = output_dir / "notes.db"
+    bystander.write_bytes(b"user file")
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    _run(automatic, output_dir / "backup.zip", home)
+    for path in leftovers:
+        assert str(path) in caplog.text
+        assert path.exists()
+    assert str(bystander) not in caplog.text
+    assert caplog.text.count(str(leftovers[0])) == 1
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_manual_backup_shows_leftovers_in_the_terminal(tmp_path, monkeypatch, capsys):
+    home = _home(tmp_path / "home")
+    legacy = home / "tmpabc123.db"
+    legacy.write_bytes(b"unfinished legacy snapshot")
+    stage = _unmarked_stage(home)
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    monkeypatch.setattr(backup, "get_default_hermes_root", lambda: home)
+    assert not backup.run_backup(Namespace(output=str(tmp_path / "backup.zip")))
+    shown = capsys.readouterr().out
+    assert "SQLite safe copy failed" in shown
+    assert str(legacy) in shown
+    assert str(stage) in shown
+    assert "Inspect" in shown
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_retry_elsewhere_reclaims_a_named_profiles_backup_stages(
+    tmp_path, monkeypatch, automatic
+):
+    home = _home(tmp_path / "home")
+    profile_backups = home / "profiles" / "work" / "backups"
+    profile_backups.mkdir(parents=True)
+    (profile_backups.parent / "config.yaml").write_bytes(b"model: {}\n")
+    # Only a real backups folder directly under a profile is swept, never one reached by a link.
+    stray = home / "profiles" / "notes.txt"
+    stray.write_bytes(b"not a profile")
+    child, snapshot = _child(home, profile_backups / "interrupted.zip")
+    _kill(child)
+    assert snapshot.read_bytes() == b"\0" * 4096
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    _run(automatic, tmp_path / "elsewhere.zip", home)
+    assert not snapshot.parent.exists()
+    assert stray.read_bytes() == b"not a profile"

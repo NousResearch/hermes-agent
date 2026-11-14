@@ -357,22 +357,22 @@ _CFG_DOTTED_RE = re.compile(
 # ``read_file`` emits ``5|      ADS_API_TOKEN: …``, ``grep -n`` emits ``6:      ADS_API_TOKEN: …``
 # and ``cat -n`` emits ``     7\tADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those
 # matched, so the rendered read of a secret-bearing file leaked what the raw text masked.
+# The key is atomic: a keyword run then settles on its rightmost keyword once (linear).
 _CFG_ANCHORED_RE = re.compile(
-    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
+    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?(?>[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*))={_CFG_VALUE}",
     re.IGNORECASE | re.MULTILINE,
 )
 
 # YAML / colon config: bare-key quoted scalars cannot match _JSON_FIELD_RE.
 # Match escaped double quotes, doubled single quotes, or an unquoted token.
 # An unterminated quote masks to end-of-line; no branch crosses LF or CRLF.
-# NOTE(perf): possessive where the successor is disjoint; the leading class
-# stays backtrackable (see _CFG_DOTTED_RE).
+# NOTE(perf): possessive where the successor is disjoint; atomic key (see _CFG_ANCHORED_RE).
 _YAML_CFG_NAMES = (
     r"(?:api[ _.\-]?key|token|secret|passwd|password|credential"
     r"|client[ _.\-]?key[ _.\-]?data|(?:private|signing|encryption|master|hmac)[ _.\-]?key)"
 )
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)"
+    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}(?>[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+))(:[ \t]*+)"
     r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*\"|'(?:''|[^'\r\n])*'|['\"][^\r\n]*|[^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
 )

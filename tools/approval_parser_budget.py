@@ -1,4 +1,4 @@
-"""Work bounds for :mod:`tools.approval_detection`'s shell scanners.
+"""Work bounds for :mod:`tools.approval_detection`'s shell scanners, and the budgeted lexer itself.
 
 Two limits, both failing closed as ``command parser limit exceeded``:
 
@@ -8,12 +8,18 @@ Two limits, both failing closed as ``command parser limit exceeded``:
   can nest, or fail to close, far deeper than the shell ever would. Counting that nesting
   syntactically either hardline-blocks ordinary scripts (one ``\\"`` per line stacked a level) or
   misses spellings that stall; charging the scanners' actual work bounds the stall itself.
+
+``_scan_shell`` (the one quote/escape state machine behind every scanner) and its substitution-end
+finders live here because they are where that work is charged.
 """
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import re
+
+from tools.approval_ansi_c import _is_shell_comment_start
 
 # Scanner steps allowed per detection call: one per character lexed, or handed to shlex by a word
 # pass; ~3.5M steps run per second. A fixed ~1 s plus a linear allowance per command char: ordinary
@@ -81,15 +87,59 @@ def memo(fn, *args):
     return budget.memo[key]
 
 
+_HEREDOC_RE = re.compile(r"""<<(-?)[ \t]*((?:'[^'\n]*'|"[^"\n]*"|\\.|[^\s;&|<>()'"\\])+)""")
+
+
+def _skip_quoted_heredoc_bodies(command: str, newline: int, pending: list) -> int:
+    """Index of the newline ending the last body of *pending* quoted-delimiter heredocs whose
+    bodies start after *newline* (the end of the command when a delimiter never comes, as in bash)."""
+    for delimiter, strip_tabs in pending:
+        while newline < len(command):
+            end = command.find("\n", newline + 1)
+            end = len(command) if end < 0 else end
+            line = command[newline + 1:end]
+            newline = end
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                break
+    return newline
+
+
 def substitution_depth(command: str) -> int:
     """Deepest ``$(`` nesting under shell quoting of the raw command: a quoted ``)`` or ``$(``
     is data, ``\\"`` inside double quotes is one literal quote, and double quotes nest per level.
     A single-quoted region is literal at its level but is also measured as its own script on top
-    of the current depth (a ``-c`` payload runs it); its quote state never leaks out."""
-    frames = [[None, 0]]  # per open `$(`: [quote state, unquoted `(` count]
+    of the current depth (a ``-c`` payload runs it); its quote state never leaks out. A comment and
+    the body of a quoted-delimiter heredoc (``<<'E'``, ``<<"E"``, ``<<\\E``) are data too; an
+    unquoted-delimiter body expands ``$(`` and is counted."""
+    frames = [[None, 0, False]]  # per open `$(`: [quote state, unquoted `(` count, is `$((`]
+    heredocs: list[tuple[str, bool] | None] = []  # this line's heredocs; None = unquoted delimiter
     deepest, i, n = 0, 0, len(command)
     while i < n:
         char, frame = command[i], frames[-1]
+        if char == "#" and frame[0] is None and _is_shell_comment_start(command, i):
+            i = command.find("\n", i)
+            if i < 0:
+                break
+            continue
+        if command.startswith("<<<", i):  # a here-string, not a heredoc
+            i += 3
+            continue
+        # `$((1<<'E'))` is a shift. A misread elsewhere hides nesting only from this count; the scan
+        # budget still bounds what the scanners then walk.
+        if char == "<" and frame[0] is None and not frame[2] and (match := _HEREDOC_RE.match(command, i)):
+            word = match[2]
+            quoted = any(c in word for c in "'\"\\")
+            delimiter = re.sub(r"\\(.)", r"\1", word).replace("'", "").replace('"', "")
+            heredocs.append((delimiter, bool(match[1])) if quoted else None)
+            i = match.end()
+            continue
+        if char == "\n" and frame[0] is None and heredocs:
+            # Bodies follow in operator order; skip the leading quoted ones (an unquoted body is counted).
+            pending = heredocs[:heredocs.index(None)] if None in heredocs else heredocs
+            heredocs = []
+            if pending:
+                i = _skip_quoted_heredoc_bodies(command, i, pending)
+                continue
         if char == "'" and frame[0] is None:
             end = command.find("'", i + 1)
             end = n if end < 0 else end
@@ -98,7 +148,7 @@ def substitution_depth(command: str) -> int:
         elif char == "\\":
             i += 1
         elif char == "$" and command.startswith("(", i + 1):
-            frames.append([None, 0])
+            frames.append([None, 0, command.startswith("((", i + 1)])
             deepest = max(deepest, len(frames) - 1)
             i += 1
         elif frame[0] == '"':
@@ -114,3 +164,83 @@ def substitution_depth(command: str) -> int:
                 frames.pop()
         i += 1
     return deepest
+
+
+def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str = "",
+                brace: bool = False, stop_unterminated: bool = False, naive_backtick: bool = False,
+                comments: bool = False):
+    """Yield ``(kind, i, j, quote)`` lexical steps over ``text[start:end]`` without expanding.
+
+    The single quote/escape state machine behind every detection scanner. ``kind`` is ``"char"``
+    (one char), ``"esc"`` (backslash + the char it escapes; never inside single quotes), ``"quote"``
+    (an opening/closing quote char) or ``"subst"`` (a ``$(...)`` / backtick / ``${...}`` span);
+    With *comments*, ``"comment"`` spans are skipped without interpreting their quote syntax.
+    ``quote`` is the state the step was read in (``None``, ``'`` or ``"``). Substitutions are
+    recognized unquoted when ``"u"`` is in *subst*, inside double quotes when ``"q"`` is; *brace*
+    adds unquoted ``${...}``. An unterminated substitution falls through as plain chars unless
+    *stop_unterminated*, which yields ``("subst", i, None, quote)`` and ends the scan (the caller
+    descends to *end* itself). *naive_backtick* closes a backtick at the next backtick even if
+    escaped (the quoted-prose masker's historical behavior)."""
+    n = len(text) if end is None else end
+    quote: str | None = None
+    i = start
+    budget = active()
+    while i < n:
+        if budget is not None:  # one unit per lexed char; inline, this loop is the hot path
+            budget.remaining -= 1
+            if budget.remaining < 0:
+                raise ParserBudgetExceeded
+        ch = text[i]
+        kind, j = "char", i + 1
+        if comments and quote is None and _is_shell_comment_start(text, i):
+            kind, j = "comment", text.find("\n", i, n)
+            if j < 0:
+                j = n
+        elif quote != "'" and ch == "\\" and i + 1 < n:
+            kind, j = "esc", i + 2
+        elif ch == quote or (quote is None and ch in "'\""):
+            kind = "quote"
+        elif quote != "'" and ("q" if quote else "u") in subst and (
+            ch == "`" or text.startswith("$(", i) or (brace and not quote and text.startswith("${", i))
+        ):
+            if ch == "`":
+                close = text.find("`", i + 1) + 1 or None if naive_backtick else _scan_backtick_end(text, i)
+            elif text[i + 1] == "(":
+                close = _scan_dollar_paren_end(text, i)
+            else:
+                close = text.find("}", i + 2) + 1 or None
+            if close is not None:
+                kind, j = "subst", close
+            elif stop_unterminated:
+                yield ("subst", i, None, quote)
+                return
+        yield (kind, i, j, quote)
+        if kind == "quote":
+            quote = None if quote else ch
+        i = j
+
+
+def _scan_dollar_paren_end(command: str, start: int) -> int | None:
+    """Return the offset after a balanced ``$(...)`` command substitution."""
+    return memo(_dollar_paren_end, command, start)
+
+
+def _dollar_paren_end(command: str, start: int) -> int | None:
+    depth = 1
+    for kind, i, _, quote in _scan_shell(command, start + 2):
+        if kind == "char" and not quote:
+            depth += command.startswith("$(", i) - (command[i] == ")")
+            if depth == 0:
+                return i + 1
+    return None
+
+
+def _scan_backtick_end(command: str, start: int) -> int | None:
+    return memo(_backtick_end, command, start)
+
+
+def _backtick_end(command: str, start: int) -> int | None:
+    # Backticks have no quote awareness: only a backslash escapes the next char.
+    match = re.compile(r"(?:\\.|[^`\\])*`", re.DOTALL).match(command, start + 1)
+    charge((match.end() if match else len(command)) - start)
+    return match.end() if match else None

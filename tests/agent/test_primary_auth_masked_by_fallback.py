@@ -238,3 +238,22 @@ def test_a_fallback_whose_base_url_carries_a_query_keeps_the_primary_failure(hom
                                backup_base_url="https://resource.openai.azure.test/openai/v1?api-version=2024-01-01")
     attach_primary_auth_failure(agent, other)
     assert agent._primary_auth_failure is None
+
+
+def test_a_backup_endpoint_with_a_query_string_keeps_the_primarys_lead():
+    """The agent moves a base_url's query (Azure's ``api-version``) into the client's default query, so it
+    runs the backup's query-free URL: that is still the backup's route, and its failure keeps the lead."""
+    from types import SimpleNamespace
+
+    from agent.primary_auth_fallback import PrimaryAuthFailure, attach_primary_auth_failure
+
+    failure = PrimaryAuthFailure(provider="nous", error="signed out", relogin="hermes auth add nous",
+                                 backup="custom",
+                                 backup_base_url="https://x.openai.azure.com/openai/v1?api-version=2025-04-01-preview")
+    agent = SimpleNamespace(provider="custom", base_url="https://x.openai.azure.com/openai/v1")
+    attach_primary_auth_failure(agent, failure)
+    assert agent._primary_auth_failure is failure
+
+    elsewhere = SimpleNamespace(provider="custom", base_url="https://y.openai.azure.com/openai/v1")
+    attach_primary_auth_failure(elsewhere, failure)
+    assert elsewhere._primary_auth_failure is None

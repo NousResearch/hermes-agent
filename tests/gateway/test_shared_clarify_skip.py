@@ -1,6 +1,5 @@
 """An empty ``clarify.respond`` answer is a skip, never a timeout (the method's documented contract)."""
 from concurrent.futures import Future
-import threading
 from types import SimpleNamespace
 
 
@@ -15,14 +14,11 @@ def _wait_while_viewer_answers(answer):
     controls.register_clarify('skip-session', 1, entry)
     sent = Future()
     sent.set_result(SimpleNamespace(success=True))
-    answered = threading.Thread(target=controls.respond, args=('skip-session', 1, entry.clarify_id, {'answer': answer}),
-                                kwargs={'kind': 'clarify'})
-    answered.start()
+    controls.respond('skip-session', 1, entry.clarify_id, {'answer': answer}, kind='clarify')
     try:
         return _clarify_send_then_wait(sent, clarify_id=entry.clarify_id, session_key=entry.session_key,
                                        clarify_mod=clarify_gateway), clarify_gateway.SKIPPED
     finally:
-        answered.join(5)
         clarify_gateway.clear_session(entry.session_key)
 
 

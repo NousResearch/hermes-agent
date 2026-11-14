@@ -10,10 +10,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from agent.message_metadata import message_uid_or_none, record_absorbed_message
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
+
+# Live-only ordered carriers that replay INSTEAD of ``content`` (native Anthropic, Bedrock Converse). A merged
+# row without them replays from ``content`` and the persisted ``reasoning_details``, as its durable copy does.
+_ORDERED_REPLAY_CARRIERS = ("anthropic_content_blocks", "bedrock_content_blocks")
 
 def _ensure_compressed_keeps_last_assistant_reply(
     original_messages: list, compressed: list, *, session_id: Optional[str] = None,
@@ -35,8 +40,10 @@ def _ensure_compressed_keeps_last_assistant_reply(
     them and the later passes see the reply as the tail they place around
     (``[summary, reply, U_new]`` / ``[..., reply, TODO-row]``). Placement is
     chronological (see ``_reply_insertion_index``); when the only slot would
-    sit assistant-adjacent to a non-twin row the reinsertion is skipped, never
-    forced: strict alternation beats recovery. Empty (reasoning-only) and
+    sit assistant-adjacent to a non-twin assistant row the row is never added
+    as a peer (strict alternation beats recovery) and its text is merged into
+    that neighbour instead (``_absorb_into_assistant_neighbour``, #144546), so
+    a reply the user has already read is not lost. Empty (reasoning-only) and
     tool-call rows are out of scope: the former is a different bug family, the
     latter must keep its atomic tool group.
 
@@ -84,8 +91,9 @@ def _ensure_compressed_keeps_last_assistant_reply(
     if index is None:
         logger.warning(
             "Compression: engine folded away the just-delivered assistant reply and the surviving tool "
-            "rounds reuse tool-call ids, so its slot cannot be located; not reinserting it (session=%s).",
-            session_id or "none",
+            "rounds reuse tool-call ids, so its slot cannot be located; not reinserting it "
+            "(session=%s, reply=%s, neighbour=tool_call).",
+            session_id or "none", message_uid_or_none(reply) or "none",
         )
         return None
     # Either neighbour already being a non-tool assistant twin means the reply is
@@ -93,37 +101,25 @@ def _ensure_compressed_keeps_last_assistant_reply(
     neighbours = [compressed[i] for i in (index - 1, index) if 0 <= i < len(compressed)]
     if any(_is_reply_twin(message) for message in neighbours):
         return None
-    # A non-twin assistant neighbour (an older kept reply, the engine's own paraphrase of
-    # this one, or a tool-call row) means the slot cannot take the row without
-    # assistant;assistant adjacency, and sliding past it would only move the seam while
-    # putting the newest reply before an older one. Strict alternation is the invariant
-    # every provider path relies on; the reply stays readable on disk, so skip the recovery
-    # rather than break the shape. Tool-call rows are NOT exempt on either side: to the left
-    # the row would separate a call from its result; to the right the user-turn anchor is
-    # only best-effort (it yields to a merged in-flight replay, a surviving real user row or
-    # a busy steer), so the pair would reach the durable active set and the pre-call belt
-    # would then merge the reply INTO the tool-call row, diverging live from DB.
-    if any(isinstance(m, dict) and m.get("role") == "assistant" for m in neighbours):
-        logger.warning(
-            "Compression: engine folded away the just-delivered assistant reply and left a non-matching "
-            "assistant row at its slot; not reinserting it to keep strict role alternation (session=%s).",
-            session_id or "none",
-        )
+    # A non-twin assistant neighbour (an older reply the engine kept) means the slot cannot take the
+    # row as a PEER without assistant;assistant adjacency, and sliding past it would only move the
+    # seam while putting the newest reply before an older one. Strict alternation is the invariant
+    # every provider path relies on, so the row is never inserted beside it — but the delivered text
+    # is not dropped either: it is merged into that older reply, the row that already occupies the
+    # slot (#144546). Tool-call and handoff neighbours are not mergeable and keep the old skip.
+    if _absorb_into_assistant_neighbour(
+        original_messages, compressed, index, reply_pos, anchor, reply_text, session_id=session_id,
+    ):
         return None
     # The built-in compressor deliberately lets a reply that alone dominates the window fold
     # (``_ensure_last_assistant_message_in_tail`` yields to ``head_end + 1``) so compaction can
     # make progress; forcing it back would make the candidate no smaller than the input, and
     # the commit-site no-growth guard would then refuse the attempt and add an ineffective
-    # strike — a session that can never compact is worse than a folded reply. Measure with
-    # the same rough estimate that guard uses and mirror its comparison (it refuses only on
-    # `>`, so exact break-even is still accepted). The estimate is a per-row sum, so the
-    # anchor's cost is added rather than re-estimating the whole candidate. The `<` pre-check
+    # strike — a session that can never compact is worse than a folded reply. The `<` pre-check
     # limits the yield to compactions that ARE shrinking: a candidate that already fails to
-    # shrink is refused by the guard (or repaired by salvage) whether or not the reply is in
-    # it, so dropping the reply there would buy nothing.
-    rough_in = estimate_messages_tokens_rough(original_messages)
-    rough_out = estimate_messages_tokens_rough(compressed)
-    if rough_out < rough_in < rough_out + estimate_messages_tokens_rough([anchor]):
+    # shrink is refused by the guard (or repaired by salvage) whether or not the reply is in it,
+    # so dropping the reply there would buy nothing.
+    if _reply_would_block_shrinking(original_messages, compressed, anchor):
         logger.info(
             "Compression: not reinserting the just-delivered assistant reply; it would stop this "
             "compaction from shrinking the transcript (session=%s).", session_id or "none",
@@ -135,6 +131,152 @@ def _ensure_compressed_keeps_last_assistant_reply(
     anchor[_DB_PERSISTED_MARKER] = True
     compressed.insert(index, anchor)
     return anchor
+
+
+def _absorb_into_assistant_neighbour(
+    original_messages: list, compressed: list, index: int, reply_pos: int, anchor: dict,
+    reply_text: str, *, session_id: Optional[str] = None,
+) -> bool:
+    """Carry the delivered reply INSIDE the assistant row that took its slot (#144546).
+
+    The slot cannot hold the reply as a peer row: an assistant neighbour would make the compacted
+    transcript assistant;assistant, and strict alternation is the invariant every provider path
+    relies on. Dropping the reply instead loses text the user has already read, so the ONE row that
+    can safely absorb it does: an OLDER reply the engine kept, sitting just before the slot, with
+    the delivered text appended (the reply is the newest visible assistant row of the original
+    transcript, so it belongs after that row). Row count, role shapes and chronology are unchanged.
+
+    The neighbour must be an older reply in fact, not just by role: its visible text has to match an
+    assistant row that precedes the reply in ``original_messages``. That is what keeps the compaction
+    handoff row (the engine's summary standing in for the whole folded region) and any engine-invented
+    text out of this path — folding a reply into the summary would rewrite the handoff itself.
+
+    Not mergeable, and logged as before: a tool-call neighbour (that row owns an atomic call group,
+    and it can sit on either side of the slot), a compaction summary row, and an assistant neighbour
+    on the FOLLOWING side (nothing after the slot is older than the reply). The no-growth pre-check
+    applies here too, charged what the merge adds to that row: a compaction that stops shrinking is
+    refused at the commit site.
+
+    The merge lands on a copy that replaces the neighbour in ``compressed``: an engine's kept row can be
+    the live original, which must stay as stored if this compaction is refused later. The copy is
+    ``model_only`` for display, as micro-compaction's user-turn join is: both source rows stay in
+    display history, so showing the join too would paint the reply twice.
+
+    Returns True when an assistant row holds the slot (absorbed, or skipped for a reason logged
+    here), False when the slot is free and the caller may insert.
+    """
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    from agent.turn_context import drop_stale_api_content
+
+    pos = next(
+        (
+            candidate
+            for candidate in (index - 1, index)
+            if 0 <= candidate < len(compressed)
+            and isinstance(compressed[candidate], dict)
+            and compressed[candidate].get("role") == "assistant"
+        ),
+        None,
+    )
+    if pos is None:
+        return False
+    neighbour = compressed[pos]
+    reply_row = original_messages[reply_pos]
+    reply_uid = message_uid_or_none(reply_row) or "none"
+    kind = _neighbour_kind(neighbour, pos != index - 1, original_messages[:reply_pos])
+    if kind:
+        logger.warning(
+            "Compression: engine folded away the just-delivered assistant reply and left a non-matching "
+            "assistant row at its slot; not reinserting it to keep strict role alternation "
+            "(session=%s, reply=%s, neighbour=%s).",
+            session_id or "none", reply_uid, kind,
+        )
+        return True
+    merged = dict(neighbour)
+    if not _append_text_to_row(merged, reply_text):
+        logger.warning(
+            "Compression: engine folded away the just-delivered assistant reply and the assistant row at "
+            "its slot carries no visible text to merge into; not reinserting it "
+            "(session=%s, reply=%s, neighbour=empty).",
+            session_id or "none", reply_uid,
+        )
+        return True
+    drop_stale_api_content(merged)
+    for carrier in _ORDERED_REPLAY_CARRIERS:
+        merged.pop(carrier, None)
+    merged["display_metadata"] = {**(merged.get("display_metadata") or {}), MODEL_ONLY_DISPLAY_METADATA_KEY: True}
+    if _reply_would_block_shrinking(original_messages, compressed, merged, replaced=neighbour):
+        logger.info(
+            "Compression: not carrying the just-delivered assistant reply into the compacted transcript; "
+            "it would stop this compaction from shrinking it (session=%s).", session_id or "none",
+        )
+        return True
+    record_absorbed_message(merged, reply_row)
+    compressed[pos] = merged
+    logger.info(
+        "Compression: engine folded away the just-delivered assistant reply; merged it into the assistant "
+        "row at its slot instead of adding a peer (session=%s, reply=%s).", session_id or "none", reply_uid,
+    )
+    return True
+
+
+def _neighbour_kind(neighbour: dict, following: bool, older_messages: list) -> Optional[str]:
+    """Name an unmergeable neighbour without changing its provider-owned replay state."""
+    from agent.agent_runtime_helpers import _is_codex_interim
+    from agent.context_compressor import is_compaction_summary_message
+    from agent.conversation_compression import _message_text
+
+    if following:
+        return "following"
+    if neighbour.get("tool_calls"):
+        return "tool_call"
+    if is_compaction_summary_message(neighbour):
+        return "summary"
+    if _is_codex_interim(neighbour):
+        return "codex"
+    older_reply_texts = {
+        _message_text(message).strip()
+        for message in older_messages
+        if isinstance(message, dict) and message.get("role") == "assistant" and not message.get("tool_calls")
+    }
+    text = _message_text(neighbour).strip()
+    if text not in older_reply_texts:
+        return "paraphrase" if text else "empty"
+    return None
+
+
+def _append_text_to_row(row: dict, text: str) -> bool:
+    """Append ``text`` to ``row``'s visible content, preserving its shape.
+
+    Parts-list content stays a parts list (the engine's own rendering survives); a plain string
+    gains a blank-line-separated block. Returns False — the caller logs and keeps the old skip —
+    when the row carries nothing visible to merge into, so an unexpected content shape is never
+    overwritten.
+    """
+    content = row.get("content")
+    if isinstance(content, str) and content.strip():
+        row["content"] = f"{content.rstrip()}\n\n{text}"
+        return True
+    if isinstance(content, list) and content:
+        row["content"] = [*content, {"type": "text", "text": text}]
+        return True
+    return False
+
+
+def _reply_would_block_shrinking(
+    original_messages: list, compressed: list, anchor: dict, *, replaced: Optional[dict] = None,
+) -> bool:
+    """True when carrying the reply would stop this compaction from shrinking the transcript.
+
+    Measured with the same rough estimate as the commit-site no-growth guard and mirroring its
+    comparison (it refuses only on ``>``, so exact break-even is still accepted). The estimate is a
+    per-row sum, so the reply's cost is added to the candidate rather than re-estimating the whole
+    transcript; a merge passes the row its ``anchor`` replaces, so only the growth of that row counts.
+    """
+    rough_in = estimate_messages_tokens_rough(original_messages)
+    rough_out = estimate_messages_tokens_rough(compressed)
+    added = estimate_messages_tokens_rough([anchor]) - estimate_messages_tokens_rough([replaced] if replaced else [])
+    return rough_out < rough_in < rough_out + added
 
 
 def _same_visible_content(left: dict, right: dict, right_text: str) -> bool:

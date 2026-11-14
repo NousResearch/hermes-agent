@@ -29,6 +29,21 @@ There is nothing to set up.
 a masked password field. *Save & sign in* stores it and continues; *Don't save*
 tells the agent to stop asking for this turn.
 
+**Telegram** — the agent asks in the chat ("🔑 Login for github.com (2/2) — Now
+the password, in your next message"), and you answer with an ordinary message.
+That message is deleted as soon as it arrives, before the value reaches the
+vault, and never becomes a turn the model sees. Only the person whose message
+started the turn can answer; other members of a group or topic chat as usual. A
+voice message is deleted without being transcribed. An answer sent just after
+the prompt ended (timeout, `/stop`) is deleted too and not used.
+
+Hermes only asks where it can delete your answer: in a private chat with the
+bot, or in a group where the bot is an administrator with the **Delete
+messages** right. Elsewhere, and on other messaging platforms, the agent is told
+why and points you to `hermes vault add` on the host. The password still passes
+through Telegram's servers, and in a group other members may get a notification
+for the second before it is deleted; a private chat with the bot avoids that.
+
 From then on the agent lists your saved logins, types the identifier itself and
 fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also

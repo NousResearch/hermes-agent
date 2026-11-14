@@ -27,6 +27,7 @@ from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_secret import GatewayInboundSecretMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
@@ -73,7 +74,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayInboundSecretMixin,
+                          GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -383,8 +385,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
         except Exception:
             return None
-        if _pending_clarify is None or self._refused_clarify(event, _pending_clarify.clarify_id):
+        if _pending_clarify is None:
+            return await self._hm_late_secret_reply(event, source, _quick_key)
+        if self._refused_clarify(event, _pending_clarify.clarify_id):
             return None  # another member's message is their own message, not this clarify's answer
+        if not self._may_answer_bound_prompt(source, _pending_clarify):
+            return None  # bound prompt (vault): anyone but the person asked routes normally
+        if _pending_clarify.secret:
+            return await self._hm_secret_clarify_reply(event, source, _pending_clarify)
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 

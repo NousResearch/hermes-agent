@@ -44,6 +44,7 @@ import {
 } from '../composer-utils'
 import {
   ackComposerInsert,
+  type ComposerInsertCaret,
   type ComposerInsertMode,
   focusComposerInput,
   getActiveComposer,
@@ -91,6 +92,12 @@ interface UseComposerDraftArgs {
   focusKey: ChatBarProps['focusKey']
   inputDisabled: boolean
   queueEditRef: RefObject<QueueEditState | null>
+  /** Filled by ChatBar once `useComposerUndo` has run — that hook is declared
+   *  AFTER this one, so the callback cannot arrive as an ordinary argument.
+   *  A programmatic insert is a user-visible edit: it has to bank the composer's
+   *  undo snapshot before it repaints, or ⌘Z steps back over the typing that
+   *  came before it and leaves the inserted block stranded. */
+  recordUndoPointRef?: RefObject<(() => void) | null>
   sessionId: string | null | undefined
 }
 
@@ -123,6 +130,7 @@ export function useComposerDraft({
   focusKey,
   inputDisabled,
   queueEditRef,
+  recordUndoPointRef,
   sessionId
 }: UseComposerDraftArgs) {
   const aui = useAui()
@@ -257,12 +265,18 @@ export function useComposerDraft({
   )
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode): boolean => {
+    (text: string, mode: ComposerInsertMode, caret: ComposerInsertCaret = 'end'): boolean => {
       const value = text.trim()
 
       if (!value) {
         return false
       }
+
+      // Bank the pre-insert draft BEFORE the repaint. This is the only write path
+      // that never went through the app-owned undo stack, so ⌘Z after an insert
+      // reverted the user's previous typing and left the block in place — worst
+      // of both worlds for the one gesture (quoting) where undo is the reflex.
+      recordUndoPointRef?.current?.()
 
       // 'prefix' puts the value at the START of the draft — slash commands
       // only route when they lead the message.
@@ -277,11 +291,16 @@ export function useComposerDraft({
       const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
 
-      paintDraft(`${base}${sep}${value}`)
+      // 'below' parks the caret on the empty line under the block: paintDraft
+      // sends it to the end of whatever it paints, so that blank line IS the
+      // target. A quoted passage must not be what the next keystroke edits.
+      const tail = mode === 'block' && caret === 'below' ? '\n\n' : ''
+
+      paintDraft(`${base}${sep}${value}${tail}`)
 
       return true
     },
-    [paintDraft]
+    [paintDraft, recordUndoPointRef]
   )
 
   // Keep-alive tabs keep this composer mounted. A background session whose
@@ -344,11 +363,11 @@ export function useComposerDraft({
       setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
+    const offInsert = onComposerInsertRequest(({ caret, mode, target: requested, text, token }) => {
       if (requested === target) {
         // A tokened insert came from the plugin SDK — echo whether the text
         // actually landed, so its promise never settles on a silent no-op.
-        ackComposerInsert(token, appendExternalText(text, mode))
+        ackComposerInsert(token, appendExternalText(text, mode, caret))
       }
     })
 

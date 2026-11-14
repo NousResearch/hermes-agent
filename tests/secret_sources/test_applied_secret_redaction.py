@@ -220,3 +220,17 @@ def test_short_multiline_value_does_not_register_its_joined_form(tmp_path):
     redact_secret_sources.publish_secret_source_values(tmp_path, {"REGION_LIST_SECRET": "us-east\neu-west"})
     with _profile(tmp_path):
         assert redact_sensitive_text("deploy to us-easteu-west later", force=True) == "deploy to us-easteu-west later"
+
+
+def test_json_private_key_with_literal_newline_escapes_masks_decoded_body(tmp_path):
+    # Some source-held JSON has a second layer of escapes: json.loads() yields literal \n,
+    # and a consumer expands it before printing lines through sed/grep.
+    source_value = json.dumps({"private_key": RSA_KEY.replace("\n", "\\n")})
+    redact_secret_sources.publish_secret_source_values(
+        tmp_path, {"GOOGLE_APPLICATION_CREDENTIALS_JSON": source_value}
+    )
+    with _profile(tmp_path):
+        decoded = json.loads(source_value)["private_key"].replace("\\n", "\n")
+        body_only = "\n".join(line for line in decoded.splitlines() if "PRIVATE KEY" not in line)
+        redacted = redact_sensitive_text(body_only, force=True)
+        assert not [line for line in RSA_BODY if line in redacted]

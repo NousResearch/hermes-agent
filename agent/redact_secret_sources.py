@@ -82,6 +82,10 @@ def _pem_texts(value: str) -> list[str]:
                 stack.extend(item)
             elif isinstance(item, str) and _PEM_ARMOR in item:
                 texts.append(item)
+                # Some secret stores preserve literal \n inside the decoded JSON string.
+                # A consumer replacing those escapes before printing must not expose key lines.
+                if "\\n" in item:
+                    texts.append(item.replace("\\r\\n", "\n").replace("\\n", "\n"))
     return texts
 
 

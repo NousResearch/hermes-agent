@@ -50,12 +50,10 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
-    runner._pending_one_turn_model_restores = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._agent_cache = {}
     runner._agent_cache_lock = None
@@ -320,7 +318,7 @@ class TestOneTurnNeverPersisted:
             encoding="utf-8",
         )
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
         monkeypatch.setattr(
             "hermes_cli.model_switch.switch_model",
             lambda **kw: ModelSwitchResult(
@@ -342,7 +340,6 @@ class TestOneTurnNeverPersisted:
         runner.adapters = {}
         runner._voice_mode = {}
         runner._session_model_overrides = {}
-        runner._pending_one_turn_model_restores = {}
         runner._running_agents = {}
         # async_session_store is a property over session_store; install the
         # mock behind the private cache attribute it reads.
@@ -380,7 +377,7 @@ class TestOneTurnNeverPersisted:
         assert runner._session_model_overrides[sk]["capabilities"] == {
             "openai_native_compaction": True
         }
-        assert sk in runner._pending_one_turn_model_restores
+        assert runner._session_state(sk).conversation.one_turn_restore is not None
         # ...but NEVER written through to the persistent session store.
         runner.async_session_store.set_model_override.assert_not_awaited()
 
@@ -398,5 +395,20 @@ class TestOneTurnNeverPersisted:
 
         # The second producer call snapshotted the live gpt-5.5 override; the pending restore
         # must still be the ORIGINAL "no override" state.
-        assert runner._pending_one_turn_model_restores[sk]["had_override"] is False
+        assert runner._session_state(sk).conversation.one_turn_restore["had_override"] is False
 
+    @pytest.mark.asyncio
+    async def test_plain_switch_after_once_survives_the_turn_restore(self, tmp_path, monkeypatch):
+        """`/model X --once`, then a plain `/model Y` before the turn runs: the plain switch is the
+        user's new standing choice, so it disarms the --once restore and the turn finalizer leaves
+        it in place instead of reverting the session to the pre---once state."""
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+
+        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
+        assert runner._session_state(sk).conversation.one_turn_restore is not None
+        await runner._handle_model_command(self._event("/model gpt-5.5"))
+
+        assert runner._session_state(sk).conversation.one_turn_restore is None
+        runner._restore_pending_one_turn_model_override(sk)  # what the turn finalizer runs
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"

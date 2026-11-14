@@ -186,14 +186,14 @@ class TestLifecycle:
         client = FakeClient()
         s = make_session(client, permission_profile="workspace-write", developer_instructions="SOUL: be terse")
         s.ensure_started()
-        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none"}
 
     def test_thread_start_omits_developer_instructions_when_prompt_empty(self):
         """No prompt (or a blank one) never sends an empty developerInstructions field."""
         client = FakeClient()
         make_session(client, developer_instructions="   ").ensure_started()
-        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert "developerInstructions" not in params
         assert params["personality"] == "none"
 

@@ -29,13 +29,11 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
     'best-quality-resident':
       'El modelo de mayor calidad que se ejecuta por completo en tu GPU a máxima velocidad. La selección equilibra la calidad con la velocidad prevista en este hardware.',
     'speed-gated-quality':
-      'Cabe un modelo de mayor calidad en este equipo, pero respondería demasiado lento por el ancho de banda de su memoria; este es el mejor modelo que se mantiene rápido.',
-    'fastest-resident':
-      'Ningún modelo alcanza la velocidad máxima en este hardware; este es el que más se acerca ejecutándose por completo en la memoria de la GPU.'
+      'Cabe un modelo de mayor calidad en este equipo, pero respondería demasiado lento por el ancho de banda de su memoria; este es el mejor modelo que se mantiene rápido.'
   },
   noRecommendationTitle: 'No hay recomendación automática para este equipo',
   noRecommendationDetail:
-    'La configuración automática requiere un modelo seleccionado que quepa por completo en la memoria de la GPU o unificada. Aun así, puedes elegir un modelo abajo o explorar más modelos.',
+    'La configuración automática requiere un modelo seleccionado que se ejecute por completo en la memoria de la GPU o unificada a máxima velocidad. Aun así, puedes elegir un modelo abajo o explorar más modelos.',
   noRecommendationAction: 'Explorar modelos',
   downloaded: 'Descargado',
   downloadAction: size => `Descargar · ${size}`,
@@ -59,6 +57,8 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'Hay una actualización del motor',
   updateDetail: (next, current) =>
     `Hay una compilación más reciente de llama.cpp (${next}) lista para instalar; tienes ${current}. Los modelos siguen funcionando durante la descarga.`,
+  updateSameBuildDetail: tag =>
+    `Hermes ahora incluye llama.cpp ${tag} con archivos que necesita para funcionar. Al actualizar, el motor se vuelve a descargar; los modelos siguen funcionando durante la descarga.`,
   updateAction: 'Actualizar motor',
   updating: 'Actualizando el motor…',
   upToDateTitle: 'Motor actualizado',

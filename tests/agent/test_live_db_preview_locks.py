@@ -48,7 +48,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
             code = ("import sqlite3,sys; c=sqlite3.connect(sys.argv[1], timeout=0); "
                     "c.execute('BEGIN IMMEDIATE'); c.rollback(); c.close()")
             result = subprocess.run([sys.executable, "-c", code, str(path)],
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=10, check=False)
             return result.returncode != 0 and "database is locked" in result.stderr
 
         before = (own_posix_locks(path), own_posix_locks(shm))
@@ -86,7 +86,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
             "c.commit(); c.close()"
         )
         rival = subprocess.run([sys.executable, "-c", code, str(path)],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10, check=False)
         assert rival.returncode == 0, rival.stderr
         assert [row[0] for row in conn.execute(
             "SELECT value FROM preview_markers ORDER BY rowid"

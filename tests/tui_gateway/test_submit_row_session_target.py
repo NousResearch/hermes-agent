@@ -171,7 +171,7 @@ def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
     conversation no longer reads — the reporter's 130 stray ``model_switch`` rows. ``personality_switch``
     is unaffected: it only ever touches ``session["history"]``, never the DB."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    sid, key, session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         server._append_model_switch_marker(session, model="test-model-2", provider="test-provider")
         prefix = server._MODEL_SWITCH_MARKER_PREFIX
@@ -223,7 +223,7 @@ def test_message_react_targets_the_row_in_the_session_that_owns_it(monkeypatch, 
     has no text row. Same defect class as the submit row: an off-turn write addressed by a key a
     rotation invalidated (#123545)."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    sid, key, _session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         # The continuation's newest user row is the rotated turn's own submit row.
         db.append_message(child, "user", content="the turn the user just reacted to")
@@ -251,7 +251,7 @@ def test_session_history_reads_the_continuation_after_a_rotation(monkeypatch, tm
     pointers, so a stale ``session_key`` materializes root..parent and never the continuation — a
     reconnect in the post-rotation window renders a transcript missing every turn since the rotation."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    sid, key, _session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         db.append_message(child, "user", content="sent after the rotation")
         got = server.handle_request({"id": "h1", "method": "session.history", "params": {"session_id": sid}})
@@ -270,13 +270,13 @@ def test_out_of_band_probe_reads_the_continuation_after_a_rotation(monkeypatch, 
     returns nothing and the model never sees the out-of-band turn — a regression of the contract this
     function exists for (#42962/#86588)."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    sid, key, session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         from tui_gateway import prompt_turn
         # _adopt_out_of_band_turns reads _message_row_id, which methods_prompt publishes onto server's
         # globals at bind_module time (prompt_turn's own module never imports it). Importing the module
         # here runs that binding — the same order server.py's own import loop produces.
-        from tui_gateway import methods_prompt  # noqa: F401
+        from tui_gateway import methods_prompt
         assert hasattr(server, "_message_row_id"), "the bind seam must publish _message_row_id"
         # Stamp the in-memory history with the row ids the rotation actually created, so `seen` is the
         # newest row the agent's own flush wrote and the foreign row is strictly newer.
@@ -332,7 +332,7 @@ def test_busy_queue_accept_row_lands_with_the_turn_and_is_addressed_there(monkey
     accept-time row stays ACTIVE beside its replacement, the [uA, uB, aA] glue that
     ``_replace_queued_user_row_for_turn`` exists to prevent."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    sid, _key, session, agent, child = _rotated_session(monkeypatch, db)
     try:
         with session["history_lock"]:
             session["running"] = True

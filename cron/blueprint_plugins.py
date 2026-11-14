@@ -68,7 +68,7 @@ def _slot(raw: Any) -> BlueprintSlot:
     return slot
 
 
-def _placeholders(template: str, what: str) -> List[str]:
+def _placeholders(template: str, what: str) -> list[str]:
     names = []
     for _literal, name, _spec, _conv in string.Formatter().parse(template):
         if name is None:
@@ -136,7 +136,7 @@ def build_plugin_blueprint(
     return blueprint
 
 
-def plugin_blueprints() -> List[AutomationBlueprint]:
+def plugin_blueprints() -> list[AutomationBlueprint]:
     """Blueprints the active profile's enabled plugins registered (resolved per call)."""
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager

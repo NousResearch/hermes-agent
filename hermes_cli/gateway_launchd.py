@@ -15,6 +15,11 @@ import subprocess
 import sys
 import time
 from xml.sax.saxutils import escape
+from datetime import UTC
+
+from hermes_cli import gateway_service_owner
+
+from agent.deadline import poll_until
 
 
 def _gw():
@@ -46,7 +51,7 @@ def _probe_launchd_domain_for_label(label: str) -> str:
     # Not loaded anywhere: Aqua → gui/<uid>; anything else (Background, loginwindow) → user/<uid>,
     # the pre-probing default and the recommended domain on macOS 26+.
     try:
-        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT, check=False)
         if "Aqua" in (result.stdout or ""):
             return gui_domain
     except launchctl_errors:
@@ -190,7 +195,7 @@ def _write_launchd_unsupported_marker() -> None:
     """Persist that launchd cannot supervise the gateway on this host."""
     from datetime import datetime, timezone
     payload = {
-        "written_at": datetime.now(timezone.utc).isoformat(),
+        "written_at": datetime.now(UTC).isoformat(),
         "reason": "launchd domain unsupported (exit 5/125)",
     }
     with contextlib.suppress(OSError):
@@ -209,7 +214,13 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 def _gateway_run_command() -> list[str]:
     from hermes_cli._launchers import runtime_command
-    return runtime_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
+    from hermes_constants import get_default_hermes_root
+    # Every caller spawns an UNSUPERVISED child, which follows the sticky active_profile unless a
+    # selector pins it (main._apply_profile_override): the root's replacement booted that profile.
+    selector = shlex.split(_gw()._profile_arg())
+    if not selector and _gw().get_hermes_home().resolve() == get_default_hermes_root().resolve():
+        selector = ["--profile", "default"]
+    return runtime_command(_gw().PROJECT_ROOT, [*selector, "gateway", "run", "--replace"],
                            python=_gw().get_python_path())
 
 
@@ -298,6 +309,7 @@ def _spawn_detached_gateway() -> bool:
                 _timestamped_stderr_gateway_command(log_dir / "gateway.error.log"),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
                 env=child_env,
+                # detached-spawn: ok — foreground-less gateway launch, a service meant to outlive the CLI
                 **windows_detach_popen_kwargs(),
             )
     except OSError:
@@ -347,6 +359,18 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def service_path_prefix_entries() -> list[str]:
+    """The Hermes-owned PATH entries a generated definition puts BEFORE the invoking shell's PATH.
+
+    Both sources are deterministic — the venv/node bin dirs that exist on disk, and the pm-managed Node
+    the target home's ``facts.json`` records — so the staleness check may compare them; only the shell
+    tail is environment-derived (#144735).
+    """
+    entries = _gw()._build_service_path_dirs()
+    _gw()._append_node_dir_for_service(entries)
+    return list(dict.fromkeys(entries))
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -358,9 +382,11 @@ def generate_launchd_plist() -> str:
 
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
-    priority_dirs = _gw()._build_service_path_dirs()
-    _gw()._append_node_dir_for_service(priority_dirs)
-    sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
+    priority_dirs = service_path_prefix_entries()
+    # Only the prefix may carry a store Node: a refresh run inside the gateway inherits the old plist PATH.
+    store_node = str(_gw().get_hermes_home() / "tools" / "node-")
+    shell_dirs = [p for p in os.environ.get("PATH", "").split(":") if p and not p.startswith(store_node)]
+    sane_path = ":".join(dict.fromkeys(priority_dirs + shell_dirs))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
@@ -456,6 +482,37 @@ def generate_launchd_plist() -> str:
 """
 
 
+# The generated PATH is ``<Hermes-owned prefix> + $PATH``; only the tail is environment-derived.
+_PLIST_PATH_PATTERN = r"(<key>PATH</key>\s*<string>)(.*?)(</string>)"
+_PLIST_PATH_TAIL = "__HERMES_SHELL_PATH__"
+
+
+def normalize_plist_path_for_comparison(text: str) -> str:
+    """Mask only the shell-derived PATH tail so the Hermes-owned prefix stays comparable.
+
+    Blanking the whole payload (the previous rule) also hid the pm-managed Node dir, so a Node update
+    left the installed plist "current" forever (#144735).
+    """
+    import re
+    from html import unescape
+
+    keep = len(service_path_prefix_entries())
+    managed_node_prefix = str(_gw().get_hermes_home() / "tools" / "node-")
+
+    def _mask(match: re.Match[str]) -> str:
+        entries = [part for part in match.group(2).split(":") if part]
+        # When facts.json loses its Node entry, the current prefix gets shorter.
+        # Do not relabel a previously managed Node path as disposable shell PATH.
+        protected = keep
+        while protected < len(entries) and unescape(entries[protected]).startswith(managed_node_prefix):
+            protected += 1
+        tail = f":{_PLIST_PATH_TAIL}" if len(entries) > protected else ""
+        return f"{match.group(1)}{':'.join(entries[:protected])}{tail}{match.group(3)}"
+
+    normalized = _gw()._normalize_service_definition(text)
+    return re.sub(_PLIST_PATH_PATTERN, _mask, normalized, flags=re.DOTALL)
+
+
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
     plist_path = _gw().get_launchd_plist_path()
@@ -534,19 +591,63 @@ def _spawn_deferred_launchd_reload(
     return True
 
 
-def refresh_launchd_plist_if_needed() -> bool:
-    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
-    re-reads it immediately."""
+def _bootout_drain_and_rebootstrap(domain, plist_path, label, old_pid, budget: float) -> bool:
+    """Boot the job out, wait out the old gateway's drain, then bootstrap until launchd registers it.
+
+    Bootstrap can fail silently under load during a drain, and KeepAlive can't revive an
+    unregistered job, so the retry runs to a deadline. Waiting for *old_pid* first keeps the
+    budget from burning on guaranteed EIO ("already loaded"). The bootout is best effort (the job
+    may already be unloaded) and captured to keep expected noise off the terminal.
+    """
+    target = f"{domain}/{label}"
+    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    if old_pid is not None and not _gw()._wait_for_pid_exit(old_pid, budget):
+        _gw()._append_launchd_reload_log(
+            f"old gateway pid {old_pid} still alive after "
+            f"{int(budget)}s drain wait — bootstrapping {target} anyway"
+        )
+    return _gw()._retry_launchctl_bootstrap_until_registered(
+        domain, plist_path, label, deadline=time.monotonic() + budget)
+
+
+def _rewrite_stale_launchd_plist() -> bool:
+    """Write the generated plist over a stale installed one this home owns; True when written."""
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
+    # Runs on every gateway start/restart: a plist pinning another home is another install's gateway.
+    from hermes_cli.gateway_service_owner import definition_belongs_to_home
+    if not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "rewrite"):
+        return False
 
     new_plist = _gw().generate_launchd_plist()
-    if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
+    return True
+
+
+def refresh_unloaded_launchd_plist() -> bool:
+    """Rewrite a stale plist of a job launchd does not hold; the next bootstrap reads it.
+
+    A loaded job is left to ``refresh_launchd_plist_if_needed`` (its restart path), which must
+    still see the file stale to reload the job."""
+    if _gw()._locate_launchd_gateway_service(_gw().get_launchd_label())[0] is not None:
+        return False
+    if not _rewrite_stale_launchd_plist():
+        return False
+    print(f"  ↻ Updated {_gw().get_launchd_plist_path().name} to match the current Hermes install")
+    return True
+
+
+def refresh_launchd_plist_if_needed() -> bool:
+    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
+    re-reads it immediately."""
+    if not _rewrite_stale_launchd_plist():
+        return False
+    plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -573,19 +674,9 @@ def refresh_launchd_plist_if_needed() -> bool:
         )
         return True
 
-    # Bootout/bootstrap so launchd reads the new definition; bootstrap can fail silently under load
-    # during a drain, and KeepAlive can't revive an unregistered job.
-    # Captured: best-effort (the job may already be unloaded), keep expected noise off the terminal.
-    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    # Bootout/bootstrap so launchd reads the new definition.
     _reload_budget = _launchd_reload_budget()
-    # Wait out the old gateway's drain first so the budget isn't burned on guaranteed EIO ("already loaded").
-    if gateway_pid is not None and not _gw()._wait_for_pid_exit(gateway_pid, _reload_budget):
-        _gw()._append_launchd_reload_log(
-            f"old gateway pid {gateway_pid} still alive after "
-            f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
-        )
-    _deadline = time.monotonic() + _reload_budget
-    if not _gw()._retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline):
+    if not _bootout_drain_and_rebootstrap(domain, plist_path, label, gateway_pid, _reload_budget):
         _gw()._append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
             f"retrying for {int(_reload_budget)}s (in-process fallback path)"
@@ -599,14 +690,23 @@ def refresh_launchd_plist_if_needed() -> bool:
     return True
 
 
-def launchd_install(force: bool = False, *, start_now: bool = True):
+def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_path: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
+    # A plist pinning another home is another install's gateway, --force included; --force-unit-path repoints.
+    from hermes_cli.gateway_service_owner import definition_belongs_to_home
+    if not force_unit_path and not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "overwrite"):
+        sys.exit(1)
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
     # loading it. A gateway that launchd already runs is still reloaded; this install did not start it.
     load = start_now or _gw()._launchctl_label_supervising_process(label)
+    # A forced reinstall over a live job must remember the incumbent before bootstrap starts.
+    # _launchctl_bootstrap() handles EIO by booting the stale label out and retrying once, but
+    # that immediate retry races the old gateway's drain (#120629). The install path can wait
+    # because it runs outside the supervised gateway process.
+    force_old_pid = _gw()._launchctl_supervised_pid(label) if force and load else None
 
-    if plist_path.exists() and not force:
+    if plist_path.exists() and not (force or force_unit_path):
         if _gw().launchd_plist_is_current():
             print(f"Service already installed at: {plist_path}")
             print("Use --force to reinstall")
@@ -628,7 +728,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     new_plist = _gw().generate_launchd_plist()
-    if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()
@@ -648,11 +748,26 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
         print("  hermes gateway status             # Check status")
         return
 
-    try:
-        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
-    except subprocess.CalledProcessError as e:
-        _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
-        return
+    if force_old_pid is not None:
+        domain = _gw()._launchd_domain()
+        target = f"{domain}/{label}"
+        budget = _gw()._launchd_reload_budget()
+        if not _bootout_drain_and_rebootstrap(domain, plist_path, label, force_old_pid, budget):
+            _gw()._append_launchd_reload_log(
+                f"FAILED forced launchd install of {target} — service NOT registered after "
+                f"retrying for {int(budget)}s"
+            )
+            _gw().print_error(
+                f"launchctl bootstrap did not register {target} within {int(budget)}s; "
+                "the gateway service is NOT loaded."
+            )
+            sys.exit(1)
+    else:
+        try:
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
+        except subprocess.CalledProcessError as e:
+            _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
+            return
 
     print()
     print("✓ Service installed and loaded!")
@@ -665,6 +780,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
 
 def launchd_uninstall():
+    gateway_service_owner.refuse_foreign_launchd_plist("uninstall")
     plist_path = _gw().get_launchd_plist_path()
     # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
     subprocess.run(
@@ -677,13 +793,14 @@ def launchd_uninstall():
 
 
 def launchd_start():
+    gateway_service_owner.refuse_foreign_launchd_plist("start")
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         new_plist = _gw().generate_launchd_plist()
-        if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+        if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -728,6 +845,7 @@ def _launchd_ok(message: str) -> None:
 
 
 def launchd_stop():
+    gateway_service_owner.refuse_foreign_launchd_plist("stop")
     target = f"{_launchd_domain()}/{get_launchd_label()}"
     _gw()._mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
@@ -755,17 +873,15 @@ def _wait_for_launchd_service_pid(
 ) -> bool:
     """Poll ``domain/label`` (0.5s) until it runs on a fresh PID or ``timeout`` passes — KeepAlive respawn
     isn't instantaneous. launchctl ``TimeoutExpired`` propagates; callers own failure accounting."""
-    deadline = time.monotonic() + max(timeout, 0.5)
-    while True:
-        _loaded, pid = _gw()._launchd_print_service_pid(domain, label)
-        if pid is not None and pid > 0 and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.5)
+    def _fresh_pid() -> bool:
+        pid = _gw()._launchd_print_service_pid(domain, label)[1]
+        return pid is not None and pid > 0 and pid != old_pid
+
+    return poll_until(_fresh_pid, max(timeout, 0.5), 0.5)
 
 
 def launchd_restart():
+    gateway_service_owner.refuse_foreign_launchd_plist("restart")
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -877,21 +993,18 @@ def wait_for_launchd_gateway_supervision(
         return True
 
     label = label or _gw().get_launchd_label()
-    deadline = time.monotonic() + max(timeout, 0.0)
-    while True:
+    def _supervised() -> bool:
         pid = _gw()._launchctl_supervised_pid(label)
-        if pid is not None and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(max(poll_interval, 0.01))
+        return pid is not None and pid != old_pid
+
+    return poll_until(_supervised, max(timeout, 0.0), max(poll_interval, 0.01))
 
 
 def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT, check=False)
         service_listed = result.returncode == 0
         list_output = result.stdout
     except subprocess.TimeoutExpired:
@@ -949,4 +1062,4 @@ def launchd_status(deep: bool = False):
         if log_file.exists():
             print()
             print("Recent logs:")
-            subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+            subprocess.run(["tail", "-20", str(log_file)], timeout=10, check=False)

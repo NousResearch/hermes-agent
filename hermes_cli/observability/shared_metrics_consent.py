@@ -1,11 +1,13 @@
 """The one shared-metrics consent answer, and the terminal's first-run offer.
 
 Every surface reads and writes the same two keys in the profile's config.yaml:
-``telemetry.shared_metrics.enabled`` (collect locally) and ``.send`` (upload daily). The question
-counts as answered once either key is written explicitly; the shipped defaults are not an answer.
-Every answer also writes ``offer_version``. A "No thanks" without it predates the type-ahead fix
-(an Enter pressed during startup could save it unseen), so that profile is asked once more, with
-the reason, and any response (Esc or dismiss included) settles it for good.
+``telemetry.shared_metrics.enabled`` (collect) and ``.send`` (upload daily). The offer has two
+answers, and each sets both keys: "Share with Nous" turns both on, "No thanks" turns both off. The
+question counts as answered once either key is written explicitly; the shipped defaults are not an
+answer. Every answer also writes ``offer_version``. A "No thanks" without it predates the type-ahead
+fix (an Enter pressed during startup could save it unseen), so that profile is asked once more, with
+the reason, and any response (Esc or dismiss included) settles it for good. A collect-only answer
+from before the offer dropped that choice stays decided: nothing is sent, and it is not asked again.
 Desktop paints the offer as a composer strip (``consent-strip.tsx`` over the ``shared_metrics.*``
 RPCs). The terminal asks at the end of every ``hermes setup`` flow and, for a profile that never
 answered, once before an interactive ``hermes`` / ``hermes --tui`` chat (which also covers the
@@ -22,10 +24,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# (label, enabled, send): the Desktop strip's three equal answers, in its order.
+# (label, enabled, send): the offer's two answers, in the order every surface shows them.
 OFFER_CHOICES = (
-    ("Collect and send to Nous", True, True),
-    ("Collect locally only", True, False),
+    ("Share with Nous", True, True),
     ("No thanks", False, False),
 )
 _NO_THANKS = len(OFFER_CHOICES) - 1
@@ -33,12 +34,10 @@ DOCS_URL = "https://hermes-agent.nousresearch.com/docs/developer-guide/relay-sha
 _OFFER_DESCRIPTION = "\n".join((
     "Shared metrics are bounded counters: activity, outcomes, error classes (with a",
     "fixed-list reason when a memory write, compression, update or install fails),",
-    "model routes, token totals, feature use and coarse machine facts. A failed or",
-    "finished fresh install is noted on this machine and counted only if you opt in.",
-    "Never prompts, files, paths,",
-    "setting values or error text. Collection stays on this machine; sending to Nous is",
-    "a separate choice, and apart from that install note, data from before you opt in",
-    "is never sent.",
+    "model routes, token totals, feature use and coarse machine facts. Never prompts,",
+    "files, paths, setting values or error text. Sharing sends them to Nous once a",
+    "day. Apart from a one-time install note, data from before you opt in is never",
+    "sent.",
     f"Details: {DOCS_URL}",
     "Change it any time: hermes setup telemetry",
 ))
@@ -58,7 +57,8 @@ OFFER_VERSION = 2
 def consent_state(raw_cfg: Any) -> dict:
     """``{enabled, send, decided, reask}`` from a RAW config mapping (no defaults merged). ``reask``:
     an "off" answer from before ``OFFER_VERSION`` that may never have been seen; it reads undecided
-    so every surface offers it once more. An opt-in was always a deliberate pick and stays."""
+    so every surface offers it once more. An opt-in was always a deliberate pick and stays, including
+    a collect-only answer from before the offer dropped that choice."""
     section = _section(raw_cfg)
     enabled = section.get("enabled") is True
     answered = "enabled" in section or "send" in section
@@ -120,7 +120,7 @@ def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
 
 
 def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:
-    """Ask once, with the Desktop strip's three answers; "No thanks" is the default so Enter never
+    """Ask once, with the offer's two answers; "No thanks" is the default so Enter never
     opts anyone in. Esc leaves a first question open (asked again next time); on a re-ask it keeps
     the recorded "No thanks", so nobody is asked a third time. True when answered."""
     from hermes_cli.cli_output import print_info, print_success
@@ -142,7 +142,7 @@ def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:
         return False
     _, enabled, send = OFFER_CHOICES[idx]
     save_consent(enabled, send, config)
-    outcome = "collected and sent to Nous" if send else "collected on this machine only" if enabled else "off"
+    outcome = "sent to Nous once a day" if send else "off"
     print_success(f"Shared metrics {outcome}. Change it any time with `hermes setup telemetry`.")
     return True
 

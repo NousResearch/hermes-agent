@@ -1,6 +1,8 @@
 import asyncio
 import os
+import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -143,7 +145,6 @@ def test_run_stdio_malware_check_does_not_block_event_loop():
 
     def slow_check(_command, _args):
         time.sleep(0.3)  # simulate a slow OSV HTTPS call
-        return None
 
     ticks = {"n": 0}
 
@@ -234,6 +235,110 @@ def test_bare_node_launchers_resolve_pm_node_ahead_of_the_users(tmp_path, monkey
     assert env["PATH"].split(os.pathsep) == [str(npm_bin), str(node_bin), str(user_bin), "/usr/bin"]
 
 
+def _sealed_npx(tmp_path, monkeypatch):
+    """A sealed payload's npm + node dirs, with `node` a real file for `which` on every OS."""
+    import pm.user_facing
+
+    npm_bin = _toolchain_bin(tmp_path / "store" / "npm", "npx")
+    (npm_bin / "node_modules" / "npm" / "bin").mkdir(parents=True)
+    (npm_bin / "node_modules" / "npm" / "bin" / "npm-cli.js").write_text("", encoding="utf-8")
+    node_bin = tmp_path / "store" / "node"
+    node_bin.mkdir(parents=True)
+    node = _bare_exe(node_bin, "node")
+    monkeypatch.setattr(pm.user_facing, "applies", lambda: True)
+    sealed = {"node": [str(node_bin)], "npm": [str(npm_bin)]}
+    monkeypatch.setattr(pm.user_facing, "_sealed_dirs", lambda name: sealed.get(name, []))
+    return npm_bin, node
+
+
+def test_packaged_npx_runs_the_package_bin_on_the_packaged_node(tmp_path, monkeypatch):
+    """With only the payload's Node, npx's cmd.exe hop always dies, so Hermes installs the
+    package (scripts off) and runs its bin script on the packaged node instead."""
+    import subprocess
+
+    from tools.mcp_tool_config import _packaged_npx_entry
+
+    npm_bin, node = _sealed_npx(tmp_path, monkeypatch)
+    calls = []
+
+    def fake_install(argv, **kwargs):
+        # Stands in for `node npm-cli.js install --prefix <p> ... <spec>`: records argv, lays out the package.
+        calls.append(argv)
+        pkg = Path(argv[argv.index("--prefix") + 1]) / "node_modules" / "@scope" / "srv"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "package.json").write_text('{"bin": {"srv": "dist/index.js"}}', encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_install)
+
+    args = ["-y", "@scope/srv", "--port", "1"]
+    command, argv = _packaged_npx_entry(str(npm_bin / "npx.cmd"), args)
+    # which() reports the PATHEXT spelling (node.EXE), so compare case-normalised.
+    assert os.path.normcase(command) == os.path.normcase(str(node))
+    assert argv[1:] == ["--port", "1"] and argv[0].endswith(os.path.join("@scope", "srv", "dist", "index.js"))
+    assert "--ignore-scripts" in calls[0]
+    assert calls[0][0] == command
+    # Like npx: an unpinned spec re-resolves on every start, an exact version is reused.
+    assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), args) == (command, argv)
+    assert len(calls) == 2
+    pinned = ["-y", "@scope/srv@1.2.3"]
+    assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), pinned) == _packaged_npx_entry(str(npm_bin / "npx.cmd"), pinned)
+    assert len(calls) == 3
+    # npm installs a git/URL/path spec under a name the spec does not show: plain npx, no install.
+    assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), ["-y", "github:u/r"]) is None
+    assert len(calls) == 3
+    assert _packaged_npx_entry(str(tmp_path / "user-node" / "npx.cmd"), args) is None
+
+
+@pytest.mark.parametrize("failure", [
+    subprocess.TimeoutExpired("node", 600),
+    PermissionError(13, "Access is denied"),
+    subprocess.CompletedProcess([], 1, "", "npm ERR!"),
+], ids=["timeout", "oserror", "nonzero-exit"])
+def test_packaged_npx_install_failure_degrades_to_plain_npx(tmp_path, monkeypatch, failure):
+    """A hung, unstartable or failing install must return None (plain npx, an honest failure),
+    never raise into the MCP connect loop where it would burn the server's retry budget."""
+    from tools.mcp_tool_config import _packaged_npx_entry
+
+    npm_bin, _node = _sealed_npx(tmp_path, monkeypatch)
+
+    def fail(argv, **kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), ["-y", "@scope/srv"]) is None
+
+    # A refresh that fails (offline) keeps the package an earlier start installed.
+    from hermes_constants import get_hermes_home
+    import hashlib
+    pkg = (Path(get_hermes_home()) / "cache" / "mcp-npx" / hashlib.sha256(b"@scope/srv").hexdigest()[:16]
+           / "node_modules" / "@scope" / "srv")
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text('{"bin": "cli.js"}', encoding="utf-8")
+    assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), ["-y", "@scope/srv"])[1] == [str(pkg / "cli.js")]
+
+
+def test_outside_package_swaps_the_sealed_dirs_for_pm_copies(tmp_path, monkeypatch):
+    """A bare npx/npm/node on a sealed payload resolves in PM's writable copy (npm starts each
+    bin through cmd.exe, which cannot start the packaged node); outside a payload it is untouched."""
+    import pm.user_facing
+    from tools.mcp_tool_config import _outside_package
+
+    sealed_dir = str(tmp_path / "sealed")
+    copy = _toolchain_bin(tmp_path / "copy", "npx")
+    managed = str(tmp_path / "sealed" / "npx")
+
+    monkeypatch.setattr(pm.user_facing, "copies", lambda dirs: [str(copy)])
+    launcher, dirs = _outside_package("npx", managed, [sealed_dir])
+    assert dirs == [str(copy)]
+    assert os.path.dirname(launcher) == str(copy)
+
+    monkeypatch.setattr(pm.user_facing, "copies", lambda dirs: list(dirs))
+    assert _outside_package("npx", managed, [sealed_dir]) == (managed, [sealed_dir])
+
+
 def test_bare_uvx_resolves_pm_uv_and_an_absolute_command_stays_the_users(tmp_path, monkeypatch):
     user_bin = _toolchain_bin(tmp_path / "user" / ".local" / "bin", "uvx")
     uv_dir = _toolchain_bin(tmp_path / "store" / "uv-0.1", "uv", "uvx")
@@ -276,7 +381,7 @@ def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, m
     managed_bin.mkdir(parents=True)
     user_bin = tmp_path / "user-bin"
     user_bin.mkdir()
-    managed_exe = _bare_exe(managed_bin, "python3")
+    _bare_exe(managed_bin, "python3")
     user_exe = _bare_exe(user_bin, "python3")
     token = set_hermes_home_override(home)
     try:

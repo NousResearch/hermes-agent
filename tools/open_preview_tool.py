@@ -24,9 +24,9 @@ def _normalize_target(raw: str) -> str:
     v = raw.strip().strip("`").strip()
     if not v or "://" in v or v.startswith(("/", "./", "../", "~", "file:")):
         return v
-    if re.match(r"^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(/|$)", v, re.I):
+    if re.match(r"^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(/|$)", v, re.IGNORECASE):
         return "http://" + v
-    if re.match(r"^[\w.-]+\.[a-z]{2,}(:\d+)?(/.*)?$", v, re.I):
+    if re.match(r"^[\w.-]+\.[a-z]{2,}(:\d+)?(/.*)?$", v, re.IGNORECASE):
         return "https://" + v
     return v
 

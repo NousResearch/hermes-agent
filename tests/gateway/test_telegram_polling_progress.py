@@ -9,6 +9,7 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
 
 
 class _ControlledRequest:
@@ -117,7 +118,7 @@ def _configure_lifecycle_connect(monkeypatch, adapter, apps):
     monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *args, **kwargs: None)
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
     monkeypatch.setattr(adapter, "_release_platform_lock", MagicMock())
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
     monkeypatch.setattr(adapter, "_start_post_connect_housekeeping", MagicMock())
     return builders
 
@@ -271,7 +272,7 @@ async def test_fallback_discovery_timeout_uses_seed_ipv4(monkeypatch):
     assert await adapter.connect() is True
     httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
     transport = httpx_kwargs.get("transport")
-    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert isinstance(transport, TelegramFallbackTransport)
     assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
@@ -300,7 +301,7 @@ async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeyp
         if getattr(getattr(awaitable, "cr_code", None), "co_name", "") == "stuck_discovery":
             assert timeout == 5.0
             awaitable.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         return await original_deadline(awaitable, timeout, **_kwargs)
 
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)
@@ -309,7 +310,7 @@ async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeyp
     assert await adapter.connect() is True
     httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
     transport = httpx_kwargs.get("transport")
-    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert isinstance(transport, TelegramFallbackTransport)
     assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
@@ -455,7 +456,7 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
 
     adapter = _make_adapter()
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
     _, progress = adapter._begin_polling_generation()
 
     assert await adapter.connect() is False

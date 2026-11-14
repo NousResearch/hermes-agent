@@ -31,18 +31,37 @@ _COMPUTER_USE_CAPTURE_SUMMARY_RE = re.compile(
 )
 
 
-def tool_name_by_call_id(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+def tool_name_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Map assistant tool-call ids to tool names for the given messages."""
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     for msg in messages:
         if msg.get("role") != "assistant":
             continue
         for call in msg.get("tool_calls") or []:
             call_id = call.get("id") or call.get("call_id")
-            name = str((call.get("function") or {}).get("name") or call.get("name") or "")
+            function = call.get("function") or {}
+            name = str(function.get("name") or call.get("name") or "")
             if call_id and name:
-                mapping[str(call_id)] = name
+                mapping[str(call_id)] = _underlying_tool_name(name, function.get("arguments"))
     return mapping
+
+
+def _underlying_tool_name(name: str, arguments: Any) -> str:
+    """The tool a ``tool_call`` bridge invocation ran, else ``name``.
+
+    A deferred producer (text_to_speech, image_generate, computer_use) is recorded under the
+    bridge name, so a lookup keyed on the producer's own name would never match its result."""
+    from tools.tool_search import TOOL_CALL_NAME, normalize_tool_call_entries
+
+    if name != TOOL_CALL_NAME:
+        return name
+    try:
+        args = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except ValueError:
+        return name
+    entries, err = normalize_tool_call_entries(args if isinstance(args, dict) else {})
+    # Local tools are refused in a multi-entry batch, so one entry is the whole call.
+    return entries[0]["name"] if not err and len(entries) == 1 else name
 
 
 def _computer_use_capture_basename(path: Any) -> str:
@@ -85,7 +104,7 @@ def _iter_computer_use_capture_paths(content: Any) -> Iterator[str]:
                 yield from _iter_computer_use_capture_paths(nested)
 
 
-def _current_turn_messages(messages: List[Dict[str, Any]], history_offset: int) -> List[Dict[str, Any]]:
+def _current_turn_messages(messages: list[dict[str, Any]], history_offset: int) -> list[dict[str, Any]]:
     if not history_offset or len(messages) >= history_offset:
         return messages[history_offset:]
     # Compression can invalidate the slice boundary: recover the turn from its last user
@@ -97,7 +116,7 @@ def _current_turn_messages(messages: List[Dict[str, Any]], history_offset: int) 
     return []
 
 
-def repair_explicit_computer_use_media_paths(response: str, messages: List[Dict[str, Any]], history_offset: int = 0) -> str:
+def repair_explicit_computer_use_media_paths(response: str, messages: list[dict[str, Any]], history_offset: int = 0) -> str:
     """Recover model-mangled paths in explicit ``MEDIA:`` directives whose basename
     matches (case-insensitively) a canonical screenshot path from this turn.
     Fail-open: the repair is cosmetic, so any error returns the response unchanged."""
@@ -108,10 +127,10 @@ def repair_explicit_computer_use_media_paths(response: str, messages: List[Dict[
         return response
 
 
-def _canonical_capture_paths(turn_messages: List[Dict[str, Any]]) -> Dict[str, str]:
+def _canonical_capture_paths(turn_messages: list[dict[str, Any]]) -> dict[str, str]:
     """``{lowercase basename: absolute canonical path}`` from this turn's computer_use results."""
     call_id_names = tool_name_by_call_id(turn_messages)
-    canonical: Dict[str, str] = {}
+    canonical: dict[str, str] = {}
     for msg in turn_messages:
         if msg.get("role") not in {"tool", "function"}:
             continue
@@ -125,7 +144,7 @@ def _canonical_capture_paths(turn_messages: List[Dict[str, Any]]) -> Dict[str, s
     return canonical
 
 
-def _repair_explicit_computer_use_media_paths_inner(response: str, messages: List[Dict[str, Any]], history_offset: int = 0) -> str:
+def _repair_explicit_computer_use_media_paths_inner(response: str, messages: list[dict[str, Any]], history_offset: int = 0) -> str:
     if "MEDIA:" not in response:
         return response
     canonical_by_basename = _canonical_capture_paths(_current_turn_messages(messages, history_offset))

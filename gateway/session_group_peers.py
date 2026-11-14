@@ -1,0 +1,200 @@
+"""Cross-gateway members of gateway-owned Group Chats: text-only targets on any served profile.
+
+The target gateway's operator mints a room-scoped grant (``groups.peer.invite``) or revokes that
+scope (``groups.peer.revoke``). The room's home binds the grant to the room's pinned peer member
+(``groups.peer.register``). Dispatch, Stop, recovery and Disband then run on the canonical hosted
+service like any other member (``CanonicalHostedRoomService`` inherits the peer transport).
+"""
+import sqlite3
+from pathlib import Path
+
+from hermes_state_runtime import RuntimeStoreError
+
+TARGET_METHODS = frozenset({'groups.peer.invite', 'groups.peer.revoke'})
+_GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})
+
+
+def _api_server(authority):
+    from gateway.config import Platform
+    adapters = getattr(getattr(authority, 'runner', None), 'adapters', None) or {}
+    return adapters.get(Platform.API_SERVER)
+
+
+def room_link(authority):
+    """Whether this gateway can host a member of another gateway's room; else the first missing piece."""
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import gateway_room_grant_secret_available
+    from gateway.platforms.api_server_room_grants import _local_room_catalog
+    from gateway.session_authorities import served_profile_name
+    # One api_server listener serves every profile; a named profile is lent through its /p/<name> mirror.
+    profile = served_profile_name(Path(authority.profile_id))
+    adapter = _api_server(authority)
+    if adapter is None:
+        return {'enabled': False, 'reason': 'api_server_required'}
+    if not getattr(getattr(adapter, '_run_idempotency_store', None), 'durable', False):
+        return {'enabled': False, 'reason': 'durable_run_storage_required'}
+    if not gateway_room_grant_secret_available():
+        return {'enabled': False, 'reason': 'gateway_roomlink_secret_unavailable'}
+    try:
+        _, catalog = _local_room_catalog(adapter, profile, hosted_rooms.local_authority_gateway_id())
+    except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+        # For example approvals off: a remote turn must never run without approval prompts.
+        return {'enabled': False, 'reason': 'execution_policy_unsupported'}
+    if not catalog['endpoint'].get('available'):
+        return {'enabled': False, 'reason': 'endpoint_required'}
+    return {'enabled': True, 'profile': profile, 'catalog': catalog, 'endpoint': catalog['endpoint']}
+
+
+def dispatch_target(authority, method, params):
+    """Operator-only target controls; ``room_id`` names the home's room, not a local one."""
+    return (_invite if method == 'groups.peer.invite' else _revoke)(authority, params)
+
+
+def _invite(authority, params):
+    from gateway.platforms.api_server_room_grants import _issue_invitation
+    identity = ('room_id', 'home_install_id', 'authority_gateway_id', 'member_id')
+    # ``status_ttl_seconds`` is the renewal horizon (``_issue_invitation`` bounds it to ``ttl_seconds``
+    # .. 30 days): the home renews the route at dispatch up to it, and never past it.
+    if (not all(isinstance(params.get(k), str) and params[k] for k in identity)
+            or type(params.get('authority_epoch')) is not int or not 1 <= params['authority_epoch'] < 2**63
+            or any(type(params.get(k, 3600)) not in (int, float) for k in ('ttl_seconds', 'status_ttl_seconds'))):
+        raise RuntimeStoreError('invalid_params')
+    if not (link := room_link(authority))['enabled']:
+        raise RuntimeStoreError('room_link_unavailable')
+    invitation = _issue_invitation(_api_server(authority), params, link['profile'])
+    return {'grant': invitation['grant'], 'target_profile': invitation['target_profile'],
+            'catalog': invitation['catalog'], 'endpoint': invitation['catalog']['endpoint']}
+
+
+def _revoke(authority, params):
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import HostedRoomPeerError, decode_room_grant, gateway_room_grant_secret
+    from gateway.session_authorities import served_profile_name
+    if not isinstance(params.get('grant'), str) or not params['grant']:
+        raise RuntimeStoreError('invalid_params')
+    try:
+        claims = decode_room_grant(gateway_room_grant_secret(), params['grant'], permission='status')
+    except HostedRoomPeerError as exc:
+        raise RuntimeStoreError('invalid_room_grant') from exc
+    if (claims['target_profile'], claims['target_install_id']) != (
+            served_profile_name(Path(authority.profile_id)), hosted_rooms.local_authority_gateway_id()):
+        raise RuntimeStoreError('permission_denied')
+    hosted_rooms.revoke_room_grant_scope(
+        hosted_rooms.default_db_path(), claims=claims,
+        expires_at=float(claims.get('status_expires_at', claims['expires_at'])))
+    return {'revoked': True}
+
+
+def _probe(client, grant, catalog, scope):
+    """Check a grant on the member's gateway: reachable, the same catalog, the same room scope."""
+    from gateway.hosted_room_peer import GatewayRoomCatalog, HostedRoomPeerError
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    try:
+        probe = client.probe(grant=grant)
+        live = GatewayRoomCatalog.from_mapping(probe.get('catalog'))
+    except PeerRunsHTTPError as exc:
+        raise RuntimeStoreError(exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
+    except HostedRoomPeerError as exc:
+        raise RuntimeStoreError('peer_target_mismatch') from exc
+    if live != catalog or any(probe.get(k) != v for k, v in scope.items()):
+        raise RuntimeStoreError('peer_target_mismatch')
+
+
+def register(service, params):
+    """Bind a target grant to the room's pinned peer member, after a live scoped probe."""
+    from gateway.hosted_room_peer import (
+        GatewayRoomCatalog, HostedRoomPeerError, PROTOCOL_VERSION,
+        room_grant_matches_scope, validate_room_link_url)
+    from gateway.hosted_rooms import (
+        HostedRoomError, OwedRevokesFullError, RoomNotFoundError, room_state)
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
+    room_id, member_id, profile, grant = (params.get(k) for k in ('room_id', 'member_id', 'target_profile', 'grant'))
+    if not all(isinstance(v, str) and v for v in (room_id, member_id, profile, grant)):
+        raise RuntimeStoreError('invalid_params')
+    try:
+        target_url, security = validate_room_link_url(params.get('target_url'))
+        catalog = GatewayRoomCatalog.from_mapping(params.get('catalog'))
+    except (HostedRoomPeerError, TypeError, KeyError) as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+    disbanding = None
+    try:
+        with service.peer_route_lock:
+            gateway_id, epoch = service.route_authority(room_id)
+        room, ended = service._room(room_id), None
+    except RoomNotFoundError as exc:
+        room, ended = service.ended_room(room_id), exc
+        if room is None:
+            raise
+    except RuntimeStoreError as exc:
+        if exc.reason != 'room_disbanding_retry':
+            raise
+        room = room_state(service.db_path, room_id=room_id, include_disbanded=True)
+        ended, disbanding = None, exc
+    member = next((m for m in room['members'] if m['member_id'] == member_id), {})
+    target = member.get('target') or {}
+    if (target.get('kind') != 'peer' or target.get('installation_id') != catalog.installation_id
+            or target.get('capability_digest') != catalog.catalog_digest
+            or target.get('profile') != profile or profile != catalog.execution_policy.target_profile
+            # The pinned digest covers the endpoint the member's gateway advertises: the grant goes
+            # there and nowhere else, so another host can neither read it nor answer for that gateway.
+            or target_url != catalog.endpoint_url):
+        raise RuntimeStoreError('peer_target_mismatch')
+    if (disbanding is not None or ended is not None) and not room_grant_matches_scope(
+            grant, room_id=room_id, member_id=member_id, home_install_id=room["authority_gateway_id"],
+            authority_gateway_id=room["authority_gateway_id"], authority_epoch=room["authority_epoch"]):
+        raise RuntimeStoreError('peer_target_mismatch')
+    if disbanding is not None:
+        service.hold_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+        raise disbanding
+    if ended is not None:
+        # The room ended first (an invitation still in flight when Disband returned): its gateway
+        # minted this grant for it, so this home owes its revoke at the pinned endpoint, unprobed.
+        service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+        raise ended
+    if (not catalog.text or catalog.attachments
+            or PROTOCOL_VERSION not in catalog.protocol_versions or 'direct' not in catalog.link_modes):
+        raise RuntimeStoreError('peer_target_unsupported')
+    client = PeerRunsHTTPClient(base_url=target_url, api_key='', receipt_db_path=service.db_path)
+    # The network probe holds no lock, so Stop and Disband are never held behind a slow peer.
+    _probe(client, grant, catalog, {
+        'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
+        'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile})
+    # The home derives the route's identity (a caller cannot choose it), so a re-registered grant
+    # replays an accepted dispatch byte for byte instead of conflicting with it.
+    cancellation_scope_id, trace_id = route_identity(
+        db_path=service.db_path, home_install_id=gateway_id, room_id=room_id, member_id=member_id)
+    route = PeerMemberRoute(
+        home_install_id=gateway_id, member_id=member_id, target_install_id=catalog.installation_id,
+        target_profile=profile, capability_digest=catalog.catalog_digest,
+        execution_policy_digest=catalog.execution_policy.policy_digest,
+        cancellation_scope_id=cancellation_scope_id, trace_id=trace_id, grant=grant)
+    with service.peer_route_lock:
+        # The probe took time: publish only while the room is still the one it was checked against.
+        try:
+            refused = (None if service.route_authority(room_id) == (gateway_id, epoch)
+                       else RuntimeStoreError('peer_target_mismatch'))
+        except HostedRoomError as exc:  # disbanded meanwhile
+            refused = exc
+        except RuntimeStoreError as exc:
+            if exc.reason != 'room_disbanding_retry':
+                raise
+            refused = exc
+        if refused is None:
+            try:
+                service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
+                                            target_url=target_url, catalog=catalog)
+            except OwedRevokesFullError as exc:  # the replaced grant's revoke found no room
+                refused = exc
+    if refused is not None:
+        if isinstance(refused, RuntimeStoreError) and refused.reason == 'room_disbanding_retry':
+            service.hold_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+            raise refused
+        # The member's gateway has seen this grant for a room that ended or moved, or one it could
+        # not store: this home owes its revoke, paid by the worker cycle (or now, when no room is
+        # left to record it), so Disband leaves no grant it was handed.
+        service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+                                 client=client)
+        raise refused
+    return {'registered': True, 'mode': 'direct', 'transport_security': security,
+            'target_install_id': catalog.installation_id, 'target_profile': profile}

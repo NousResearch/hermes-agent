@@ -12,7 +12,7 @@ from tests.ci.desktop_release_roles import (
 )
 from tests.ci.test_commit_build_staging import shell_step
 from tests.ci.test_desktop_release_tag_admission import _workflow
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
 @pytest.mark.parametrize("gh_available", [False, True])

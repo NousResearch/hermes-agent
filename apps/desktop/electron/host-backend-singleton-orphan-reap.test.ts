@@ -17,11 +17,7 @@ import { test } from 'vitest'
 
 import { processStartMarker } from './backend-claim'
 import { BackendDialClaims } from './backend-dial-claim'
-import {
-  type BackendIdentity,
-  type BackendOwnershipEntry,
-  createBackendOwnership
-} from './backend-ownership'
+import { type BackendIdentity, type BackendOwnershipEntry, createBackendOwnership } from './backend-ownership'
 import { assertNoSecondLocalBackend, SecondLocalBackendError } from './host-backend-singleton'
 import { isPidAlive } from './update-marker'
 
@@ -65,9 +61,7 @@ test('#81275 storm: 12 concurrent same-scope reconnect dials coalesce to ONE spa
   // one wake. backendDialClaims is the seam main.ts wires at every dial site
   // (ensureTerminalBackend, media-stream resolveRemoteConnection, window
   // routes), so this is the production coalescing contract, not a model.
-  const results = await Promise.all(
-    Array.from({ length: 12 }, (_, attempt) => claims.run('default', dial))
-  )
+  const results = await Promise.all(Array.from({ length: 12 }, (_, attempt) => claims.run('default', dial)))
 
   assert.equal(spawns, 1, 'a same-scope reconnect storm must produce exactly one backend spawn')
   assert.equal(claims.inFlight('default'), false, 'the claim must release once the dial settles')
@@ -124,160 +118,168 @@ test('#81275 singleton: a local pool spawn that routing missed still cannot reac
   assertNoSecondLocalBackend('worker', { unscopableRequest: true })
 })
 
-test('#81275 orphan reap: a crashed parent leaves a REAL child that the next launch reaps', { timeout: 60_000 }, async () => {
-  // The issue's orphans were PPID-1 serve children left by a Desktop that
-  // quit before its backends. Simulate exactly the recorded shape: the
-  // ownership ledger knows the child (pid + start marker) and its parent;
-  // the parent is dead; the next launch's reapOrphans must stop the child.
-  // Real processes + the real platform start-marker probe (ps / /proc), so
-  // this exercises the same identity matching the packaged reaper uses.
-  if (process.platform === 'win32') {
-    return // Windows uses PowerShell Get-Process; covered by the Windows lane.
-  }
-
-  const orphan = spawnDetachedChild()
-  const fakeParent = spawnDetachedChild()
-
-  try {
-    const marker = await processStartMarker(orphan.pid)
-    const parentMarker = await processStartMarker(fakeParent.pid)
-
-    const entry: BackendOwnershipEntry = {
-      nonce: 'reap-probe-nonce',
-      pid: orphan.pid,
-      profile: 'default',
-      startMarker: marker,
-      parentPid: fakeParent.pid,
-      parentStartMarker: parentMarker
+test(
+  '#81275 orphan reap: a crashed parent leaves a REAL child that the next launch reaps',
+  { timeout: 60_000 },
+  async () => {
+    // The issue's orphans were PPID-1 serve children left by a Desktop that
+    // quit before its backends. Simulate exactly the recorded shape: the
+    // ownership ledger knows the child (pid + start marker) and its parent;
+    // the parent is dead; the next launch's reapOrphans must stop the child.
+    // Real processes + the real platform start-marker probe (ps / /proc), so
+    // this exercises the same identity matching the packaged reaper uses.
+    if (process.platform === 'win32') {
+      return // Windows uses PowerShell Get-Process; covered by the Windows lane.
     }
 
-    let store = JSON.stringify({ backends: [entry] })
-    const stopped: BackendIdentity[] = []
+    const orphan = spawnDetachedChild()
+    const fakeParent = spawnDetachedChild()
 
-    const ownership = createBackendOwnership({
-      // The REAL probe: the orphan is alive and its recorded start marker
-      // matches, so identity is confirmed — the reaper must stop it.
-      matchesIdentity: async identity => (await processStartMarker(identity.pid)) === identity.startMarker,
-      // The parent is dead (killed below), so parent liveness resolves via
-      // the same marker comparison main.ts's backendParentMatches performs.
-      matchesParent: async candidate => {
-        if (!candidate.parentPid || !candidate.parentStartMarker) {
-          return undefined
+    try {
+      const marker = await processStartMarker(orphan.pid)
+      const parentMarker = await processStartMarker(fakeParent.pid)
+
+      const entry: BackendOwnershipEntry = {
+        nonce: 'reap-probe-nonce',
+        pid: orphan.pid,
+        profile: 'default',
+        startMarker: marker,
+        parentPid: fakeParent.pid,
+        parentStartMarker: parentMarker
+      }
+
+      let store = JSON.stringify({ backends: [entry] })
+      const stopped: BackendIdentity[] = []
+
+      const ownership = createBackendOwnership({
+        // The REAL probe: the orphan is alive and its recorded start marker
+        // matches, so identity is confirmed — the reaper must stop it.
+        matchesIdentity: async identity => (await processStartMarker(identity.pid)) === identity.startMarker,
+        // The parent is dead (killed below), so parent liveness resolves via
+        // the same marker comparison main.ts's backendParentMatches performs.
+        matchesParent: async candidate => {
+          if (!candidate.parentPid || !candidate.parentStartMarker) {
+            return undefined
+          }
+
+          try {
+            return (await processStartMarker(candidate.parentPid)) === candidate.parentStartMarker
+          } catch {
+            return false // ESRCH: the parent is gone.
+          }
+        },
+        stop: async identity => {
+          try {
+            process.kill(identity.pid, 'SIGTERM')
+          } catch {
+            // Race with an external kill: still record the attempt.
+          }
+
+          stopped.push(identity)
+        },
+        store: {
+          read: () => store,
+          write: (next: string) => {
+            store = next
+          }
         }
+      })
 
-        try {
+      // The parent dies first — the crash that orphans the backend child.
+      fakeParent.stop()
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, 500)
+
+        void (async () => {
+          while (isPidAlive(fakeParent.pid)) {
+            await new Promise(wait => setTimeout(wait, 25))
+          }
+
+          clearTimeout(timer)
+          resolve()
+        })()
+      })
+      assert.equal(isPidAlive(fakeParent.pid), false, 'fixture parent must be dead before the sweep')
+
+      const reaped = await ownership.reapOrphans()
+
+      assert.deepEqual(reaped, [orphan.pid], 'the sweep must reap the orphaned child')
+      assert.equal(stopped.length, 1, 'exactly one stop for the confirmed orphan')
+
+      await new Promise(resolve => setTimeout(resolve, 300))
+      assert.equal(isPidAlive(orphan.pid), false, 'the orphaned backend must actually be stopped')
+
+      assert.doesNotThrow(() => {
+        const survivors = JSON.parse(store).backends as BackendOwnershipEntry[]
+        assert.equal(
+          survivors.some(candidate => candidate.pid === orphan.pid),
+          false,
+          'a reaped backend must leave the ownership ledger'
+        )
+      })
+    } finally {
+      orphan.stop()
+      fakeParent.stop()
+    }
+  }
+)
+
+test(
+  '#81275 orphan reap: a backend whose parent Electron is STILL alive is never reaped',
+  { timeout: 60_000 },
+  async () => {
+    // #87295: the running instance's live backend is never an orphan, even when
+    // a second launch reaches reapOrphans. Same real-process probe, parent kept
+    // alive — the mirror image of the crash case and the guard that makes the
+    // reaper safe to run on every boot.
+    if (process.platform === 'win32') {
+      return
+    }
+
+    const owned = spawnDetachedChild()
+    const liveParent = spawnDetachedChild()
+
+    try {
+      const entry: BackendOwnershipEntry = {
+        nonce: 'live-parent-nonce',
+        pid: owned.pid,
+        profile: 'default',
+        startMarker: await processStartMarker(owned.pid),
+        parentPid: liveParent.pid,
+        parentStartMarker: await processStartMarker(liveParent.pid)
+      }
+
+      let store = JSON.stringify({ backends: [entry] })
+      let stopCalls = 0
+
+      const ownership = createBackendOwnership({
+        matchesIdentity: async identity => (await processStartMarker(identity.pid)) === identity.startMarker,
+        matchesParent: async candidate => {
+          if (!candidate.parentPid || !candidate.parentStartMarker) {
+            return undefined
+          }
+
           return (await processStartMarker(candidate.parentPid)) === candidate.parentStartMarker
-        } catch {
-          return false // ESRCH: the parent is gone.
+        },
+        stop: async () => {
+          stopCalls += 1
+        },
+        store: {
+          read: () => store,
+          write: (next: string) => {
+            store = next
+          }
         }
-      },
-      stop: async identity => {
-        try {
-          process.kill(identity.pid, 'SIGTERM')
-        } catch {
-          // Race with an external kill: still record the attempt.
-        }
+      })
 
-        stopped.push(identity)
-      },
-      store: {
-        read: () => store,
-        write: (next: string) => {
-          store = next
-        }
-      }
-    })
+      const reaped = await ownership.reapOrphans()
 
-    // The parent dies first — the crash that orphans the backend child.
-    fakeParent.stop()
-    await new Promise<void>(resolve => {
-      const timer = setTimeout(resolve, 500)
-
-      void (async () => {
-        while (isPidAlive(fakeParent.pid)) {
-          await new Promise(wait => setTimeout(wait, 25))
-        }
-
-        clearTimeout(timer)
-        resolve()
-      })()
-    })
-    assert.equal(isPidAlive(fakeParent.pid), false, 'fixture parent must be dead before the sweep')
-
-    const reaped = await ownership.reapOrphans()
-
-    assert.deepEqual(reaped, [orphan.pid], 'the sweep must reap the orphaned child')
-    assert.equal(stopped.length, 1, 'exactly one stop for the confirmed orphan')
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-    assert.equal(isPidAlive(orphan.pid), false, 'the orphaned backend must actually be stopped')
-
-    assert.doesNotThrow(() => {
-      const survivors = JSON.parse(store).backends as BackendOwnershipEntry[]
-      assert.equal(
-        survivors.some(candidate => candidate.pid === orphan.pid),
-        false,
-        'a reaped backend must leave the ownership ledger'
-      )
-    })
-  } finally {
-    orphan.stop()
-    fakeParent.stop()
-  }
-})
-
-test('#81275 orphan reap: a backend whose parent Electron is STILL alive is never reaped', { timeout: 60_000 }, async () => {
-  // #87295: the running instance's live backend is never an orphan, even when
-  // a second launch reaches reapOrphans. Same real-process probe, parent kept
-  // alive — the mirror image of the crash case and the guard that makes the
-  // reaper safe to run on every boot.
-  if (process.platform === 'win32') {
-    return
-  }
-
-  const owned = spawnDetachedChild()
-  const liveParent = spawnDetachedChild()
-
-  try {
-    const entry: BackendOwnershipEntry = {
-      nonce: 'live-parent-nonce',
-      pid: owned.pid,
-      profile: 'default',
-      startMarker: await processStartMarker(owned.pid),
-      parentPid: liveParent.pid,
-      parentStartMarker: await processStartMarker(liveParent.pid)
+      assert.deepEqual(reaped, [], 'a live parent means the backend is not an orphan')
+      assert.equal(stopCalls, 0, "the sweep must never stop a live instance's backend")
+      assert.equal(isPidAlive(owned.pid), true, 'the owned backend survives the sweep')
+    } finally {
+      owned.stop()
+      liveParent.stop()
     }
-
-    let store = JSON.stringify({ backends: [entry] })
-    let stopCalls = 0
-
-    const ownership = createBackendOwnership({
-      matchesIdentity: async identity => (await processStartMarker(identity.pid)) === identity.startMarker,
-      matchesParent: async candidate => {
-        if (!candidate.parentPid || !candidate.parentStartMarker) {
-          return undefined
-        }
-
-        return (await processStartMarker(candidate.parentPid)) === candidate.parentStartMarker
-      },
-      stop: async () => {
-        stopCalls += 1
-      },
-      store: {
-        read: () => store,
-        write: (next: string) => {
-          store = next
-        }
-      }
-    })
-
-    const reaped = await ownership.reapOrphans()
-
-    assert.deepEqual(reaped, [], 'a live parent means the backend is not an orphan')
-    assert.equal(stopCalls, 0, 'the sweep must never stop a live instance\'s backend')
-    assert.equal(isPidAlive(owned.pid), true, 'the owned backend survives the sweep')
-  } finally {
-    owned.stop()
-    liveParent.stop()
   }
-})
+)

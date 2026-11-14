@@ -194,11 +194,12 @@ export function I18nProvider({
           }
 
           // Keep inference unsaved so OS language changes apply on the next boot
-          // until the user explicitly picks a language.
+          // until the user explicitly picks a language. The saved ask is checked
+          // again after the probe: its pack may have arrived in the meantime.
           const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
 
           if (!cancelled && !userLocaleRef.current) {
-            setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))
+            setLocaleState(resolveInitialLocale(requestedRef.current, machineProfile?.locale))
           }
         })
         .catch(error => {

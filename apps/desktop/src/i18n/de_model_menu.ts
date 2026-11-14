@@ -1,4 +1,5 @@
 export const deModelMenu = {
+  pickDeferred: (model: string) => `${model} gilt ab deiner nächsten Nachricht`,
   search: 'Modelle durchsuchen',
   noModels: 'Keine Modelle gefunden',
   editModels: 'Modelle bearbeiten…',
@@ -13,6 +14,11 @@ export const deModelMenu = {
   cacheRead: 'Cache-Lesung',
   priceTitle: (input: string, output: string, cache: string) =>
     `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Lokal ausführen · kostenlos, privat',
+    text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,
+    action: 'Einrichten'
+  },
   limited: 'Limitiert',
   limitedUntil: (time: string) => `Limitiert bis ${time}`,
   limitedTip: (provider: string, time: null | string) =>

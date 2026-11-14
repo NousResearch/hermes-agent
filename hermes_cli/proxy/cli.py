@@ -112,4 +112,4 @@ def cmd_proxy(args: Any) -> int:
     return 0
 
 
-__all__ = ["cmd_proxy", "cmd_proxy_start", "cmd_proxy_status", "cmd_proxy_list_providers"]
+__all__ = ["cmd_proxy", "cmd_proxy_list_providers", "cmd_proxy_start", "cmd_proxy_status"]

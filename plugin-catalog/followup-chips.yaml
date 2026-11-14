@@ -1,0 +1,11 @@
+name: followup-chips
+description: >-
+  Clickable follow-up question chips under assistant replies. One click sends
+  the question as the next turn; Hermes arc-border hover; the choice persists
+  per block across reload. Single-file desktop plugin, no native components.
+repo: https://github.com/nuonrg/hermes-plugin-followup-chips
+sha: 3e44fa90462c23d29402d35f30a7c52f6cc4ae34
+capabilities: {}
+maintainer: nuonrg
+requires_hermes: ">=0.21.6"
+version: "1.0.0"

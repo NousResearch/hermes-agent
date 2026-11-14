@@ -292,3 +292,26 @@ def test_recovery_copy_without_a_catalog_memory_entry_keeps_the_generic_hint(tmp
     assert mig.catalog_install_hint("no-such-provider") is None
     doctor_state._memory_provider_generic("no-such-provider")
     assert "run: hermes memory setup" in capsys.readouterr().out
+
+
+def test_startup_recovery_backs_off_after_a_failed_install(tmp_path, monkeypatch):
+    """A failed agent-start install is not retried by every following process start (each `hermes chat`,
+    cron run, Desktop restart): one failure, then a quiet hour; `hermes update` still retries."""
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: hindsight\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    attempts: list[str] = []
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: (lambda n: attempts.append(n) or {"ok": False, "error": "uv lock exited 1"}))
+    said: list[str] = []
+    for _process in range(3):
+        monkeypatch.setattr(mig, "_attempted", set())  # a fresh process each time
+        assert mig.recover_at_startup("hindsight", say=said.append) is False
+    assert attempts == ["hindsight"]
+    assert "`hermes plugins install hindsight`" in said[-1]  # still told memory is off, and the fix
+    monkeypatch.setattr(mig, "STARTUP_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(mig, "_attempted", set())
+    mig.recover_at_startup("hindsight")
+    assert attempts == ["hindsight", "hindsight"]

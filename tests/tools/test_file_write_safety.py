@@ -801,6 +801,33 @@ class TestProtectedInstructionFiles:
         assert not res.get("error"), res
         assert approvals["calls"] == []
 
+    def test_instruction_files_in_real_hermes_home_are_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """#92146: the home exemption must not skip the basename / extra-pattern
+        match. The LIVE SOUL.md / AGENTS.md and operator-listed cron scripts in the
+        home steer the agent; denied writes stay unwritten."""
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / ".hermes"
+        (fake_home / "scripts").mkdir(parents=True)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, ["*.py"])
+        )
+        approvals["answer"] = "deny"
+        for target in (fake_home / "SOUL.md", fake_home / "AGENTS.md",
+                       fake_home / "scripts" / "prerun.py"):
+            res = self._write(target)
+            assert res.get("error") and "BLOCKED" in res["error"], target
+            assert not target.exists()
+        assert len(approvals["calls"]) == 3
+        # Ordinary home files remain out of this gate.
+        res = self._write(fake_home / "state.json", "{}")
+        assert not res.get("error"), res
+        assert len(approvals["calls"]) == 3
+
     # ---- patch tool -----------------------------------------------------
 
     def test_patch_replace_mode_is_gated(self, tmp_path, approvals):
@@ -976,8 +1003,11 @@ class TestProfileHomeExemptsHermesRoot:
         token = set_hermes_home_override(str(profile))
         try:
             assert os.path.realpath(str(root)) in ft._hermes_exempt_homes()
-            for name in ("LEDGER.md", "MEMORY.md", "SOUL.md", "AGENTS.md"):
+            for name in ("LEDGER.md", "MEMORY.md", "USER.md"):
                 assert ft._protected_instruction_reason(str(root / name)) is None, name
+            # The root's own instruction files stay gated (#92146).
+            for name in ("SOUL.md", "AGENTS.md"):
+                assert ft._protected_instruction_reason(str(root / name)) == name
             res = self._write(root / "LEDGER.md", "caliber fixed")
         finally:
             reset_hermes_home_override(token)
@@ -992,7 +1022,7 @@ class TestProfileHomeExemptsHermesRoot:
         import tools.file_tools_write_guards as ft
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        root, profile = self._profile_layout(tmp_path)
+        _root, profile = self._profile_layout(tmp_path)
         repo = tmp_path / "repo"
         (repo / ".hermes").mkdir(parents=True)
         monkeypatch.delenv("HERMES_HOME", raising=False)

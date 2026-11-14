@@ -105,6 +105,12 @@ bytes through the public archive and installs the actual artifact before chat:
 | macOS arm64 and x64 | DMG, ZIP |
 | Windows arm64 and x64 | MSIX, universal MSIXBUNDLE |
 
+The macOS smoke verifies the app's code signature again after the chat: a file
+the running app writes into its own bundle (a pyc) breaks the seal, and
+Gatekeeper then holds the next update behind a prompt. It then runs one command
+the way the backend starts its detached actions (`python -I`, which ignores the
+bytecode cache prefix) and verifies the signature once more.
+
 The universal envelope runs on both Windows architectures, verifying native
 slice selection. Windows assembly/staging is separate from feed publication;
 both Windows smoke matrices must pass before publishing its canary feed.
@@ -160,12 +166,9 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 ## Triggers and cost
 
-The full matrix does not run on pull requests. One leg installs real toolchains and takes more than 10 minutes. The triggers are:
+The matrix runs on release builds only. It never runs on pull requests, pushes to main, or a schedule: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
-- A pull request that touches the install/update surface (the `paths:` list in `install-e2e.yml`). It runs only the `pr` route: `installer-script -> hermes-update` on Linux (newest release -> PR, and PR -> NEXT), Windows (PR -> NEXT) and macOS (newest release -> PR). The four legs run in parallel, so the wall clock is about one leg.
-- A schedule, every 12 hours. This finds upstream drift. When a scheduled run goes red, `install-e2e-red.yml` opens one issue labelled `install-e2e-red`, rewrites its body in place on every later red run, and closes it on the first green one.
-- A matching release tag push.
-- A reusable workflow call from the stable release gate.
+- A reusable workflow call from the stable release gate (`route=all`).
 - Manual dispatch. You can select the route and the tag count:
 
 ```

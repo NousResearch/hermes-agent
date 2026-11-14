@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.codex_responses_adapter import ResponsesEndpointQuirks
 from agent.native_compaction import (
     DEFAULT_COMPACT_THRESHOLD,
     is_direct_openai_route,
@@ -136,7 +137,7 @@ class TestRequestGate:
         )
         assert (
             native_compaction_context_management(
-                agent, is_codex_backend=False, is_github_responses=True
+                agent, is_codex_backend=False, endpoint=ResponsesEndpointQuirks(native_compaction=False)
             )
             is None
         )
@@ -445,11 +446,11 @@ class TestAgentInitConfig:
             skip_memory=True,
             enabled_toolsets=[],
         )
-        compressor = getattr(agent, "context_compressor")
+        compressor = agent.context_compressor
         compressor.threshold_tokens = 765_000
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
-        assert getattr(agent, "codex_responses_compact_threshold") == configured
+        assert agent.codex_responses_compact_threshold == configured
         assert kwargs["context_management"] == [
             {"type": "compaction", "compact_threshold": resolved}
         ]

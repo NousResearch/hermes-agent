@@ -1,0 +1,32 @@
+name: rom-studio
+repo: "https://github.com/erosika/rom-studio"
+sha: "ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6"
+version: "0.2.0"
+title: ROM Studio
+description: "Make your own small game by talking with your agent, one scene at a time, from a decomp (the community-made source of an original handheld game) that you supply. A pane in the desktop app shows each change as a sentence with a picture from the running game, plus a play link, scenes, gallery, maps, music, dialogue, source search and the agent's questions. Ships a command-line kit the agent runs, a browser player with an always-on flash guard and the make-your-game skill; starts one local page on 127.0.0.1 once a game folder is set. kit agent-play, started by hand, can send game pictures to a model API you name. No agent tools, hooks, middleware or env vars. Linux only. Disclosure — Starts a local page on 127.0.0.1 (port 8778) whenever a game folder is set, and `kit play` starts a local player on 127.0.0.1:4870 (with `--phone`, also an https listener on this computer's LAN addresses, opened by a key link). `kit setup` git-clones the decomp address you give, downloads the poryscript 3.6.1 compiler from GitHub (checked against a sha256) and installs the player's npm package, and the build runs your decomp's own Makefile and tools on your computer. Words typed into the game's agent menu are sent to `hermes chat` in a session named rom-studio-game, which runs with your normal approval settings. `kit agent-play --provider`, run by hand, sends pictures of the game and its on-screen state to the model API you name, using the key from the environment variable you choose."
+maintainer: erosika
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: "https://github.com/erosika/rom-studio/blob/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/README.md"
+image: "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/tour-host.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/tour-gallery.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/tour-decisions.jpg"
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Not yet seen running inside the desktop app: the plugin passes hermes plugins validate and doctor and its halves were run outside a host, but the pane in the app, the feed event arriving and the skill loaded through the plugin are untested."
+  - "Linux only. macOS and Windows are not supported (the build scripts use Linux tools and the script compiler download is a Linux program); Windows through WSL has not been tried."
+  - "Needs bun, git and a toolchain for the game that you install yourself: make, python3 with Pillow, C and C++ compilers, flock, libpng with pkg-config, arm-none-eabi-gcc 14.2, cmake and a libmgba 0.10.5 you build once; ffmpeg for sound. kit status lists what is missing and how to get it."
+  - "You bring the decomp and, to make a patch, your own copy of the original game file. ROM Studio includes and fetches neither. The first build takes about 7 minutes and a game folder about 1 GB."
+  - "The optional base (calm changes inside the game, quick start, the test hook, the in-game agent entry) is patches for one version of one engine and is not shipped. Without it the flag, creature-gift and exact-text steps are unavailable, each new build plays through the original opening once, and the in-game agent link is absent. The player's flash guard is always on regardless."
+  - "The phone link of the player (kit play --phone) has not been tried on a real phone. The kit's MCP server has been tried over stdio by hand, not inside Hermes."
+  - "Setup's caches (headless emulator, script compiler, browser emulator) live inside the plugin folder; if an update removes them, run kit setup again."
+  - "A setting change needs a restart of Hermes. The kit does not read the plugin's settings: for a game folder other than the default, also set ROM_STUDIO_GAME where your agent's commands run."

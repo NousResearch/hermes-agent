@@ -164,7 +164,7 @@ def test_a_routed_profile_fire_runs_under_multiplex_semantics_for_exactly_its_sc
     the parent process env is byte-identical after the tick (#107692)."""
     import os
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
     from agent import secret_scope
     from cron.scheduler_provider import _profile_cron_scope, routed_profile_fire
     from hermes_cli.env_loader import load_hermes_dotenv
@@ -215,7 +215,7 @@ def test_routed_fire_scope_carries_managed_env_authority(tmp_path, monkeypatch, 
     scope itself must carry the administrator-managed .env with the precedence _apply_managed_env
     gives it in the launch process: a managed-only key is present and a managed value beats the
     routed profile's own (#111187 review)."""
-    import cron.scheduler as scheduler
+    from cron import scheduler
     from agent import secret_scope
     from cron.scheduler_provider import _profile_cron_scope
     from hermes_cli import managed_scope
@@ -249,8 +249,8 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
     launch profile's own fire afterwards (A -> B -> A) keeps single-profile semantics."""
     import os
 
-    import cron.scheduler as scheduler
-    import hermes_cli.web_server_cron as web_server_cron
+    from cron import scheduler
+    from hermes_cli import web_server_cron
     from agent import secret_scope
     from cron.jobs import create_job
     from cron.scheduler_provider import InProcessCronScheduler

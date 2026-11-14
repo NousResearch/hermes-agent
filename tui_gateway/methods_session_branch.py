@@ -10,6 +10,14 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 # ── session.branch ───────────────────────────────────────────────────
+def _branch_title(db, parent_key: str) -> str:
+    """Next title in the parent's lineage (mirrors the TUI /branch naming)."""
+    current = db.get_session_title(parent_key) or "branch"
+    if hasattr(db, "get_next_title_in_lineage"):
+        return db.get_next_title_in_lineage(current)
+    return f"{current} (branch)"
+
+
 def _visible_branch_history(messages) -> list:
     """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
     return [dict(message) for message in messages or []

@@ -33,7 +33,7 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
 
     request = prepared.request
     env = bootstrap_environment(request.source, request.work, request.cache, inherited)
-    selection = verified_tools(["python", "node", "npm"], source_store=request.cache / "tools",
+    selection = verified_tools(["python", "node", "pnpm"], source_store=request.cache / "tools",
                                target=request.target, lock=Lockfile(request.source / "pm/lock.json"))
     if prepared.python != selection.entries["python"].binary or prepared.node != selection.entries["node"].binary:
         raise ValueError("prepared Python/Node paths do not match selected tools; prepare again")

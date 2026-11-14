@@ -29,7 +29,10 @@ async function deadMarkerBodies(): Promise<[string, string][]> {
   return [
     ['dead v2 owner', `${gone}\n${minutesAgo(1)}\nct:1700000000.000\n`],
     ['dead v1 owner', `${gone}\n${minutesAgo(1)}\n`],
-    ['dead owner + dead delegate (crash-12db shape)', `${gone}\n${minutesAgo(1)}\nct:1.000\ndelegate:${gone} ct:2.000\n`],
+    [
+      'dead owner + dead delegate (crash-12db shape)',
+      `${gone}\n${minutesAgo(1)}\nct:1.000\ndelegate:${gone} ct:2.000\n`
+    ],
     ['malformed', 'not-a-pid\nnonsense\n'],
     ['previous incarnation of our own pid', `${process.pid}\n${minutesAgo(1)}\n`]
   ]

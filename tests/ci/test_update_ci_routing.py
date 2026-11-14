@@ -26,12 +26,13 @@ import os
 import re
 import subprocess
 import sys
-from functools import lru_cache
+from functools import lru_cache, cache
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from hermes_agent.compat.paths import current_module, current_path, original_path
 from hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
@@ -85,7 +86,7 @@ def _real_classifier(paths: list[str]) -> dict[str, bool]:
 # -- workflow replay ---------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
@@ -95,8 +96,12 @@ def _on(workflow: dict) -> dict:
     return workflow.get("on", workflow.get(True)) or {}
 
 
-def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
-    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs."""
+def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch") -> dict[str, Any]:
+    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs.
+
+    Replays a manual dispatch by default: E2E lanes reach their consumers only on a dispatch or a
+    release run (pull requests and main pushes force them off), and the routing tests below check
+    that a set lane reaches its suites."""
     raw = {k: gha.to_string(v) for k, v in lanes.items()}
     action = _yaml(".github/actions/detect-changes/action.yml")
     action_out = {k: gha.render(v["value"], {"steps": {"classify": {"outputs": raw}}})
@@ -106,7 +111,7 @@ def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": "pull_request"}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -297,8 +302,8 @@ _R15_CASES = {
 @_NATIVE_WINDOWS_TOO
 @pytest.mark.parametrize("path,lanes", list(_R15_CASES.items()))
 def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
-    assert (_REPO / path).is_file(), f"{path} moved: update this table"
-    classified = _real_classifier([path])
+    assert (_REPO / current_path(path)).is_file(), f"{path} is gone: update this table"
+    classified = _real_classifier([current_path(path)])
     run = _ci_run(classified)
     for lane in lanes:
         assert classified[lane], f"{path}: classifier leaves {lane} off"
@@ -336,7 +341,7 @@ def test_update_path_change_selects_every_suite_that_exercises_it(path, lanes):
 
 # Review CI2/CI3: update-path files the classifier sent to the wrong suites.
 _CI3_CASES = {
-    # /api/health `commit`: host-backend-attach compares it before attaching after an update.
+    # /api/health `commit`: the Desktop compares it before attaching after an update.
     "hermes_cli/web_routers/status.py": ("python", "e2e_desktop_update"),
     # The SSH remote's marker judge/gate: typecheck/vitest and the marker contract's script tests.
     "apps/desktop/electron/remote-update-marker-programs.ts": ("frontend", "desktop_updater"),
@@ -355,8 +360,8 @@ _TAURI_UPDATER = tuple(f"apps/bootstrap-installer/src-tauri/src/{name}.rs" for n
 @pytest.mark.parametrize("path", _TAURI_UPDATER)
 def test_tauri_updater_routes_as_one_unit_to_the_lane_that_builds_it(path):
     """No slow lane builds the bootstrap installer: starting one for its updater runs nothing of it."""
-    assert (_REPO / path).is_file(), f"{path} moved: update this table"
-    classified = _real_classifier([path])
+    assert (_REPO / current_path(path)).is_file(), f"{path} is gone: update this table"
+    classified = _real_classifier([current_path(path)])
     assert classified["rust"], f"{path}: cargo test never runs"
     started = [lane for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update", "e2e_desktop_core") if classified[lane]]
     assert not started, f"{path}: starts {started}, which never build the Tauri installer"
@@ -411,7 +416,7 @@ def test_marker_corpus_change_runs_every_language_that_reads_it():
 def _tracked_mentions(name: str) -> list[str]:
     try:
         out = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-F", name, "--", "."],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, check=False)
     except OSError:
         pytest.skip("git unavailable: cannot list the fixture's consumers")
     if out.returncode not in (0, 1):
@@ -570,7 +575,7 @@ def test_replay_python3_is_the_replay_interpreter_when_its_dir_has_only_python(t
              "print(json.dumps([sys.executable, workflow_steps.outputs(json.loads(sys.argv[1]), {})]))")
     env = {**os.environ, "PYTHONPATH": str(_REPO)}
     result = subprocess.run([str(interpreter), "-c", probe, json.dumps(_PROBE_STEP)], cwd=_REPO, env=env,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     replay_python, out = json.loads(result.stdout)
     assert out["py3"] == replay_python
@@ -629,24 +634,25 @@ _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "w
 
 
 def _product_python() -> list[Path]:
+    """Product modules where they live; a file left at a path ``MOVES`` maps elsewhere only forwards."""
     out = []
     for dirpath, dirnames, filenames in os.walk(_REPO):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         out += [Path(dirpath) / f for f in filenames if f.endswith(".py")]
-    return out
+    return [p for p in out if current_path(rel := p.relative_to(_REPO).as_posix()) == rel]
 
 
 def _module_file(module: str) -> Path | None:
-    base = _REPO / module.replace(".", "/")
+    base = _REPO / current_module(module).replace(".", "/")
     for candidate in (base.with_suffix(".py"), base / "__init__.py"):
         if candidate.is_file():
             return candidate
     return None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _imports(path: Path) -> frozenset[str]:
-    """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
+    """Repo modules ``path`` imports anywhere (module level or lazily in a function), by original path."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8-sig"))
     except (SyntaxError, UnicodeDecodeError):
@@ -669,17 +675,17 @@ def _imports(path: Path) -> frozenset[str]:
     for name in names:
         target = _module_file(name)
         if target is not None and target != path:
-            found.add(target.relative_to(_REPO).as_posix())
+            found.add(original_path(target.relative_to(_REPO).as_posix()))
     return frozenset(found)
 
 
 def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
-    hits = [p for p in _product_python() if p.relative_to(_REPO).as_posix().startswith(prefixes)]
+    hits = [p for p in _product_python() if original_path(p.relative_to(_REPO).as_posix()).startswith(prefixes)]
     assert hits, f"no module matches {prefixes}: the entry-point list went stale"
     return sorted(hits)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _importers() -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in _product_python():
@@ -815,10 +821,15 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
         assert _strict_env(run, path, rel, job, step) == value, "/".join(path)
 
 
-def test_pull_requests_never_run_strict():
-    run = _ci_run(cc.classify([]))
-    for path, rel, job, step in _STRICT_STEPS:
-        assert _strict_env(run, path, rel, job, step) == "", "/".join(path)
+@pytest.mark.parametrize("event_name", ["pull_request", "push"])
+def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
+    """E2E suites run only on a release run or a manual dispatch, whatever the diff or labels select."""
+    lanes = cc.classify([], run_e2e=True)  # every lane on, as a label or an update-path diff would
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name))
+    for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
+        assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
+    assert "e2e-desktop-core" not in run
+    assert "tests" in run and "tests-os" in run  # the unit lanes still run
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():
@@ -833,5 +844,5 @@ def test_windows_install_update_dispatch_alone_sets_strict():
 def test_run_tests_forwards_the_strict_switch():
     """run_tests.sh starts pytest under `env -i`: an unlisted variable never arrives."""
     text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
-    allow = re.search(r"for _test_var in (.*?); do", text, re.S)
+    allow = re.search(r"for _test_var in (.*?); do", text, re.DOTALL)
     assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()

@@ -129,7 +129,7 @@ def test_read_conn_open_failure_marks_thread(db, monkeypatch, tmp_path):
 def test_anchored_view_and_around_use_read_path(db):
     msgs = db.get_messages("s1")
     anchor = msgs[0]["id"]
-    acquired = db._lock.acquire()
+    db._lock.acquire()
     try:
         done = {}
 
@@ -166,7 +166,7 @@ def test_session_resume_reads_do_not_take_writer_lock(db):
     db.append_message("child1", role="user", content="child turn")
     db.append_message("child1", role="assistant", content="child reply")
 
-    acquired = db._lock.acquire()
+    db._lock.acquire()
     try:
         done = {}
 

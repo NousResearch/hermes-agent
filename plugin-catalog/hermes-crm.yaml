@@ -1,0 +1,104 @@
+name: hermes-crm
+title: HermesCRM
+repo: https://github.com/gptnius/hermes-crm
+sha: da1d1412eaf10c3ea8ba0b4431cafdbc59c6bcae
+description: "Native relationship management with agent tools, linked records, reports and dashboards. Disclosure — on your request the agent creates one-shot Hermes cron jobs (task follow-ups, internal CRM analysis assignments, and scheduled research runs that use Hermes' web/search tools on a public question you approve); jobs run unattended with CRM-only plus those tools, deliver locally, and cannot schedule further jobs. Optional PostgreSQL storage sends CRM records to the database URL you configure."
+maintainer: gptnius
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/gptnius/hermes-crm/blob/da1d1412eaf10c3ea8ba0b4431cafdbc59c6bcae/docs/USER_GUIDE.md
+version: "0.1.0"
+readme: true
+known_issues:
+  - "Small-workspace prototype; legacy record lists and form choices are bounded at 500 records."
+  - "Native Desktop checked on macOS; broader platform, keyboard and accessibility coverage remains incomplete."
+  - "Scheduled results require human review and do not establish that a business task is complete."
+capabilities:
+  provides_tools:
+    - crm_contact_report
+    - crm_contact_list
+    - crm_contact_get
+    - crm_contact_create
+    - crm_contact_update
+    - crm_deal_list
+    - crm_deal_get
+    - crm_deal_create
+    - crm_deal_update
+    - crm_task_list
+    - crm_task_get
+    - crm_task_create
+    - crm_task_update
+    - crm_overview
+    - crm_followup_schedule
+    - crm_work_create
+    - crm_work_get
+    - crm_work_list
+    - crm_work_schedule
+    - crm_work_reconcile
+    - crm_work_cancel
+    - crm_work_report
+    - crm_report_catalog
+    - crm_report_run
+    - crm_report_list
+    - crm_report_get
+    - crm_saved_report_run
+    - crm_dashboard_get
+    - crm_report_create
+    - crm_report_update
+    - crm_report_archive
+    - crm_report_restore
+    - crm_dashboard_save
+    - crm_contact_log
+    - crm_contact_log_list
+    - crm_contact_log_void
+    - crm_schema_catalog
+    - crm_schema_stage_create
+    - crm_schema_stage_update
+    - crm_schema_field_create
+    - crm_schema_field_update
+    - crm_record_fields
+    - crm_task_owner_policy
+    - crm_research_evidence_submit
+    - crm_research_note_propose
+    - crm_research_evidence_list
+    - crm_research_proposal_list
+    - crm_research_evidence_get
+    - crm_company_list
+    - crm_company_get
+    - crm_company_records
+    - crm_contact_company_get
+    - crm_company_create
+    - crm_company_update
+    - crm_company_archive
+    - crm_company_restore
+    - crm_contact_company_set
+    - crm_contact_create_with_company
+    - crm_event_list
+    - crm_event_get
+    - crm_event_create
+    - crm_event_update
+    - crm_event_complete
+    - crm_event_cancel
+    - crm_event_reopen
+    - crm_event_needs_rescheduling
+    - crm_relationship_activities
+    - crm_event_reschedule
+    - crm_event_tasks
+    - crm_event_task_create
+    - crm_event_task_link
+    - crm_event_task_unlink
+    - crm_event_revisions
+    - crm_scheduled_research_create
+    - crm_scheduled_research_get
+    - crm_scheduled_research_list
+    - crm_scheduled_research_schedule
+    - crm_scheduled_research_reconcile
+    - crm_scheduled_research_cancel
+    - crm_scheduled_research_run_get
+    - crm_scheduled_research_evidence
+    - crm_scheduled_research_propose
+    - crm_scheduled_research_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

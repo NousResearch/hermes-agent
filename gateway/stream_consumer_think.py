@@ -35,7 +35,7 @@ class StreamThinkFilterMixin:
             return acc_boundary and preceding.strip() == ""
         return preceding[last_nl + 1:].strip() == ""
 
-    def _earliest_open_tag(self, buf: str, lower_buf: str) -> "tuple[int, int]":
+    def _earliest_open_tag(self, buf: str, lower_buf: str) -> tuple[int, int]:
         """(index, length) of the earliest block-boundary opening tag, or (-1, 0)."""
         best_idx, best_len = -1, 0
         for tag in self._OPEN_THINK_TAGS:

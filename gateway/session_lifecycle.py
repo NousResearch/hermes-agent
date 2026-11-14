@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
 from hermes_state_ids import new_session_id
@@ -46,6 +46,23 @@ def _parse_iso(value) -> Optional[datetime]:
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
+# Set on a delegate subagent's row a user explicitly switched a chat onto (``/resume <child> --all``,
+# handoff). ``_delegate_from`` stays: it is lineage (compression continuations, the running worker's
+# publish check), not a routing flag; this marker alone tells the route guard the user chose the row.
+CHAT_ADOPTED_MARKER = "_chat_adopted"
+
+
+def is_delegate_child_row(row: dict) -> bool:
+    """A delegate subagent's row: never a chat's route or topic-binding target. A row that also carries
+    ``_reset_from`` is a /new continuation of the chat whose config picked up the marker (#109073), and
+    one carrying ``CHAT_ADOPTED_MARKER`` was chosen by the user; both stay routable (same rule as peer
+    recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
+    from hermes_state_sessions import _parse_model_config
+    config = _parse_model_config(row.get("model_config"))
+    return (bool(config.get("_delegate_from")) and "_reset_from" not in config
+            and not config.get(CHAT_ADOPTED_MARKER))
+
+
 def auto_continue_freshness_window() -> float:
     """Resume-scheduler freshness window; stale automation never discards the transcript."""
     raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
@@ -59,8 +76,8 @@ class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
     def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
-        """True iff state.db says the session is gone: ended (non-null end_reason) or hard-deleted
-        (no row in a readable owning DB). No DB or a DB error -> False (same failure mode as
+        """True iff state.db says the session is gone: ended (non-null end_reason), hard-deleted
+        (no row in a readable owning DB), or a delegate subagent's row (never a chat's route). No DB or a DB error -> False (same failure mode as
         ``_prune_stale_sessions_locked``). Lets routing self-heal a session finalized or deleted
         while the gateway stays alive. Store resolved from the owning profile.
 
@@ -80,6 +97,12 @@ class SessionLifecycleMixin:
         after the self-heal re-homes the key, the id has no owner and would resolve to the launch
         store, which never holds a routed profile's rows (#118862).
         """
+        with self._lock:
+            if session_id in self._rows_pending:
+                # A route transition published this id and has not inserted/reopened its row yet
+                # (a /new racing a turn that resolves the route as it finishes): healing it here
+                # would hand the route back to the conversation the user just left.
+                return False
         db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
         if not db or not session_id:
             return False
@@ -87,7 +110,59 @@ class SessionLifecycleMixin:
             row = db.get_session(session_id)
         except Exception:
             return False
-        return row is None or row.get("end_reason") is not None
+        # A delegate subagent's row is never a chat's conversation: a route left naming one (written while
+        # the subagent captured the thread, #138210) is stale, so recovery hands the chat back to its owner.
+        return row is None or row.get("end_reason") is not None or is_delegate_child_row(row)
+
+    def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
+        """The physical target the authority's receipt names for *entry*'s local route, else None
+        (not a local route, no receipt, or the receipt belongs to another route).
+
+        Such a route moves only through the authority (compression and reset advance the receipt
+        and the route in one transaction), and its first admitted turn reopens a stamped row
+        (``reopen_local_session``). A row stamped ended (a viewer's ``ws_orphan_reap``) is
+        therefore never a stale route: dropping it minted a replacement id the authority refuses
+        (``admission_conflict``) and stranded the conversation (#140642)."""
+        origin = getattr(entry, "origin", None)
+        if origin is None or getattr(origin, "platform", None) is None or origin.platform.value != "local":
+            return None
+        db = self._db_for_key(entry.session_key)
+        if db is None or getattr(db, "_read_ctx", None) is None:
+            return None
+        import sqlite3
+
+        from hermes_state_local import local_receipt
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            receipt = local_receipt(db, str(origin.chat_id))
+            if receipt.get("route") != entry.session_key:
+                return None
+            return str(receipt["entry"]["session_id"]) or None
+        except (RuntimeStoreError, sqlite3.Error, KeyError, TypeError, AttributeError):
+            return None
+
+    def _api_bound(self, entry: Optional[SessionEntry]) -> bool:
+        """*entry*'s API route is the one its binding receipt names (``bind_api_session``). Like a
+        local receipt route it moves only through the authority, and its next admitted turn reopens a
+        stamped row (``reopen_api_session``): replacing it forked the caller's conversation onto a
+        minted id every later run on it refused (``admission_conflict``)."""
+        origin = getattr(entry, "origin", None)
+        if origin is None or getattr(origin, "platform", None) is None or origin.platform.value != "api_server":
+            return False
+        db = self._db_for_key(entry.session_key)
+        if db is None or getattr(db, "_read_ctx", None) is None:
+            return False
+        import json
+        import sqlite3
+
+        from hermes_state_local import API_BINDING_PREFIX
+        try:
+            with db._read_ctx() as conn:
+                saved = conn.execute("SELECT value FROM state_meta WHERE key=?",
+                                     (API_BINDING_PREFIX + str(origin.chat_id),)).fetchone()
+            return saved is not None and json.loads(saved[0])["entry"]["session_key"] == entry.session_key
+        except (sqlite3.Error, ValueError, KeyError, TypeError):
+            return False
 
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
         """Only explicit suspension replaces a routed conversation; time never does."""
@@ -148,7 +223,7 @@ class SessionLifecycleMixin:
                 return None
             # Aware UTC, unlike the local wall clock elsewhere: the next process compares it with
             # epoch transcript timestamps and may run in another zone (DST, container vs unit TZ).
-            self._set_turn_marker_locked(session_key, entry, token, datetime.now(timezone.utc))
+            self._set_turn_marker_locked(session_key, entry, token, datetime.now(UTC))
         return token
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:

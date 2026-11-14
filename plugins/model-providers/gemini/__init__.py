@@ -1,13 +1,32 @@
 """Google Gemini (AI Studio) provider profile.
 
-Reports api_mode="chat_completions" but runs on GeminiNativeClient; this
-profile carries auth/endpoint metadata and the thinking_config translation hook.
+Reports api_mode="chat_completions" but supplies its own client (``client.GeminiClient``): each call
+goes to the Interactions API (``interactions.py``) or to ``generateContent`` (GeminiNativeClient), per
+model. This profile also carries auth/endpoint metadata and the thinking_config translation hook.
 """
 
+import logging
 from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+logger = logging.getLogger(__name__)
+
+
+# Models that take the ``xhigh`` thinking level; Gemini 4 Argon and Carbon answer 400 to it.
+_XHIGH_MODELS = ("gemini-4-hydrogen",)
+_XHIGH_EFFORTS = {"xhigh", "max", "ultra"}
+
+
+def _with_top_thinking_level(model: str, reasoning_config: Any, thinking_config: dict[str, Any]) -> dict[str, Any]:
+    """Send ``xhigh`` where the model has it: the shared mapping stops at ``high``, the top level of the
+    other thinking-level models."""
+    name = (model or "").strip().lower().removeprefix("google/")
+    effort = str(reasoning_config.get("effort") or "").strip().lower() if isinstance(reasoning_config, dict) else ""
+    if name.startswith(_XHIGH_MODELS) and effort in _XHIGH_EFFORTS and thinking_config.get("thinkingLevel") == "high":
+        return {**thinking_config, "thinkingLevel": "xhigh"}
+    return thinking_config
 
 
 class GeminiProfile(ProviderProfile):
@@ -25,10 +44,49 @@ class GeminiProfile(ProviderProfile):
         raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
         if not raw:
             return {}
-        if self.name == "gemini" and _is_gemini_openai_compat_base_url(context.get("base_url") or self.base_url):
+        raw = _with_top_thinking_level(context.get("model") or "", context.get("reasoning_config"), raw)
+        base_url = context.get("base_url") or self.base_url
+        if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
             thinking_config = _snake_case_gemini_thinking_config(raw)
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
-        return {"thinking_config": raw}
+        from agent.gemini_long_decode import long_decode_max_output_tokens
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+
+        # Long decode exists only on native generateContent (not /openai, not proxies).
+        budget = long_decode_max_output_tokens(context.get("model") or "", context.get("reasoning_config"))
+        return {"thinking_config": raw, **({"max_output_tokens": budget} if budget and is_native_gemini_base_url(base_url) else {})}
+
+    def create_client(self, **client_kwargs: Any) -> Any:
+        """The plugin's client (Interactions or generateContent per model) on a native Gemini base; None on
+        the OpenAI-compatible ``/openai`` surface and proxies, which keep the standard OpenAI client."""
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+
+        base_url = str(client_kwargs.get("base_url") or self.base_url or "")
+        if not is_native_gemini_base_url(base_url):
+            return None
+        from .client import GeminiClient
+
+        allowed = {"api_key", "base_url", "default_headers", "timeout", "http_client"}
+        kwargs = {k: v for k, v in client_kwargs.items() if k in allowed}
+        if "http_client" not in kwargs and (http_client := _keepalive_http_client(base_url)) is not None:
+            kwargs["http_client"] = http_client
+        return GeminiClient(**kwargs)
+
+
+def _keepalive_http_client(base_url: str) -> Any:
+    """The keepalive client (and the provider's ``ssl_ca_cert`` / ``ssl_verify``) the core gives a native
+    Gemini client; the profile hook receives the client kwargs after the core has consumed the TLS keys."""
+    try:
+        from agent.process_bootstrap import build_keepalive_http_client
+        from agent.ssl_verify import resolve_httpx_verify
+        from hermes_cli.config_providers import get_custom_provider_tls_settings
+
+        tls = get_custom_provider_tls_settings(base_url)
+        verify = resolve_httpx_verify(ca_bundle=tls.get("ssl_ca_cert"), ssl_verify=tls.get("ssl_verify"), base_url=base_url)
+        return build_keepalive_http_client(base_url, verify=verify)
+    except Exception:  # GeminiNativeClient then builds its own httpx client
+        logger.warning("Gemini: keepalive client unavailable; using a default client", exc_info=True)
+        return None
 
 
 gemini = GeminiProfile(

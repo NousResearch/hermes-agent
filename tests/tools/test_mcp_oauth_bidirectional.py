@@ -226,7 +226,7 @@ async def test_long_lived_resource_request_does_not_block_concurrent_post(
 
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
-    return None
+    return
 
 
 async def _noop_callback() -> tuple[str, str | None]:

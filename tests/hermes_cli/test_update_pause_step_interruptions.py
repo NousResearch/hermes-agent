@@ -111,7 +111,7 @@ def test_an_interrupted_lockfile_churn_cleanup_stays_held(repo, tmp_path):
 
 @pytest.mark.parametrize("interrupted", [True, False])
 def test_a_stash_restore_at_the_moved_head_is_gated_from_that_head(repo, tmp_path, interrupted):
-    root, a, t = repo
+    root, _a, t = repo
     (root / "mine.py").write_text("M=2  # my edit\n", encoding="utf-8")
     token = pause(root)
     moves = update_cmd._moves_for(token)

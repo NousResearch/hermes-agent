@@ -20,7 +20,7 @@ _LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
 _LM_EFFORT_CLAMP = {"max": "xhigh", "ultra": "xhigh"}
 
 
-def resolve_lmstudio_effort(reasoning_config: Optional[dict], allowed_options: Optional[List[str]]) -> Optional[str]:
+def resolve_lmstudio_effort(reasoning_config: Optional[dict], allowed_options: Optional[list[str]]) -> Optional[str]:
     """Return the ``reasoning_effort`` to send to LM Studio, or ``None`` = omit the
     field (the user picked a level the model can't honor, so LM Studio falls back
     to the model's declared default rather than a silently substituted effort).

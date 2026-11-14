@@ -186,6 +186,17 @@ def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_sto
     assert server._get_db().get_session("parent") is None  # never looked up through the launch store
 
 
+def test_restored_delegation_requires_a_live_notification_consumer():
+    """Regression for #138343: a persisted completion cannot wake a detached runtime."""
+    session = {"session_key": "chat", "transport": None}
+    event = {"type": "async_delegation", "session_key": "chat", "restored": True, "startup_replay": True}
+
+    assert server._session_owns_notification_event("ui1", session, event) is False
+
+    session["transport"] = object()
+    assert server._session_owns_notification_event("ui1", session, event) is True
+
+
 def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_lineage(launch_db_env, tmp_path):
     """Two profiles share one completion queue. Profile B's poller dequeues an event keyed on profile
     A's compressed parent: B cannot resolve A's lineage in its own store, so both of B's ownership

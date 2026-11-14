@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import requests
-import shlex
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -19,6 +18,7 @@ from typing import Any, Dict, Optional
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.terminal_tool_sudo_askpass import fill_timeout_token
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,15 @@ class ManagedModalEnvironment(BaseEnvironment):
     """Gateway-owned Modal sandbox with Hermes-compatible execute/cleanup."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
     _CONNECT_TIMEOUT_SECONDS = _request_timeout_env("TERMINAL_MANAGED_MODAL_CONNECT_TIMEOUT_SECONDS", 1.0)
     _POLL_READ_TIMEOUT_SECONDS = _request_timeout_env("TERMINAL_MANAGED_MODAL_POLL_READ_TIMEOUT_SECONDS", 5.0)
     _CANCEL_READ_TIMEOUT_SECONDS = _request_timeout_env("TERMINAL_MANAGED_MODAL_CANCEL_READ_TIMEOUT_SECONDS", 5.0)
 
     def __init__(self, image: str, cwd: str = "/root", timeout: int = 60,
-                 modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
+                 modal_sandbox_kwargs: Optional[dict[str, Any]] = None,
                  persistent_filesystem: bool = True, task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
         # Managed Modal does not sync or mount host credential files.
@@ -84,11 +87,12 @@ class ManagedModalEnvironment(BaseEnvironment):
         del rewrite_compound_background, bounded_capture
         exec_command, sudo_stdin = self._prepare_command(command)
         if sudo_stdin is not None:
-            # Feed sudo via a shell pipe: the transport has no direct stdin piping.
-            exec_command = f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
+            # Password lines lead the request's stdin, merged as in BaseEnvironment.execute.
+            stdin_data = sudo_stdin + (stdin_data or "")
         timeout = timeout or self.timeout
+        exec_command = fill_timeout_token(exec_command, timeout)
         exec_id = str(uuid.uuid4())
-        payload: Dict[str, Any] = {"execId": exec_id, "command": exec_command, "cwd": cwd or self.cwd,
+        payload: dict[str, Any] = {"execId": exec_id, "command": exec_command, "cwd": cwd or self.cwd,
                                    "timeoutMs": int(timeout * 1000)}
         if stdin_data is not None:
             payload["stdinData"] = stdin_data
@@ -184,8 +188,8 @@ class ManagedModalEnvironment(BaseEnvironment):
             raise RuntimeError("Managed Modal create did not return a sandbox id")
         return sandbox_id
 
-    def _request(self, method: str, path: str, *, json: Dict[str, Any] | None = None, timeout: int = 30,
-                 extra_headers: Dict[str, str] | None = None) -> requests.Response:
+    def _request(self, method: str, path: str, *, json: dict[str, Any] | None = None, timeout: int = 30,
+                 extra_headers: dict[str, str] | None = None) -> requests.Response:
         headers = {"Authorization": f"Bearer {self._nous_user_token}", "Content-Type": "application/json",
                    **(extra_headers or {})}
         return requests.request(method, f"{self._gateway_origin}{path}", headers=headers, json=json, timeout=timeout)

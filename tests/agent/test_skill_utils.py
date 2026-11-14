@@ -48,18 +48,20 @@ skills:
 """.strip(),
         encoding="utf-8",
     )
+    import utils
     parse_count = 0
-    real_yaml_load = skill_utils.yaml_load
+    real_load = utils.fast_safe_load
 
-    def counting_yaml_load(text):
+    def counting_load(stream):
         nonlocal parse_count
         parse_count += 1
-        return real_yaml_load(text)
+        return real_load(stream)
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     skill_utils._external_dirs_cache_clear()
     getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
-    monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+    # The file config backend parses through utils.fast_safe_load.
+    monkeypatch.setattr(utils, "fast_safe_load", counting_load)
 
     assert get_disabled_skill_names() == {"hidden-skill"}
     assert get_external_skills_dirs() == [external.resolve()]
@@ -67,6 +69,158 @@ skills:
         {"key": "wiki.path", "description": "Wiki path"}
     ])["wiki.path"].endswith("/wiki")
     assert parse_count == 1
+
+
+def _write_disabled_config(home, disabled: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"skills:\n  disabled:\n    - {disabled}\n", encoding="utf-8"
+    )
+
+
+class TestMultiprofileRawConfigCache:
+    """#141610: a multiplexed watcher rotates through up to ~32 published profile
+    scopes plus the ambient one; one profile's cache miss must not evict every
+    other profile's unchanged entry."""
+
+    @staticmethod
+    def _patch_config_parser(monkeypatch, parse):
+        """Route config.yaml parses through *parse(text)*: the backend parses with
+        ``utils.fast_safe_load`` on the open file."""
+        import utils
+
+        real = utils.fast_safe_load
+        monkeypatch.setattr(utils, "fast_safe_load", lambda stream: parse(stream.read(), real))
+
+    @staticmethod
+    def _load_under(home) -> list:
+        from agent import skill_utils
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        token = set_hermes_home_override(str(home))
+        try:
+            return skill_utils._load_raw_config()["skills"]["disabled"]
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_watcher_rotation_reparses_no_unchanged_config(self, tmp_path, monkeypatch):
+        from agent import skill_utils
+
+        homes = [tmp_path / f"scope-{i:02d}" for i in range(33)]
+        for i, home in enumerate(homes):
+            _write_disabled_config(home, f"skill-{i:02d}")
+        parse_count = 0
+
+        def counting_parse(text, real):
+            nonlocal parse_count
+            parse_count += 1
+            return real(text)
+
+        self._patch_config_parser(monkeypatch, counting_parse)
+        skill_utils._raw_config_cache_clear()
+
+        for _ in range(3):
+            for i, home in enumerate(homes):
+                assert self._load_under(home) == [f"skill-{i:02d}"]
+
+        assert parse_count == 33
+
+    def test_editing_one_profile_reparses_only_that_profile(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import skill_utils
+
+        first, second = tmp_path / "first", tmp_path / "second"
+        _write_disabled_config(first, "old-disabled")
+        _write_disabled_config(second, "second-disabled")
+        parse_count = 0
+
+        def counting_parse(text, real):
+            nonlocal parse_count
+            parse_count += 1
+            return real(text)
+
+        self._patch_config_parser(monkeypatch, counting_parse)
+        skill_utils._raw_config_cache_clear()
+        assert self._load_under(first) == ["old-disabled"]
+        assert self._load_under(second) == ["second-disabled"]
+
+        # A different length changes st_size, so the signature must change even on
+        # filesystems whose mtime granularity misses a quick rewrite.
+        (first / "config.yaml").write_text(
+            "skills:\n  disabled:\n    - new-disabled-name\n", encoding="utf-8"
+        )
+        assert self._load_under(first) == ["new-disabled-name"]
+        assert self._load_under(second) == ["second-disabled"]
+        assert parse_count == 3
+
+    def test_one_profile_parse_does_not_block_another_profile(
+        self, tmp_path, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from agent import skill_utils
+
+        first, second = tmp_path / "first", tmp_path / "second"
+        _write_disabled_config(first, "first-disabled")
+        _write_disabled_config(second, "second-disabled")
+        entered, release = Event(), Event()
+
+        def delayed_parse(text, real):
+            if "first-disabled" in text:
+                entered.set()
+                assert release.wait(5), "first profile was not released"
+            return real(text)
+
+        self._patch_config_parser(monkeypatch, delayed_parse)
+        skill_utils._raw_config_cache_clear()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_result = pool.submit(self._load_under, first)
+            try:
+                assert entered.wait(5), "first profile parse did not start"
+                second_result = pool.submit(self._load_under, second)
+                assert second_result.result(timeout=3) == ["second-disabled"]
+            finally:
+                release.set()
+            assert first_result.result(timeout=5) == ["first-disabled"]
+        assert self._load_under(first) == ["first-disabled"]
+        assert self._load_under(second) == ["second-disabled"]
+
+    def test_concurrent_loads_across_evicting_homes_never_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """Tool threads share the cache: two threads evicting the same oldest key must not
+        raise KeyError, nor an insert during ``next(iter(...))`` a RuntimeError. A 1 µs
+        switch interval makes the unlocked interleaving reliable instead of rare."""
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        from agent import skill_utils
+
+        homes = [tmp_path / f"scope-{i:02d}" for i in range(24)]
+        for i, home in enumerate(homes):
+            _write_disabled_config(home, f"skill-{i:02d}")
+        monkeypatch.setattr(skill_utils, "_RAW_CONFIG_CACHE_MAX", 2)
+        skill_utils._raw_config_cache_clear()
+
+        def hammer(offset: int) -> None:
+            for n in range(150):
+                i = (offset + n) % len(homes)
+                assert self._load_under(homes[i]) == [f"skill-{i:02d}"]
+
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                futures = [pool.submit(hammer, t) for t in range(16)]
+                errors = [f.exception(timeout=60) for f in futures]
+        finally:
+            sys.setswitchinterval(old_interval)
+        assert errors == [None] * 16
 
 
 class TestParseConfigStringList:

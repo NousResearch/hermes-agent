@@ -46,7 +46,7 @@ PUBLIC_INDEXES = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org")
 class Result:
     cp: subprocess.CompletedProcess
     secs: float
-    edge: "Edge | None"
+    edge: Edge | None
 
     @property
     def rc(self) -> int:
@@ -56,7 +56,7 @@ class Result:
     def out(self) -> str:
         return (self.cp.stdout or "") + (self.cp.stderr or "")
 
-    def report(self, inst: "Installed", *extra: str) -> str:
+    def report(self, inst: Installed, *extra: str) -> str:
         parts = [f"exit={self.rc} after {self.secs:.1f}s", I.describe(self.cp)]
         if self.edge is not None:
             parts.append("--- network edge log ---\n" + self.edge.transcript())
@@ -70,7 +70,7 @@ class Result:
 class Edge:
     """The namespace's only egress: a TLS-inspecting proxy plus optional plain-HTTP mirrors."""
 
-    inst: "Installed"
+    inst: Installed
     proxy: N.EdgeProxy
     sites: list[N.HttpSite] = field(default_factory=list)
     use_auth: bool = False
@@ -118,14 +118,15 @@ class Installed:
     # -- edges -----------------------------------------------------------------
     def edge(self, *, assets: N.App | None = None, git: N.App | None = None,
              extra: dict[str, N.App] | None = None, sites: Iterable[N.HttpSite] = (),
-             eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None) -> Edge:
+             eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None,
+             tunnel_unrouted: bool = False) -> Edge:
         """Proxy routes: the release-channel host (default: no records published, so ``main``
         follows the branch), github.com (default: the git server over the bare origin)."""
         routes = {ASSETS: assets or N.static_app({}), "github.com": git or N.git_app(self.gitroot)}
         routes.update(extra or {})
         for host in eof_hosts:
             routes.pop(host, None)
-        proxy = N.EdgeProxy(self.ca, routes, eof_hosts=eof_hosts, auth=auth)
+        proxy = N.EdgeProxy(self.ca, routes, eof_hosts=eof_hosts, auth=auth, tunnel_unrouted=tunnel_unrouted)
         return Edge(self, proxy, list(sites), use_auth=auth is not None)
 
     # -- running -----------------------------------------------------------------
@@ -185,18 +186,26 @@ class Installed:
         return self.hermes("--version", edge=None, timeout=120)
 
 
-def seed_install(root: Path) -> Installed:
+def seed_install(root: Path, release: str | None = None) -> Installed:
+    """HEAD by HEAD's installer, or ``release`` (a commit) by that release's own installer."""
     root.mkdir(parents=True, exist_ok=True)
-    origin = I.make_origin(root, I.head_sha())
+    origin = I.make_origin(root, release or I.head_sha())
     I.git("config", "uploadpack.allowFilter", "true", cwd=origin)
     sb = I.new_sandbox(root / "sb", origin)
     # The host's SSL_CERT_FILE (allowlisted by _helpers) would replace the sandbox's trust store
     # and hide the corporate root the cells install; the cells control trust explicitly.
     sb.env.pop("SSL_CERT_FILE", None)
     script = sb.root / "install.sh"
-    shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    cp = sb.run(["bash", str(script), "--non-interactive", "--skip-browser"], timeout=1800, input="")
+    if release is None:
+        shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
+    else:
+        script.write_text(I.git("show", f"{release}:scripts/install.sh", cwd=H.WORKTREE) + "\n", encoding="utf-8")
+    cp = sb.run(["bash", str(script), "--non-interactive", "--skip-browser"], timeout=1800, input="",
+                env=I.fresh_install_env(sb))
     assert cp.returncode == 0, "seed install failed:\n" + I.describe(cp)
+    if release is not None:
+        assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == release, f"the installer did not install {release[:12]}"
+    I.pin_main_channel(sb)  # cells publish commits, not releases (test_release_channel_records opts back into stable)
     # From here on the checkout talks to the official URL, which only the proxy can serve.
     (sb.home / ".gitconfig").write_text("", encoding="utf-8")
     gitroot = root / "gitroot"
@@ -246,26 +255,20 @@ def _identity(name: str, token: str) -> dict:
             "windowsExecutableName": pascal, "msixAppIdWithOrg": f"NousResearch.{pascal}"}
 
 
-def stable_objects(commit: str, *, version: str = "2099.1.1", build_id: str = "c" * 32,
-                   repository: str = REPOSITORY) -> dict[str, bytes]:
-    """A published stable release pinned at ``commit``: the channel record and its build manifest."""
-    identity = _identity("stable", "5" * 16)
-    prefix = f"releases/channel-builds/{build_id}/"
-    request = {"schema": 1, "buildId": build_id, "channel": "stable", "sequence": 1,
-               "repository": repository, "commit": commit, "sourceVersion": version, "version": version,
-               "windowsVersion": version + ".0", "releaseTag": "v" + version, "identity": identity,
-               "bundleEnv": {}, "publicBase": f"https://{ASSETS}"}
-    manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [
-        {"platform": "darwin", "arch": "arm64", "variant": "bundled", "identity": identity["appId"],
-         "version": version, "teamId": "ABCDEFGHIJ",
-         "artifact": {"key": prefix + "Hermes.dmg", "sha256": "d" * 64, "size": 100},
-         "feed": {"key": prefix + "stable-mac.yml", "channel": "stable"}}]}
-    body = canonical(manifest)
-    record = {"schema": 1, "name": "stable", "repository": repository, "policy": "stable-release",
-              "state": "active", "revision": 1, "nextSequence": 2, "identity": identity,
-              "head": {"buildId": build_id, "sequence": 1, "manifestKey": prefix + "build.json",
-                       "sha256": hashlib.sha256(body).hexdigest()}}
-    return {"/releases/channels/stable.json": canonical(record), f"/{prefix}build.json": body}
+GITHUB_API = "api.github.com"
+
+
+def stable_release(inst: Installed, commit: str, *, tag: str = "v99.1.1", draft: bool = False,
+                   prerelease: bool = False, api_commit: str | None = None) -> dict[str, bytes]:
+    """A published GitHub release ``tag`` at ``commit``: the tag on origin plus the API objects.
+
+    ``api_commit`` makes GitHub report a different commit than the tag on origin points at.
+    """
+    I.git("tag", "-f", tag, commit, cwd=inst.origin)
+    release = {"tag_name": tag, "draft": draft, "prerelease": prerelease}
+    base = f"/repos/{REPOSITORY}"
+    return {f"{base}/releases/latest": canonical(release), f"{base}/releases/tags/{tag}": canonical(release),
+            f"{base}/commits/{tag}": canonical({"sha": api_commit or commit})}
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +282,7 @@ def prefetch(url: str, sha256: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == sha256:
         return dest
-    with urllib.request.urlopen(url, timeout=120) as resp:  # noqa: S310 - pinned URL + digest
+    with urllib.request.urlopen(url, timeout=120) as resp:
         data = resp.read()
     got = hashlib.sha256(data).hexdigest()
     assert got == sha256, f"prefetched {url} has sha256 {got}, pinned {sha256}"

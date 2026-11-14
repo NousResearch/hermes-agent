@@ -180,6 +180,7 @@ inline affordance — "Change", "Open logs").
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 (status-stack/table-footers), and the icon family `icon` / `icon-xs` /
 `icon-sm` / `icon-lg` / `icon-titlebar`.
+`touch` provides a 44px minimum target for compact mobile navigation.
 
 **Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
 not a tax on every icon. Ask: does hover reveal something the user cannot
@@ -269,6 +270,20 @@ blurred backdrop.
 
 ## Layout
 
+In the browser-hosted Desktop, composer controls retain 44px targets on
+coarse-pointer surfaces. Its collapse stages budget the actual control-size
+token; below the two-target width budget, the context menu and Send occupy
+separate rows rather than clipping or shrinking. Native Desktop keeps the
+compact stages sized for 24px controls.
+The voice engine split-button uses `--composer-voice-menu-size`: compact on
+desktop, matching `--composer-control-size` on touch surfaces.
+Narrow browser touch layouts show the current session tab with an open-tab
+count. Its menu exposes every tab, while the new-tab action remains beside it.
+In the browser-hosted Desktop, outside taps dismiss narrow sidebar overlays;
+cancelled or scrolling gestures do not. Native Desktop keeps its overlay until
+Escape, the toggle or hover-out. Touch transcript gestures select a pane without
+focusing its composer.
+
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
   `px-6`/`px-8` on pages.
@@ -303,6 +318,11 @@ Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 
+On macOS, native traffic lights use a 12-point left inset in every titled window.
+Keep the renderer's startup fallback insets aligned with that position so the
+adjacent toolbar and panel reservations do not jump when native state arrives.
+Windows/Linux retain their previous toolbar startup fallback until native state arrives.
+
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
 In Simple interface mode only sidebar, settings and the layout editor render,
@@ -314,6 +334,9 @@ binding and hovered/focused-zone resolver as the number shortcuts.
 
 Tab close buttons fade the label with a content mask, not a painted gradient.
 The tab reads its surface token directly so glass tint is painted only once.
+Close glyphs keep a 24px hit area, including session tabs wrapped in context menus.
+`PaneTab` owns its `data-slot` marker after forwarded props so composition cannot
+disable that width or the label mask.
 
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
@@ -346,7 +369,7 @@ so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Chat typography
 
-Appearance → Typography keeps **UI Scale** as whole-window zoom (90% by
+Appearance → Typography keeps **UI Scale** as whole-window zoom (100% by
 default). **Chat Text Size** is a separate desktop-local multiplier (110% by
 default) on conversation text and the composer editor, including floating and
 inline-edit composers.
@@ -466,6 +489,11 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
+- Hover paints instantly; only the return eases. Put the transition on the
+  resting state and drop it while hovered (`transition-colors duration-100
+  hover:transition-none`, or the CSS equivalent on `:hover`). A group that
+  dims siblings goes instant too. Exceptions are named, e.g. the catalog
+  card's arc border fades in and out.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
   then settle the surface — the outer container's fade is *delayed* so it
   doesn't swallow the inner animation. Don't let a global fade race the detail.
@@ -499,6 +527,20 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Zone tabs have one keyboard entry point at the selected tab. Arrows follow
+  the strip's orientation; Home/End move focus, Enter/Space activate, and Tab
+  leaves the tabs. Delete invokes an available close action and retains focus
+  on a surviving sibling. Restoring a vertical rail retains its tab focus.
+  The collapsed rail keeps the zone context menu on its outer surface; its
+  inner tab list owns vertical keyboard navigation.
+- Tab-header focus belongs to navigation: session activation and queued composer
+  focus retries must not redirect it. Explicit composer focus still works.
+  Entering a split's tab strip selects its visible chat as the typing recipient
+  without moving focus into the editor; hidden tabs must not receive that input.
+- Sidebar keyboard stops are real controls: session title, reorder handle and
+  actions, not timestamps. Focus uses existing theme tokens, stays distinct from
+  selection, and reveals hover-only controls. Focused/open actions replace their
+  metadata tail; real metadata actions remain independently reachable.
 - Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
   Dimming still distinguishes session panes; sidebar navigation must not desaturate
   the chat or transfer its active highlight to a hidden primary tab.
@@ -546,7 +588,21 @@ The detailed state contract lives in the scoped
 
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
-- Global focus-ring reset; titlebar actions have no active-background state.
+- Keep keyboard focus visible through existing control primitives and theme
+  tokens; never globally suppress outlines or focus rings. Preserve native
+  focus indicators on controls without a themed replacement. Titlebar actions
+  have no active-background state.
+- Each control has one focus treatment: its existing ring, outline, or field
+  border. Suppress the native outline only when that replacement is visible.
+  In forced-colors mode, use one system-color outline on the focused control
+  (or its field wrapper); don't outline unfocused menu rows or containers.
+  Keep command-picker input and selected-row fallback outlines inset so scroll
+  and group clipping cannot cut off their edges.
+  Inline message editors delegate focus chrome to their card border, just like
+  the main composer; their inner contenteditable must not add a second outline.
+- Keyboard users can activate image viewers and return to their available
+  opener when the viewer closes. Composer focus-follow must preserve focus
+  returning from a floating layer while updating the owning chat surface.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".
 

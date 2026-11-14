@@ -69,6 +69,8 @@ class Package:
         when a platform needs a completely different url.
     gaps: targets this package does NOT exist for, with the reason
         (upstream ships no artifact). Everything else is available.
+    on_demand: targets where a package that is otherwise required is optional,
+        with the reason. It stays available there; nothing requires it up front.
     """
 
     name: str = ""
@@ -79,6 +81,7 @@ class Package:
     on_path: bool = True
     url: str = ""
     gaps: dict[str, str] = {}
+    on_demand: dict[str, str] = {}
     # How the lockfile `version` field labels this package for `pm update`:
     #   "semver" — one shared version across targets (node 26.7.0, uv 0.12.3).
     #   "minor"  — the version label is major.minor; each target's exact
@@ -93,11 +96,14 @@ class Package:
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)
 
+    def is_optional(self, target: str) -> bool:
+        return self.optional or target in self.on_demand
+
     def latest_versions(self, target: str, locked: Optional[str] = None) -> list[str]:
         """Newest-first candidate versions for `target` — the "how do I find
         latest" hook for `hermes pm update`. Empty list = this package has
-        no auto-update source (chromium follows agent-browser; venv is a
-        state; Playwright browsers are revision-pinned by playwright).
+        no auto-update source (chromium is bumped by hand with
+        `hermes pm lock --bump`; venv is a state).
 
         Subclasses resolve their upstream's real release index here; the
         update driver intersects across targets (per version_style) and
@@ -140,7 +146,7 @@ class Package:
 
         extract(archive, staged)
 
-    def stage(self, store: "Store", staged: Path, version: str, target: str) -> None:
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Post-unpack fixups inside the scratch dir. Default: nothing."""
 
     def binary(self, entry: Path, target: str) -> Optional[Path]:
@@ -363,7 +369,7 @@ def _missing_reason(binary: Path, entry: Path) -> str:
     return f"{rel} missing under {native(entry)}; {_entry_listing(entry)}"
 
 
-def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:
+def _probe_reason(binary: Path, proc: subprocess.CompletedProcess) -> str:
     """Why a --version probe failed: the exit code plus output tail."""
     out = (proc.stdout or b"") + (proc.stderr or b"")
     tail = out.decode(errors="replace").strip()[-300:]
@@ -379,4 +385,4 @@ class Runner:
 
     def run(self, cmd, **kwargs) -> subprocess.CompletedProcess:
         kwargs.setdefault("env", self.env)
-        return subprocess.run(cmd, **kwargs)
+        return subprocess.run(cmd, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError

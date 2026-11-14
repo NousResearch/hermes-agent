@@ -48,6 +48,7 @@ $ProcessName = $oldProcess.ProcessName
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+. (Join-Path $PSScriptRoot 'windows-uia-buttons.ps1')
 
 New-Item -ItemType Directory -Path $ProofDir -Force | Out-Null
 if (-not $ResultPath) { $ResultPath = Join-Path $ProofDir "drive-update-result.json" }
@@ -87,24 +88,6 @@ function Find-AppWindow {
     return $null
 }
 
-function Find-InvokableButton {
-    # Depth-first walk for a button whose Name matches one of the regexes.
-    param($Root, [string[]]$Patterns)
-    $cond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Button)
-    $buttons = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-    foreach ($b in $buttons) {
-        $name = ""
-        try { $name = $b.Current.Name } catch {}
-        if (-not $name) { continue }
-        foreach ($pat in $Patterns) {
-            if ($name -match $pat) { return @{ Element = $b; Name = $name } }
-        }
-    }
-    return $null
-}
-
 function Invoke-Button($Element) {
     $invoke = $null
     if ($Element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
@@ -127,6 +110,7 @@ if ($pids.Count -eq 0) { throw "no $ProcessName process is running - the install
 
 $deadline = (Get-Date).AddSeconds($ButtonTimeoutSec)
 $clicked = $null
+$lastNavigation = ''
 while ((Get-Date) -lt $deadline -and -not $clicked) {
     $pids = Get-AppPids
     $win = Find-AppWindow -Pids $pids
@@ -142,8 +126,12 @@ while ((Get-Date) -lt $deadline -and -not $clicked) {
             if (Invoke-Button $hit.Element) { $clicked = $hit } else { Write-Host "  [uia] invoke pattern unavailable; retrying" }
         } else {
             # Use the visible settings flow; never call the updater bridge.
-            $navigation = Find-InvokableButton -Root $win -Patterns @('^Open settings$', '^About$', '^Check now$', 'choose a provider later')
-            if ($navigation) { [void](Invoke-Button $navigation.Element) }
+            $navigation = Find-InvokableButton -Root $win -Patterns @('^Check now$', '^Open settings$', '^About$', 'choose a provider later')
+            if ($navigation) {
+                if ($navigation.Name -cne $lastNavigation) { Write-Host "  [uia] navigating: '$($navigation.Name)'" }
+                $lastNavigation = $navigation.Name
+                [void](Invoke-Button $navigation.Element)
+            }
         }
     }
     if (-not $clicked) { Start-Sleep -Seconds 3 }
@@ -160,19 +148,14 @@ Write-Host "[uia] watching for an App Installer confirmation (up to ${ConfirmTim
 $cDeadline = (Get-Date).AddSeconds($ConfirmTimeoutSec)
 $confirmed = $false
 while ((Get-Date) -lt $cDeadline -and -not $confirmed) {
-    $installer = Get-Process -Name "AppInstaller" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($installer) {
-        $root = [System.Windows.Automation.AutomationElement]::RootElement
-        $cond = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $installer.Id)
-        $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
-        if ($win) {
-            $hit = Find-InvokableButton -Root $win -Patterns @('^Update$', '^Install$', '^(Reinstall|Update) .*')
-            if ($hit) {
-                Save-Shot "02-appinstaller-confirm"
-                Write-Host "  [uia] App Installer dialog: clicking '$($hit.Name)'"
-                if (Invoke-Button $hit.Element) { $confirmed = $true }
-            }
+    $installers = @(Get-Process -Name "AppInstaller" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    if ($installers.Count) {
+        $hit = Find-WindowButton -Root ([System.Windows.Automation.AutomationElement]::RootElement) `
+            -ProcessIds $installers -Patterns @('^Update$', '^Install$', '^(Reinstall|Update) .*')
+        if ($hit) {
+            Save-Shot "02-appinstaller-confirm"
+            Write-Host "  [uia] App Installer dialog: clicking '$($hit.Name)'"
+            if (Invoke-Button $hit.Element) { $confirmed = $true }
         }
     }
     # The app quits before App Installer opens; keep watching its confirmation.

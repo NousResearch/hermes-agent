@@ -34,7 +34,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 CRON_DUE_S = 65  # after the update starts: the checkout holds the new code, the old gateway still ticks
 _TASK_RE = re.compile(r"work kanban task (t_[0-9a-f]+)")
-_PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.I)
+_PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.IGNORECASE)
 REPLY = "handoff reply"
 _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|cannot import name")
 
@@ -250,7 +250,7 @@ class WorkerSampler:
                 pass
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "WorkerSampler":
+    def __enter__(self) -> WorkerSampler:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
@@ -300,7 +300,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
 
             o.boots = len(X.gateway_starts(inst))
             o.target = X.publish_target(inst)
-            due = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) + dt.timedelta(seconds=CRON_DUE_S + 5)
+            due = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(seconds=CRON_DUE_S + 5)
             cp = inst.cli("cron", "create", due.isoformat(), f"Reply with the word done. {model.cron_marker}",
                           "--name", model.cron_marker)
             assert cp.returncode == 0, "premise: cron create failed\n" + H.describe(cp)
@@ -311,6 +311,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
 
             o.up = inst.update()
             o.sha_after = inst.sha()
+            o.layout_after = {rel: (inst.checkout / rel).is_file() for rel in X.NEXT_MOVE}
 
             o.ident = X.settle_gateway(inst, o.old_pid)
             model.release.set()
@@ -333,7 +334,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             o.dash_new = back if back and back > 0 else None
 
             if o.ident:  # the cron ticker and the kanban dispatcher live in the gateway
-                _quiet_wait(lambda: dt.datetime.now(dt.timezone.utc) > due + dt.timedelta(seconds=5), timeout=600,
+                _quiet_wait(lambda: dt.datetime.now(dt.UTC) > due + dt.timedelta(seconds=5), timeout=600,
                             what="the cron due time")
                 _quiet_wait(lambda: model.cron_calls, timeout=240, what="the cron job's provider call")
                 _quiet_wait(lambda: card_status(inst, o.card1) == "done" and card_status(inst, o.card2) == "done",
@@ -350,6 +351,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             time.sleep(2)  # let the pid-file watch see what the status probes did
         o.pid_history = watch.history
         o.relaunch = X.relaunch_verdict(inst, o.old_pid, o.boots, o.ident, o.up)
+        o.restart_wait = X.restart_wait_verdict(inst)
         o.pid_file = X.pid_file_verdict(inst, o.ident["pid"], watch.history) if o.ident else "no gateway"
         o.dash_listener = listener_pid(inst, o.dash_port)
         o.dash_roots = dashboards(inst)
@@ -406,6 +408,15 @@ class HandoffProperties:
 
     def test_update_moves_the_checkout(self, fleet):
         assert fleet.sha_after == fleet.target, f"the update did not move the checkout\n{fleet.diag}"
+        if fleet.column == "head":
+            old, new = X.NEXT_MOVE
+            assert fleet.layout_after == {old: False, new: True}, (
+                f"NEXT moved {old} to {new}; the checkout has {fleet.layout_after}\n{fleet.diag}")
+
+    def test_restart_wait_ends_within_its_cap(self, fleet):
+        """A gateway that will not drain is stopped at ``agent.restart_after_turn_timeout``: the update
+        moves on in minutes and the report names what held it, instead of the job timing out."""
+        assert not fleet.restart_wait, f"{fleet.restart_wait}\n{fleet.diag}"
 
     def test_gateway_is_relaunched_once_on_the_new_commit(self, fleet):
         o = fleet
@@ -476,7 +487,7 @@ class HandoffProperties:
 
 def dashboard_verdict(o) -> str:
     """Why no new dashboard serves its port, in words a gate can key on."""
-    if re.search(r"^SyntaxError", o.dash_restarts, re.M) and "restarted:" in o.up.stdout:
+    if re.search(r"^SyntaxError", o.dash_restarts, re.MULTILINE) and "restarted:" in o.up.stdout:
         return (f"the respawned dashboard died parsing its launcher: the update replayed the pre-update argv and "
                 f"Python read a shell script (SyntaxError in logs/dashboard-restart.log); port {o.dash_port} is dark")
     # The sandbox runs no Hermes unit, so any unit the dashboard stop restarts is the one the test runner

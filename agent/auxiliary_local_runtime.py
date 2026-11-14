@@ -15,7 +15,7 @@ from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 
 def bare_llamacpp_endpoint(provider: Optional[str], base_url: Optional[str],
-                           api_key: Any) -> Optional[Tuple[str, Any]]:
+                           api_key: Any) -> Optional[tuple[str, Any]]:
     """``(base_url, api_key)`` of the profile's local llama.cpp server for a bare alias.
 
     ``base_url`` is ``""`` when nothing is serving. ``None`` when the request is not a bare alias:

@@ -38,7 +38,7 @@ class TestMergeProfileTree:
 
         assert len(merged) == 1
         # First writer wins the identity slot.
-        assert list(merged.values())[0]["id"] == "p_a"
+        assert next(iter(merged.values()))["id"] == "p_a"
 
     def test_windows_forward_slash_spelling_folds(self):
         """``C:/Users/me/Project`` and ``C:\\Users\\me\\Project`` are one folder."""
@@ -118,4 +118,4 @@ class TestMergeProfileTree:
         _merge_profile_tree(merged, [declared], "beta", preview_limit=5)
 
         assert len(merged) == 1
-        assert list(merged.values())[0]["label"] == "My Proj"
+        assert next(iter(merged.values()))["label"] == "My Proj"

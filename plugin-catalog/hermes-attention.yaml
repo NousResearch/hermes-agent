@@ -1,0 +1,27 @@
+name: hermes-attention
+title: Hermes Attention
+repo: https://github.com/xraysight/hermes-attention
+sha: 37c6b56cf18c4ad8fb6675a1ec830083dc846b65
+subdir: ""
+description: "Repeating desktop alerts for pending approvals and questions, with sound signals, custom audio and optional cached speech. Disclosure — Optional speech generation sends the alert phrase you type (never conversation content) to your configured Hermes TTS provider, or to Microsoft Edge TTS when you pick a specific language, and may incur provider charges."
+maintainer: xraysight
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/xraysight/hermes-attention/blob/37c6b56cf18c4ad8fb6675a1ec830083dc846b65/README.md
+version: "1.5.1"
+image: https://raw.githubusercontent.com/xraysight/hermes-attention/37c6b56cf18c4ad8fb6675a1ec830083dc846b65/docs/assets/hermes-attention-hero.png
+screenshots:
+  - https://raw.githubusercontent.com/xraysight/hermes-attention/37c6b56cf18c4ad8fb6675a1ec830083dc846b65/docs/assets/hermes-attention-settings.png
+  - https://raw.githubusercontent.com/xraysight/hermes-attention/37c6b56cf18c4ad8fb6675a1ec830083dc846b65/docs/assets/hermes-attention-icon.png
+readme: true
+platforms: []
+known_issues:
+  - "End-to-end Desktop playback was verified on Windows; macOS/Linux playback has not been verified end to end."
+  - "Automatic TTS uses a Hermes internal helper and may need adjustment after host updates; explicit language selection uses Edge TTS."
+  - "Optional TTS sends the entered text to the configured provider or Microsoft Edge TTS and may incur provider charges."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

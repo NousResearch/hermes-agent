@@ -229,7 +229,7 @@ test('packaging isolates boot metadata and executable names without renaming rel
 
     const {
       AppInfo
-    }: { AppInfo: typeof BuilderAppInfo } = require('../../../node_modules/app-builder-lib/dist/appInfo.js')
+    }: { AppInfo: typeof BuilderAppInfo } = require('app-builder-lib')
 
     const appInfo: BuilderAppInfo = new AppInfo(
       { config, metadata: { ...pkg, ...config.extraMetadata } } as Packager,

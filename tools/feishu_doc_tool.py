@@ -4,7 +4,7 @@ Provides ``feishu_doc_read`` for reading document content as plain text.
 Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 """
 
-from tools.feishu_lark import (  # noqa: F401  (set_client/get_client are imported by feishu_comment)
+from tools.feishu_lark import (
     _check_feishu,
     build_request,
     get_client,

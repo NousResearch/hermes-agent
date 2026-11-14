@@ -1,13 +1,15 @@
-"""Hosted Group Chat rooms (``groups.*``), cross-connection bot relay (``bot_relay.*``) and the
-dashboard browser controller (``browser.controller.*``).
+"""Hosted Group Chat rooms (``groups.*``) and cross-connection bot relay (``bot_relay.*``).
 
-Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py``,
-``tui_gateway/methods_browser_control.py``. Room / event / page shapes are produced by
+Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py``. Room / event / page shapes are produced by
 ``gateway/hosted_rooms.py`` (``_room_from_row`` / ``_event_from_row`` / ``read_events``) and
 ``gateway/hosted_room_replicas.py``; the RoomLink catalog by ``gateway/hosted_room_peer.py``.
 """
 
 from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
@@ -29,8 +31,14 @@ class RoomMember(OpenModel):
 
 
 class RoomActor(Result):
+    """``hosted_rooms._ACTOR_FIELDS``; member replies carry ``profile`` plus, when known,
+    ``display_name`` and the peer ``connection_id`` (``hosted_room_discussion._member_actor``)."""
+
     kind: str
     id: str
+    profile: str | None = None
+    display_name: str | None = None
+    connection_id: str | None = None
 
 
 class RoomEvent(Result):
@@ -147,13 +155,26 @@ class GroupsCapabilitiesParams(ProfileParams):
 
 class GroupsCapabilitiesResult(Result):
     protocol_version: int
+    #: On the canonical gateway (hermes gateway run, also via forwarding hermes serve),
+    #: owning a group chat with peer members requires a running driver on the home.
     driver: bool
+    #: The canonical home must be persistent to drive the group chat with Desktop closed.
+    #: Standalone hermes serve derives this from its lending catalog; clients should not
+    #: treat it as a home for gateway-owned group chats.
     persistent_process: bool
     authority_gateway_id: str
+    #: On the canonical gateway, lending requires room_link.enabled with its catalog and
+    #: endpoint; the home need not enable its own. Standalone hermes serve skips its
+    #: API-server and endpoint checks.
     room_link: RoomLinkStatus
     features: list[str]
+    #: On the canonical gateway, owning requires groups.peer.register; lending requires groups.peer.invite.
     methods: list[str]
     max_log_limit: int
+    #: Local profiles THIS caller may seat in a new group (``gateway/session_hosted_members``): served
+    #: bots, minus retiring/unaddressable ones, plus usable ``hosted_rooms.profiles`` entries; only a
+    #: host-scoped caller gets served siblings. Absent on gateways that predate it.
+    seatable_profiles: list[str] | None = None
 
 
 method("groups.capabilities", params=GroupsCapabilitiesParams, result=GroupsCapabilitiesResult,
@@ -204,21 +225,63 @@ class PeerRouteStatus(Result):
     status: str
 
 
+class RoomMemberActivity(Result):
+    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and
+    ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running;
+    ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running
+    the turn."""
+
+    member_id: str
+    status: str
+    thread_id: str | None = None
+    round_index: int | None = None
+    started_at: float | None = None
+    tool: str | None = None
+    progress_at: float | None = None
+
+
 class RoomDriverStatus(Result):
-    """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``
-    or the driver's approval action (``kind: approval`` + run/session/approval context)."""
+    """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt
+    (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)
+    or the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled
+    room preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken).
+    ``member_activity`` lists live tasks in admission order (absent from older gateways).
+    ``last_error`` is this room's last preparation failure, null once one succeeds."""
 
     running: bool
     working: bool
     blocked: bool
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
+    member_activity: list[RoomMemberActivity] = Field(default_factory=list)
+    last_error: str | None = None
+    max_rounds: int | None = None
+    #: How many times one discussion paused at its cap may Continue (absent from older gateways).
+    max_continues: int | None = None
+    #: Room routing modes this gateway accepts (absent from older gateways: everyone and lead).
+    routing_modes: list[str] | None = None
     peer_routes: list[PeerRouteStatus]
 
 
+class RoomContext(Result):
+    """``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn
+    prompt carries (inside the user-role message)."""
+
+    purpose: str
+    notes: str
+    #: ``everyone`` (every member answers an unaddressed message), ``lead`` (the lead assigns it) or ``auto``
+    #: (one ``auxiliary.group_router`` call picks who answers; recorded as ``room.routed``).
+    routing: Literal["everyone", "lead", "auto"] = "everyone"
+    lead_member_id: str = ""
+
+
 class GroupsStateResult(Result):
+    """``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is
+    only a backstop (absent on older backends: keep polling at the old rate)."""
     room: Room
     driver_status: RoomDriverStatus | None = None
+    context: RoomContext | None = None
+    change_events: bool | None = None
 
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
@@ -255,6 +318,24 @@ class GroupsRenameResult(Result):
 
 method("groups.rename", params=GroupsRenameParams, result=GroupsRenameResult,
        doc="Rename one hosted room atomically with its replay event.")
+
+
+class GroupsContextParams(RoomParams):
+    event_id: str
+    purpose: str
+    notes: str
+    #: Omitted routing fields keep the room's current routing.
+    routing: Literal["everyone", "lead", "auto"] | None = None
+    lead_member_id: str | None = None
+
+
+class GroupsContextResult(Result):
+    context: RoomContext
+    event: RoomEvent
+
+
+method("groups.context", params=GroupsContextParams, result=GroupsContextResult,
+       doc="Set one hosted room's purpose and shared notes; members see them from the next message.")
 
 
 class GroupsLogParams(RoomParams):
@@ -312,6 +393,19 @@ method("groups.stop", params=GroupsStopParams, result=GroupsStopResult,
        doc="Durably cancel queued or running work for one hosted room.")
 
 
+class GroupsContinueParams(RoomParams):
+    discussion_event_id: str
+
+
+class GroupsContinueResult(Result):
+    continued: bool = True
+    event: RoomEvent
+
+
+method("groups.continue", params=GroupsContinueParams, result=GroupsContinueResult,
+       doc="Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued.")
+
+
 class GroupsApproveParams(RoomParams):
     member_id: str
     task_id: str
@@ -333,6 +427,9 @@ method("groups.approve", params=GroupsApproveParams, result=GroupsApproveResult,
 
 class GroupsRetryParams(RoomParams):
     task_id: str
+    # The pending action's exact attempt; absent only from clients that predate it.
+    member_id: str | None = None
+    execution_generation: int | None = None
 
 
 class RoomTaskReceipt(Result):
@@ -441,6 +538,7 @@ class GroupsPeerInviteParams(ProfileParams):
     member_id: str | None = None
     grant_id: str | None = None
     ttl_seconds: float | None = None
+    status_ttl_seconds: float | None = None
 
 
 class GroupsPeerInviteResult(Result):
@@ -569,71 +667,6 @@ class BotRelayReplyParams(ProfileParams):
 
 method("bot_relay.reply", params=BotRelayReplyParams, result=OkResult,
        doc="Write a relayed reply and/or typed error for an envelope so the sender-side waiter resolves.")
-
-
-# ── browser controller ────────────────────────────────────────────────────────────────────────
-
-
-class BrowserControllerParams(Params):
-    """Every controller call names the session the controller is attached to."""
-
-    session_id: str
-
-
-class BrowserControllerRegisterParams(BrowserControllerParams):
-    controller_id: str
-    browser_profile_id: str
-    capabilities: list[str] | None = None
-    protocol_version: JsonValue | None = None  # checked exactly by the handler (an int today)
-    # Ignored: the principal is derived from the server-minted identity, never client-supplied.
-    principal_id: str | None = None
-
-
-class ControllerScope(Result):
-    principal_id: str
-    profile_id: str
-    session_id: str
-    controller_id: str
-    browser_profile_id: str
-    transport_family: str
-    capabilities: list[str]
-
-
-class BrowserControllerRegisterResult(Result):
-    scope: ControllerScope
-
-
-method("browser.controller.register", params=BrowserControllerRegisterParams,
-       result=BrowserControllerRegisterResult,
-       doc="Attach this connection as the browser controller for one session; fails closed (4403).")
-
-
-class BrowserControllerResultParams(BrowserControllerParams):
-    command_id: str
-    ok: JsonValue | None = None  # only the exact ``true`` counts as success
-    result: JsonValue | None = None
-    error: JsonValue | None = None
-
-
-class BrowserControllerResultResult(Result):
-    accepted: bool
-
-
-method("browser.controller.result", params=BrowserControllerResultParams,
-       result=BrowserControllerResultResult,
-       doc="Deliver one command result to the broker; accepted is false for unknown or settled command ids.")
-
-
-method("browser.controller.heartbeat", params=BrowserControllerParams, result=OkResult,
-       doc="Acknowledge a heartbeat only for this transport's own attached controller.")
-
-
-class BrowserControllerDetachResult(Result):
-    detached: bool = True
-
-
-method("browser.controller.detach", params=BrowserControllerParams, result=BrowserControllerDetachResult,
-       doc="Hard-detach only the controller owned by this authenticated transport.")
 
 
 __all__ = [

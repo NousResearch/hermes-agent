@@ -14,10 +14,10 @@ import copy
 import pytest
 from unittest.mock import patch
 
-import agent.skill_bundles as skill_bundles
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
-import agent.prompt_cache_boundary as prompt_cache_boundary
+from agent import skill_bundles
+from agent import skill_commands
+from tools import skills_tool
+from agent import prompt_cache_boundary
 from agent.prompt_cache_boundary import (
     find_stable_prefix,
     register_stable_prefix,

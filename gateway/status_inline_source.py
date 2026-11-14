@@ -78,24 +78,31 @@ _MAIN = rf"{_Q}__main__{_Q}"
 _RUN_MODULE = rf"runpy\.run_module\(\s*{_Q}(?P<target>[\w.]+){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*,\s*alter_sys\s*=\s*True\s*\)"
 _BOOTSTRAPS = (
     # hermes_cli._launchers.runtime_command (store launcher, the Windows updater's relaunch)
-    ("module", re.compile(rf"import os, sys, runpy;.*\b{_RUN_MODULE}", re.S)),
+    ("module", re.compile(rf"import os, sys, runpy;.*\b{_RUN_MODULE}", re.DOTALL)),
     # hermes_cli.venv_sync.relaunch_command: argv is assigned inside the source
-    ("module", re.compile(rf"import sys, runpy; sys\.path\.insert\(.*\b{_RUN_MODULE}", re.S)),
+    ("module", re.compile(rf"import sys, runpy; sys\.path\.insert\(.*\b{_RUN_MODULE}", re.DOTALL)),
     ("path", re.compile(
         rf"import sys, runpy; sys\.path\.insert\(.*\brunpy\.run_path\(\s*{_Q}(?P<target>[^'\"]+?){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*\)",
-        re.S)),
+        re.DOTALL)),
     # hermes_cli.venv_sync.relaunch_command re-entering a ``-c`` launcher: the launcher's source is
     # exec'd as a string literal, its argv assigned before it; resolved through the rows above/below
-    ("exec", re.compile(r"import sys, runpy; sys\.path\.insert\(.*?;\s*exec\((?P<target>.+)\)", re.S)),
+    ("exec", re.compile(r"import sys, runpy; sys\.path\.insert\(.*?;\s*exec\((?P<target>.+)\)", re.DOTALL)),
     # hermes_cli._launchers._launcher_script (the published POSIX shell / Windows .cmd launcher)
-    ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)),
+    ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.DOTALL)),
+    # scripts/build/launchers.py::posix_launcher (the bundled/Docker payload's bin/hermes). Spelled out
+    # statement by statement: a ``.*`` would span a carrier's source plus the launcher argv it carries.
+    # Only the ``hermes`` entry: the same shape importing any other module is someone else's program.
+    ("module", re.compile(
+        rf"import os, site, sys;\s*sys\.argv\[0\]\s*=\s*{_Q}[\w.-]+{_Q};\s*"
+        rf"site\.addsitedir\(os\.environ\[{_Q}HERMES_SITE{_Q}\]\);"
+        r"\s*from\s+(?P<target>hermes_cli\.main)\s+import\s+main\s*;\s*sys\.exit\(\s*main\(\)\s*\)")),
     # hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
     ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
 )
 _ASSIGNED_ARGV = re.compile(r"\bsys\.argv\s*=\s*\[(.*?)\]\s*;")
 _EXEC_LAUNCHER = re.compile(
     # no ``\b`` before ``from``/``sys``: an escaped newline normalizes to ``/n`` and abuts them
-    r"import os, re, sys\W.*?from\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*sys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)
+    r"import os, re, sys\W.*?from\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*sys\.exit\(\s*(?P=func)\(\)\s*\)", re.DOTALL)
 _EXEC_BASE64 = re.compile(r"import base64; exec\(base64\.b64decode\(\W*(?P<b64>[A-Za-z0-9+/=]+)")
 
 

@@ -6,6 +6,7 @@ other anchor exists (a relative/sentinel ``TERMINAL_CWD`` would silently anchor
 edits to the agent process cwd, e.g. the main repo during a worktree session).
 """
 
+import logging
 import os
 import posixpath
 import sys
@@ -14,18 +15,21 @@ from pathlib import Path, PurePosixPath
 
 from agent.runtime_self_protection import split_entry
 
+logger = logging.getLogger(__name__)
+
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "modal", "daytona", "vercel_sandbox"})
 # Backend name inferred from the live environment's class name (first match wins).
-_ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
-# Container task id -> monotonic time of the last failed SSH bring-up in path resolution.
+_ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "modal", "daytona")
+# Container task id -> monotonic time of the last failed environment bring-up in path resolution (an SSH
+# home, or a plugin sandbox's ``~`` home).
 _SSH_HOME_RETRY_AFTER = 30.0
 _ssh_home_failed_at: dict[str, float] = {}
 
 
-def _expand_tilde(path: str) -> str:
+def _expand_tilde(path: str, task_id: str = "default") -> str:
     """Expand ``~`` using the effective profile home (``get_subprocess_home``) so
     gateway/cron runs, whose process HOME may differ, agree with interactive CLI sessions.
 
@@ -34,6 +38,9 @@ def _expand_tilde(path: str) -> str:
     """
     if not path or "~" not in path:
         return path
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return _expand_sandbox_tilde(path, task_id)
     try:
         from hermes_constants import get_subprocess_home
 
@@ -45,18 +52,44 @@ def _expand_tilde(path: str) -> str:
     return os.path.expanduser(path)
 
 
+def _expand_sandbox_tilde(path: str, task_id: str = "default") -> str:
+    """``~`` of a hosted path: the home the agent's sandbox declared (``plugin_sandbox_home``), never this host's
+    HOME, profile home or passwd database. Raises ``ValueError`` for ``~user`` and when the sandbox declared none."""
+    if not path.startswith("~"):
+        return path
+    if path != "~" and not path.startswith("~/"):
+        raise ValueError(f"Cannot resolve {path!r} in the sandbox: '~user' paths are not supported. "
+                         "Pass an absolute path.")
+    from tools.terminal_tool_config import plugin_sandbox_home
+    env = _live_or_started_env(task_id)  # the caller's sandbox, as its own call would bring it up
+    home = plugin_sandbox_home(env) if env is not None else None
+    if home is None:
+        raise ValueError(f"Cannot resolve {path!r}: the sandbox declared no home directory. Pass an absolute path.")
+    return home + path[1:]
+
+
+def _hosted_tilde(path: str, task_id: str = "default") -> str:
+    """*path* with a hosted ``~`` expanded against the sandbox's home, for a tool that sends the path as given;
+    unchanged outside a hosted scope."""
+    from tools.environments.sandbox_scope import hosted_scope
+    return _expand_sandbox_tilde(path, task_id) if path and hosted_scope() is not None else path
+
+
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
     """Best-effort terminal backend type for path-resolution decisions."""
     try:
         from tools.terminal_tool import (
             _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
 
+        from tools.environments.sandbox_scope import hosted_scope
         try:
             container_key = _resolve_container_task_id(task_id)
         except Exception:
             container_key = task_id
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(container_key)
+            if env is None and hosted_scope() is None:  # a raw task id may name another agent's sandbox
+                env = _active_environments.get(task_id)
         if env is not None:
             name = env.__class__.__name__.lower()
             hint = next((h for h in _ENV_CLASS_NAME_HINTS if h in name), None)
@@ -69,6 +102,9 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return True  # a hosted agent's paths name its sandbox: never anchored or dereferenced on this host
     env_type = _terminal_env_type_for_task(task_id)
     try:
         from tools.terminal_tool import _is_container_backend
@@ -89,23 +125,35 @@ def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosix
     return PurePosixPath(posixpath.normpath(str(path)))
 
 
-def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
+def _sentinel_free_abs_cwd(raw: str | None, task_id: str = "default") -> str | None:
     """Return *raw* expanded when it is a non-sentinel ABSOLUTE anchor, else ``None``
     (a relative anchor is exactly the ambiguity that misroutes worktree edits)."""
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = _expand_tilde(raw)
+    try:
+        expanded = _expand_tilde(raw, task_id)
+    except ValueError:
+        from tools.environments.sandbox_scope import hosted_scope
+        if hosted_scope() is None:
+            raise
+        return None  # a hosted ``~`` the sandbox gives no meaning to anchors nothing
     return expanded if os.path.isabs(expanded) else None
 
 
-def _configured_terminal_cwd() -> str | None:
+def _configured_terminal_cwd(task_id: str = "default") -> str | None:
     """Return ``$TERMINAL_CWD`` only when it names a real (absolute, non-sentinel) anchor.
-    Scope-aware: under gateway multiplexing the routed profile's cwd lives in the per-turn scope."""
+    Scope-aware: under gateway multiplexing the routed profile's cwd lives in the per-turn scope.
+    A hosted scope gets the terminal config's sanitized cwd (``_container_default_cwd``), the directory its terminal
+    commands start in, never the raw value the config may have discarded."""
     # See #68559.
     from agent.runtime_cwd import scope_terminal_cwd
+    from tools.environments.sandbox_scope import hosted_scope
 
-    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
+    if hosted_scope() is not None:
+        return _container_default_cwd(task_id)
+
+    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None, task_id)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -121,7 +169,7 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     except Exception:
         return None
 
-    return _sentinel_free_abs_cwd(overrides.get("cwd"))
+    return _sentinel_free_abs_cwd(overrides.get("cwd"), task_id)
 
 
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
@@ -137,17 +185,20 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         recorded = get_session_cwd(task_id)
     except Exception:
         recorded = None
-    return recorded or _registered_task_cwd_override(task_id) or _configured_terminal_cwd()
+    from tools.environments.sandbox_scope import hosted_scope
+    if recorded and str(recorded).strip().startswith("~") and hosted_scope() is not None:
+        recorded = _sentinel_free_abs_cwd(recorded, task_id)  # the sandbox's home, or no anchor
+    return recorded or _registered_task_cwd_override(task_id) or _configured_terminal_cwd(task_id)
 
 
-def _host_text(text: str, container_paths: bool) -> str:
+def _host_text(text: str, container_paths: bool, task_id: str = "default") -> str:
     """Expand ``~``; on host backends also translate Git Bash ``/c/Users/...`` drive
     paths before Path sees them. Container/WSL Linux paths are never rewritten."""
     if not container_paths:
         from tools.environments.local import _msys_to_windows_path
 
         text = _msys_to_windows_path(text)
-    return _expand_tilde(text)
+    return _expand_tilde(text, task_id)
 
 
 def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
@@ -188,17 +239,10 @@ def _ssh_remote_anchor(task_id: str) -> str:
     return "~"
 
 
-def _ssh_remote_home(task_id: str) -> str | None:
-    """The SSH user's home as detected at connect (``echo $HOME``), else None.
-
-    Brings the environment up through the file tools' own creator (same cwd
-    and cache as the call that follows) when none is live: they resolve before
-    touching the backend, and a first call keyed ``~/x`` while later ones key
-    ``/home/u/x`` splits read tracking and staleness checks for one file. A
-    failed bring-up is remembered briefly so one tool call's several
-    resolutions don't each wait out the SSH connect timeout; the tool's own
-    backend call reports the error.
-    """
+def _live_or_started_env(task_id: str):
+    """The task's live terminal environment, else one brought up through the file tools' own creator. A failed
+    bring-up is remembered briefly, so one tool call's several path resolutions don't each wait out the
+    backend's connect timeout; the tool's own backend call reports the error."""
     from tools.file_tools import _get_file_ops
     from tools.terminal_tool import _resolve_container_task_id
     from tools.terminal_tool_lifecycle import get_active_env
@@ -210,10 +254,27 @@ def _ssh_remote_home(task_id: str) -> str | None:
             return None
         try:
             env = _get_file_ops(task_id).env
-        except Exception:  # noqa: BLE001 — connect failure
+        except Exception:  # health: allow BLE001 -- any backend's connect failure; the tool's own call reports it
             _ssh_home_failed_at[key] = time.monotonic()
             return None
     _ssh_home_failed_at.pop(key, None)
+    return env
+
+
+def _ssh_remote_home(task_id: str) -> str | None:
+    """The SSH user's home as detected at connect (``echo $HOME``), else None.
+
+    Brings the environment up through the file tools' own creator (same cwd
+    and cache as the call that follows) when none is live: they resolve before
+    touching the backend, and a first call keyed ``~/x`` while later ones key
+    ``/home/u/x`` splits read tracking and staleness checks for one file. A
+    failed bring-up is remembered briefly so one tool call's several
+    resolutions don't each wait out the SSH connect timeout; the tool's own
+    backend call reports the error.
+    """
+    env = _live_or_started_env(task_id)
+    if env is None:
+        return None
     # A guessed /home/<user> (``echo $HOME`` failed) must not stand in for the real home.
     home = getattr(env, "_remote_home", None) if getattr(env, "_remote_home_detected", False) else None
     return home if isinstance(home, str) and posixpath.isabs(home) else None
@@ -259,9 +320,44 @@ def _resolve_base_dir(
         if _terminal_env_type_for_task(task_id) == "ssh":
             return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
-    root = _authoritative_workspace_root(task_id)
+    root = _authoritative_workspace_root(task_id) or (_container_default_cwd(task_id) if container_paths else None)
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        # The process cwd is this host's directory, never the sandbox's: with no absolute in-sandbox anchor a
+        # relative path has nothing to resolve against.
+        text = _host_text(root, container_paths, task_id) if root else ""
+        if not posixpath.isabs(text):
+            raise ValueError("Cannot resolve a relative path: the sandbox's working directory is not known. "
+                             "Pass an absolute path.")
+        return _anchor(text, os.getcwd, container_paths)
     # A backend's relative cwd is anchored to the process cwd once, here.
-    return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
+    return _anchor(_host_text(root or os.getcwd(), container_paths, task_id), os.getcwd, container_paths)
+
+
+def _container_default_cwd(task_id: str = "default") -> str | None:
+    """A container backend's configured working directory (already sanitized to the backend default) when the
+    session recorded none: the cwd its terminal commands start in (``_resolve_command_cwd``'s default). The process
+    cwd is a host directory (``/opt/data`` in the Docker image) the sandbox does not have. The live env's cwd is NOT
+    used: a shared env's cwd is wherever ANOTHER session last ``cd``'d."""
+    try:
+        from tools.terminal_tool import _get_env_config
+
+        cwd = _get_env_config().get("cwd")
+        if cwd == "~":
+            # A plugin backend's sandbox home is known once its environment connects: bring it up as the
+            # call that follows would, and use the home THAT environment resolved. When it can't connect,
+            # relative paths fall back to the process cwd below; the file operation itself then fails on
+            # the same connection, so nothing is read or written on the host.
+            from tools.terminal_tool_config import plugin_sandbox_home
+
+            env = _live_or_started_env(task_id)
+            cwd = plugin_sandbox_home(env) if env is not None else None
+        if isinstance(cwd, str) and posixpath.isabs(cwd):
+            return cwd
+    except Exception:
+        # Path resolution must not fail on a broken terminal config; the caller falls back to the process cwd.
+        logger.debug("container default cwd unavailable for task %s", task_id, exc_info=True)
+    return None
 
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
@@ -270,7 +366,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     if _terminal_env_type_for_task(task_id) == "ssh":
         return _resolve_ssh_path(filepath, task_id)
     container_paths = _uses_container_paths(task_id)
-    return _anchor(_host_text(filepath, container_paths),
+    return _anchor(_host_text(filepath, container_paths, task_id),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 
 
@@ -296,13 +392,13 @@ def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task
                 return None
             root = _resolve_ssh_path(".", task_id)
         else:
-            if Path(_expand_tilde(filepath)).is_absolute():
+            if Path(_expand_tilde(filepath, task_id)).is_absolute():
                 return None
             workspace_root = _authoritative_workspace_root(task_id)
             if not workspace_root:
                 return None
             if _uses_container_paths(task_id):
-                root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+                root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root, task_id)))
             else:
                 root = Path(_expand_tilde(workspace_root)).resolve()
         if resolved.is_relative_to(root):

@@ -1,0 +1,28 @@
+# Catalog entry for NousResearch/hermes-agent: plugin-catalog/usage-guard.yaml
+# Pinned to the release commit of v0.5.0. Bump sha and version together.
+name: usage-guard
+repo: https://github.com/mister-ideas/usage-guard
+sha: d59f798e848f5310f9e3d8673c01f383207c695e
+description: "Keeps an agent inside its subscription allowance: refuses a provider dispatch once a subscription usage window is exhausted, so an account that allows paid extra usage stops at the wall instead of spending overage. Reads the usage Hermes already displays, holds no credentials, and never touches account or billing settings. Disclosure — refuses main-loop provider calls (including MoA turns) for the providers in `provider_keys` (Anthropic and OpenAI Codex by default) when a subscription usage window reaches `threshold_percent` (a lone Anthropic reading of exactly 100% with extra usage off is treated as possibly 1%, because Hermes's Anthropic parser scales any utilization <= 1 by 100 until hermes-agent#139916, and passes; a 100% that follows a higher reading in the same window, or any 100% while extra usage is on, refuses), and by default (`fail_open: false`) also refuses when usage data is missing, stale, unreadable, or the guard's own config is malformed; usage is read through Hermes's own account-usage fetcher (no credentials held, at most one read per source every 180 seconds by default) and cached in $HERMES_HOME/plugin-data/usage-guard/usage.json; a `pre_llm_call` hook adds a short usage note to the next turn's context at 80% and 90% used by default, and an opt-in (off by default) `llm_request` middleware lowers an existing output-token budget near the usage limit; both read only the cache, never the network; a `/usage-guard` slash command and a Hermes Desktop status-bar chip (polling a read-only `GET /api/plugins/usage-guard/status` route every 60 s and after each turn) report the guard's decision from the same cache, never making a usage request; auxiliary calls (compression, vision, titles, MoA advisors) are not gated. Borrowing is off by default: when `hydrate_from_paths` names files, the guard may read those JSON snapshots instead of reading the endpoint, validating every window and never writing them into its own cache."
+image: https://raw.githubusercontent.com/mister-ideas/usage-guard/d59f798e848f5310f9e3d8673c01f383207c695e/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/mister-ideas/usage-guard/d59f798e848f5310f9e3d8673c01f383207c695e/docs/media/shot-chip.png
+  - https://raw.githubusercontent.com/mister-ideas/usage-guard/d59f798e848f5310f9e3d8673c01f383207c695e/docs/media/shot-refusal.png
+  - https://raw.githubusercontent.com/mister-ideas/usage-guard/d59f798e848f5310f9e3d8673c01f383207c695e/docs/media/shot-chip-blocked.png
+  - https://raw.githubusercontent.com/mister-ideas/usage-guard/d59f798e848f5310f9e3d8673c01f383207c695e/docs/media/shot-near-wall.png
+  - https://raw.githubusercontent.com/mister-ideas/usage-guard/d59f798e848f5310f9e3d8673c01f383207c695e/docs/media/shot-unavailable.png
+maintainer: mister-ideas
+tier: community
+category: automation
+requires_hermes: ">=0.21.6"
+version: "0.5.0"
+known_issues:
+  - "Multi-profile gateways: Hermes dispatches plugin slash commands in the gateway's launch profile, so `/usage-guard` can report that profile's limit and reading. The guard itself and the Desktop chip use the served profile."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - llm_execution
+    - llm_request
+  requires_env: []

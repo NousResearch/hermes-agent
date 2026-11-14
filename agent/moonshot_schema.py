@@ -28,7 +28,7 @@ _SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 _ENUM_SAMPLE_TYPES = ((bool, "boolean"), (int, "integer"), (float, "number"))
 
 
-def _empty_object_schema() -> Dict[str, Any]:
+def _empty_object_schema() -> dict[str, Any]:
     return {"type": "object", "properties": {}, "required": []}
 
 
@@ -39,7 +39,7 @@ def _repair_schema(node: Any) -> Any:
     if not isinstance(node, dict):
         return node
 
-    repaired: Dict[str, Any] = {}
+    repaired: dict[str, Any] = {}
     for key, value in node.items():
         if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             repaired[key] = {sub_key: _repair_schema(sub_val) for sub_key, sub_val in value.items()}
@@ -86,7 +86,7 @@ def _repair_schema(node: Any) -> Any:
     return repaired
 
 
-def _ensure_required_array(node: Dict[str, Any]) -> Dict[str, Any]:
+def _ensure_required_array(node: dict[str, Any]) -> dict[str, Any]:
     """Guarantee an object schema carries a ``required`` list, pruning names not in
     ``properties`` (Moonshot also rejects dangling names). Mutates and returns ``node``."""
     props = node.get("properties")
@@ -99,7 +99,7 @@ def _ensure_required_array(node: Dict[str, Any]) -> Dict[str, Any]:
     return node
 
 
-def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
+def _fill_missing_type(node: dict[str, Any]) -> dict[str, Any]:
     """Infer a ``type`` if this schema node has none.
 
     A type list collapses to its first concrete member; otherwise
@@ -130,7 +130,7 @@ def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     return {**node, "type": inferred}
 
 
-def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
+def sanitize_moonshot_tool_parameters(parameters: Any) -> dict[str, Any]:
     """Deep-copied, Moonshot-compatible object schema; input is not mutated."""
     if not isinstance(parameters, dict):
         return _empty_object_schema()
@@ -143,14 +143,14 @@ def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
     return _ensure_required_array(repaired)
 
 
-def sanitize_moonshot_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sanitize_moonshot_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply ``sanitize_moonshot_tool_parameters`` to every tool's parameters.
 
     Returns the input list object itself when nothing needed repairing.
     """
     if not tools:
         return tools
-    sanitized: List[Dict[str, Any]] = []
+    sanitized: list[dict[str, Any]] = []
     any_change = False
     for tool in tools:
         fn = tool.get("function") if isinstance(tool, dict) else None

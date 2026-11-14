@@ -9,6 +9,8 @@ import { queryClient } from '@/lib/query-client'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
 
+import { CronView } from './index'
+
 const getCronJobRuns = vi.fn()
 const getCronJobs = vi.fn()
 const triggerCronJob = vi.fn()
@@ -42,7 +44,6 @@ const job: CronJob = {
 const queuedRow = () => window.document.querySelector('[data-slot="cron-run-pending"]')
 
 async function renderCron() {
-  const { CronView } = await import('./index')
   let result!: ReturnType<typeof render>
 
   await act(async () => {
@@ -111,7 +112,12 @@ describe('CronView queued trigger feedback (#70826)', () => {
     // The backend materializes the run the trigger produced.
     const observedAt = Date.now() / 1000
     getCronJobRuns.mockResolvedValue([
-      { id: 'cron_job-1_20261006_120001', last_active: observedAt, started_at: observedAt, title: 'Status report run' } as SessionInfo
+      {
+        id: 'cron_job-1_20261006_120001',
+        last_active: observedAt,
+        started_at: observedAt,
+        title: 'Status report run'
+      } as SessionInfo
     ])
     await act(async () => {
       releaseTrigger(job)
@@ -139,7 +145,12 @@ describe('CronView queued trigger feedback (#70826)', () => {
     const callsBeforeChange = getCronJobRuns.mock.calls.length
     const observedAt = Date.now() / 1000
     getCronJobRuns.mockResolvedValue([
-      { id: 'cron_job-1_20261006_120002', last_active: observedAt, started_at: observedAt, title: 'Status report run' } as SessionInfo
+      {
+        id: 'cron_job-1_20261006_120002',
+        last_active: observedAt,
+        started_at: observedAt,
+        title: 'Status report run'
+      } as SessionInfo
     ])
     await act(async () => {
       notifyCronChanged()

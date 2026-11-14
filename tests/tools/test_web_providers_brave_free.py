@@ -124,7 +124,7 @@ class TestBraveFreeBackendWiring:
     def test_brave_free_does_not_override_paid_provider(self, monkeypatch):
         """Exa (higher priority) should win in auto-detect."""
         from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_tools, "_load_web_config", dict)
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "EXA_API_KEY", "SEARXNG_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("EXA_API_KEY", "exa_test")

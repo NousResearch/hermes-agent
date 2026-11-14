@@ -1,0 +1,36 @@
+name: lusor
+title: Lusor
+repo: https://github.com/lusor-ai/plugins
+sha: bd9493383d799f0a9dd2065661c8fcc84cce9689
+subdir: plugins/lusor
+description: >-
+  AI agents on real phones through Lusor's hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic
+  client registration and PKCE): list your phones, run a task on your own iPhone or Android or a Lusor
+  Phone in the cloud and read the result, answer the agent's questions, read the screen, tap, type and
+  swipe, and install catalog apps. Portable Agent Plugins v1 package (plugin.json + mcp.json),
+  configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to
+  mcp.lusor.ai, signed in as the user through Lusor's OAuth sign-in, and counts against that
+  workspace's Lusor plan. Tool results, including screenshots and screen text, enter the session
+  context and so reach the user's model provider. Write-capable tools: run_task (uses credits, and
+  phone minutes on a Lusor Phone), phone_action, reply_to_task, stop_task, install_app, add_phone
+  (buys Lusor Phones on the workspace's plan after a separate price-quote call), remove_phone and
+  wipe_phone (erases a Lusor Phone; confirmed by typing its name). The package marks the server
+  untrusted, but the required sign-in step writes a config.yaml entry that replaces the package's
+  own, trust included, unless the user adds trust: untrusted to it. Hermes stores and refreshes the
+  OAuth tokens. The tool list comes from Lusor's server at run time, so the pinned commit doesn't
+  cover it. OAuth must be enabled with `hermes mcp add lusor --url https://mcp.lusor.ai/mcp --auth oauth`;
+  the bundled mcp.json alone yields 401.
+maintainer: Lusor
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://docs.lusor.ai/connect/hermes
+version: "1.0.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add lusor --url https://mcp.lusor.ai/mcp --auth oauth"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

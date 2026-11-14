@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import contextlib
 import contextvars
+import json
 import logging
 import os
 import threading
@@ -32,11 +33,14 @@ from acp_adapter.events import (
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
+from acp_adapter import modes as _modes
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
+from agent.turn_failure_copy import (
+    CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
 from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
 
@@ -122,6 +126,43 @@ def _history_message_chunk(role: str, message: dict[str, Any]) -> UserMessageChu
     )
 
 
+def _content_refused_notice(message: dict[str, Any]) -> str | None:
+    """The stored refusal notice when *message* is a retained ``content_refused`` display row, else
+    ``None``. The row keeps the user's own refused ask VISIBLE but is gone from the MODEL context
+    (``active = 0``), so the active-only model history never carries it — only the display projection
+    does. Falls back to the shared notice when the row predates a stored one."""
+    if message.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
+        return None
+    meta = message.get("display_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            meta = None
+    entry = meta.get(CONTENT_REFUSED_METADATA_KEY) if isinstance(meta, dict) else None
+    notice = entry.get("notice") if isinstance(entry, dict) else None
+    return notice if isinstance(notice, str) and notice.strip() else CONTENT_REFUSED_NOTICE
+
+
+def _user_history_updates(message: dict[str, Any]):
+    """Replay a persisted user row. A retained ``content_refused`` row keeps the user's ask visible
+    (tagged ``hermes.contentRefused`` so a client can grey it) and is followed by the refusal notice
+    as an agent message, so a reopened editor still shows "you asked X -> refused" even though the
+    turn was dropped from the model context. A plain user row replays unchanged."""
+    notice = _content_refused_notice(message)
+    if notice is not None:
+        if (text := _flatten_history_text(message.get("content"))):
+            yield UserMessageChunk(
+                session_update="user_message_chunk",
+                content=TextContentBlock(type="text", text=text),
+                field_meta={"hermes": {"contentRefused": True}},
+            )
+        yield acp.update_agent_message_text(notice)
+        return
+    if (chunk := _history_message_chunk("user", message)) is not None:
+        yield chunk
+
+
 def _history_replay_updates(history: list[dict[str, Any]]):
     """Yield ACP session updates that reconstruct a persisted transcript, in order: user/assistant
     text (with compaction ``_meta``), assistant thoughts, and tool-call start/complete pairs
@@ -130,8 +171,7 @@ def _history_replay_updates(history: list[dict[str, Any]]):
     for message in history:
         role = str(message.get("role") or "")
         if role == "user":
-            if (chunk := _history_message_chunk(role, message)) is not None:
-                yield chunk
+            yield from _user_history_updates(message)
         elif role == "assistant":
             thought = _history_reasoning_text(message)
             if thought:
@@ -233,23 +273,19 @@ class _TurnCallbacks:
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     """ACP Agent implementation wrapping Hermes AIAgent."""
 
-    _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
-    _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
-    _MODE_DEFAULT = "default"
-    # mode id -> (edit approval policy, display name, description)
-    _MODES: dict[str, tuple[str, str, str]] = {
-        "default": ("ask", "Default", "Ask before edits."),
-        "accept_edits": (
-            "workspace_session",
-            "Accept Edits",
-            "Auto-allow workspace and temp-dir edits; still asks for sensitive paths.",
-        ),
-        "dont_ask": (
-            "session", "Don't Ask", "Auto-allow file edits for this session except sensitive paths."
-        ),
-    }
-    _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
-    _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
+    # mode id -> (edit approval policy, display name, description): ``acp_adapter/modes.py``
+    _EDIT_APPROVAL_POLICY_CONFIG_ID = _modes.EDIT_APPROVAL_POLICY_CONFIG_ID
+    _EDIT_APPROVAL_POLICY_DEFAULT = _modes.DEFAULT_EDIT_APPROVAL_POLICY
+    _MODE_DEFAULT = _modes.DEFAULT_MODE
+    _MODES = _modes.MODES
+    _MODE_TO_EDIT_APPROVAL_POLICY = _modes.MODE_TO_EDIT_APPROVAL_POLICY
+    _EDIT_APPROVAL_POLICY_TO_MODE = _modes.EDIT_APPROVAL_POLICY_TO_MODE
+
+    def __new__(cls, session_manager=None):
+        if session_manager is None:
+            from acp_adapter.gateway_server import GatewayACPAgent
+            return GatewayACPAgent()
+        return super().__new__(cls)
 
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
@@ -326,7 +362,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.model_switch import switch_model
         from hermes_cli.models import parse_model_input
 
-        current_provider, current_model = getattr(state.agent, "provider", None), str(state.model or "")
+        # Prefer the route's named form (``custom:<name>``): it compares equal against
+        # switch_model's target_provider, which is named too, and an agent whose provider is
+        # empty (a resume that fell back) must never pin the old endpoint under a new
+        # provider's credentials (#139908).
+        current_provider = (getattr(state.agent, "provider_route", None)
+                            or getattr(state.agent, "provider", None))
+        current_model = str(state.model or "")
         explicit_provider, model_input = parse_model_input(raw_model, "")
         cfg = load_config()
         result = switch_model(
@@ -340,7 +382,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             raise ModelRejected(result.error_message or f"Cannot switch to {raw_model}")
         target_provider, new_model = result.target_provider, result.new_model
         endpoint: dict[str, Any] = {}
-        if keep_endpoint and not (current_provider and target_provider != current_provider):
+        # Keep the endpoint only when the provider is KNOWN and equal: an empty current
+        # provider (a resume that fell back) keeping the old base_url while the target
+        # provider's credentials are used is exactly the key/endpoint mismatch of #139908.
+        if keep_endpoint and current_provider and target_provider == current_provider:
             endpoint = {
                 "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
             }
@@ -415,7 +460,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         update = SessionInfoUpdate(
             session_update="session_info_update",
             title=title if isinstance(title, str) and title.strip() else None,
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(UTC).isoformat(),
             field_meta=self._provenance_meta(
                 session_id, current_hermes_session_id or session_id, previous_hermes_session_id
             ),
@@ -448,13 +493,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
+            from agent.delegation_backends import saved_backend
+            agent._delegation_backend = saved_backend()  # the session routes on what its delegate_task is built from
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
@@ -569,10 +616,20 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def _replay_session_history(self, state: SessionState) -> None:
         """Replay history as user/assistant/thought chunks plus reconstructed tool-call
-        start/complete events so the editor shows the transcript, not a clean thread."""
-        if not self._conn or not state.history:
+        start/complete events so the editor shows the transcript, not a clean thread.
+
+        Replays the DURABLE DISPLAY projection, not ``state.history``: a safety-refused turn is
+        taken out of the model context (``retain_refused_turn_for_display``) so it can't re-lock the
+        chat, but is KEPT in the display projection as a ``content_refused`` row. ``state.history`` is
+        the active-only model view and no longer carries it, so replaying that alone would hide the
+        user's refused ask on every reopen. The display read includes the retained row; it falls back
+        to ``state.history`` when the DB view is unavailable (e.g. a test agent factory)."""
+        if not self._conn:
             return
-        for update in _history_replay_updates(state.history):
+        history = self.session_manager.display_history(state.session_id) or state.history
+        if not history:
+            return
+        for update in _history_replay_updates(history):
             if not await self._send(state.session_id, update, fail_msg="Failed to replay ACP history for session %s"):
                 return
 
@@ -654,11 +711,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             state.cancel_event.set()
             try:
                 if state.agent:
-                    request_hard_interrupt(state.agent)
-                    # Background delegations are detached from the turn's fan-out; they end with the cancel.
-                    from tools.async_delegation import interrupt_for_session
-                    interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
-                                          reason="acp_cancel")
+                    request_hard_interrupt(state.agent)  # this turn only: background delegations keep running
             except Exception:
                 logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
         logger.info("Cancelled session %s", session_id)
@@ -899,13 +952,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Install the ACP streaming callbacks on the session agent for one turn."""
         cbs = _TurnCallbacks()
         if conn:
-            tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+            tool_call_ids: dict[str, deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
             cbs.tool_call_ids, cbs.tool_call_meta = tool_call_ids, tool_call_meta
             # Shared with the step callback so a runtime that projects
             # ``tool.completed`` closes each call once, not twice.
             turn_state: dict[str, Any] = {}
-            policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
+            policy_getter = lambda: self._edit_approval_policy_for_state(state)
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
                 turn_state=turn_state,
@@ -925,7 +978,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
             cbs.stream_delta_cb = stream_delta_cb
             # Closes the synthetic permission-request bubble once the user has answered.
-            send_update = lambda update: _send_update(conn, session_id, loop, update)  # noqa: E731
+            send_update = lambda update: _send_update(conn, session_id, loop, update)
             cbs.approval_cb = make_approval_callback(conn.request_permission, loop, session_id, send_update=send_update)
             try:
                 from acp_adapter.edit_approval import make_acp_edit_approval_requester
@@ -956,6 +1009,24 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             if "messages" in result and isinstance(result["messages"], list):
                 state.history = result["messages"]
                 self.session_manager.save_session(session_id)
+                # Safety refusal: take the whole refused turn (user row + any tool rounds + the
+                # refusal) out of the MODEL context so a fresh session load isn't re-sent the
+                # blocked content and locked, while KEEPING the user's message visible in the chat
+                # as a greyed refused notice. state.history is already the clean pre-refusal history.
+                # Retain ONLY when the OWNING agent flushed incrementally AND save_session skipped
+                # replace_messages — i.e. session.py's exact condition `_session_db is db and
+                # _session_db_created`. A non-owning agent's replace_messages(clean history) already
+                # dropped the refused turn; a second rewind would drop a prior accepted turn.
+                _adb = getattr(state.agent, "_session_db", None)
+                if (result.get("failure_reason") == "content_policy_blocked"
+                        and _adb is not None and _adb is self.session_manager._get_db()
+                        and getattr(state.agent, "_session_db_created", False)):
+                    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                    from hermes_state_rewind import retain_refused_turn_for_display
+                    retain_refused_turn_for_display(
+                        _adb, getattr(state.agent, "session_id", session_id),
+                        notice=CONTENT_REFUSED_NOTICE,
+                        boundary_row_id=result.get("refused_turn_boundary_row_id"))
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.
             post_turn_hermes_id = getattr(state.agent, "session_id", None)

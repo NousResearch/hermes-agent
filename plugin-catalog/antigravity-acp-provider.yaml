@@ -1,0 +1,20 @@
+name: antigravity-acp-provider
+title: Hermes Antigravity ACP
+repo: https://github.com/rhgo1749/hermes-antigravity-acp
+sha: 75cac136ece2759a68d65c8f015cb00aa8d0cdbc
+subdir: hermes-plugin/antigravity-acp
+version: "0.7.12"
+description: "Independent Hermes provider for Google's official Antigravity ACP server. Disclosure — runs Google's official Antigravity ACP server (installed by the project's installer from dl.google.com, sha256-pinned) as a child process that holds its own Google sign-in and sends prompts, conversation context and files it reads to Google; the server's native shell and file-edit tools are refused, so shell and file work goes through Hermes' own approval-gated tools; Google restricts third-party use of personal Antigravity OAuth, so check your account's terms; not affiliated with or endorsed by Google."
+maintainer: rhgo1749
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/rhgo1749/hermes-antigravity-acp/blob/75cac136ece2759a68d65c8f015cb00aa8d0cdbc/docs/hermes-compatibility.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+readme: true
+platforms:
+  - linux

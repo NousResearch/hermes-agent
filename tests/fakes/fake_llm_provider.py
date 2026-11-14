@@ -112,7 +112,7 @@ class Raw:
     content_type: str = "application/json"
 
 
-Response = Union[Text, ToolCall, Error, Hang, DropMidStream, StallMidStream, Raw]
+Response = Text | ToolCall | Error | Hang | DropMidStream | StallMidStream | Raw
 Responder = Callable[[dict[str, Any]], Response]
 
 
@@ -153,7 +153,7 @@ class FakeLLMServer:
         self._tool_seq = 0
 
     # lifecycle
-    def __enter__(self) -> "FakeLLMServer":
+    def __enter__(self) -> FakeLLMServer:
         self.start()
         return self
 
@@ -186,6 +186,13 @@ class FakeLLMServer:
     def push(self, *responses: Response) -> None:
         with self._lock:
             self._script.extend(responses)
+
+    def drop_unconsumed(self) -> int:
+        """Discard scripted responses no request consumed; returns how many."""
+        with self._lock:
+            dropped = len(self._script)
+            self._script.clear()
+        return dropped
 
     def _next_main(self, record: dict[str, Any]) -> Response:
         if self._responder is not None:
@@ -233,7 +240,7 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if server.record_get:
                 with server._lock:
                     server.requests.append({
@@ -247,7 +254,7 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json(404, {"error": {"message": "not found"}})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             try:
                 body = json.loads(raw or b"{}")

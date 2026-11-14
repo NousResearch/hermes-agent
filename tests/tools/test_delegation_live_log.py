@@ -305,7 +305,7 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
     home = tmp_path / "own-profile"
     home.mkdir()
 
-    deleg_id, writers, paths = create_live_transcripts(
+    deleg_id, _writers, paths = create_live_transcripts(
         [{"goal": "pin me"}], home=home,
     )
     update_manifest_statuses(
@@ -317,6 +317,16 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
         (Path(paths[0]).parent / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["tasks"][0]["status"] == "completed"
+
+
+def test_manifest_records_inherited_child_model(tmp_path):
+    """With delegation.model blank the dispatch-time model is None; the manifest must still name what ran (#123452)."""
+    deleg_id, _writers, paths = create_live_transcripts([{"goal": "a"}, {"goal": "b"}], home=tmp_path)
+    update_manifest_statuses(deleg_id, [{"task_index": 0, "status": "completed", "model": "parent/model"},
+                                        {"task_index": 1, "status": "completed", "model": "parent/model"}], home=tmp_path)
+    manifest = json.loads((Path(paths[0]).parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["model"] == "parent/model"
+    assert [t["model"] for t in manifest["tasks"]] == ["parent/model", "parent/model"]
 
 
 def test_parent_without_session_db_warns_and_skips_pin(caplog):

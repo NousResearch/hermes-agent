@@ -22,6 +22,7 @@ from tests.agent.test_run_agent_codex_responses import (
     _codex_message_response,
     _codex_reasoning_only_response,
 )
+import itertools
 
 
 def _spy_fallback(agent, monkeypatch):
@@ -48,7 +49,7 @@ def _drive(agent, monkeypatch, responses):
     return api_calls
 
 
-def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch):
+def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch, caplog):
     agent = _build_agent(monkeypatch)
     agent.max_iterations = 3
     agent.iteration_budget = run_agent.IterationBudget(3)
@@ -60,11 +61,14 @@ def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch)
         _codex_message_response("Fallback answered."),
     ])
 
-    result = agent.run_conversation("keep thinking")
+    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+        result = agent.run_conversation("keep thinking")
 
     assert result["completed"] is True
     assert result["final_response"] == "Fallback answered."
     assert calls == [FailoverReason.incomplete_response]
+    # The trigger survives the fallback's success in the log (#152101).
+    assert "Codex reasoning-only stall after 3 attempts — switched to fallback" in caplog.text
     # Three budgeted calls + exactly one grace call; the grace flag is consumed.
     assert api_calls["n"] == 4
     assert agent._budget_grace_call is False
@@ -134,4 +138,4 @@ def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeyp
     assert not any(_CODEX_INCOMPLETE_NUDGE in str(m.get("content") or "") for m in wire)
     assert not any(m.get("codex_reasoning_items") for m in wire)
     roles = [m["role"] for m in wire]
-    assert roles and all(a != b for a, b in zip(roles, roles[1:]))
+    assert roles and all(a != b for a, b in itertools.pairwise(roles))

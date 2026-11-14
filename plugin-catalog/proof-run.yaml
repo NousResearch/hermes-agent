@@ -1,0 +1,19 @@
+name: proof-run
+repo: https://github.com/raffieeey/hermes-proof-run
+sha: 36f3f4111b6d8cd5cf67d53eaf54e62148fcf3ca
+subdir: proof-run
+description: "Capture demonstrated actions, check exact arguments and session-bound observations before reuse, and stop on unproven replay evidence. Local operator-controlled contracts and rebind; no model or network calls. Hermes Agent Plugin Hackathon entry."
+maintainer: raffieeey
+tier: community
+category: automation
+requires_hermes: ">=0.21.0"
+version: "0.1.0"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

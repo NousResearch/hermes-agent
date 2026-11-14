@@ -39,7 +39,7 @@ class ConsoleCommand:
     path: tuple[str, ...]
     usage: str
     summary: str
-    handler: Callable[["HermesConsoleEngine", list[str]], str]
+    handler: Callable[[HermesConsoleEngine, list[str]], str]
     mutating: bool = False
     confirmation: str = ""
 
@@ -225,7 +225,7 @@ class _CliSurface:
 
 # Memoized: the surface is process-static, but the dashboard opens a fresh engine per
 # /api/console connection and would otherwise re-import + re-parse it on every reconnect.
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _surface_summaries(surface: _CliSurface, root: str) -> dict[tuple[str, ...], str]:
     try:
         return _summaries_from_parser(surface.build(root, live=False))
@@ -292,8 +292,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "memory": (_sub("memory", "build_memory_parser", "cmd_memory"), "status, *off, *reset"),
     "auth": (
         _sub("auth", "build_auth_parser", "cmd_auth"),
-        "list, status, *reset, *priority, *refresh, *add, *remove, *logout, spotify status, *spotify login, "
-        "*spotify logout"),
+        "list, status, *reset, *priority, *refresh, *add, *remove, *logout"),
     "pairing": (
         _sub("pairing", "build_pairing_parser", "cmd_pairing"),
         "list, *approve, *revoke, *clear-pending"),
@@ -335,7 +334,7 @@ _SEND_SURFACE = _CliSurface("adder", "hermes_cli.send_cmd", "register_send_subpa
 
 
 def _register_command_family(
-    engine: "HermesConsoleEngine", root: str, surface: _CliSurface, paths: str) -> None:
+    engine: HermesConsoleEngine, root: str, surface: _CliSurface, paths: str) -> None:
     summaries = _surface_summaries(surface, root)
     namespace_update = _apply_confirmed_defaults if surface.kind in _CONFIRMED_KINDS else None
     for child_path, mutating in _paths(paths):
@@ -356,7 +355,6 @@ _BLOCKED_TOP = frozenset(
 
 _BLOCKED_PAIRS = {
     ("config", "edit"): "`config edit` opens an editor and is not available in Hermes Console.",
-    ("mcp", "serve"): "`mcp serve` starts a server and is not available in Hermes Console.",
     ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
     ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
     ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
@@ -441,7 +439,7 @@ class HermesConsoleEngine:
 
     def register(
         self, path: Iterable[str], usage: str, summary: str,
-        handler: Callable[["HermesConsoleEngine", list[str]], str], *,
+        handler: Callable[[HermesConsoleEngine, list[str]], str], *,
         mutating: bool = False, confirmation: str = "") -> None:
         key = tuple(path)
         self.commands[key] = ConsoleCommand(key, usage, summary, handler, mutating, confirmation)
@@ -562,7 +560,7 @@ def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 _doctor = _simple_command(
     "doctor", "hermes_cli.doctor", "run_doctor", lambda: (SimpleNamespace(fix=False, ack=None),))
-_config_show = _simple_command("config show", "hermes_cli.config", "show_config")
+_config_show = _simple_command("config show", "hermes_cli.config_show", "show_config")
 _cron_status = _simple_command("cron status", "hermes_cli.cron", "cron_status")
 
 
@@ -641,12 +639,12 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
     _expect_no_args(args, "config migrate")
     from hermes_cli.config import migrate_config
     results = migrate_config(interactive=False, quiet=False)
-    if results.get("env_added") or results.get("config_added"):
-        print("Configuration updated.")
-    else:
-        print("Configuration is up to date.")
     for warning in results.get("warnings") or []:
         print(f"Warning: {warning}")
+    if results.get("failed_step") is not None:
+        raise ConsoleCommandError(f"config migrate: {results['failed_warning']}")
+    print("Configuration updated." if results.get("env_added") or results.get("config_added")
+          else "Configuration is up to date.")
 
 
 def _guard_exports(db, session_ids: list[str]) -> None:
@@ -717,12 +715,14 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
     from hermes_state import DEFAULT_DB_PATH
-    from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
     db_path = DEFAULT_DB_PATH
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
     reason = _db_opens_cleanly(db_path)
+    if isinstance(reason, HealthCheckUnavailable):
+        raise ConsoleCommandError(f"Could not check {db_path}: {reason}")
     if reason is None:
         print(f"{db_path} opens cleanly; no repair needed.")
         return

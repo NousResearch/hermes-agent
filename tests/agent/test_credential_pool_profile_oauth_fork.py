@@ -462,7 +462,7 @@ def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, mo
     """"Added" is printed only for a credential the store holds afterwards."""
     from argparse import Namespace
 
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
     from hermes_cli.auth_commands import auth_add_command
 
     monkeypatch.setattr(credential_pool, "write_credential_pool", lambda *a, **kw: [])
@@ -657,6 +657,32 @@ def test_heal_rotated_fork_moves_provider_block_with_the_pool_row(fleet):
     assert "openai-codex" not in p.get("credential_pool", {})
     fleet["use"](fleet["root"])
     assert {e.refresh_token for e in load_pool("openai-codex").entries()} == {"rt-new"}
+
+
+def test_heal_keeps_the_later_issued_fork_even_when_it_expires_sooner(fleet):
+    """A later rotation can carry a shorter access TTL; issue time, not expiry, names the live pair."""
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    def store(tag, issued_off, ttl):
+        tokens = {"access_token": "at-" + tag, "refresh_token": "rt-" + tag}
+        issued = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + issued_off))
+        return {"version": 1,
+                "providers": {"openai-codex": {"tokens": tokens, "last_refresh": issued}},
+                "credential_pool": {"openai-codex": [{
+                    "id": "shared-id", "auth_type": "oauth", "source": "device_code", **tokens,
+                    "last_refresh": issued,
+                    "expires_at_ms": int((time.time() + issued_off + ttl) * 1000)}]}}
+
+    root = fleet["root"] / "auth.json"
+    kid = _profile(fleet, "short-ttl")
+    kid.mkdir(parents=True, exist_ok=True)
+    root.write_text(json.dumps(store("old", -600, 3600)))      # spent: issued first, expires last
+    (kid / "auth.json").write_text(json.dumps(store("new", -5, 900)))
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("openai-codex")["adopted"] is True
+    r = json.loads(root.read_text())
+    assert r["credential_pool"]["openai-codex"][0]["refresh_token"] == "rt-new"
+    assert r["providers"]["openai-codex"]["tokens"]["refresh_token"] == "rt-new"
 
 
 def test_heal_leaves_a_different_account_alone(fleet):

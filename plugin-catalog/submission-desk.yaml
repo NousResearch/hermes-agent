@@ -1,0 +1,39 @@
+name: submission-desk
+repo: https://github.com/alfredbirkelund/hermes-submission-desk
+sha: fde18934d5cf4798c312b8a631a22c050addb984
+subdir: ""
+version: "0.1.0"
+title: Submission Desk
+description: >-
+  Readiness ledger for one application (a grant, a scholarship, a university or a job portal).
+  Each requirement you confirm is tied to a verbatim quote from your saved instructions, the exact
+  portal field label and the exact file revision (SHA-256). Local checks run on those bytes (real
+  format, exact size, PDF pages, word counts) and say unknown instead of guessing; a changed file,
+  rule or mapping makes earlier reviews stale. The agent proposes; only you confirm, review and
+  attest, on a Desktop page or with /submission-desk. Exports a hand-back checklist and manifest.
+  It never logs in, uploads, signs or submits.
+  Disclosure: reads files only inside the application folder you choose (a folder the agent proposes
+  is read only after you confirm it); never writes your files; parses PDFs with pypdf in a short-lived
+  child process with CPU, memory and time limits; keeps its ledger and exports in the plugin's own
+  data folder. No network calls, telemetry, credentials, shell commands or background processes.
+maintainer: alfredbirkelund
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/alfredbirkelund/hermes-submission-desk#readme
+screenshots:
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/fde18934d5cf4798c312b8a631a22c050addb984/docs/screenshots/readiness-stale-review.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/fde18934d5cf4798c312b8a631a22c050addb984/docs/screenshots/proposals-with-quotes.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/fde18934d5cf4798c312b8a631a22c050addb984/docs/screenshots/folder-confirmation.png
+platforms: []
+known_issues:
+  - "Hermes Desktop builds before 2026.9.21: if the Submission Desk page does not open from the sidebar, right-click it and choose Open in split (issue #109063)."
+capabilities:
+  provides_tools:
+    - submission_desk_workspace
+    - submission_desk_propose
+    - submission_desk_check
+    - submission_desk_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

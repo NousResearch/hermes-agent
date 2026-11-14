@@ -15,13 +15,3 @@ export interface AppTourTranslations {
   messaging: TourStopCopy
   rightPane: TourStopCopy
 }
-
-/** The tour that closes the guided first run (components/onboarding-chat/signpost.ts). */
-export interface HandoffTourTranslations {
-  profileTitle: string
-  profileText: string
-  sessionsTitle: string
-  sessionsText: string
-  stayTitle: string
-  stayText: string
-}

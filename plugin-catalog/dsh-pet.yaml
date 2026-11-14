@@ -1,0 +1,27 @@
+name: dsh-pet
+repo: https://github.com/yucode-kk/dsh-pet
+sha: ea058fcac75289abda09c1335ec830a6c2b9926e
+subdir: "hermes"
+description: "Desktop pet for Hermes: runs the upstream dsh-pet standalone pet (Node + Electron window), maps session/tool activity onto its work status, and adds start/stop/uninstall commands. This entry points at a fork of PC2005-cloud/dsh-pet (MIT, copyright PC2005-cloud): upstream owns the pet runtime, the animation assets and the DSH plugin; the fork adds only the hermes/ adapter, and the pinned dsh-pet@0.4.7 runtime is the unmodified upstream npm package. Catalog installs fetch that runtime on first start (~80 MB, one time) with npm ci from a bundled lockfile (98 packages at exact versions with sha512 integrities), and dsh-pet downloads Electron (~350 MB) unless a local copy is reused. The child process runs with a minimal environment (PATH/temp/user dirs plus DSH_HOME); no inherited Hermes environment or provider keys. The pet listens on 127.0.0.1:3080-3089 and keeps its data in the plugin data directory. Disclosure — on first start this plugin runs `npm ci` with its bundled lockfile (dsh-pet@0.4.7 and 98 exact, integrity-checked packages from registry.npmjs.org, install scripts off) into its plugin data directory, and the pet downloads Electron 43.3.0 (~350 MB) from npmmirror.com (override: DSH_PET_ELECTRON_MIRROR); when the gateway runs it starts a Node/Electron pet process automatically (turn off with `autostart: false`) under a minimal environment without Hermes's provider keys, which listens on 127.0.0.1:3080-3089 with a per-run token and receives only the current tool name; the pet's optional chat feature sends your chat messages to the AI endpoint and API key you configure in the pet's settings; Electron userData is shared at %APPDATA%\\dsh-pet-electron-helper."
+maintainer: yucode-kk
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "0.2.1"
+docs_url: https://github.com/yucode-kk/dsh-pet/blob/ea058fcac75289abda09c1335ec830a6c2b9926e/docs/hermes-plugin.md
+screenshots: []
+readme: true
+platforms: [windows]
+title: "dsh-pet"
+known_issues:
+  - "Windows is the only verified platform; macOS and Linux are untested."
+  - "First start downloads ~80 MB of runtime and ~350 MB of Electron; on slow networks it looks hung — the launch log shows progress."
+  - "Electron userData is shared with a DSH install (%APPDATA%\\dsh-pet-electron-helper); settings and chat memory are not."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

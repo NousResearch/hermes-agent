@@ -24,6 +24,7 @@ from typing import Callable
 import pytest
 
 from . import _helpers as H
+import itertools
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX dashboard process")
 
@@ -151,7 +152,7 @@ def test_session_routes_stay_consistent_under_a_concurrent_writer(env) -> None:
     assert w.done >= 20, f"writer committed only {w.done} sessions: the contention window never opened"
     assert len(totals) >= 10 and len(series) >= 10, f"too few reads overlapped the writer ({len(totals)}, {len(series)})"
     assert not problems, f"{len(problems)} inconsistent read(s) while writing:\n  " + "\n  ".join(dict.fromkeys(problems[:30]))
-    backwards = [(a, b) for a, b in zip(series, series[1:]) if b < a]
+    backwards = [(a, b) for a, b in itertools.pairwise(series) if b < a]
     assert not backwards, f"session total went backwards between sequential reads: {backwards[:5]}"
 
     raw = H.db_rows(p.db, "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL")[0][0]

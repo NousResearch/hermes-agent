@@ -161,7 +161,7 @@ class TestProbeGatewayHealthAuth:
             lambda: json.dumps({"status": "ok"}),
         )
 
-        alive, body = _web_server_gateway._probe_gateway_health()
+        alive, _body = _web_server_gateway._probe_gateway_health()
 
         assert alive is True
         assert requests[0] == ("http://gw:8642/health/detailed", "Bearer sekrit-token")
@@ -176,7 +176,7 @@ class TestProbeGatewayHealthAuth:
             monkeypatch, lambda: (_ for _ in ()).throw(ConnectionError("401"))
         )
 
-        alive, body = _web_server_gateway._probe_gateway_health()
+        alive, _body = _web_server_gateway._probe_gateway_health()
 
         assert alive is True
         assert requests[0] == ("http://gw:8642/health/detailed", "Bearer sekrit-token")
@@ -192,7 +192,7 @@ class TestProbeGatewayHealthAuth:
             lambda: json.dumps({"status": "ok"}),
         )
 
-        alive, body = _web_server_gateway._probe_gateway_health()
+        alive, _body = _web_server_gateway._probe_gateway_health()
 
         assert alive is True
         assert requests[0][1] is None

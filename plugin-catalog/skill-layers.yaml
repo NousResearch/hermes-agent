@@ -1,0 +1,24 @@
+name: skill-layers
+repo: https://github.com/asimons81/hermes-skill-layers
+sha: 4ae841ab0c6a4b3506b561ed328ecc998774361c
+description: "Preserve source skills, create writable derivatives, and review three-way source updates. Disclosure — publishing (only from the Desktop page, the dashboard or the `hermes skill-layers` CLI; the three agent tools are read-only) writes a new `sl-*` skill folder into the active profile's skills directory and never replaces an existing one; three-way source updates run the local `git merge-file` with a scrubbed environment; history is kept under the profile's plugin data and is not removed on uninstall."
+maintainer: asimons81
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/asimons81/hermes-skill-layers/blob/4ae841ab0c6a4b3506b561ed328ecc998774361c/README.md
+version: "0.1.0"
+platforms:
+  - linux
+  - macos
+  - windows
+known_issues:
+  - The contributed CLI requires Hermes plugin isolation mode in_process; managed host isolation skips CLI contributions.
+capabilities:
+  provides_tools:
+    - skill_layers_list
+    - skill_layers_status
+    - skill_layers_diff
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

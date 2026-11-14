@@ -52,7 +52,8 @@ def worker_bootstrap() -> None:
         return
     from pm.environments import activate_dependencies
 
-    activate_dependencies(Path(__file__).resolve().parent.parent)
+    from hermes_cli._startup_fast import project_root_str
+    activate_dependencies(Path(project_root_str()))
 
 
 def finish_worker_boot() -> None:
@@ -62,6 +63,6 @@ def finish_worker_boot() -> None:
     ``sys.argv[0]`` is still ``-m`` and ``__main__`` has no spec, so the relaunch command could
     not name the module to re-run. In ``__main__`` both are set.
     """
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 
     os.environ.pop(WORKER_MARKER, None)

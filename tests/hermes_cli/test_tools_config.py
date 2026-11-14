@@ -1,7 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
 import logging
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -56,6 +55,20 @@ def test_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("platform", ["teams", "google_chat", "homeassistant"])
+def test_unloaded_plugin_platform_toolset_no_runtime_warning(caplog, platform):
+    """Bundled and catalog plugin-platform entries are valid before plugin loading."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard(platform)
+    config = {"platform_toolsets": {platform: [f"hermes-{platform}"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, platform)
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     """When at least one configured toolset is valid, tools still resolve, so
     the runtime zero-tools warning must not fire (the migration-time check still
@@ -78,6 +91,34 @@ def test_null_platform_toolsets_fall_back_to_platform_default():
     )
 
     assert enabled == default_enabled
+
+
+def test_explicit_empty_platform_toolsets_merge_no_mcp_servers():
+    """An explicitly saved empty list means zero toolsets and no MCP merge."""
+    config = {
+        "mcp_servers": {"claudius": {"url": "http://x"}, "evil": {"url": "http://y"}},
+        "platform_toolsets": {"cli": []},
+    }
+
+    assert _get_platform_tools(config, "cli") == set()
+
+    config["platform_toolsets"]["cli"] = ["no_mcp"]
+    assert _get_platform_tools(config, "cli") == set()
+
+
+def test_explicit_empty_gateway_platform_toolsets_keep_mcp_controls():
+    """Only the explicit empty list is zero: an absent key still gets every enabled server, a named
+    server still narrows to itself, and a non-empty list still inherits the enabled servers."""
+    servers = {"alpha": {"url": "http://x"}, "beta": {"url": "http://y"}}
+
+    assert _get_platform_tools({"mcp_servers": servers, "platform_toolsets": {"email": []}}, "email") == set()
+    assert {"alpha", "beta"} <= _get_platform_tools({"mcp_servers": servers}, "email")
+    assert _get_platform_tools(
+        {"mcp_servers": servers, "platform_toolsets": {"email": ["terminal", "alpha"]}}, "email",
+    ) == {"terminal", "alpha"}
+    assert _get_platform_tools(
+        {"mcp_servers": servers, "platform_toolsets": {"email": ["terminal"]}}, "email",
+    ) == {"terminal", "alpha", "beta"}
 
 
 def test_scalar_platform_toolsets_fall_back_to_platform_default():
@@ -387,6 +428,24 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
     sorted(enabled)
 
 
+@pytest.mark.parametrize("listed", ["dead", "mcp-dead"])
+def test_a_saved_disabled_mcp_server_does_not_enable_every_other_server(listed):
+    """A disabled server in a saved list matched nothing and fell through to ALL enabled servers.
+    It is still the user's explicit server selection: it stays off, and no other server is added."""
+    config = {
+        "platform_toolsets": {"cli": ["terminal", listed]},
+        "mcp_servers": {
+            "dead": {"url": "https://example.com/dead", "enabled": False},
+            "live": {"url": "https://example.com/live"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "terminal" in enabled
+    assert not {"dead", "mcp-dead", "live"} & enabled, enabled
+
+
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
 
 
@@ -395,7 +454,7 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 
-class TestAgentBrowserPostSetup:
+class TestChromiumPostSetup:
     """Cloud isolation, image ownership, and failed setup remain observable."""
 
     @pytest.fixture(autouse=True)
@@ -403,57 +462,40 @@ class TestAgentBrowserPostSetup:
         with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as stub:
             yield stub
 
-    @pytest.fixture(autouse=True)
-    def _stub_package_install(self):
-        with patch("pm.ensure") as ensure:
-            yield ensure
-
-
-
-    @pytest.mark.parametrize("failure", ["pm", "timeout"])
-    def test_install_failure_reports_error(self, failure):
+    @pytest.mark.parametrize("failure", ["pm", "worker"])
+    def test_install_failure_reports_error(self, failure, tmp_path):
         import pm
 
-        error = (pm.InstallError("agent-browser", "fatal: network error") if failure == "pm"
-                 else subprocess.TimeoutExpired(cmd=["agent-browser"], timeout=600))
+        error = (pm.InstallError("chromium", "fatal: network error") if failure == "pm"
+                 else RuntimeError("worker exited unsuccessfully"))
         with patch("pm.ensure", side_effect=error), patch(
-            "tools.browser_tool_install._running_in_docker", return_value=False
+            "hermes_cli.browser_runtime.chromium_executable", return_value=None
+        ), patch("hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE", tmp_path / "absent"), patch(
+            "hermes_constants.is_termux", return_value=False
         ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn, patch(
             "hermes_cli.tools_config_post_setup._print_info"
         ) as info:
-            _run_post_setup("agent_browser")
+            _run_post_setup("chromium")
 
         assert any(str(error) in c.args[0] for c in warn.call_args_list)
-        assert any("hermes tools post-setup agent_browser" in c.args[0] for c in info.call_args_list)
+        assert any("hermes tools post-setup chromium" in c.args[0] for c in info.call_args_list)
 
 
-class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
-    """The Browser Use CLI is the primary driver engine for every browser
-    backend except Camofox — so EVERY browser picker selection except
-    Camofox must attempt the CLI install, not just the explicit
-    "Browser Use" row."""
+class TestBrowserExecEngineCheckedForEveryBrowserRow:
+    """browser-harness is browser_exec's engine for every browser row, so each hook confirms it."""
 
-    @pytest.mark.parametrize("key", ["agent_browser", "browserbase", "browser_use_cli"])
+    @pytest.mark.parametrize("key", ["chromium", "browserbase", "lightpanda"])
     def test_browser_post_setup_attempts_cli_install(self, key):
         with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as ensure, patch(
             "shutil.which", return_value=None
-        ), patch("subprocess.run"), patch("pm.ensure"):  # the managed driver install is PM's, not this test's
+        ), patch("subprocess.run"), patch("pm.ensure"), patch(
+            "hermes_cli.browser_runtime.chromium_executable", return_value="/pm/chrome"
+        ), patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
             _run_post_setup(key)
         ensure.assert_called_once()
 
-    def test_camofox_post_setup_never_touches_browser_use(self):
-        """Camofox is Firefox-based with no CDP surface; the CDP-only
-        browser-use harness cannot drive it, so its setup must not pull
-        the CLI in."""
-        with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as ensure, patch(
-            "hermes_constants.find_node_executable", return_value=None
-        ), patch("subprocess.run"):
-            _run_post_setup("camofox")
-        ensure.assert_not_called()
-
     def test_ensure_helper_missing_harness_is_non_fatal(self):
-        """A missing harness must warn and point at `hermes update`, never raise — the built-in
-        tools remain available."""
+        """A missing harness must warn and point at `hermes update`, never raise."""
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
         with patch("tools.browser_use_cli._find_cli", return_value=None), patch(
@@ -562,9 +604,8 @@ class TestImagegenModelPicker:
 
 
 def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
-    """Bundled plugins (plugins/spotify) share their toolset key with the
-    built-in CONFIGURABLE_TOOLSETS entry. The effective list must not list
-    them twice — otherwise `hermes tools` → "reconfigure existing" shows
+    """A plugin toolset whose key is also a CONFIGURABLE_TOOLSETS entry must not
+    be listed twice — otherwise `hermes tools` → "reconfigure existing" shows
     the same toolset two rows in a row.
     """
     from hermes_cli.tools_config import _get_effective_configurable_toolsets
@@ -575,12 +616,6 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
         f"duplicate toolset keys in effective list: "
         f"{[k for k in keys if keys.count(k) > 1]}"
     )
-    # Spotify specifically — the bug that motivated the dedupe.
-    spotify_rows = [t for t in all_ts if t[0] == "spotify"]
-    assert len(spotify_rows) == 1, spotify_rows
-    # Built-in label wins over the plugin label.
-    builtin_label = next(label for key, label, _ in CONFIGURABLE_TOOLSETS if key == "spotify")
-    assert spotify_rows[0][1] == builtin_label
 
 
 
@@ -627,7 +662,7 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
 
 
 def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     account = NousPortalAccountInfo(
         logged_in=False,
@@ -659,7 +694,7 @@ def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
 
 
 def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     account = NousPortalAccountInfo(
         logged_in=True,
@@ -708,7 +743,7 @@ def _managed_image_row() -> dict:
 
 
 def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     from hermes_cli.tools_config_providers import _plugin_image_gen_providers
 
     monkeypatch.setattr(
@@ -723,7 +758,7 @@ def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
 
 
 def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
     from plugins.image_gen.krea import KREA_MODEL_IDS
     from tools.image_generation_catalog import FAL_MODELS
@@ -741,7 +776,7 @@ def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monke
 
 
 def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     from hermes_cli.tools_config_providers import _managed_image_catalog
 
     pool = NousPortalAccountInfo(

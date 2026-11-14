@@ -171,6 +171,8 @@ describe('shouldRelaunchForNvidiaGpuDeath', () => {
 
   it('relaunches on a GPU launch failure', () => {
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failure' } })).toBe(true)
+    // Electron's real spelling (`Details['reason']`); the recovery never fired on it before.
+    expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failed' } })).toBe(true)
   })
 
   it("counts `killed`: the #40077 GPU process died to Chromium's health-check SIGTERM (exit_code=15)", () => {
@@ -179,7 +181,7 @@ describe('shouldRelaunchForNvidiaGpuDeath', () => {
   })
 
   it('never relaunches twice in one process, or when the fallback is already active', () => {
-    const details = { type: 'GPU', reason: 'crashed' }
+    const details = { type: 'GPU', reason: 'crashed' as const }
 
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details, relaunchAttempted: true })).toBe(false)
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details, fallbackActive: true })).toBe(false)
@@ -224,5 +226,44 @@ describe('marker persistence', () => {
         driverVersion: '580.178.04'
       })
     ).toEqual(nvidiaEglFallbackMarker('0.21.5', '580.178.04'))
+  })
+})
+
+describe('qualified NVIDIA witnesses across source updates', () => {
+  const buildIdentity = '0.0.0+gsynthetic-new@2026-10-23T00:00:00Z'
+  const source = { ...PROBE, appVersion: '0.0.0', buildIdentity }
+
+  it('re-probes a legacy fallback on a source build instead of keeping 0.0.0 forever', () => {
+    const marker = nvidiaEglFallbackMarker('0.0.0', PROBE.driverVersion)
+    expect(decideNvidiaEglFallback({ ...source, marker }).enable).toBe(false)
+  })
+
+  it('re-probes both fallback and interrupted-boot records from a previous source build', () => {
+    for (const state of ['fallback', 'booting'] as const) {
+      const marker = { state, version: '0.0.0', driverVersion: PROBE.driverVersion, build: 'older-source-build' }
+      expect(decideNvidiaEglFallback({ ...source, marker }).enable).toBe(false)
+    }
+  })
+
+  it('does not trust an unqualified legacy booting marker as a failure of this build', () => {
+    expect(decideNvidiaEglFallback({ ...source, marker: { state: 'booting' } }).enable).toBe(false)
+  })
+
+  it('retains a genuine failed probe only within the same build and driver', () => {
+    const probe = decideNvidiaEglFallback(source)
+    const retry = decideNvidiaEglFallback({ ...source, marker: probe.nextMarker })
+    expect(retry.enable).toBe(true)
+    expect(retry.nextMarker.build).toBe(buildIdentity)
+    expect(decideNvidiaEglFallback({ ...source, marker: retry.nextMarker }).enable).toBe(true)
+    expect(decideNvidiaEglFallback({ ...source, marker: retry.nextMarker, driverVersion: '600.2.3' }).enable).toBe(
+      false
+    )
+  })
+
+  it('does not discard a real release fallback or spin when no source identity is available', () => {
+    const marker = nvidiaEglFallbackMarker(PROBE.appVersion, PROBE.driverVersion)
+    expect(decideNvidiaEglFallback({ ...PROBE, marker }).enable).toBe(true)
+    const unknown = nvidiaEglFallbackMarker('0.0.0', PROBE.driverVersion)
+    expect(decideNvidiaEglFallback({ ...source, marker: unknown, buildIdentity: '0.0.0' }).enable).toBe(true)
   })
 })

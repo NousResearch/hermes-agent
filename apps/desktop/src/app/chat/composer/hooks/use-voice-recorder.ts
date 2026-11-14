@@ -80,6 +80,7 @@ export function useVoiceRecorder({
 
       if (dictation) {
         void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+        void dictation.live?.().then(session => session?.cancel())
       }
     },
     []
@@ -115,7 +116,8 @@ export function useVoiceRecorder({
         return
       }
 
-      const transcript = (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
+      const transcript =
+        (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
 
       if (!live()) {
         return
@@ -172,20 +174,32 @@ export function useVoiceRecorder({
       return
     }
 
+    if (dictationRef.current) {
+      return
+    }
+
+    const owner = resolveOwnerNow(ownerRef.current)
+    const stream = liveStream(owner)
+    const dictation: Dictation = { live: stream.session, owner, warmup: Promise.resolve() }
+    dictationRef.current = dictation
+
     try {
-      const owner = resolveOwnerNow(ownerRef.current)
-      const stream = liveStream(owner)
       await handle.start({
         onError: error => notifyError(error, voiceCopy.recordingFailed),
         onPcm: stream.push,
         onPcmRate: stream.open
       })
+
+      if (dictationRef.current !== dictation) {
+        return
+      }
+
       // The mic is open, so a transcript is coming: warm the backend's STT
       // engine now so a cold local model loads while the user is still
       // speaking instead of inside the transcription timeout (#105955).
       // Fire-and-forget for the MIC UX — but keep the promise: stop() awaits
       // it as the readiness barrier before transcription (see above).
-      dictationRef.current = { live: stream.session, owner, warmup: syncSttLease(VOICE_INPUT_LEASE, true, owner) }
+      dictation.warmup = syncSttLease(VOICE_INPUT_LEASE, true, owner)
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
@@ -194,6 +208,11 @@ export function useVoiceRecorder({
       const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
       timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
     } catch (error) {
+      if (dictationRef.current !== dictation) {
+        return
+      }
+
+      finish(dictation)
       setVoiceStatus('idle')
       notifyError(error, voiceCopy.recordingFailed)
     }

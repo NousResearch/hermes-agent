@@ -188,7 +188,7 @@ class TestWorkerTeardownOnCeiling:
 class TestDurableAttemptBackoff:
 
     def test_backoff_blocks_same_strategy_reentry_next_turn(self, tmp_path: Path):
-        db, agent = _build_agent(tmp_path, "BACKOFF_REENTRY")
+        _db, agent = _build_agent(tmp_path, "BACKOFF_REENTRY")
         agent.context_compressor.record_timeout_failure(
             "stall", failure_kind="stalled"
         )
@@ -284,7 +284,7 @@ class TestSupersessionDiscardsLateResults:
 
 class TestTransientBlockIsNotExhaustion:
     def test_cooldown_blocked_noop_sets_transient_signal(self, tmp_path: Path):
-        db, agent = _build_agent(tmp_path, "TRANSIENT_SIGNAL")
+        _db, agent = _build_agent(tmp_path, "TRANSIENT_SIGNAL")
         agent.context_compressor.record_timeout_failure(
             "host ceiling", failure_kind="ceiling_exhausted"
         )
@@ -302,7 +302,7 @@ class TestTransientBlockIsNotExhaustion:
     def test_signal_cleared_per_attempt_and_not_set_when_unblocked(
         self, tmp_path: Path
     ):
-        db, agent = _build_agent(tmp_path, "TRANSIENT_CLEAR")
+        _db, agent = _build_agent(tmp_path, "TRANSIENT_CLEAR")
         # Stale signal from a previous pass must not leak.
         agent._compression_blocked_transient = "cooldown:999"
         agent.context_compressor.compress = lambda messages, **kw: list(messages)
@@ -341,7 +341,7 @@ class TestProviderOverflowBypassesCooldown:
     def test_overflow_attempt_invokes_summarizer_while_cooldown_armed(
         self, tmp_path: Path
     ):
-        db, agent = self._armed_agent(tmp_path, "OVERFLOW_BYPASS")
+        _db, agent = self._armed_agent(tmp_path, "OVERFLOW_BYPASS")
         calls = []
 
         def fake_call_llm(**kwargs):
@@ -365,7 +365,7 @@ class TestProviderOverflowBypassesCooldown:
         assert len(out) < len(live), "the attempt must actually compact"
 
     def test_non_overflow_pass_still_deferred_by_cooldown(self, tmp_path: Path):
-        db, agent = self._armed_agent(tmp_path, "OVERFLOW_ORDINARY")
+        _db, agent = self._armed_agent(tmp_path, "OVERFLOW_ORDINARY")
         calls = []
 
         def fake_call_llm(**kwargs):  # pragma: no cover - must not run

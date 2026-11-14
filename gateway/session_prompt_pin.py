@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 PROMPT_PIN_VERSION = 1
 
 
-def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
+def sanitize_prompt_pin(pin: Any) -> Optional[dict[str, Any]]:
     """Validated durable snapshot of the exact ephemeral inputs reused by internal turns.
 
     ``redact_pii`` is the ``privacy.redact_pii`` the context bytes were rendered under; a pin
@@ -47,7 +47,7 @@ class SessionPromptPinMixin:
     """Fenced read/write of ``SessionEntry.prompt_pin`` on the routing index."""
 
     def set_prompt_pin(
-        self, session_key: str, pin: Dict[str, Any], *, expected_session_id: Optional[str] = None,
+        self, session_key: str, pin: dict[str, Any], *, expected_session_id: Optional[str] = None,
     ) -> bool:
         """Persist effective prompt inputs without letting a stale turn cross a boundary.
 
@@ -70,7 +70,7 @@ class SessionPromptPinMixin:
 
     def get_prompt_pin(
         self, session_key: str, *, expected_session_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Return the prompt pin only while the route still owns the caller's session."""
         with self._lock:
             entry = self._entry_locked(session_key)

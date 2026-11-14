@@ -351,7 +351,7 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> Dict[str, Any]:
+                 last_error: Optional[str] = None) -> dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
     the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
     ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
@@ -366,7 +366,7 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
-                      deliverable_targets: Optional[set] = None) -> List[Dict[str, Any]]:
+                      deliverable_targets: Optional[set] = None) -> list[dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for redelivery.
 
     Claiming atomically re-stamps the owner to THIS process, moves the row to 'attempting' and increments
@@ -386,7 +386,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
     ``'default'`` on claim or adoption (the caller only accepts such rows when it is not multiplexed),
     because the runtime sweep matches profiles exactly and could otherwise never claim it."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
-    claimed: List[Dict[str, Any]] = []
+    claimed: list[dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
@@ -447,7 +447,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
 
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
-                             profile: Optional[str] = None) -> List[Dict[str, Any]]:
+                             profile: Optional[str] = None) -> list[dict[str, Any]]:
     """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
@@ -462,7 +462,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     if started is None:  # PID alone cannot distinguish this process from a stale row left after PID
         return []        # reuse; runtime replay is optional, so fail closed (startup recovery remains).
     expected_profile = "default" if not profile or profile == "default" else str(profile)
-    claimed: List[Dict[str, Any]] = []
+    claimed: list[dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
@@ -505,7 +505,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     return claimed
 
 
-def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
+def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:
     """This process's failed rows that still await redelivery, one entry per adapter identity with the
     earliest deadline (``not_before``). The runner arms one redelivery timer per entry, so a row adopted
     at boot, skipped because its wait had not passed, or rejected again is never stranded. Rows past the
@@ -518,7 +518,7 @@ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
             """SELECT platform, adapter_profile, updated_at, last_error, attempts, created_at
                FROM delivery_obligations
                WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?""", (pid, started)).fetchall()
-    earliest: Dict[tuple, float] = {}
+    earliest: dict[tuple, float] = {}
     for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
         # Reconnect-only rows (a claim released because the adapter was gone) are re-claimed by the
         # reconnect sweep; a timer would claim and release them every tick until the adapter is back.
@@ -552,7 +552,7 @@ def _prune_unlocked(conn, now: float) -> None:
                  LIMIT ?)""", (total - _MAX_ROWS,))
 
 
-def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+def ledger_enabled(config: Optional[dict[str, Any]] = None) -> bool:
     """Read the ``gateway.delivery_ledger`` config gate (default on)."""
     try:
         if config is None:

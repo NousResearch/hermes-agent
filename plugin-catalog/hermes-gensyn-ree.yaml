@@ -1,0 +1,21 @@
+name: hermes-gensyn-ree
+repo: https://github.com/TakeshiTGAL/hermes-gensyn-plugins
+sha: 9325a7b15d815ca05983885ddd6615eae5f2b7a6
+subdir: packages/ree
+description: "ree_validate_receipt, ree_verify_receipt, ree_infer. Validate does not re-execute and does not stand behind text_output, finish_reason, token_count, model.name, or ree_version. Verify re-executes on CPU. Infer runs one of three small models and writes one receipt. Disclosure — Starts containers from the local image gensynai/ree:v0.8.0 (pinned by digest) and never pulls it; running docker pull yourself is consent to the REE-Binary-License. ree_verify_receipt and ree_infer mount ~/.cache/gensyn and ~/.cache/huggingface read-write (a Hugging Face token file stored there is visible to the container; no token is passed in the environment), may download Hugging Face weights for any model a receipt names, and their container network is not limited to Hugging Face; they ask for Hermes approval on every call and refuse under cron, yolo, approvals off, single-query, unattended runs, host isolation, or when the approval API is missing. ree_validate_receipt runs with network none, does not ask, and returns no receipt text. Any person admitted to one of your gateways can call these tools and approve containers on your Docker daemon; disable per surface with hermes tools. Choosing \"always\" adds one config.yaml allowlist line per call and never covers the next call. New receipts and temporary work files are written under ~/.cache/hermes-ree; nothing is stored under HERMES_HOME. The container is not a hostile-code sandbox. No cron is created."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - ree_validate_receipt
+    - ree_verify_receipt
+    - ree_infer
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -76,11 +76,17 @@ class TestSessionStatsCompressionChildren(_SessionsCompressionEndpoints):
 class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
     """``DELETE /api/sessions/{session_id}`` — single-row flavour of #57543."""
 
-    def test_delete_removes_whole_compression_chain(self):
+    def test_delete_removes_whole_compression_chain(self, monkeypatch):
         """The list row the user clicked carries the chain tip's id; deleting it
         must take the root with it, or the conversation resurfaces as the
         previous chain link on the next reload."""
+        from types import SimpleNamespace
+
+        from gateway.session_authority import LiveSession, SessionAuthority
+        from hermes_cli.web_server import app
+        from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
+        from hermes_state_runtime import begin_runtime_epoch
 
         db = SessionDB()
         try:
@@ -89,15 +95,20 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
             db.create_session(
                 session_id="conv_tip", source="tui", parent_session_id="conv_root"
             )
-        finally:
-            db.close()
+            # The dashboard never opens a second writer: DELETE admits through the owner.
+            authority = SessionAuthority(
+                SimpleNamespace(_draining=False), profile_id=str(get_hermes_home()),
+                instance_id="owner", db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
+            authority.sessions["conv_tip"] = LiveSession(None, "route")
+            monkeypatch.setattr(app.state, "session_authority", authority, raising=False)
 
-        resp = self.auth_client.delete("/api/sessions/conv_tip")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
+            snap = self.auth_client.get("/api/sessions/conv_tip/mutation-snapshot").json()
+            resp = self.auth_client.delete("/api/sessions/conv_tip", params={
+                "request_id": "delete-chain", "expected_revision": snap["runtime_revision"],
+                "expected_generation": snap["runtime_generation"]})
+            assert resp.status_code == 200, resp.text
+            assert resp.json().get("ok") is True
 
-        db = SessionDB()
-        try:
             assert db.get_session("conv_tip") is None
             assert db.get_session("conv_root") is None
         finally:

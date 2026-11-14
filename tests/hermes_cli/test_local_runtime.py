@@ -63,7 +63,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         if self.require_auth and "Authorization" not in self.headers:
             self._send(401, {})
             return
@@ -97,7 +97,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, {})
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self):
         if self.path == "/v1/chat/completions":
             self._send(200, {"choices": [{"message": {
                 "role": "assistant", "content": self.chat_answer}}]})
@@ -246,7 +246,7 @@ def test_touch_generate_scans_reasoning_content(stub_server, tmp_path):
     sup = _make_supervisor(tmp_path, port)
 
     class ReasoningHandler(handler):  # type: ignore[valid-type]
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             if self.path == "/v1/chat/completions":
                 self._send(200, {"choices": [{"message": {
                     "role": "assistant", "content": "",
@@ -311,7 +311,7 @@ def test_llamacpp_endpoint_resolution_prefers_managed(tmp_path, monkeypatch, stu
     """provider: llamacpp with a live managed server resolves to it,
     api-key included."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    port, handler = stub_server
+    port, _handler = stub_server
     from hermes_cli.local_runtime import endpoint as ep
     from hermes_cli.local_runtime.supervisor import state_path
 
@@ -717,7 +717,7 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     """End to end through the REAL resolver: provider='llamacpp' with no
     base_url lands on the managed endpoint with source='local-runtime'."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    port, handler = stub_server
+    port, _handler = stub_server
     from hermes_cli.local_runtime.supervisor import state_path
 
     _write_current_process_state(
@@ -860,7 +860,7 @@ def test_bootstrap_reuses_running_server(tmp_path, monkeypatch, stub_server):
     """A live state file (another process supervising) short-circuits the
     install/spawn path entirely."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    port, handler = stub_server
+    port, _handler = stub_server
     from hermes_cli.local_runtime import bootstrap
     from hermes_cli.local_runtime.supervisor import state_path
 
@@ -1004,9 +1004,15 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.config.load_config_readonly",
                         lambda: {"local_runtime": {"backend": "cpu"}})  # another profile's config
     priced: list = []
-    monkeypatch.setattr(bootstrap, "_generate_presets",
-                        lambda mdir, path: priced.append(hardware._configured_engine()) or path)
-    monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda mdir, configured: configured)
+
+    def _priced(mdir, path, residents=1, engine_tag=None):
+        priced.append((hardware._configured_engine(), engine_tag))
+        return path
+
+    monkeypatch.setattr(bootstrap, "_generate_presets", _priced)
+    capped: list = []
+    monkeypatch.setattr(bootstrap, "_admitted_models_max",
+                        lambda mdir, configured, engine_tag=None: capped.append(engine_tag) or configured)
 
     class _NoStart:
         def __init__(self, *a, **k):
@@ -1021,5 +1027,7 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", _NoStart)
 
     assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is None
-    assert priced == [vulkan]
+    # The release reaches the presets too: drafts gate on the engine that will load them.
+    assert priced == [(vulkan, "b1")]
+    assert capped == ["b1"]  # the residency cap prices the draft only where this engine loads it
     assert bootstrap.serving_engine() is None  # a failed boot serves nothing

@@ -184,3 +184,20 @@ def test_older_sdk_timeout_default_and_optional_hint(transport, monkeypatch, tim
     assert client.submit("app", {}, hint="ignored-on-old-sdk").request_id == "r1"
     assert transport[0][0].extensions["timeout"]["read"] == expected
     assert "x-fal-runner-hint" not in transport[0][0].headers
+
+
+def test_image_wait_polls_queue_status_at_gateway_cadence(transport, monkeypatch):
+    """The SDK's ``handle.get()`` polls every 0.1 s: one job alone burns the gateway's 200 req/min."""
+    import tools.image_generation_tool as image_tool
+    from tools.fal_common import FAL_QUEUE_POLL_SECONDS
+
+    requests, replies = transport
+    sleeps = []
+    monkeypatch.setattr(fal_client.client.time, "sleep", sleeps.append)
+    replies.extend([accepted(), (200, {"status": "IN_QUEUE", "queue_position": 0}),
+                    (200, {"status": "IN_PROGRESS", "logs": None}),
+                    *[(200, {"status": "COMPLETED", "logs": None})] * 2, (200, {"images": ["done"]})])
+    handle = _ManagedFalSyncClient(fal_client, key="token", queue_run_origin="https://queue.test").submit("app", {})
+    assert image_tool._wait_fal_result(handle) == {"images": ["done"]}
+    assert sleeps == [FAL_QUEUE_POLL_SECONDS] * 2
+    assert [r.url.path for r in requests] == ["/app", "/status", "/status", "/status", "/status", "/result"]

@@ -5,6 +5,7 @@ may import a dependency or another PM module.
 """
 from __future__ import annotations
 
+from contextlib import suppress
 import errno
 import hashlib
 import ntpath
@@ -20,8 +21,18 @@ _LOCK_POLL_SECONDS = 0.05
 
 
 def is_junction(path: Path) -> bool:
-    """Keep junctions opaque even before Python 3.12's Path.is_junction exists."""
-    return os.name == "nt" and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    """Keep junctions opaque even before Python 3.12's Path.is_junction exists.
+
+    A path that cannot be stat'ed is not a junction, matching ``os.path.isjunction``: callers
+    probe slots that do not exist yet (a first plugin install) and must get False, not a crash.
+    POSIX stat results carry no reparse tag, which lands in the same False.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        return path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):
+        return False
 
 
 _VERBATIM = "\\\\?\\"
@@ -52,7 +63,7 @@ def native(path: str | os.PathLike[str]) -> str:
     text = os.fspath(path)
     if text.startswith(_VERBATIM_UNC):
         return "\\\\" + text[len(_VERBATIM_UNC):]
-    return text[len(_VERBATIM):] if text.startswith(_VERBATIM) else text
+    return text.removeprefix(_VERBATIM)
 
 
 def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
@@ -82,6 +93,65 @@ def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
             if not wait or (deadline is not None and time.monotonic() >= deadline):
                 return False
             time.sleep(_LOCK_POLL_SECONDS)
+
+
+def unlock_fd(fd: int) -> None:
+    """Release :func:`lock_fd`'s byte lock; best effort, since closing the descriptor releases it too."""
+    with suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False) -> int | None:
+    """Open *path* (created if missing), wait up to ``timeout`` for its byte lock and return the
+    held descriptor; None when the wait expired. The caller closes the descriptor to release.
+
+    A holder that removes the lock file unlinks it while still holding it (the install-state
+    collector), so a waiter that opened the old file gets a lock on an inode no one else can
+    reach while the next opener creates a fresh file: both would hold "the" lock. Once held,
+    the descriptor must still be the file at *path*, else retry on the current one. Windows
+    cannot unlink an open file, so the check is POSIX-only. ``create_dir`` re-creates the
+    parent the remover may have taken with it.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        if create_dir:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        except FileNotFoundError:
+            # Only a parent removed between mkdir and open is worth another try; anything else
+            # (a dangling symlink at *path*) fails the same way every time.
+            if not create_dir or path.parent.is_dir():
+                raise
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            continue
+        try:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if not lock_fd(fd, wait=True, timeout=remaining):
+                os.close(fd)
+                return None
+            if os.name == "nt" or _same_file(fd, path):
+                return fd
+        except BaseException:
+            os.close(fd)
+            raise
+        os.close(fd)
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+
+
+def _same_file(fd: int, path: Path) -> bool:
+    try:
+        return os.path.samestat(os.fstat(fd), os.stat(path))
+    except FileNotFoundError:
+        return False
 
 
 def read_bytes_or_none(path: Path) -> bytes | None:
@@ -114,6 +184,39 @@ def durable_write_bytes(path: Path, data: bytes) -> None:
                 os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def inherit_parent_acl(path: Path) -> bool:
+    """Windows: give a tree just moved into place the access rules of its new parent.
+
+    ``tempfile`` folders on Python >= 3.13 carry a private, protected DACL (SYSTEM, Administrators,
+    OWNER RIGHTS) and ``os.replace`` moves a staged tree with the DACL it had, so a plugin staged
+    that way keeps none of ``plugins/``'s entries: not the user's own, not the sandbox groups'. A
+    gateway running elevated (a Windows service) then writes ``__pycache__`` owned by Administrators
+    that the same user's non-elevated processes can neither read nor delete. An empty, unprotected
+    DACL makes the root inherit from its parent, and Windows propagates that down the tree in place
+    of the entries the children inherited from the staging folder. Explicit entries are kept.
+
+    Best effort, never raises: a volume without ACLs (FAT, some shares) keeps what it had. Returns
+    whether the DACL was applied; always False off Windows.
+    """
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    advapi.InitializeAcl.restype = wintypes.BOOL
+    advapi.SetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+                                             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    acl = ctypes.create_string_buffer(8)  # sizeof(ACL) with no entries
+    if not advapi.InitializeAcl(acl, ctypes.sizeof(acl), 2):  # ACL_REVISION
+        return False
+    se_file_object, dacl, unprotected_dacl = 1, 0x00000004, 0x20000000
+    return advapi.SetNamedSecurityInfoW(os.fspath(path), se_file_object, dacl | unprotected_dacl,
+                                        None, None, acl, None) == 0
 
 
 #: A handle still open inside the tree. Windows reports antivirus and indexer scans of freshly

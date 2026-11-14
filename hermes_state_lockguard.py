@@ -73,13 +73,13 @@ else:
 # struct flock differs per libc: glibc/musl put type+whence first, Darwin/BSD last.
 _FLOCK_FORMAT = "@qqihh" if sys.platform == "darwin" or "bsd" in sys.platform else "@hhqqi"
 
-Identity = Tuple[int, int]
-Held = Dict[Identity, Tuple[int, int]]  # inode this handle guards -> its (start, length) range
+Identity = tuple[int, int]
+Held = dict[Identity, tuple[int, int]]  # inode this handle guards -> its (start, length) range
 
 # Handles per guarded inode in this process. Several SessionDB handles on one file share the
 # same descriptors' locks (hold() locks every matching descriptor), so the LAST handle unlocks.
 _LOCK = threading.Lock()
-_HANDLES: Dict[Identity, int] = {}
+_HANDLES: dict[Identity, int] = {}
 
 
 def supported() -> bool:
@@ -111,14 +111,14 @@ def _identity(path: str) -> Optional[Identity]:
     return (st.st_dev, st.st_ino)
 
 
-def _own_fds_for(identities: Set[Identity]):
-    """Yield ``(fd, identity)`` for every descriptor of this process on one of *identities*
-    (SQLite's own connection descriptors; the cached header-probe fd too, harmless)."""
+def own_descriptors() -> Optional[list[tuple[int, Identity]]]:
+    """Every ``(fd, (st_dev, st_ino))`` this process holds; None when the fd table is unreadable."""
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
         try:
             names = os.listdir(fd_dir)
         except OSError:
             continue
+        found: list[tuple[int, Identity]] = []
         for name in names:
             if not name.isdigit():
                 continue
@@ -127,10 +127,17 @@ def _own_fds_for(identities: Set[Identity]):
                 st = os.fstat(fd)
             except OSError:
                 continue
-            ident = (st.st_dev, st.st_ino)
-            if ident in identities:
-                yield fd, ident
-        return
+            found.append((fd, (st.st_dev, st.st_ino)))
+        return found
+    return None
+
+
+def _own_fds_for(identities: set[Identity]):
+    """Yield ``(fd, identity)`` for every descriptor of this process on one of *identities*
+    (SQLite's own connection descriptors; the cached header-probe fd too, harmless)."""
+    for fd, ident in own_descriptors() or ():
+        if ident in identities:
+            yield fd, ident
 
 
 def _guard_ranges(db_path) -> Held:

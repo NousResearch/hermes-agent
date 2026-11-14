@@ -1,8 +1,8 @@
 """``GET /api/health`` ``commit`` contract (review G4).
 
-Desktop's host-backend-attach.ts (``fetchBackendCodeIdentity``) reads ``commit`` from the public
-health probe and refuses to attach to a backend whose BOOT commit differs from its checkout, so a
-``serve`` that outlived ``hermes update`` is never re-adopted. The field must always be present
+The public health probe reports the backend's BOOT ``commit`` so an attaching client can refuse a
+backend whose boot commit differs from its checkout: a ``serve`` that outlived ``hermes update``
+is never re-adopted. The field must always be present
 (``null`` off git) and must come from ``get_version_info().commit``.
 """
 
@@ -22,7 +22,7 @@ def _info(commit: str | None) -> VersionInfo:
 def test_health_reports_the_boot_commit_from_version_info(monkeypatch, commit):
     from starlette.testclient import TestClient
 
-    import hermes_cli.web_routers.status as status
+    from hermes_cli.web_routers import status
     import hermes_cli.web_server as ws
 
     monkeypatch.setattr(status, "get_version_info", lambda: _info(commit))
@@ -32,5 +32,5 @@ def test_health_reports_the_boot_commit_from_version_info(monkeypatch, commit):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert "commit" in body, "host-backend-attach.ts keys the attach decision on this field"
+    assert "commit" in body, "attaching clients key the boot-identity decision on this field"
     assert body["commit"] == commit

@@ -67,7 +67,7 @@ def _send_update(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventL
         logger.debug("Failed to send ACP update", exc_info=True)
 
 
-def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str] | None:
+def _upgrade_queue(tool_call_ids: dict[str, deque[str]], name: str) -> deque[str] | None:
     """Fetch the per-tool FIFO of pending call IDs, upgrading a legacy bare-string entry in place."""
     queue = tool_call_ids.get(name)
     if isinstance(queue, str):
@@ -76,8 +76,8 @@ def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str
 
 
 def close_tool_call(
-    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
 ) -> str | None:
     """Close the oldest open ACP tool call for ``name``; returns its id, or None when none is open."""
     queue = _upgrade_queue(tool_call_ids, name)
@@ -95,8 +95,8 @@ def close_tool_call(
 
 
 def flush_open_tool_calls(
-    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]],
 ) -> int:
     """Close every tool call still open at the end of a turn, and report how many there were.
 
@@ -117,10 +117,10 @@ def flush_open_tool_calls(
 
 
 def make_tool_progress_cb(
-    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
-    turn_state: Dict[str, Any] | None = None,
+    turn_state: dict[str, Any] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -130,7 +130,7 @@ def make_tool_progress_cb(
     ``tool.completed`` closes that call with its own result — the step callback
     only fires on the *next* step, which leaves a turn's last tools open."""
 
-    def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+    def _tool_progress(event_type: str, name: str | None = None, preview: str | None = None, args: Any = None, **kwargs) -> None:
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True
@@ -253,8 +253,8 @@ def make_message_cb(
 
 
 def make_step_cb(
-    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]], turn_state: Dict[str, Any] | None = None,
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]], turn_state: dict[str, Any] | None = None,
 ) -> Callable:
     """Create a ``step_callback(api_call_count: int, prev_tools: list)`` for AIAgent."""
 

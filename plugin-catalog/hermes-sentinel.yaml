@@ -1,0 +1,18 @@
+name: hermes-sentinel
+repo: https://github.com/SaltProphet/hermes-sentinel
+sha: "ea578eaffb871802162186adcc93ebbf71f99f92"
+maintainer: Justin Strange
+tier: community
+category: tools
+description: "Deterministic runtime circuit breaker and local execution auditor. Disclosure — blocks any turn whose new user message contains a credential-shaped string; refuses the third consecutive identical tool call (including legitimate repeated polls) until `/sentinel reset`; redacts credential-shaped text in every tool result and truncates each result to 4000 characters / 100 lines before the model sees it; stores audit events (redacted 200-char argument previews) in `<HERMES_HOME>/plugin-data/hermes-sentinel/sentinel_audit.db`, falling back to memory-only or no auditing; no network calls, subprocesses or telemetry."
+requires_hermes: ">=0.22.6"
+version: "0.1.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

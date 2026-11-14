@@ -43,9 +43,9 @@ def picker_env(monkeypatch, tmp_path):
     real_which = shutil.which
     monkeypatch.setattr(shutil, "which",
                         lambda cmd, *a, **kw: sys.executable if cmd == profile.process_command else real_which(cmd, *a, **kw))
-    import agent.models_dev as models_dev
+    from agent import models_dev
     monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **kw: {})
-    import hermes_cli.inventory as inventory
+    from hermes_cli import inventory
     monkeypatch.setattr(inventory, "_prewarm_pricing_async", lambda *a, **kw: None)
     return home, profile
 

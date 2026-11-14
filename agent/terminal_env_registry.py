@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 #: Names owned by in-tree backends in tools/environments/ — never
 #: registrable by plugins. Includes internal-mode aliases (managed_modal).
 BUILTIN_BACKEND_NAMES = frozenset({
-    "local", "docker", "singularity", "modal", "managed_modal",
+    "local", "docker", "modal", "managed_modal",
     "daytona", "vercel_sandbox", "ssh",
 })
 
@@ -45,18 +45,20 @@ _registry: ProviderRegistry[TerminalEnvironmentProvider] = ProviderRegistry(
 _registry.export(globals())
 
 
-def plugin_backend_names(*, scope: Optional[str] = None) -> List[str]:
+def plugin_backend_names(*, scope: Optional[str] = None) -> list[str]:
     """Names of all registered plugin backends (sorted)."""
     return [p.name.strip().lower() for p in _registry.list_providers(scope=scope)]
 
 
-def provider_flag(name: str, attr: str, default=False):
+def provider_flag(name: str, attr: str, default=False, *, scope: Optional[str] = None):
     """Read a classification attribute off the provider for *name*.
 
     Fail-soft: unknown backend or a raising property returns *default* so a misbehaving
     plugin degrades to built-in-equivalent behavior instead of taking the terminal tool down.
+    *scope* names the profile home whose registrations to consult (default: the active home);
+    a caller deciding for a session bound to another profile passes that profile's home.
     """
-    provider = _registry.get_provider(name)
+    provider = _registry.get_provider(name, scope=scope)
     if provider is None:
         return default
     try:

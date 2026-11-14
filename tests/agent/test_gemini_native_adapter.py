@@ -916,3 +916,127 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypatch):
+    """A CONTINUATION hop resends the SAME request plus the token (never the partial output); the hops
+    join into one turn whose usage is summed for billing, with hop 1's prompt kept as the context size."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    def hop(text, finish, token, prompt, out):
+        cand = {"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": finish}
+        return {"candidates": [{**cand, **({"continuationToken": token} if token else {})}],
+                "usageMetadata": {"promptTokenCount": prompt, "candidatesTokenCount": out, "totalTokenCount": prompt + out}}
+
+    hops = [hop("part one ", "CONTINUATION", "tok-1", 100, 32768), hop("part two", "STOP", None, 32868, 500)]
+    sent = []
+
+    class _Stream:
+        def __init__(self, payload):
+            self.status_code, self._payload = 200, payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_text(self):
+            # A mid-stream checkpoint (token, no finish) precedes the hop's final event.
+            checkpoint = {"candidates": [{"content": {"parts": [{"text": ""}]}, "continuationToken": "ckpt"}]}
+            yield f"data: {json.dumps(checkpoint)}\n\ndata: {json.dumps(self._payload)}\n\n"
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            sent.append(json)
+            return DummyResponse(payload=hops[len(sent) - 1])
+
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            sent.append(json)
+            return _Stream(hops[len(sent) - 1])
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    client = GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    kwargs = {"model": "gemini-4-argon", "messages": [{"role": "user", "content": "prove it"}], "max_tokens": 262_144}
+
+    response = client.chat.completions.create(**kwargs)
+    assert sent[1] == {**sent[0], "continuationToken": "tok-1"}
+    assert sent[0]["generationConfig"]["maxOutputTokens"] == 262_144  # not clamped to the per-request cap
+    assert response.choices[0].message.content == "part one part two"
+    assert response.choices[0].finish_reason == "stop"
+    usage = response.usage
+    assert (usage.prompt_tokens, usage.completion_tokens, usage.initial_prompt_tokens) == (32968, 33268, 100)
+
+    sent.clear()
+    chunks = list(client.chat.completions.create(**kwargs, stream=True))
+    assert sent[1] == {**sent[0], "continuationToken": "tok-1"}  # the hop's final token, not the checkpoint
+    finishes = [c for c in chunks if c.choices[0].finish_reason]
+    assert [c.choices[0].finish_reason for c in finishes] == ["stop"]  # CONTINUATION is not the end
+    assert "".join(c.choices[0].delta.content or "" for c in chunks) == "part one part two"
+    assert (finishes[0].usage.prompt_tokens, finishes[0].usage.initial_prompt_tokens) == (32968, 100)
+
+
+def _blocking_client(monkeypatch, payload):
+    """Real GeminiNativeClient over a transport that answers HTTP 200 with ``payload`` (unary and SSE)."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    class _Stream:
+        status_code, headers = 200, {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_text(self):
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return DummyResponse(payload=payload)
+
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            return _Stream()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    return GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_prompt_block_reason_is_terminal_content_policy_error(monkeypatch, stream):
+    # Google answers a blocked prompt with HTTP 200, promptFeedback.blockReason and no candidates.
+    from agent.error_classifier import FailoverReason, classify_api_error
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {"promptTokenCount": 7}}
+    client = _blocking_client(monkeypatch, payload)
+    kwargs = {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "hi"}], "stream": stream}
+    with pytest.raises(GeminiAPIError) as excinfo:
+        result = client.chat.completions.create(**kwargs)
+        list(result) if stream else None
+    assert "blockReason=PROHIBITED_CONTENT" in str(excinfo.value)
+    verdict = classify_api_error(excinfo.value, provider="gemini", model="gemini-2.5-flash")
+    assert (verdict.reason, verdict.retryable, verdict.should_fallback) == (FailoverReason.content_policy_blocked, False, True)
+
+
+def test_prompt_block_surfaces_vertex_block_reason_message(monkeypatch):
+    # Vertex explains the block in promptFeedback.blockReasonMessage; the user sees that, not canned text.
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "MODEL_ARMOR", "blockReasonMessage": "Blocked by Model Armor policy X."}}
+    client = _blocking_client(monkeypatch, payload)
+    with pytest.raises(GeminiAPIError, match=r"blockReason=MODEL_ARMOR\): Blocked by Model Armor policy X\."):
+        client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+
+
+def test_prompt_feedback_without_block_reason_keeps_empty_turn(monkeypatch):
+    client = _blocking_client(monkeypatch, {"promptFeedback": {"safetyRatings": []}})
+    out = client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+    assert out.choices[0].finish_reason == "stop"

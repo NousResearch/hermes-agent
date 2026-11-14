@@ -1,0 +1,25 @@
+name: hermes-artifacts
+title: Hermes Artifacts
+repo: https://github.com/MrSakal/hermes-artifacts
+sha: 750409b91e700e5ce4a1ae7b0b48fdfabc13623e
+subdir: plugin
+description: "Claude-style artifacts for Hermes: docs, sheets, whiteboards, slide decks, dashboards, designs, 3D models, films and design systems that Hermes makes and you edit in place, versioned, in a gallery and sandboxed viewer inside Hermes Desktop. Sheets calculate, dashboards re-run stored MCP queries, and everything exports locally (docx, xlsx, pptx, pdf, png, svg, mp4, glb). Disclosure — stores artifacts, versions, comments and a 30-day trash under the profile's plugin-data folder; reads and writes host files only inside the chat's working directory (never Hermes' home or hidden folders); live dashboards call your MCP servers through Hermes only for servers you add to plugins.entries.hermes-artifacts.mcp_allowlist, re-running a query without asking only when the agent ran that exact call in the chat (otherwise Hermes Desktop asks first; set require_approval to always ask); the agent may suggest the allowlist command, and on an unsandboxed terminal it could run it itself; runs your system node with a minimal environment to calculate sheets; the optional browser viewer listens on 127.0.0.1 only; no telemetry."
+maintainer: MrSakal
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.16.2"
+docs_url: https://github.com/MrSakal/hermes-artifacts#readme
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/MrSakal/hermes-artifacts/750409b91e700e5ce4a1ae7b0b48fdfabc13623e/screenshots/gallery.png
+  - https://raw.githubusercontent.com/MrSakal/hermes-artifacts/750409b91e700e5ce4a1ae7b0b48fdfabc13623e/screenshots/sheet.png
+  - https://raw.githubusercontent.com/MrSakal/hermes-artifacts/750409b91e700e5ce4a1ae7b0b48fdfabc13623e/screenshots/board.png
+  - https://raw.githubusercontent.com/MrSakal/hermes-artifacts/750409b91e700e5ce4a1ae7b0b48fdfabc13623e/screenshots/doc.png
+  - https://raw.githubusercontent.com/MrSakal/hermes-artifacts/750409b91e700e5ce4a1ae7b0b48fdfabc13623e/screenshots/slides.png
+  - https://raw.githubusercontent.com/MrSakal/hermes-artifacts/750409b91e700e5ce4a1ae7b0b48fdfabc13623e/screenshots/dashboard.png
+capabilities:
+  provides_tools: [ha_publish, ha_guide, ha_check, ha_live_read, ha_live_edit, ha_list, ha_read, ha_open, ha_inbox, ha_delete, ha_comments, ha_reply, ha_design_system_get, ha_design_system_export]
+  provides_hooks: [pre_llm_call, on_session_end, post_compaction, post_tool_call]
+  provides_middleware: []
+  requires_env: []

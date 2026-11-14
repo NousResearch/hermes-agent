@@ -85,7 +85,7 @@ class TestModelResolution:
 
         model_id, meta = _resolve_model()
         assert model_id == "krea-2-large"
-        assert meta["path"] == "large"
+        assert meta["path"] == "/generate/image/krea/krea-2/large"
 
 
 
@@ -373,6 +373,39 @@ class TestGenerateErrors:
         assert "Invalid API key" in result["error"]
 
 
+    @pytest.mark.parametrize("failure, eligible", [
+        ("refused", True), (429, True), ("disconnected", False), (503, False), (422, False), ("timeout", False),
+        ("invalid_json", False),
+    ])
+    def test_submit_failure_marks_whether_a_fal_fallback_is_safe(self, failure, eligible):
+        """Only failures that prove Krea created no job may fall back: a connection that was never
+        established, or the gateway's 429. A connection dropped after sending, a timeout or a 5xx may
+        have happened after Krea accepted the job."""
+        import requests as req_lib
+        from urllib3.exceptions import MaxRetryError, NewConnectionError
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        if failure == "refused":
+            refused = MaxRetryError(None, "http://x", reason=NewConnectionError(None, "Connection refused"))
+            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.ConnectionError(refused))
+        elif failure == "disconnected":
+            post = patch("plugins.image_gen.krea.requests.post",
+                         side_effect=req_lib.ConnectionError("Remote end closed connection without response"))
+        elif failure == "timeout":
+            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.Timeout())
+        else:
+            resp = req_lib.Response()
+            resp.status_code = 200 if failure == "invalid_json" else failure
+            resp._content = b"not json" if failure == "invalid_json" else b'{"error": "nope"}'
+            resp.raise_for_status = MagicMock(side_effect=None if failure == "invalid_json" else req_lib.HTTPError(response=resp))
+            post = patch("plugins.image_gen.krea.requests.post", return_value=resp)
+
+        with post:
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["fallback_eligible"] is eligible
+
     def test_job_failed(self):
         from plugins.image_gen.krea import KreaImageGenProvider
 
@@ -395,6 +428,7 @@ class TestGenerateErrors:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "NSFW" in result["error"]
+        assert "fallback_eligible" not in result
 
 
     def test_completed_but_missing_urls(self):
@@ -584,7 +618,7 @@ class TestExplicitModelOverride:
 
         model_id, meta = _resolve_model("krea-2-large")
         assert model_id == "krea-2-large"
-        assert meta["path"] == "large"
+        assert meta["path"] == "/generate/image/krea/krea-2/large"
 
     def test_turbo_routes_to_medium_turbo_endpoint(self):
         from plugins.image_gen.krea import KreaImageGenProvider
@@ -716,3 +750,65 @@ class TestRegistration:
         provider = mock_ctx.register_image_gen_provider.call_args[0][0]
         assert isinstance(provider, KreaImageGenProvider)
         assert provider.name == "krea"
+
+
+class TestKrea3:
+    def _generate(self, monkeypatch, **kwargs):
+        monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-3")
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        submit, poll = _submit_response(), _poll_response(_completed_job())
+        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="make the mug red", upscale=False, **kwargs)
+        return result, mock_post.call_args
+
+    def test_submits_to_the_krea_3_path_with_fast_1k_defaults(self, monkeypatch):
+        result, call = self._generate(monkeypatch)
+        assert call[0][0].endswith("/generate/image/krea/krea-3")
+        assert call.kwargs["json"] == {
+            "prompt": "make the mug red", "aspect_ratio": "16:9", "resolution": "1K", "thinking_mode": "fast"}
+        assert (result["resolution"], result["thinking_mode"]) == ("1K", "fast")
+        assert "creativity" not in result
+
+    def test_an_edit_keeps_the_pictures_framing_and_sends_only_krea_3_fields(self, monkeypatch, tmp_path):
+        image = tmp_path / "mug.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nmug")
+        _, call = self._generate(
+            monkeypatch, image_url=str(image), reference_image_urls=[str(image), "https://example.com/red.png"],
+            thinking="high", resolution="2k", creativity="raw", intensity=50)
+        payload = call.kwargs["json"]
+        assert payload["image_urls"] == [  # the repeated source is sent, and billed, once
+            "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode("ascii"),
+            "https://example.com/red.png"]
+        assert (payload["resolution"], payload["thinking_mode"]) == ("2K", "high")
+        assert not {"aspect_ratio", "creativity", "intensity", "image_style_references"} & set(payload)
+
+    def test_caps_reference_images_at_the_gateway_limit(self, monkeypatch):
+        _, call = self._generate(monkeypatch, reference_image_urls=[f"https://example.com/{i}.png" for i in range(6)])
+        assert len(call.kwargs["json"]["image_urls"]) == 4
+
+    def test_capabilities_follow_the_active_model(self, monkeypatch):
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-3")
+        krea3 = KreaImageGenProvider().capabilities()
+        assert (krea3["max_reference_images"], krea3["creative_controls"]) == (4, ["thinking", "resolution"])
+        assert "source_image_role" not in krea3
+        monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-medium")
+        krea2 = KreaImageGenProvider().capabilities()
+        assert krea2["source_image_role"] == "style"
+        assert "creativity" in krea2["creative_controls"]
+
+    def test_capabilities_describe_the_stored_model_the_dispatcher_sends(self, monkeypatch):
+        """Managed and direct dispatch both pass ``image_gen.model`` to generate() explicitly, so the
+        schema must describe that model even when KREA_IMAGE_MODEL names another one."""
+        import plugins.image_gen.krea as krea_mod
+
+        monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
+        for provider, gateway in (("nous", _managed_cfg()), ("krea", None)):
+            monkeypatch.setattr(krea_mod, "_load_krea_config", lambda p=provider: {"provider": p, "model": "krea-3"})
+            monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda g=gateway: g)
+            assert krea_mod.KreaImageGenProvider().capabilities()["creative_controls"] == ["thinking", "resolution"]

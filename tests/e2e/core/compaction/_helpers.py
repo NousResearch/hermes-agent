@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from tests.fakes.fake_llm_provider import MODEL_ID, Error, FakeLLMServer, Hang, Text, ToolCall
+import itertools
 
 # Every compaction knob is tiny so a handful of turns crosses the trigger. The window must stay at the
 # 64K agent floor; ``threshold_tokens`` (an absolute cap) pulls the trigger far below the ratio floor.
@@ -385,7 +386,7 @@ def assert_wire_request_ok(body: dict[str, Any], turn_marker: str, base_system: 
         assert text.rfind(turn_marker) > text.rfind(GOOD_SUMMARY_TOKEN), (
             f"{where}: the in-flight user message {turn_marker} only survives inside/before the summary")
     assert_tool_pairs(msgs, where)
-    for a, b in zip(msgs, msgs[1:]):
+    for a, b in itertools.pairwise(msgs):
         assert not (a["role"] == "user" and b["role"] == "user"), f"{where}: two consecutive user messages"
     assert msgs[-1]["role"] in ("user", "tool"), f"{where}: request ends with {msgs[-1]['role']}"
 

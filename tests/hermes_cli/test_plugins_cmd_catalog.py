@@ -15,7 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
-from tests.pm._fixtures import client, isolated_python  # noqa: F401
+from tests.pm._fixtures import client, isolated_python
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -81,7 +81,7 @@ def world(client, tmp_path, monkeypatch):
 
 
 def _head(path: Path) -> str:
-    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True).stdout.strip()
+    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False).stdout.strip()
 
 
 def test_catalog_platform_mismatch_refuses_before_install(world):
@@ -134,6 +134,32 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
                                   cat.resolved_removed_entries()) == "malware"
 
 
+def test_the_catalog_name_you_installed_with_works_for_every_later_verb(world, tmp_path):
+    """17 catalog entries install under a different manifest name (`hermes-memory-wiki` lands as
+    `plugins/memory-wiki`). Every later verb must accept the name the user typed at install, resolved
+    through the installer's own record; a URL install shipping a forged sidecar must not claim it."""
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: renamed-plugin\nversion: 1.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "manifest name differs from catalog name")
+    forged = json.dumps({"catalog_name": "cat-plugin", "tier": "official", "sha": "0" * 40, "repo": "x"})
+    _install_url(tmp_path / "evil", "evil-plugin", {cat.CATALOG_SIDECAR: forged})
+    assert pc._find_plugin_entry("cat-plugin") is None
+
+    pc.cmd_install("cat-plugin", enable=False)
+    target = world["plugins_dir"] / "renamed-plugin"
+    assert target.is_dir() and pc._get_enabled_set() == set()
+
+    pc.cmd_enable("cat-plugin")
+    assert pc._get_enabled_set() == {"renamed-plugin"}
+    pc.cmd_show("cat-plugin")
+    pc.cmd_capabilities("cat-plugin")
+    pc.cmd_disable("cat-plugin")
+    assert pc._get_disabled_set() == {"renamed-plugin"}
+    assert pc.dashboard_set_agent_plugin_enabled("cat-plugin", enabled=True)["name"] == "renamed-plugin"
+    assert pc.dashboard_update_user_plugin("cat-plugin")["ok"] is True
+    assert pc.dashboard_remove_user_plugin("cat-plugin")["ok"] is True
+    assert not target.exists()
+    assert "renamed-plugin" not in pc._get_enabled_set()
 
 
 def test_custom_install_records_an_anonymous_extension_install_and_reinstall_none(world, monkeypatch):
@@ -180,6 +206,25 @@ def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     # Control: a real catalog install is still recognised through the metadata record.
     real, _m, _n = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)
     assert cat.catalog_annotation(real) == f"catalog:community@{world['sha1'][:8]}"
+
+
+def test_url_install_of_an_archived_handoff_repo_is_repinned_to_its_catalog_entry(world, tmp_path, monkeypatch):
+    """A provider that left core was first handed off through a Nous repo that is now archived; a URL install of
+    it has no catalog record, so `update` would keep pulling the archive. It is adopted as the catalog entry that
+    superseded it, and `update` re-pins it to the maintained repo at the reviewed sha."""
+    archived = tmp_path / "archived"
+    target = _install_url(archived, "cat-plugin", {"ARCHIVED.md": "moved\n"})
+    assert cat.read_catalog_sidecar(target) is None  # control: an unknown repo stays a plain URL install
+    monkeypatch.setitem(cat._HANDOFF_REPOS, pc_cat._normalize_repo(archived.as_uri()), "cat-plugin")
+    assert cat.read_catalog_sidecar(target)["catalog_name"] == "cat-plugin"
+    seen = {}
+    real_scan = pc._scan_plugin_tree
+    monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: seen.update(k) or real_scan(*a, **k))
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] and result["unchanged"] is False and _head(target) == world["sha1"]
+    assert seen["reviewed_pin"] is True  # the re-pinned tree IS the reviewed sha: caution findings don't block it
+    record = pc._read_install_metadata()["cat-plugin"]
+    assert record["source"] == world["repo"].as_uri() and record["catalog"]["repo"] == world["repo"].as_uri()
 
 
 def test_ref_install_records_installed_sha_so_update_is_offered(world):
@@ -330,6 +375,146 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     # Explicit bypass at install time is remembered.
     pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
+
+
+def _recall_after_install(world, tmp_path, monkeypatch, name: str = "killed") -> Path:
+    """A URL install that lands on the kill list afterwards (offline: no cached live copy)."""
+    target = _install_url(tmp_path / f"later-{name}", name, {})
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name=name, reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    return target
+
+
+def test_plugin_pack_install_refuses_a_recalled_plugin(world):
+    from hermes_cli.plugin_packs import PackPluginEntry, PluginPack, ResolvedPackPlugin, install_pack_plugins
+    world["state"]["removed"].append(
+        pc_cat.RemovedEntry(name="cat-plugin", repo=world["repo"].as_uri(), reason="malware"))
+    entry = PackPluginEntry(ref=world["sha1"], repo=world["repo"].as_uri())
+    pack = PluginPack(name="p", plugins=[entry])
+    results = install_pack_plugins(pack, [ResolvedPackPlugin(entry=entry, identifier=entry.install_identifier)],
+                                   pc._console())
+    assert [(r.ok, "malware" in (r.error or "")) for r in results] == [(False, True)]
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+    assert "cat-plugin" not in pc._get_enabled_set()
+
+
+def test_plugin_pack_refuses_a_bare_name_whose_catalog_name_is_recalled(world, monkeypatch):
+    from hermes_cli.plugin_packs import PackPluginEntry, PluginPack, install_pack_plugins, resolve_pack_plugins
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [pc_cat.PluginCatalogEntry(
+        name="cat-entry", repo=world["repo"].as_uri(), sha=world["sha1"], description="d", maintainer="t")])
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="cat-entry", reason="malware"))
+    pack = PluginPack(name="p", plugins=[PackPluginEntry(ref=world["sha1"], name="cat-entry")])
+    results = install_pack_plugins(pack, resolve_pack_plugins(pack), pc._console())
+    assert [(r.ok, "malware" in (r.error or "")) for r in results] == [(False, True)]
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+    assert "cat-plugin" not in pc._get_enabled_set()
+
+
+def test_dashboard_enable_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
+    _recall_after_install(world, tmp_path, monkeypatch)
+    result = pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)
+    assert result["ok"] is False and "backdoor" in result["error"]
+    assert "killed" not in pc._get_enabled_set()
+
+
+def test_tui_plugin_toggle_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
+    from tui_gateway import server
+    _recall_after_install(world, tmp_path, monkeypatch)
+    reply = server.handle_request({"id": "1", "method": "plugins.manage",
+                                   "params": {"action": "toggle", "key": "killed", "enable": True}})
+    assert "backdoor" in json.dumps(reply.get("error"))
+    assert "killed" not in pc._get_enabled_set()
+
+
+def test_enable_of_a_recalled_plugin_installed_with_allow_removed_still_works(world, tmp_path, monkeypatch):
+    _recall_after_install(world, tmp_path, monkeypatch)
+    pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
+    assert pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)["ok"] is True
+    assert "killed" in pc._get_enabled_set()
+
+
+@pytest.mark.parametrize("exempt", [False, True])
+def test_plugins_picker_refuses_to_turn_on_a_recalled_plugin(world, tmp_path, monkeypatch, capsys, exempt):
+    """The bare `hermes plugins` picker saves ticked rows through admission, not `_set_plugin_enabled`, so it
+    checks the kill list itself before admission (real cmd_toggle, text fallback); --allow-removed still exempts."""
+    _recall_after_install(world, tmp_path, monkeypatch)
+    if exempt:
+        pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
+    monkeypatch.setattr(pc, "_provider_categories", list)
+    monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setitem(pc.sys.modules, "curses", None)
+    keys = [entry[5] for entry in pc._discover_all_plugins()]
+    answers = iter([str(keys.index("killed") + 1), ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    pc.cmd_toggle()
+    assert ("killed" in pc._get_enabled_set()) is exempt
+    assert ("backdoor" in capsys.readouterr().out) is not exempt
+
+
+@pytest.mark.parametrize("exempt", [True, False])
+def test_update_of_a_recalled_subdir_install_honours_its_allow_removed_exemption(world, tmp_path, monkeypatch,
+                                                                                 exempt):
+    """A subdirectory install (no .git) updates by re-cloning through the install core: the record's
+    --allow-removed exemption must reach that re-clone, and a non-exempt recalled install stays refused."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "killed"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: killed\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    _commit(mono, "v1")
+    target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/killed", force=False, allow_removed=exempt)[0]
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="killed", reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    (src / "plugin.yaml").write_text("name: killed\nversion: 2.0.0\ndescription: d\n")
+    _commit(mono, "v2")
+
+    result = pc.dashboard_update_user_plugin("killed")
+
+    if exempt:
+        assert result["ok"] is True, result
+        assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+        assert pc._read_install_metadata()["killed"]["allow_removed"] is True
+    else:
+        assert result["ok"] is False and "backdoor" in result["error"]
+        assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
+
+
+def _enabled_via(surface: str, key: str) -> bool:
+    if surface == "dashboard":
+        return pc.dashboard_set_agent_plugin_enabled(key, enabled=True)["ok"]
+    try:
+        pc.cmd_enable(key)
+    except SystemExit:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("surface", ["dashboard", "cli"])
+@pytest.mark.parametrize("case, refused", [("manifest_recalled", True), ("leaf_install_exempt", True),
+                                           ("leaf_install_recalled", False)])
+def test_enable_judges_a_nested_plugin_by_its_own_manifest_and_dir(world, tmp_path, monkeypatch, surface, case,
+                                                                   refused):
+    """The enable check reads the plugin the load-time gate reads: plugins/obs/zzprobe by its manifest name and
+    its own directory, never by the install record of a top-level plugins/zzprobe sharing its leaf."""
+    nested = world["plugins_dir"] / "obs" / "zzprobe"
+    nested.mkdir(parents=True)
+    (nested / "plugin.yaml").write_text("name: zz-nested\nversion: 1.0.0\ndescription: d\n")
+    (nested / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    recall = pc_cat.RemovedEntry(name="zz-nested", reason="backdoor")
+    if case != "manifest_recalled":
+        _install_url(tmp_path / "flat", "zzprobe", {})
+    if case == "leaf_install_exempt":  # the top-level install bypassed the list; the nested one did not
+        pc._update_install_record("zzprobe", lambda record: {**(record or {}), "allow_removed": True})
+        recall = pc_cat.RemovedEntry(name="zzprobe", reason="backdoor")
+    if case == "leaf_install_recalled":  # only the top-level install's source is recalled
+        recall = pc_cat.RemovedEntry(name="flat-entry", repo=(tmp_path / "flat").as_uri(), reason="backdoor")
+    world["state"]["removed"].append(recall)
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+
+    assert (cat.installed_plugin_removal("zz-nested", nested) is not None) is refused  # the load-time verdict
+    assert _enabled_via(surface, "obs/zzprobe") is not refused
+    assert ("obs/zzprobe" in pc._get_enabled_set()) is not refused
 
 
 _HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
@@ -493,3 +678,24 @@ def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
 
     monkeypatch.setattr(cat, "load_catalog_live", boom)
     assert cat.catalog_rows_maps() == ({}, {}, {})
+
+
+@pytest.mark.parametrize("gateway_pid", [None, 4242], ids=["no-gateway", "gateway-running"])
+def test_brief_install_prints_the_pin_and_outcome_and_a_restart_hint_only_for_a_gateway(
+        world, monkeypatch, gateway_pid):
+    """First-time setup already said what it installs and why, so ``brief`` leaves out the catalog
+    description, the clone line and the "Installed" panel; with no gateway running or installed (a
+    first-time setup) there is nothing to restart, so no restart hint either."""
+    from rich.panel import Panel
+    printed: list = []
+    monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda self, *a, **k: printed.extend(a)})())
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: gateway_pid)  # no reload answered
+    monkeypatch.setattr("hermes_cli.gateway._installed_service_kind", lambda: None)
+
+    pc.cmd_install("cat-plugin", enable=True, brief=True)
+
+    text = "\n".join(str(p) for p in printed if not isinstance(p, Panel))
+    assert "pinned @" in text and "Plugin [bold]cat-plugin[/bold] enabled" in text
+    assert not any(isinstance(p, Panel) for p in printed)
+    assert "maintained by" not in text and "Cloning" not in text
+    assert ("Restart the gateway" in text) is bool(gateway_pid)

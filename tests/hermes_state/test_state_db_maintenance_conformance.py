@@ -113,7 +113,7 @@ class _LiveWriter:
             if conn is not None:
                 conn.close()
 
-    def __enter__(self) -> "_LiveWriter":
+    def __enter__(self) -> _LiveWriter:
         self.thread.start()
         assert self.ready.wait(timeout=30), "live writer never acquired lock"
         if self.error is not None:

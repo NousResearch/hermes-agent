@@ -1,20 +1,22 @@
 name: klipper-print-watch
 repo: https://github.com/TakeshiTGAL/hermes-plugin-klipper-print-watch
-sha: a970970b9d27f8e1b5000e6770748b3c4d68a86b
-description: "Built on the Moonraker HTTP API. Cron reports klippy_shutdown, complete, error, paused (after printing), cancelled, stalled. Disclosure — Talks to the one Moonraker URL you set. Over plain http on a LAN, MOONRAKER_API_KEY is sent unencrypted. Pause, resume and cancel ask for Hermes approval every time and are refused under cron, yolo, approvals off and unattended sessions. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a move and approve it. Answering \"always\" adds an unused line to config.yaml. The optional watch is a cron job (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. vision_check, off by default, sends webcam stills to your model. Not tested on real hardware."
+sha: 1dd1391c171afd92825ec07a81b1efbaca5c64e0
+description: "Each watch run costs 0 tokens, and the unmanned run holds no tools. Built on the Moonraker HTTP API. Cron reports klippy_shutdown, complete, error, paused (after printing), cancelled, stalled. Disclosure — Talks to the one Moonraker URL you set. Over plain http on a LAN, MOONRAKER_API_KEY is sent unencrypted. While a person is in the session, pause, resume and cancel return one pre_tool_call approve line. Hermes shows it. yolo and approvals off skip the prompt. Choosing always adds one config.yaml command_allowlist line. For pause and resume, answering \"always\" covers only the same action at the same Moonraker origin, and only while a person is in the session. Cancel asks every time. Its rule_key changes on each call, so a saved always line does not approve the next cancel. It does not move the printer in cron, hermes -q, webhook, or plugins.isolation: host. cron, hermes -q, and unattended sessions default to deny, and this plugin also refuses the move after always. plugins.isolation: host still refuses the move. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a move and approve it. A different action or origin asks again. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. Tools are on for every surface, including gateways. Turn a surface off with hermes tools. schedule writes HERMES_HOME/scripts/klipper-print-watch.py and creates the job with hermes cron create --no-agent --script. Empty stdout sends nothing. Running schedule again switches an existing job with hermes cron edit --script --no-agent and clears the stored prompt. A job made by 0.1.x keeps its model turn until that next schedule. On that leftover turn, pre_tool_call allows klipper_watch, tool_search, tool_describe, and tool_call, and blocks every other tool name. A deferred tool named inside tool_call is checked under that inner name. Pause, resume, and cancel stay refused on it. Removing the plugin leaves the script job. Run unschedule first, or hermes cron remove after. The scheduled script does not call the vision model. vision_check, off by default, still applies when klipper_watch itself runs on a cron turn, and it does not cancel the print. The plugin host cannot run that tool watch. The scheduled script is started by Hermes cron, so plugins.isolation: host does not stop it. Not tested on real hardware."
 maintainer: TakeshiTGAL
 tier: community
 category: tools
-requires_hermes: ">=0.21.4"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-klipper-print-watch#readme
-version: "0.1.0"
+version: "0.2.2"
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-klipper-print-watch/1dd1391c171afd92825ec07a81b1efbaca5c64e0/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:
   - klipper_status
   - klipper_control
   - klipper_watch
-  provides_hooks: []
+  provides_hooks:
+  - pre_tool_call
   provides_middleware: []
   requires_env:
   - MOONRAKER_URL

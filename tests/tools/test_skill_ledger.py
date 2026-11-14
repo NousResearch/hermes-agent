@@ -311,7 +311,7 @@ def test_rollback_fails_closed_when_safety_capture_fails(ledger_env, monkeypatch
         )
     )
     assert patched["success"] is True
-    entry = [r for r in skill_ledger.list_entries("my-skill") if r["action"] == "patch"][0]
+    entry = next(r for r in skill_ledger.list_entries("my-skill") if r["action"] == "patch")
     current = skill_md.read_bytes()
 
     monkeypatch.setattr(skill_ledger, "append_entry", lambda *a, **k: None)
@@ -338,7 +338,7 @@ def test_rollback_removes_files_created_by_the_mutation(ledger_env):
     extra = ledger_env["skills"] / "my-skill" / "references" / "extra.md"
     assert extra.exists()
 
-    entry = [r for r in skill_ledger.list_entries("my-skill") if r["action"] == "write_file"][0]
+    entry = next(r for r in skill_ledger.list_entries("my-skill") if r["action"] == "write_file")
     ok, msg = skill_ledger.rollback_entry(entry["id"])
     assert ok is True, msg
     assert not extra.exists()  # created by the mutation → removed on rollback
@@ -469,10 +469,10 @@ def test_delete_after_rehome_ledgers_full_package_from_backup(ledger_env):
     deleted = json.loads(skill_manage(action="delete", name="my-skill"))
     assert deleted["success"] is True
 
-    delete_entry = [
+    delete_entry = next(
         r for r in skill_ledger.list_entries(skill="my-skill")
         if r["action"] == "delete"
-    ][0]
+    )
     before_names = {Path(i["path"]).name for i in delete_entry["before"]}
     assert "SKILL.md" in before_names
     assert "extra.md" in before_names, (
@@ -536,10 +536,10 @@ def test_delete_rollback_without_backup_still_works(ledger_env):
 
     deleted = json.loads(skill_manage(action="delete", name="my-skill"))
     assert deleted["success"] is True
-    delete_entry = [
+    delete_entry = next(
         r for r in skill_ledger.list_entries(skill="my-skill")
         if r["action"] == "delete"
-    ][0]
+    )
     assert {Path(i["path"]).name for i in delete_entry["before"]} == {"SKILL.md"}
 
     ok, msg = skill_ledger.rollback_entry(delete_entry["id"])

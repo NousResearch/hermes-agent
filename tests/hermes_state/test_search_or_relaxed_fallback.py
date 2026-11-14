@@ -77,7 +77,7 @@ def test_paraphrased_query_recovers_via_or_retry(db):
 
 def test_relaxation_does_not_fire_for_exact_semantics_or_absent_terms(db, monkeypatch):
     """Explicit NOT keeps its exclusion (relaxing would resurrect the Thursday rows), a genuine
-    miss stays empty, and a CJK-routed miss never reaches the OR rewrite (the CJK index has its
+    miss stays empty, and a CJK-routed miss never reaches the OR rewrite (the CJK routes have their
     own substring semantics)."""
     not_rows = db.search_messages("standup NOT Thursday")
     assert all("thursday" not in r["snippet"].lower() for r in not_rows)

@@ -142,6 +142,9 @@ def cmd_show(name: str) -> None:
                    else "refused (plugins.isolation: host)" if isolation_mode() == ISOLATION_HOST
                    else "Hermes process")
         console.print(f"[dim]Runs in:[/dim] {runs_in} [dim]— {audit.summary()}[/dim]")
+    from hermes_cli.plugin_provider_requests import requires_auth_notice
+    if notice := requires_auth_notice(manifest):
+        console.print(f"[dim]Sign-in:[/dim] {notice}")
     console.print("[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]"))
     console.print("[dim]Listens:[/dim] " + (", ".join(listens) if listens else "[dim](none)[/dim]"))
     console.print()

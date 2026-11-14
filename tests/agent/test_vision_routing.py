@@ -19,8 +19,7 @@ The three fixes covered here:
      reports ``supports_vision=False`` instead of routing image content to
      a text-only endpoint.
   3. ``check_vision_requirements`` mirrors the runtime fallback chain so
-     ``vision_analyze`` shows up whenever the auto chain can serve vision,
-     and ``browser_vision`` gates on vision availability as well.
+     ``vision_analyze`` shows up whenever the auto chain can serve vision.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ import sys
 import tempfile
 
 import pytest
-from tools import browser_tool_install as bt_install
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +60,7 @@ def _write_config(home: str, text: str) -> None:
 
 
 _RELOAD_PREFIXES = ("agent.auxiliary_client", "agent.image_routing",
-                    "tools.vision_tools", "tools.browser_tool",
-                    "hermes_cli.config")
+                    "tools.vision_tools", "hermes_cli.config")
 
 
 def _drop_reload_targets():
@@ -91,6 +88,17 @@ def _module_isolation():
 def _fresh_modules():
     """Drop cached hermes modules so each test reloads against current env."""
     _drop_reload_targets()
+
+
+def _seed_models_dev(monkeypatch, registry: dict) -> None:
+    """Serve ``registry`` as the in-memory models.dev catalog (fresh, so no fetch is attempted).
+
+    Capability verdicts come from models.dev; left unseeded, the test read whatever models.dev
+    served live, and offline every model was "capability unknown"."""
+    from agent import models_dev
+
+    monkeypatch.setattr(models_dev, "_models_dev_cache", registry)
+    monkeypatch.setattr(models_dev, "_models_dev_cache_time", float("inf"))
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +158,7 @@ auxiliary:
 
         from agent.auxiliary_client import resolve_vision_provider_client
         from urllib.parse import urlparse
-        provider, client, model = resolve_vision_provider_client()
+        _provider, client, model = resolve_vision_provider_client()
         assert client is not None, "openai alias should produce a usable client"
         # Exact hostname comparison (not substring) — defends against URLs
         # like ``api.openai.com.evil.example`` and keeps CodeQL happy.
@@ -179,6 +187,11 @@ model:
   default: deepseek-v4-pro
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        _seed_models_dev(monkeypatch, {"deepseek": {"id": "deepseek", "models": {"deepseek-v4-pro": {
+            "id": "deepseek-v4-pro", "attachment": False,
+            "modalities": {"input": ["text"], "output": ["text"]},
+            "limit": {"context": 1048576, "output": 393216},
+        }}}})
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client
@@ -197,6 +210,11 @@ model:
   default: claude-sonnet-4-6
 """)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        _seed_models_dev(monkeypatch, {"anthropic": {"id": "anthropic", "models": {"claude-sonnet-4-6": {
+            "id": "claude-sonnet-4-6", "attachment": True,
+            "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+            "limit": {"context": 1000000, "output": 64000},
+        }}}})
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client
@@ -217,7 +235,7 @@ model:
 
 
 # ---------------------------------------------------------------------------
-# Fix 3: check_vision_requirements + check_browser_vision_requirements parity
+# Fix 3: check_vision_requirements gating
 # ---------------------------------------------------------------------------
 
 
@@ -243,24 +261,9 @@ auxiliary:
 
 
 
-    def test_browser_vision_true_when_both_available(self, isolated_home, monkeypatch):
-        from unittest.mock import patch
-
-        _write_config(isolated_home, """
-model:
-  provider: openrouter
-  default: anthropic/claude-sonnet-4
-""")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-        _fresh_modules()
-
-        import tools.browser_tool
-        with patch.object(bt_install, "check_browser_requirements", return_value=True):
-            assert tools.browser_tool_install.check_browser_vision_requirements() is True
-
     def test_native_vision_main_advertises_image_tools_but_not_video(self, isolated_home, monkeypatch):
         """A vision-capable main model on a provider the aux resolver cannot serve (OAuth, local vLLM)
-        still gets vision_analyze and browser_vision — both handlers attach pixels natively — while
+        still gets vision_analyze — its handler attaches pixels natively — while
         video_analyze, whose handler has no native path, stays hidden (#47149)."""
         from unittest.mock import patch
 
@@ -272,11 +275,8 @@ model:
 """)
         _fresh_modules()
 
-        import tools.browser_tool_install as bt_install
         from tools import vision_tools
 
-        with patch.object(vision_tools, "_should_use_native_vision_fast_path", return_value=True), \
-             patch.object(bt_install, "check_browser_requirements", return_value=True):
+        with patch.object(vision_tools, "_should_use_native_vision_fast_path", return_value=True):
             assert vision_tools.check_video_requirements() is False  # no aux client resolves
             assert vision_tools.check_vision_requirements() is True
-            assert bt_install.check_browser_vision_requirements() is True

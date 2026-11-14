@@ -54,7 +54,6 @@ def _make_runner():
     runner.session_store = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._background_tasks = set()
     runner._session_db = None
     runner._reasoning_config = None

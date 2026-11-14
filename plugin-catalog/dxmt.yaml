@@ -1,0 +1,21 @@
+name: dxmt
+title: "DXMT Memory"
+repo: https://github.com/dxmt/dxmt
+sha: aaf7aa600770364a51cf7c47ee79e7a264913d91
+subdir: vectordb/clients/hermes-dxmt-memory
+description: "Long-term memory in a DXMT server you run: recall by meaning and keyword before each turn, durable facts extracted at session end and before compression, supersede and forget by id, and the same memories visible to every other agent and tool on the machine over REST and MCP. The server embeds, so no embedding key is needed in Hermes. Disclosure — conversation turns, extracted facts and built-in memory-tool writes are sent to the configured DXMT server (http://localhost:9999 by default; DXMT_URL or plugins.dxmt.server.url to change it) with DXMT_API_KEY if the server has one, read through Hermes; recalled memories come from that shared server, which other agents and tools on the machine can also write to; fact extraction sends session transcripts to Hermes's auxiliary LLM (task dxmt_extraction); `hermes memory setup` writes memory.provider and a plugins.dxmt block to config.yaml; no other endpoint, no telemetry, no shell access, no background process beyond prefetch and writer threads inside Hermes. Maintained by the DXMT project."
+maintainer: dxmt
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+docs_url: https://github.com/dxmt/dxmt/tree/aaf7aa600770364a51cf7c47ee79e7a264913d91/vectordb/clients/hermes-dxmt-memory#readme
+readme: true
+platforms: []
+known_issues:
+  - "Needs a running DXMT server with an embedding model (vectordb serve, or docker run -p 127.0.0.1:9999:9999 -v dxmt:/data dxmtai/dxmt); without one the tools answer with an error and prefetch injects nothing"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

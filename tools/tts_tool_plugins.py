@@ -33,7 +33,7 @@ def _lookup_plugin_provider(key: str, *, discover: bool = True, retry: bool = Fa
     return plugin_provider
 
 
-def _plugin_route_key(provider: str, tts_config: Dict[str, Any]) -> Optional[str]:
+def _plugin_route_key(provider: str, tts_config: dict[str, Any]) -> Optional[str]:
     """Normalized *provider* when a plugin may service it, else None: built-in names never reach the
     registry and a same-named ``type: command`` provider wins (config is more local than a plugin)."""
     key = (provider or "").lower().strip()
@@ -44,7 +44,7 @@ def _plugin_route_key(provider: str, tts_config: Dict[str, Any]) -> Optional[str
     return key
 
 
-def _plugin_voice_kwargs(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+def _plugin_voice_kwargs(tts_config: dict[str, Any]) -> dict[str, Any]:
     """``voice`` / ``model`` / ``speed`` for a plugin call (None = provider default). Shared by
     ``synthesize`` and the streaming path so a streamed reply keeps the configured voice."""
     cfg = tts_config if isinstance(tts_config, dict) else {}
@@ -54,7 +54,7 @@ def _plugin_voice_kwargs(tts_config: Dict[str, Any]) -> Dict[str, Any]:
             "speed": float(speed) if isinstance(speed, (int, float)) else None}
 
 
-def _plugin_pcm_streaming_provider(provider: str, tts_config: Dict[str, Any]) -> Optional[Tuple[Any, int]]:
+def _plugin_pcm_streaming_provider(provider: str, tts_config: dict[str, Any]) -> Optional[tuple[Any, int]]:
     """``(plugin, sample_rate)`` when the plugin servicing *provider* opted into raw-PCM streaming.
 
     Opt-in = ``streams_pcm`` truthy AND ``stream_sample_rate`` a finite number >= 1 Hz AND
@@ -79,7 +79,7 @@ def _plugin_pcm_streaming_provider(provider: str, tts_config: Dict[str, Any]) ->
     return plugin, int(rate)
 
 
-def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts_config: Dict[str, Any]) -> Optional[str]:
+def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts_config: dict[str, Any]) -> Optional[str]:
     """Route to a plugin-registered TTS provider; None means "fall through".
 
     Invariants re-checked here so a caller refactor can't break them: built-in names never reach
@@ -97,7 +97,7 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
         return None
     try:
         plugin_provider = _lookup_plugin_provider(key, retry=True)
-    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+    except Exception as exc:
         logger.debug("tts plugin dispatch skipped (discovery failed): %s", exc)
         return None
     if plugin_provider is None:
@@ -118,7 +118,7 @@ def _plugin_provider_is_voice_compatible(provider: str) -> bool:
     try:
         plugin_provider = _lookup_plugin_provider(key, discover=False)
         return plugin_provider is not None and bool(plugin_provider.voice_compatible)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("tts plugin voice_compatible check failed for '%s': %s", key, exc)
         return False
 

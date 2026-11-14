@@ -47,7 +47,7 @@ def _subscriptions_lock():
             yield
 
 
-def _load_subscriptions_unlocked() -> Dict[str, dict]:
+def _load_subscriptions_unlocked() -> dict[str, dict]:
     """Read one complete store snapshot; unreadable or malformed files read as empty."""
     try:
         raw = _subscriptions_path().read_bytes()
@@ -60,19 +60,19 @@ def _load_subscriptions_unlocked() -> Dict[str, dict]:
     return data if isinstance(data, dict) else {}
 
 
-def _load_subscriptions() -> Dict[str, dict]:
+def _load_subscriptions() -> dict[str, dict]:
     """Lock-free read: writers publish by atomic rename, so a reader always sees one whole
     snapshot, and read-only homes (no lock file can be created) keep working."""
     return _load_subscriptions_unlocked()
 
 
-def _save_subscriptions_unlocked(subs: Dict[str, dict]) -> None:
+def _save_subscriptions_unlocked(subs: dict[str, dict]) -> None:
     # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
     # rename (no umask window) and re-asserts the mode on the destination afterwards.
     atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
 
 
-def _mutate_subscriptions(mutate: Callable[[Dict[str, dict]], Any]) -> Any:
+def _mutate_subscriptions(mutate: Callable[[dict[str, dict]], Any]) -> Any:
     """Lock, re-read, mutate and atomically publish one complete store snapshot."""
     with _subscriptions_lock():
         subscriptions = _load_subscriptions_unlocked()
@@ -88,7 +88,7 @@ def _replace_subscription(name: str, route: dict, expected: object) -> dict:
     replaced record survives (only the dashboard's dedicated enabled endpoint lifts it).
     Returns the route as published.
     """
-    def replace(subscriptions: Dict[str, dict]) -> dict:
+    def replace(subscriptions: dict[str, dict]) -> dict:
         current = subscriptions.get(name, _MISSING_SUBSCRIPTION)
         expected_missing = expected is _MISSING_SUBSCRIPTION
         if (current is _MISSING_SUBSCRIPTION) != expected_missing or (
@@ -169,17 +169,31 @@ def webhook_command(args):
         return
     if not _is_webhook_enabled():
         print(_setup_hint())
-        return
+        return 1
     handler = _ACTIONS.get(sub)
     if handler is not None:
-        handler(args)
+        # A refusal returns 1 so scripts can tell no route was written (#139332).
+        return handler(args)
+
+
+def _route_signature(args, existing: dict, is_update: bool) -> dict:
+    """The ``signature`` key for the saved route. New routes are pinned to timestamp-bound generic
+    signatures; an update keeps the route's pin (or its absence), so re-running subscribe never breaks a
+    provider route created before pins existed. An invalid stored pin (false, "") is kept too: the gateway
+    refuses that route, whereas dropping it would republish it unpinned and accept body-only GitHub/Linear
+    MACs again."""
+    if getattr(args, "signature", None) is not None:
+        return {"signature": args.signature}
+    if not is_update:
+        return {"signature": "generic"}
+    return {"signature": existing["signature"]} if "signature" in existing else {}
 
 
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
-        return
+        return 1
 
     subs = _load_subscriptions()
     expected = subs.get(name, _MISSING_SUBSCRIPTION)
@@ -195,10 +209,10 @@ def _cmd_subscribe(args):
             validate_profile_name(profile)
         except ValueError as exc:
             print(f"Error: {exc}")
-            return
+            return 1
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
-            return
+            return 1
     existing_profile = existing.get("profile", "default")
     profile_changed = is_update and profile != existing_profile
     if profile_changed and args.secret and args.secret == existing.get("secret"):
@@ -206,7 +220,7 @@ def _cmd_subscribe(args):
             "Error: Rebinding a webhook route requires a new HMAC secret. "
             "Omit --secret to generate one automatically, or provide a different secret."
         )
-        return
+        return 1
     secret = args.secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
@@ -217,6 +231,7 @@ def _cmd_subscribe(args):
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
         "profile": profile,
+        **_route_signature(args, existing, is_update),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -227,27 +242,27 @@ def _cmd_subscribe(args):
                 "--cron-job fires an existing cron job (which handles its own "
                 "delivery)."
             )
-            return
+            return 1
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
-            return
+            return 1
         route["deliver_only"] = True
     if getattr(args, "mirror_to_session", False):
         route["mirror_to_session"] = True
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
-        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        from cron.jobs import AmbiguousJobReference
         try:
-            job = resolve_job_ref(cron_job)
+            job = _resolve_route_cron_job(profile, cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
-            return
+            return 1
         if job is None:
             print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
-            return
+            return 1
         route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
@@ -258,13 +273,17 @@ def _cmd_subscribe(args):
         route = _replace_subscription(name, route, expected)
     except SubscriptionMutationConflict as exc:
         print(f"Error: {exc}")
-        return
+        return 1
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
     print(f"  Profile: {profile}")
-    print(f"  Secret: {secret}")
+    # Masked: the full secret would otherwise land in scrollback, agent transcripts and CI logs.
+    from agent.redact import mask_secret
+    from hermes_constants import display_hermes_home
+    print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
+    print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -278,8 +297,20 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the route's stored secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
+
+
+def _resolve_route_cron_job(profile: str, reference: str):
+    """Match runtime routing without changing the caller's subscription/config home."""
+    from cron.jobs import resolve_job_ref, use_cron_store
+    from hermes_cli.profiles import get_profile_dir
+
+    # Bare/default routes execute in the ambient home, including standalone installs.
+    if profile == "default":
+        return resolve_job_ref(reference)
+    with use_cron_store(get_profile_dir(profile)):
+        return resolve_job_ref(reference)
 
 
 def _cmd_list(args):
@@ -314,7 +345,7 @@ def _cmd_list(args):
 def _cmd_remove(args):
     name = args.name.strip().lower()
 
-    def remove(subscriptions: Dict[str, dict]) -> None:
+    def remove(subscriptions: dict[str, dict]) -> None:
         if name not in subscriptions:
             raise KeyError(name)
         del subscriptions[name]
@@ -338,20 +369,31 @@ def _cmd_test(args):
     secret = subs[name].get("secret", "")
     url = _route_url(name, subs[name])
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
-    sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    headers = {"Content-Type": "application/json",
+               **_test_signature_headers(subs[name].get("signature"), secret, payload.encode())}
     print(f"  Sending test POST to {url}")
     try:
-        req = urllib.request.Request(
-            url,
-            data=payload.encode(),
-            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig, "X-GitHub-Event": "test"},
-            method="POST")
+        req = urllib.request.Request(url, data=payload.encode(), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
             print(f"  Response ({resp.status}): {body}")
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+
+
+def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
+    """Sign like the route's pinned provider would; generic and unpinned routes get timestamp-bound V2."""
+    body_mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if scheme == "github":
+        return {"X-Hub-Signature-256": "sha256=" + body_mac, "X-GitHub-Event": "test"}
+    if scheme == "linear":
+        return {"Linear-Signature": body_mac}
+    if scheme == "gitlab":
+        return {"X-Gitlab-Token": secret, "X-Gitlab-Event": "test"}
+    timestamp = str(int(time.time()))
+    v2 = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return {"X-Webhook-Signature-V2": v2, "X-Webhook-Timestamp": timestamp}
 
 
 _ACTIONS = {

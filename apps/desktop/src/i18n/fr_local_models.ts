@@ -29,13 +29,11 @@ export const frLocalModels: TranslationOverride<Translations['settings']['localM
     'best-quality-resident':
       "Le modèle de meilleure qualité qui tient entièrement dans votre GPU et s'exécute à pleine vitesse. La sélection équilibre qualité et vitesse prévue sur ce matériel.",
     'speed-gated-quality':
-      'Un modèle de meilleure qualité tient sur cette machine, mais sa bande passante mémoire le rendrait trop lent. Celui-ci est le meilleur modèle qui reste rapide.',
-    'fastest-resident':
-      "Aucun modèle n'atteint sa pleine vitesse sur ce matériel. Celui-ci s'en approche le plus tout en tenant entièrement dans la mémoire GPU."
+      'Un modèle de meilleure qualité tient sur cette machine, mais sa bande passante mémoire le rendrait trop lent. Celui-ci est le meilleur modèle qui reste rapide.'
   },
   noRecommendationTitle: 'Aucune recommandation automatique pour cette machine',
   noRecommendationDetail:
-    "La configuration automatique nécessite un modèle présélectionné qui tient entièrement dans la mémoire GPU ou unifiée. Vous pouvez toujours choisir un modèle ci-dessous ou parcourir d'autres modèles.",
+    "La configuration automatique nécessite un modèle présélectionné qui tient entièrement dans la mémoire GPU ou unifiée et s'exécute à pleine vitesse. Vous pouvez toujours choisir un modèle ci-dessous ou parcourir d'autres modèles.",
   noRecommendationAction: 'Parcourir les modèles',
   downloaded: 'Téléchargé',
   downloadAction: size => `Télécharger · ${size}`,
@@ -59,6 +57,8 @@ export const frLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'Mise à jour du moteur disponible',
   updateDetail: (next, current) =>
     `Une nouvelle build llama.cpp (${next}) est prête à être installée. Vous utilisez ${current}. Les modèles continuent de fonctionner pendant le téléchargement.`,
+  updateSameBuildDetail: tag =>
+    `Hermes fournit désormais llama.cpp ${tag} avec des fichiers nécessaires à son exécution. La mise à jour retélécharge le moteur. Les modèles continuent de fonctionner pendant le téléchargement.`,
   updateAction: 'Mettre à jour le moteur',
   updating: 'Mise à jour du moteur…',
   upToDateTitle: 'Moteur à jour',

@@ -59,7 +59,7 @@ async def test_committed_in_place_compaction_is_adopted_not_warned_about(caplog)
     # `_last_compaction_in_place` from the same `compacted_in_place` variable that produces that
     # telemetry, so a committed in-place attempt reaches the adopt step flagged and is adopted.
     agent = _agent(_last_compaction_in_place=True, _last_compression_attempt_in_place=True)
-    attempt, entry, (rotated, in_place, count, tokens) = await _adopt(agent, caplog)
+    attempt, entry, (rotated, in_place, count, _tokens) = await _adopt(agent, caplog)
     assert (rotated, in_place, count) == (False, True, len(_COMPRESSED))
     assert attempt.history is _COMPRESSED and entry.last_prompt_tokens == 0
     assert "did not rotate or compact in place" not in caplog.text

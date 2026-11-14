@@ -286,7 +286,8 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr("run_agent.AIAgent", _DummyAgent)
+    monkeypatch.setattr("hermes_cli.gateway_agent.GatewayAgent", _DummyAgent)
+    monkeypatch.setattr("hermes_cli.gateway_session_store.session_store", lambda: None)  # no live gateway
 
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
 
@@ -646,10 +647,7 @@ def test_custom_entry_model_swap_re_resolves_reasoning(monkeypatch):
 
 
 def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
-        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
-    )
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
     saved_env = {}
     monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value))
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_env.__setitem__("MODEL", model))
@@ -691,10 +689,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     saved_cfg = {"model": {"default": "", "provider": "custom", "base_url": ""}}
     captured_provider = {}
 
-    monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
-        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
-    )
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
     monkeypatch.setattr(

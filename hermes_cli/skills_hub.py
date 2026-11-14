@@ -6,7 +6,7 @@ import logging
 import re
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -173,7 +173,7 @@ def _skill_md_preview(bundle) -> Optional[str]:
     return "\n".join(lines[:50]) + more
 
 
-def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
+def _format_extra_metadata_lines(extra: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     for key, label in _EXTRA_META_LABELS:
         value = extra.get(key)
@@ -295,7 +295,7 @@ def _is_valid_installed_skill_name(name: str) -> bool:
                 and _VALID_NAME_RE.match(candidate))
 
 
-def _existing_categories() -> List[str]:
+def _existing_categories() -> list[str]:
     """Sorted category buckets under ``~/.hermes/skills/`` (children without their own SKILL.md)."""
     from tools.skills_hub import SKILLS_DIR
     from tools.skills_hub_install import _category_skill_dirs
@@ -332,7 +332,7 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
     return answer
 
 
-def _prompt_for_category(c: Console, existing: List[str]) -> str:
+def _prompt_for_category(c: Console, existing: list[str]) -> str:
     """Prompt interactively for a category. Empty/None input means flat install."""
     c.print()
     if existing:
@@ -384,7 +384,7 @@ def do_search(query: str, source: str = "all", limit: int = 10, console: Optiona
 def _rank_and_page(all_results, page: int, page_size: int):
     """Dedupe by identifier (higher trust wins; names are NOT unique across browse-sh sites),
     sort official-first, slice one page -> (deduped, page_items, page, total_pages, start)."""
-    rank = lambda r: _TRUST_RANK.get(r.trust_level, 0)  # noqa: E731
+    rank = lambda r: _TRUST_RANK.get(r.trust_level, 0)
     seen: dict = {}
     for r in all_results:
         if r.identifier not in seen or rank(r) > rank(seen[r.identifier]):
@@ -403,7 +403,7 @@ def _fetch_browse_results(c: Console, source: str):
     with c.status("[bold]Fetching skills from registries...") as status:
         # parallel_search_sources invokes the callback from the collecting thread as each
         # source completes; the page itself is rendered once over the final, fully sorted set.
-        _done: List[str] = []
+        _done: list[str] = []
 
         def _on_source_done(sid: str, count: int) -> None:
             _done.append(f"{sid} ({count})")
@@ -778,7 +778,7 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
     its type inside the metrics guard."""
     from hermes_cli.observability.shared_metrics_events import record_extension_install
     attempt = attempt or {}
-    origin = getattr(bundle, "source", None) or (
+    origin = getattr(bundle, "source", None) or attempt.get("origin") or (
         "official" if identifier.startswith("official/")
         else "url" if identifier.startswith(("http://", "https://")) else "hub")
     source = _SKILL_METRIC_SOURCES.get(origin, "hub")
@@ -791,10 +791,11 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> Optional[bool]:
+               source_id: Optional[str] = None, reinstall_existing: bool = False) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere.
+    cannot resolve to a same-named skill elsewhere. ``reinstall_existing`` lets update flows replace
+    an installed copy without ``force``'s Skills Guard override.
 
     A first install is recorded once as an extension install; updates and ``--force`` reinstalls
     of an installed skill run through here too and are not installs, nor is a cancelled prompt.
@@ -810,7 +811,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     try:
         bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
                                                     skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt)
+                                                    attempt=attempt, reinstall_existing=reinstall_existing)
     except Exception as exc:
         if fresh:
             _record_skill_install(identifier, None, "failed", attempt, error=exc)
@@ -822,7 +823,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
                    invalidate_cache: bool, name_override: str, source_id: Optional[str],
-                   attempt: Optional[dict] = None) -> tuple:
+                   attempt: Optional[dict] = None, reinstall_existing: bool = False) -> tuple:
     """``do_install``'s body: ``(bundle, outcome, installed)``. ``outcome`` is the extension-install
     event (None when this was no new install); ``installed`` is ``do_install``'s return value.
     ``attempt`` collects the metric's ``registry`` (adapter id) and, on a failed exit, its
@@ -835,7 +836,8 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     ensure_hub_dirs()
     from tools.skills_sync_bundled_ops import bundled_skill_for_install
     if not source_id and not name_override and (builtin := bundled_skill_for_install(identifier)):
-        attempt["failure_class"] = "filesystem_error"  # read only when the restore fails
+        # Read only when the restore fails or raises: either way it was a bundled install, not a hub one.
+        attempt.update(failure_class="filesystem_error", origin="bundled")
         return _install_bundled(c, builtin, invalidate_cache)
     attempt["registry"] = "unresolved"
     sources = _pinned_sources(c, _sources(), source_id, identifier)
@@ -878,7 +880,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     existing = HubLockFile().get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not (force or reinstall_existing):
             c.print("Use --force to reinstall.\n")
             return bundle, None, None
     failed = None if existing else "failed"
@@ -1045,7 +1047,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     when any update failed (e.g. the new version is refused by the scan gate), else None.
 
     Skills whose on-disk content no longer matches the hash recorded at install time have been edited
-    locally; updating them would silently destroy the user's work (``do_install(force=True)``
+    locally; updating them would silently destroy the user's work (the reinstall
     rmtree-replaces the directory). Those are skipped by default and only overwritten when ``force=True``.
     Mirrors the user-modified protection bundled skills already get from ``hermes update`` (ported from
     paperclipai/paperclip#10978's explicit-merge-mode rule: destructive replacement must be an explicit
@@ -1077,7 +1079,11 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         # Pin to the lockfile's source registry: a bare identifier such as "reddit" would
         # otherwise fuzzy-resolve inside do_install to a same-named skill in a DIFFERENT
         # registry, overwriting the user's files and rewriting the lock's `source`.
-        if do_install(entry["identifier"], category=category, force=True, console=c,
+        # No force: the scan decision do_install prints is the one it must enforce (#38041); this
+        # ``force`` only means "overwrite local edits". The installed name keeps a nameless URL
+        # skill updatable without the prompt skip_confirm suppresses.
+        if do_install(entry["identifier"], category=category, console=c, skip_confirm=True,
+                      reinstall_existing=True, name_override=entry["name"],
                       source_id=entry.get("source", "") or None) is False:
             failed.append(entry["name"])
 
@@ -1452,7 +1458,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
     tap_list = TapsManager().list_taps()
     snapshot = {
         "hermes_version": "0.1.0",
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "skills": [
             {"name": entry["name"], "source": entry.get("source", ""),
              "identifier": entry.get("identifier", ""),
@@ -1582,7 +1588,7 @@ def skills_command(args) -> Optional[int]:
 
 # --- Slash command entry point (/skills in chat) ---
 
-def _opt_value(args: List[str], flag: str, default: str, last: bool = False) -> str:
+def _opt_value(args: list[str], flag: str, default: str, last: bool = False) -> str:
     """Value following `flag` (default if absent/trailing); `last` makes a repeated flag's final
     occurrence win (historical install/publish/browse behaviour), else the first."""
     hits = [args[i + 1] for i, a in enumerate(args) if a == flag and i + 1 < len(args)]
@@ -1596,7 +1602,7 @@ def _int_or(text: str, default: int) -> int:
         return default
 
 
-def _opt_int(args: List[str], flag: str, default: int) -> int:
+def _opt_int(args: list[str], flag: str, default: int) -> int:
     """Like _opt_value(last=True) but int-parsed; a non-integer keeps the default."""
     return _int_or(_opt_value(args, flag, str(default), last=True), default)
 

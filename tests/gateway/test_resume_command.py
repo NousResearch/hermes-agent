@@ -104,6 +104,32 @@ class TestHandleResumeCommand:
 
 
     @pytest.mark.asyncio
+    async def test_resume_other_session_notices_paused_messages_left_behind(self, tmp_path, monkeypatch):
+        """A /resume route switch must tell the chat about queued messages left behind (#145177)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("saved_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("saved_session", "Earlier Work")
+        db.create_session("paused_session", "telegram", user_id="12345", chat_id="67890")
+
+        async def count_paused(_runner, session_id):
+            assert session_id == "paused_session"  # must inspect the departed route, not the target
+            return 2
+
+        monkeypatch.setattr("gateway.slash_commands_session.paused_followers", count_paused)
+        event = _make_event(text="/resume Earlier Work")
+        runner = _make_runner(session_db=db, current_session_id="paused_session", event=event)
+
+        reply = await runner._handle_resume_command(event)
+
+        assert "Earlier Work" in reply
+        assert "2 message" in reply and "/resume paused_session" in reply
+        assert "/discard" in reply
+        runner.session_store.switch_session.assert_called_once()
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):
         """Resume must not carry a previous session's /model override into the
         restored conversation, while leaving other chats' overrides intact (#10702)."""
@@ -153,14 +179,12 @@ class TestHandleResumeCommand:
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
                               event=event)
         key = _session_key_for_event(event)
-        runner._last_resolved_model = {
-            key: "gpt-5",
-            "agent:main:telegram:dm:other": "keep-me",
-        }
+        runner._session_state(key).conversation.last_resolved_model = "gpt-5"
+        runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model = "keep-me"
 
         await runner._handle_resume_command(event)
-        assert key not in runner._last_resolved_model
-        assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
+        assert not runner._session_state(key).conversation.last_resolved_model
+        assert runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model == "keep-me"
         db.close()
 
 
@@ -905,3 +929,61 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+
+class TestResumeCallerAdminAmbiguousScope:
+    """Ambiguous chat_type + both scopes gated: a scope-specific admin must not pass the
+    admin check end-to-end (cross-origin /resume and /goal gate add ride this)."""
+
+    def _runner_with_both_scopes_gated(self):
+        from gateway.config import PlatformConfig
+        runner = _make_runner()
+        runner.config = SimpleNamespace(platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, extra={
+                "allow_admin_from": ["dm-admin", "dual-admin"],
+                "group_allow_admin_from": ["group-admin", "dual-admin"],
+            }),
+        })
+        return runner
+
+    def test_ambiguous_source_group_only_admin_is_not_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="group-admin")
+        assert runner._resume_caller_is_admin(src) is False
+
+    def test_ambiguous_source_dm_only_admin_is_not_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="dm-admin")
+        assert runner._resume_caller_is_admin(src) is False
+
+    def test_ambiguous_source_dual_scope_admin_stays_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="dual-admin")
+        assert runner._resume_caller_is_admin(src) is True
+
+
+class TestBlankChatTypeOwnershipProof:
+    """A blank chat_type could be a group: the /resume ownership proofs must not read it as a DM,
+    or a member in group chat -100 could take over another member's per-user session there."""
+
+    @staticmethod
+    def _src(user_id, chat_type):
+        return SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type=chat_type,
+                             user_id=user_id)
+
+    @pytest.mark.parametrize("chat_type", ["", "  ", None])
+    def test_blank_caller_cannot_match_other_members_group_origin(self, chat_type):
+        runner = _make_runner()
+        victim = self._src("victim", "group")
+        assert runner._same_origin_chat(self._src("mallory", chat_type), victim) is False
+        assert runner._same_origin_chat(self._src("victim", chat_type), victim) is True
+
+    @pytest.mark.parametrize("chat_type", ["", "  ", None])
+    def test_blank_caller_cannot_prove_other_members_group_row(self, chat_type):
+        runner = _make_runner()
+        row = {"source": "telegram", "chat_id": "-100", "chat_type": "group", "user_id": "victim"}
+        assert runner._persisted_row_proves_owner(self._src("mallory", chat_type), row) is False
+        assert runner._persisted_row_proves_owner(self._src("victim", chat_type), row) is True

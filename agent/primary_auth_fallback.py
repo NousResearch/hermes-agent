@@ -141,7 +141,7 @@ def lead_failed_turn_with_primary_auth(agent: Any, result: Any) -> None:
     failure = getattr(agent, "_primary_auth_failure", None)
     if not isinstance(failure, PrimaryAuthFailure) or not isinstance(result, dict):
         return
-    if result.get("failed") is not True or result.get("interrupted") or result.get("_primary_auth_led"):
+    if result.get("failed") is not True or result.get("interrupted") or "primary_auth_failure" in result:
         return
     current = str(getattr(agent, "provider", "") or "").strip()
     if failure.provider and current.lower() == failure.provider:
@@ -155,4 +155,3 @@ def lead_failed_turn_with_primary_auth(agent: Any, result: Any) -> None:
 
     result["primary_auth_failure"] = {"provider": failure.provider, "relogin": failure.relogin,
                                       "error": redact_sensitive_text(failure.error, force=True)}
-    result["_primary_auth_led"] = True

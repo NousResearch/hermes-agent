@@ -39,6 +39,8 @@ class TestGitForcePushDetected:
         # the shell strips quotes, so a quoted flag or refspec still forces.
         "git push \"-f\" origin main",
         "git push origin '+main'",
+        "git push -o ci.skip origin +main",
+        "git push origin topic--push-option +main",
         # a redirection's `&`/`|` is not a command separator.
         "git push origin main 2>&1 --force",
         "git push origin main &>/dev/null -f",
@@ -76,6 +78,9 @@ class TestGitForcePushDetected:
         "git push -ofoo origin main",
         # a flag inside a quoted push option is the option's text.
         "git push -o 'note -f' origin main",
+        # a push option's value is not a `+refspec`.
+        "git push -o +foo origin main",
+        "git push --push-option +foo origin main",
     ])
     def test_an_ordinary_push_stays_unprompted(self, command):
         assert detect_dangerous_command(command) == (False, None, None)

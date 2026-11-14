@@ -5510,6 +5510,7 @@ export const frOverrides = {
     archiveFailed: "Échec de l'archivage",
     restored: 'Restauré',
     unarchiveFailed: 'Échec de la restauration',
+    archiveUndo: 'Annuler',
     cwdChangeFailed: 'Échec du changement de répertoire de travail',
     cwdStagedTitle: "Répertoire de travail en attente d'application",
     cwdStagedMessage: 'Redémarrez le backend desktop pour appliquer les modifications de cwd à cette session active.',

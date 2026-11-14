@@ -3710,6 +3710,7 @@ export const jaOverrides = {
     archiveFailed: 'アーカイブに失敗しました',
     restored: '復元しました',
     unarchiveFailed: 'アーカイブ解除に失敗しました',
+    archiveUndo: '元に戻す',
     cwdChangeFailed: '作業ディレクトリの変更に失敗しました',
     cwdStagedTitle: '作業ディレクトリがステージングされました',
     cwdStagedMessage:

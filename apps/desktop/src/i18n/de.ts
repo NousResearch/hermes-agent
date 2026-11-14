@@ -5501,6 +5501,7 @@ export const deOverrides = {
     archiveFailed: 'Archivieren fehlgeschlagen',
     restored: 'Wiederhergestellt',
     unarchiveFailed: 'Archivierung aufheben fehlgeschlagen',
+    archiveUndo: 'Rückgängig',
     cwdChangeFailed: 'Arbeitsverzeichnis-Änderung fehlgeschlagen',
     cwdStagedTitle: 'Arbeitsverzeichnis bereitgestellt',
     cwdStagedMessage: 'Starten Sie das Desktop-Backend neu, um cwd-Änderungen auf diese aktive Session anzuwenden.',

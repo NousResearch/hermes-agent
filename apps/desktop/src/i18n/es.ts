@@ -5484,6 +5484,7 @@ export const esOverrides = {
     archiveFailed: 'No se pudo archivar',
     restored: 'Restaurado',
     unarchiveFailed: 'No se pudo desarchivar',
+    archiveUndo: 'Deshacer',
     cwdChangeFailed: 'No se pudo cambiar el directorio de trabajo',
     cwdStagedTitle: 'Directorio de trabajo preparado',
     cwdStagedMessage: 'Reinicia el backend de escritorio para aplicar cambios de cwd a esta sesión activa.',

@@ -4695,6 +4695,7 @@ export const zhOverrides = {
     archiveFailed: '归档失败',
     restored: '已恢复',
     unarchiveFailed: '取消归档失败',
+    archiveUndo: '撤销',
     cwdChangeFailed: '工作目录更改失败',
     cwdStagedTitle: '工作目录已暂存',
     cwdStagedMessage: '重启桌面后端后，工作目录更改才会应用到当前活跃会话。',

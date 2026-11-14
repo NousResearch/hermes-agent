@@ -934,7 +934,7 @@ DANGEROUS_PATTERNS_COMPILED = [
 # (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
-    "dynamic shell word may expand to arbitrary program execution flag",
+    "dynamic shell word may expand to arbitrary program execution flag", _DOWNLOAD_THEN_RUN_DESCRIPTION,
 })
 # A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`), unless an unquoted launcher runs the
 # quoted text as a script: `ssh host "gci | ri -r"`, `cmd /c "..."`, `iex "..."`, `echo "..." | pwsh -`.

@@ -42,7 +42,12 @@ export function beginModelPick(sessionId: string, before: ModelPickSnapshot, pai
     picks.pending.push({ painted, token })
     picks.shown = painted
   } else {
-    picksBySession.set(sessionId, { confirmed: before, confirmedToken: 0, pending: [{ painted, token }], shown: painted })
+    picksBySession.set(sessionId, {
+      confirmed: before,
+      confirmedToken: 0,
+      pending: [{ painted, token }],
+      shown: painted
+    })
   }
 
   return token

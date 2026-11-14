@@ -12,7 +12,9 @@ function queryPath(route: string, values: Record<string, boolean | null | string
   const query = new URLSearchParams()
 
   for (const [key, value] of Object.entries(values)) {
-    if (value !== null && value !== undefined) {query.set(key, String(value))}
+    if (value !== null && value !== undefined) {
+      query.set(key, String(value))
+    }
   }
 
   return `${route}?${query.toString()}`
@@ -97,8 +99,7 @@ export function createBrowserFilesBridge({
         })
       ).href
     },
-    readDir: (path: string) =>
-      fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
+    readDir: (path: string) => fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
     readFileDataUrl: readDataUrl,
     readFileDataUrlForAttach: readDataUrl,
     readFileText: (path: string) =>

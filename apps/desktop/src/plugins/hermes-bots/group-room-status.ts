@@ -38,20 +38,26 @@ export interface MemberOutcome {
 
 /** A running member, in absolute times (epoch seconds) so it does not change as the clock ticks: the
  *  chip that shows it reads the clock (`busyAt`), the room's derivations never do. */
-export interface BusyMember { kind: 'working'; startedAt?: number; lastSignAt?: number; tool?: string }
+export interface BusyMember {
+  kind: 'working'
+  startedAt?: number
+  lastSignAt?: number
+  tool?: string
+}
 
 export type MemberStatus =
-  | { kind: 'idle' }
-  | { kind: 'queued' }
-  | BusyMember
-  | ({ kind: MemberOutcomeKind } & Omit<MemberOutcome, 'kind'>)
+  { kind: 'idle' } | { kind: 'queued' } | BusyMember | ({ kind: MemberOutcomeKind } & Omit<MemberOutcome, 'kind'>)
 
 /** A running member with no frame for this long reads as stalled. */
 export const STALL_AFTER_S = 120
 
 const TERMINAL_KINDS = new Set(['turn.settled', 'turn.failed', 'turn.cancelled', 'turn.deferred'])
 const str = (value: unknown) => (typeof value === 'string' ? value : '')
-const firstLine = (text: string) => text.split('\n').map(line => line.trim()).find(Boolean) ?? ''
+const firstLine = (text: string) =>
+  text
+    .split('\n')
+    .map(line => line.trim())
+    .find(Boolean) ?? ''
 const threadOf = (event: RoomLogEvent) => str(event.payload.thread_id)
 const isUserMessage = (event: RoomLogEvent) => event.kind === 'message.user' || event.kind === 'message'
 
@@ -88,7 +94,11 @@ const OUTCOME_OF: Record<string, (event: RoomLogEvent) => MemberOutcome | null> 
   'turn.failed': event => {
     const error = str(event.payload.error)
 
-    return { kind: 'failed', reason: str(event.payload.reason_code) || firstLine(error) || undefined, detail: error || undefined }
+    return {
+      kind: 'failed',
+      reason: str(event.payload.reason_code) || firstLine(error) || undefined,
+      detail: error || undefined
+    }
   },
   'turn.cancelled': () => ({ kind: 'cancelled' }),
   // The driver parks a member it cannot reach; the room-level `member.unavailable` names no member.
@@ -108,7 +118,11 @@ export function memberOutcomes(events: readonly RoomLogEvent[]): Map<string, Mem
     const member = str(event.payload.member_id)
     const thread = threadOf(event)
 
-    if (!member || !TERMINAL_KINDS.has(event.kind) || str(event.payload.discussion_event_id) !== discussions.get(thread)) {
+    if (
+      !member ||
+      !TERMINAL_KINDS.has(event.kind) ||
+      str(event.payload.discussion_event_id) !== discussions.get(thread)
+    ) {
       continue
     }
 
@@ -132,8 +146,12 @@ export function memberStatus(
   const running = rows.find(row => row.status !== 'queued')
 
   if (running) {
-    return { kind: 'working', startedAt: running.started_at, lastSignAt: running.progress_at ?? running.started_at,
-      tool: running.tool || undefined }
+    return {
+      kind: 'working',
+      startedAt: running.started_at,
+      lastSignAt: running.progress_at ?? running.started_at,
+      tool: running.tool || undefined
+    }
   }
 
   if (rows.length) {
@@ -148,11 +166,19 @@ export function memberStatus(
 export const isBusyStatus = (status: MemberStatus): status is BusyMember => status.kind === 'working'
 
 /** A busy member as its chip shows it at `nowS`: stalled after `STALL_AFTER_S` with no sign of life. */
-export function busyAt(status: BusyMember, nowS: number): { kind: 'stalled' | 'working'; elapsedS?: number; quietS?: number; tool?: string } {
+export function busyAt(
+  status: BusyMember,
+  nowS: number
+): { kind: 'stalled' | 'working'; elapsedS?: number; quietS?: number; tool?: string } {
   const elapsedS = typeof status.startedAt === 'number' ? Math.max(0, nowS - status.startedAt) : undefined
   const quietS = typeof status.lastSignAt === 'number' ? Math.max(0, nowS - status.lastSignAt) : undefined
 
-  return { kind: quietS !== undefined && quietS >= STALL_AFTER_S ? 'stalled' : 'working', elapsedS, quietS, tool: status.tool }
+  return {
+    kind: quietS !== undefined && quietS >= STALL_AFTER_S ? 'stalled' : 'working',
+    elapsedS,
+    quietS,
+    tool: status.tool
+  }
 }
 
 /** `45s`, `1m20s`, `1h05m`. */
@@ -171,7 +197,12 @@ export function formatElapsed(seconds: number): string {
 }
 
 export type RoomCycle =
-  | { kind: 'working'; round: number; maxRounds?: number; /** The live members of the thread `round` is from. */ members: string[] }
+  | {
+      kind: 'working'
+      round: number
+      maxRounds?: number
+      /** The live members of the thread `round` is from. */ members: string[]
+    }
   | { kind: 'bounded' | 'messageCap' | 'settled' | 'stopped' | 'stopRequested' }
 
 const ENDING: Record<string, (event: RoomLogEvent) => RoomCycle | null> = {
@@ -205,15 +236,24 @@ const ended = (events: readonly RoomLogEvent[], discussion: string | undefined):
 
 /** Older gateways send no `round_index`: the newest round a turn of this discussion finished in, moved on
  *  by one when a member already done in that round is working again. */
-function guessedRound(events: readonly RoomLogEvent[], discussion: string | undefined, live: readonly string[]): number {
+function guessedRound(
+  events: readonly RoomLogEvent[],
+  discussion: string | undefined,
+  live: readonly string[]
+): number {
   let round = -1
   const doneInRound = new Map<number, Set<string>>()
 
   for (const event of events) {
     const index = Number(event.payload.round_index)
 
-    if (TERMINAL_KINDS.has(event.kind) && !!discussion && str(event.payload.discussion_event_id) === discussion &&
-        Number.isInteger(index) && index >= 0) {
+    if (
+      TERMINAL_KINDS.has(event.kind) &&
+      !!discussion &&
+      str(event.payload.discussion_event_id) === discussion &&
+      Number.isInteger(index) &&
+      index >= 0
+    ) {
       round = Math.max(round, index)
       doneInRound.set(index, (doneInRound.get(index) ?? new Set()).add(str(event.payload.member_id)))
     }
@@ -251,14 +291,25 @@ export function roomCycle(
   // One thread owns the strip, so its round and the names beside it agree: the focused thread when it has
   // running work, else a thread that does, else the focused thread's queued work.
   const isLive = (row: RoomMemberActivity) => row.status !== 'queued'
-  const inThread = (thread: string | undefined) => rows.filter(row => row.thread_id !== undefined && row.thread_id === thread)
+  const inThread = (thread: string | undefined) =>
+    rows.filter(row => row.thread_id !== undefined && row.thread_id === thread)
   const inFocus = inThread(focus)
   const running = rows.find(row => isLive(row) && row.thread_id !== undefined)?.thread_id
-  const owning = inFocus.some(isLive) ? inFocus : running !== undefined ? inThread(running) : inFocus.length ? inFocus : rows
-  const rounds = owning.map(row => row.round_index).filter((index): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
+  const owning = inFocus.some(isLive)
+    ? inFocus
+    : running !== undefined
+      ? inThread(running)
+      : inFocus.length
+        ? inFocus
+        : rows
+  const rounds = owning
+    .map(row => row.round_index)
+    .filter((index): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
   const thread = owning.find(row => row.thread_id !== undefined)?.thread_id ?? focus
   const live = owning.filter(isLive).map(row => row.member_id)
-  const current = rounds.length ? Math.max(...rounds) : guessedRound(events, thread === undefined ? undefined : discussions.get(thread), live)
+  const current = rounds.length
+    ? Math.max(...rounds)
+    : guessedRound(events, thread === undefined ? undefined : discussions.get(thread), live)
   const max = typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : undefined
 
   return { kind: 'working', round: current + 1, maxRounds: max, members: live }

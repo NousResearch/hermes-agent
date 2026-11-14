@@ -143,13 +143,16 @@ describe('the row delegates the open and claims no activation authority', () => 
     expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'in-place' }]])
   })
 
-  it.each([{ metaKey: true }, { ctrlKey: true }])('modifier click %j opens the Bot Chat as a stacked tab', modifiers => {
-    const bot = { connectionId: 'local', name: 'research' } as RosterRow
+  it.each([{ metaKey: true }, { ctrlKey: true }])(
+    'modifier click %j opens the Bot Chat as a stacked tab',
+    modifiers => {
+      const bot = { connectionId: 'local', name: 'research' } as RosterRow
 
-    fireEvent.click(renderRow(bot), modifiers)
+      fireEvent.click(renderRow(bot), modifiers)
 
-    expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
-  })
+      expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
+    }
+  )
 
   it('never resolves a remote default into the same-named local bot', async () => {
     const bot = {
@@ -252,8 +255,17 @@ describe('age label reflects the last worker run, not only the last conversation
 it('offers Disband for a Desktop-run group chat, matching its header action', async () => {
   const onDisband = vi.fn()
   const members = [{ name: 'builder' }]
-  render(<GroupRow active={false} group="Local team" members={members} needsYou={false}
-    onDisband={onDisband} onNewSection={noop} onOpen={noop} />)
+  render(
+    <GroupRow
+      active={false}
+      group="Local team"
+      members={members}
+      needsYou={false}
+      onDisband={onDisband}
+      onNewSection={noop}
+      onOpen={noop}
+    />
+  )
   fireEvent.contextMenu(screen.getByRole('button', { name: /Local team,/ }))
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Disband' }))
   expect(onDisband).toHaveBeenCalledExactlyOnceWith({ name: 'Local team', members })

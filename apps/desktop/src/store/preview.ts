@@ -379,7 +379,9 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
 
   // P2-7 (#150283): move the imported sign-ins record + per-profile cookie jar (Electron main,
   // userData) old→new so the rename does not strand or orphan the cookies.
-  void window.hermesDesktop?.migratePreviewSigninsForProfile?.({ oldProfile: from, newProfile: to })?.catch(() => undefined)
+  void window.hermesDesktop
+    ?.migratePreviewSigninsForProfile?.({ oldProfile: from, newProfile: to })
+    ?.catch(() => undefined)
 }
 
 if (typeof window !== 'undefined') {

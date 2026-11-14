@@ -20,14 +20,20 @@ it.each(['ssh', 'remote'] as const)('gives a %s Test its dial budget without cha
     if (url.pathname.endsWith('/test')) {
       signal = init?.signal
 
-      return new Promise<Response>(resolve => { finish = resolve })
+      return new Promise<Response>(resolve => {
+        finish = resolve
+      })
     }
 
-    return Promise.resolve(new Response(JSON.stringify({
-      connections: [{ id: 'fixture', kind, label: 'Fixture' }],
-      lastUsed: 'local',
-      primary: 'local'
-    })))
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          connections: [{ id: 'fixture', kind, label: 'Fixture' }],
+          lastUsed: 'local',
+          primary: 'local'
+        })
+      )
+    )
   })
 
   vi.stubGlobal('fetch', fetchMock)

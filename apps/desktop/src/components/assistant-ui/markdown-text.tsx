@@ -135,9 +135,7 @@ function useOpenMediaFile(path: string) {
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
-        setOpenFailed(true)
-      )
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() => setOpenFailed(true))
     } else {
       openExternalLink(mediaExternalUrl(path))
     }
@@ -264,8 +262,14 @@ function flattenChildrenToText(node: unknown): string {
 
 function isPrivateIPv4([a, b]: number[]): boolean {
   // 0/8, 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16.
-  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168)
+  )
 }
 
 /** Loopback, unspecified, link-local and RFC 1918 hosts, read from the PARSED hostname, so decimal,
@@ -295,12 +299,21 @@ function PreviewOnlyMarkdownLink({ children, className, href }: ComponentProps<'
     target = null
   }
 
-  if (!target || !['http:', 'https:'].includes(target.protocol) || target.username || target.password ||
-    isPrivateNetworkHost(target.hostname)) {
+  if (
+    !target ||
+    !['http:', 'https:'].includes(target.protocol) ||
+    target.username ||
+    target.password ||
+    isPrivateNetworkHost(target.hostname)
+  ) {
     return <span>{children}</span>
   }
 
-  return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>{children}</ExternalLink>
+  return (
+    <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>
+      {children}
+    </ExternalLink>
+  )
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {

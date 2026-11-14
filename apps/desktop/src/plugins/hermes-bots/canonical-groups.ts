@@ -83,15 +83,24 @@ export function canonicalGroupProfileRoute(route: CanonicalGroupRoute) {
     connectionId: route.connectionId,
     profile: route.profile,
     targetProfile: route.profile,
-    mode: route.connectionId === 'local' ? 'local' as const : 'remote' as const
+    mode: route.connectionId === 'local' ? ('local' as const) : ('remote' as const)
   }
 }
 
 /** A resolved RPC alone does not prove this room ended; only its matching tombstone does. */
-export async function disbandCanonicalGroup(binding: CanonicalGroupBinding, labels: CanonicalGroupMessages, keptMessage = labels.disbandKept): Promise<boolean> {
-  const answer = await canonicalGroupRequest<{ tombstone?: { room_id?: unknown; disbanded_at?: unknown } }>(binding, 'groups.disband', {
-    room_id: binding.roomId, cancel_id: randomUuid()
-  }).catch(error => {
+export async function disbandCanonicalGroup(
+  binding: CanonicalGroupBinding,
+  labels: CanonicalGroupMessages,
+  keptMessage = labels.disbandKept
+): Promise<boolean> {
+  const answer = await canonicalGroupRequest<{ tombstone?: { room_id?: unknown; disbanded_at?: unknown } }>(
+    binding,
+    'groups.disband',
+    {
+      room_id: binding.roomId,
+      cancel_id: randomUuid()
+    }
+  ).catch(error => {
     // These two refusal reasons come from revoking access, after Disband's acknowledged Stop.
     // Other failures (including untyped errors) do not prove that work stopped.
     const reasons = new Map([
@@ -103,15 +112,22 @@ export async function disbandCanonicalGroup(binding: CanonicalGroupBinding, labe
       ['runtime_coordination_required', labels.disbandServiceRequired]
     ])
 
-    const reason = reasons.get(error?.data?.reason) ??
-      (typeof error?.message === 'string' && error.message.includes('still stopping') ? labels.disbandStopPending : labels.disbandUnconfirmed)
+    const reason =
+      reasons.get(error?.data?.reason) ??
+      (typeof error?.message === 'string' && error.message.includes('still stopping')
+        ? labels.disbandStopPending
+        : labels.disbandUnconfirmed)
 
     throw new Error(keptMessage.replace('{reason}', reason))
   })
 
   const tombstone = answer?.tombstone
 
-  return tombstone?.room_id === binding.roomId && typeof tombstone.disbanded_at === 'number' && Number.isFinite(tombstone.disbanded_at)
+  return (
+    tombstone?.room_id === binding.roomId &&
+    typeof tombstone.disbanded_at === 'number' &&
+    Number.isFinite(tombstone.disbanded_at)
+  )
 }
 
 export async function discoverCanonicalGroups(
@@ -129,12 +145,16 @@ export async function listCanonicalRooms(route: CanonicalGroupRoute): Promise<Ca
 
   for (;;) {
     const page = await canonicalGroupRequest<{ rooms: CanonicalRoom[]; next_offset: number | null }>(
-      route, 'groups.list', { limit: 100, offset }
+      route,
+      'groups.list',
+      { limit: 100, offset }
     )
 
     rooms.push(...page.rooms)
 
-    if (page.next_offset === null) {break}
+    if (page.next_offset === null) {
+      break
+    }
 
     if (!Number.isSafeInteger(page.next_offset) || page.next_offset <= offset) {
       throw new Error('Could not load the next group chats')
@@ -153,9 +173,11 @@ export type CanonicalRosterProblem = 'groupSize' | 'otherConnection' | 'duplicat
 export function onCanonicalConnection(route: CanonicalGroupRoute, member: GroupMember): boolean {
   const connectionId = member.route?.connectionId ?? member.connectionId
 
-  return !((connectionId !== undefined && connectionId !== route.connectionId) ||
+  return !(
+    (connectionId !== undefined && connectionId !== route.connectionId) ||
     (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
-    (connectionId === undefined && member.remoteSource))
+    (connectionId === undefined && member.remoteSource)
+  )
 }
 
 /** The gateway a Bot from another connection joins through, as `groups.capabilities` there names
@@ -174,13 +196,19 @@ export interface CanonicalPeerSeat {
 }
 
 /** A Bot's own connection name as a handle suffix (`hermes` on "Mac Mini" joins as `hermes-mac-mini`). */
-const slug = (value: unknown) => String(value ?? '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+const slug = (value: unknown) =>
+  String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
 
 /** A short, stable digest (FNV-1a) of a connection id: the last resort for telling two apart. */
 function digest(value: string) {
   let hash = 0x811c9dc5
 
-  for (const char of value) {hash = Math.imul(hash ^ char.codePointAt(0)!, 0x01000193) >>> 0}
+  for (const char of value) {
+    hash = Math.imul(hash ^ char.codePointAt(0)!, 0x01000193) >>> 0
+  }
 
   return `c${hash.toString(36)}`
 }
@@ -202,7 +230,8 @@ function connectionSuffix(member: GroupMember, rivals: GroupMember[]) {
 }
 
 /** A Bot's own name: its title, else its name (a default profile reads "Hermes"). */
-const botLabel = (member: GroupMember) => String(member.title || member.display_name || '').trim() ||
+const botLabel = (member: GroupMember) =>
+  String(member.title || member.display_name || '').trim() ||
   (member.name.trim().toLowerCase() === 'default' ? 'Hermes' : member.name)
 
 /** A peer's name in the room: its own, then the connection it runs on, so two computers' default
@@ -211,28 +240,51 @@ function peerLabel(member: GroupMember) {
   return member.connectionLabel ? `${botLabel(member)} · ${member.connectionLabel}` : botLabel(member)
 }
 
-const baseHandle = (member: GroupMember) => member.handle ?? member.route?.targetProfile ?? member.targetProfile ?? member.name
+const baseHandle = (member: GroupMember) =>
+  member.handle ?? member.route?.targetProfile ?? member.targetProfile ?? member.name
 
 /** One member as `groups.create` takes it: a Bot here as its own profile, a pinned peer as the
  *  profile its gateway lends under its handle, or handle-connection when another member has that
  *  handle. */
-function rosterEntry(member: GroupMember, members: GroupMember[], pin: CanonicalPeerPin | null, mixed: boolean): CanonicalRoomMember {
+function rosterEntry(
+  member: GroupMember,
+  members: GroupMember[],
+  pin: CanonicalPeerPin | null,
+  mixed: boolean
+): CanonicalRoomMember {
   const base = baseHandle(member)
   const rivals = members.filter(other => other !== member && baseHandle(other).toLowerCase() === base.toLowerCase())
 
   if (!pin) {
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
     // Saved on the gateway and read from any computer: "This device" would be wrong elsewhere.
-    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
+    const display =
+      member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
 
-    return { member_id: profile, profile, handle: base, target: { kind: 'local', profile },
-      ...(display ? { display_name: display } : {}) }
+    return {
+      member_id: profile,
+      profile,
+      handle: base,
+      target: { kind: 'local', profile },
+      ...(display ? { display_name: display } : {})
+    }
   }
 
   const handle = rivals.length ? `${base}-${connectionSuffix(member, rivals)}` : base
 
-  return { member_id: handle, profile: pin.profile, handle, display_name: peerLabel(member), target: {
-    kind: 'peer', peer_id: pin.installationId, installation_id: pin.installationId, profile: pin.profile, capability_digest: pin.catalogDigest } }
+  return {
+    member_id: handle,
+    profile: pin.profile,
+    handle,
+    display_name: peerLabel(member),
+    target: {
+      kind: 'peer',
+      peer_id: pin.installationId,
+      installation_id: pin.installationId,
+      profile: pin.profile,
+      capability_digest: pin.catalogDigest
+    }
+  }
 }
 
 /** The members `groups.create` would receive, or why these Bots cannot form a gateway group. A Bot on
@@ -260,7 +312,9 @@ export function canonicalGroupRoster(
     }
 
     const entry = rosterEntry(member, members, pin, mixed)
-    const keys = [`handle:${entry.handle}`, `id:${entry.member_id}`, ...(pin ? [] : [`profile:${entry.profile}`])].map(key => key.toLowerCase())
+    const keys = [`handle:${entry.handle}`, `id:${entry.member_id}`, ...(pin ? [] : [`profile:${entry.profile}`])].map(
+      key => key.toLowerCase()
+    )
 
     if (!entry.profile.trim() || !entry.handle.trim() || keys.some(key => seen.has(key))) {
       return { problem: 'duplicateMember' }
@@ -269,7 +323,9 @@ export function canonicalGroupRoster(
     keys.forEach(key => seen.add(key))
     roster.push(entry)
 
-    if (pin) {peers.push({ member: entry, source: member })}
+    if (pin) {
+      peers.push({ member: entry, source: member })
+    }
   }
 
   return { roster, peers }
@@ -310,17 +366,24 @@ export async function createRoomWithIntent(
 
     // No answer: this id may have created the group, and retrying it is safe.
     if (typeof refusal?.code !== 'number') {
-      if (current) {intent.uncertain = true}
+      if (current) {
+        intent.uncertain = true
+      }
 
       throw Object.assign(new Error(reason, { cause: error }), { canonicalGroupCreate: 'uncertain' })
     }
 
     // Only a conflict refuses this valid request in these words, and a canonical gateway
     // says just invalid_params: this id can never create the requested group.
-    if (current && [
-      'room_id belongs to a disbanded room', 'room_id already exists with different state',
-      'room_id already belongs to a different authority', 'invalid_params'
-    ].includes(reason)) {
+    if (
+      current &&
+      [
+        'room_id belongs to a disbanded room',
+        'room_id already exists with different state',
+        'room_id already belongs to a different authority',
+        'invalid_params'
+      ].includes(reason)
+    ) {
       const retried = intent.uncertain
       delete intent.key
       delete intent.payload
@@ -349,8 +412,15 @@ export async function createRoomWithIntent(
  *  is computed once inside the frozen payload, so a retry after a lost reply resends that payload
  *  instead of making a second room. */
 export function groupCreationKey(route: CanonicalGroupRoute, name: string, members: GroupMember[]): string {
-  return JSON.stringify([route.connectionId, route.profile, name,
-    members.map(member => [member.route?.connectionId ?? member.connectionId ?? '', member.route?.targetProfile ?? member.targetProfile ?? member.name])])
+  return JSON.stringify([
+    route.connectionId,
+    route.profile,
+    name,
+    members.map(member => [
+      member.route?.connectionId ?? member.connectionId ?? '',
+      member.route?.targetProfile ?? member.targetProfile ?? member.name
+    ])
+  ])
 }
 
 export function requireGroupName(name: string): string {
@@ -374,12 +444,17 @@ export async function createCanonicalGroup(
   const checked = canonicalGroupRoster(route, members)
 
   if ('problem' in checked) {
-    throw Object.assign(new Error('A group chat hosted on this gateway needs two to six different bots on this connection'),
-      { canonicalGroupProblem: checked.problem })
+    throw Object.assign(
+      new Error('A group chat hosted on this gateway needs two to six different bots on this connection'),
+      { canonicalGroupProblem: checked.problem }
+    )
   }
 
-  const room = await createRoomWithIntent(route, intent, groupCreationKey(route, name, members),
-    () => ({ room_id: randomUuid(), name: requireGroupName(sentName(name)), members: checked.roster }))
+  const room = await createRoomWithIntent(route, intent, groupCreationKey(route, name, members), () => ({
+    room_id: randomUuid(),
+    name: requireGroupName(sentName(name)),
+    members: checked.roster
+  }))
 
   return { binding: { ...route, roomId: room.room_id }, room }
 }
@@ -415,7 +490,9 @@ export function canonicalGroupCreateError(error: unknown, labels: CreateErrorLab
   const problem = (error as { canonicalGroupProblem?: unknown } | null)?.canonicalGroupProblem
 
   const problems: Record<CanonicalRosterProblem, string> = {
-    groupSize: labels.createGroupSize, otherConnection: labels.createOtherConnection, duplicateMember: labels.createDuplicateMember
+    groupSize: labels.createGroupSize,
+    otherConnection: labels.createOtherConnection,
+    duplicateMember: labels.createDuplicateMember
   }
 
   if (typeof problem === 'string' && Object.hasOwn(problems, problem)) {
@@ -439,11 +516,21 @@ export async function actCanonicalGroup(
   action: CanonicalPendingAction,
   choice?: 'once' | 'deny'
 ): Promise<Record<string, unknown>> {
-  const methods: Record<string, string> = { retry: 'groups.retry', discard: 'groups.discard', approval: 'groups.approve' }
+  const methods: Record<string, string> = {
+    retry: 'groups.retry',
+    discard: 'groups.discard',
+    approval: 'groups.approve'
+  }
   const method = Object.hasOwn(methods, action.kind) ? methods[action.kind] : undefined
 
-  if (!method || !binding.roomId || !action.member_id || !action.task_id ||
-    !Number.isSafeInteger(action.execution_generation) || action.execution_generation < 1) {
+  if (
+    !method ||
+    !binding.roomId ||
+    !action.member_id ||
+    !action.task_id ||
+    !Number.isSafeInteger(action.execution_generation) ||
+    action.execution_generation < 1
+  ) {
     throw new Error('This group chat action is no longer available')
   }
 
@@ -455,8 +542,12 @@ export async function actCanonicalGroup(
   }
 
   if (action.kind === 'approval') {
-    if (!action.request_id || (choice !== 'once' && choice !== 'deny') ||
-      !Array.isArray(action.approval?.choices) || !action.approval.choices.includes(choice)) {
+    if (
+      !action.request_id ||
+      (choice !== 'once' && choice !== 'deny') ||
+      !Array.isArray(action.approval?.choices) ||
+      !action.approval.choices.includes(choice)
+    ) {
       throw new Error('Approval requires its exact request ID and a choice the gateway offered')
     }
 

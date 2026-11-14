@@ -406,6 +406,15 @@ class TestPayloadBuilder:
         assert "seed" not in p
 
 
+    def test_gemini_omni_flash_accepts_v12_fifteen_second_cap(self):
+        """The endpoint declares duration 3-15 (v1.1 stopped at 10); a 15s request must reach it unclamped."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        fam = FAL_FAMILIES["gemini-omni-flash"]
+        p = _build_payload(fam, prompt="x", image_url=None, duration=15, aspect_ratio="16:9",
+                           resolution="720p", negative_prompt=None, audio=None, seed=None)
+        assert p["duration"] == 15
+
     def test_audio_only_sent_for_families_that_declare_it(self):
         """minimax-h3 and the i2v-only families have no generate_audio field."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload

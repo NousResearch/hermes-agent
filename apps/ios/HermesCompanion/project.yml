@@ -1,0 +1,53 @@
+name: HermesCompanion
+options:
+  bundleIdPrefix: com.local.hermes
+  deploymentTarget:
+    iOS: '17.0'
+configFiles:
+  Debug: Build.xcconfig
+  Release: Build.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    GENERATE_INFOPLIST_FILE: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: '0.1.0'
+    CODE_SIGN_STYLE: Automatic
+packages:
+  HermesCore:
+    path: Core
+  HermesFeatures:
+    path: Features
+targets:
+  HermesCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    dependencies:
+      - package: HermesCore
+      - package: HermesFeatures
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.hermes.companion
+        INFOPLIST_KEY_CFBundleDisplayName: Hermes
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: 'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight'
+  HermesCompanionUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: HermesCompanion
+schemes:
+  HermesCompanion:
+    build:
+      targets:
+        HermesCompanion: all
+    test:
+      targets:
+        - HermesCompanionUITests

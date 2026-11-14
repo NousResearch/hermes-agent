@@ -965,17 +965,24 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         # select() keeps the listening socket alive past server_close() (the kernel holds the file for
         # the duration of the poll), so a cancelled flow — e.g. the handshake timeout firing mid-login —
         # left the port bound and the retry on the same pinned/cached port died with EADDRINUSE (#113771).
-        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
-        # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
-        # under a dashboard flow — the gateway's stdin is not the user's).
-        if _is_interactive() and dashboard_flow is None:
-            print(
-                "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
-                "Type ``skip`` + Enter to continue without this server:",
-                file=sys.stderr, flush=True)
-            threading.Thread(target=_paste_callback_reader, args=(result, handler_cls.result_lock), daemon=True).start()
-        elapsed = 0.0
         try:
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
+        except BaseException:
+            # No serve loop is running, so shutdown() would wait forever; closing the socket is enough.
+            server.server_close()
+            raise
+        # From here every exit releases the port through the finally, including a paste prompt whose
+        # stderr write fails (the reader of a piped stderr has exited) or a reader thread that cannot start.
+        try:
+            # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
+            # under a dashboard flow — the gateway's stdin is not the user's).
+            if _is_interactive() and dashboard_flow is None:
+                print(
+                    "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
+                    "Type ``skip`` + Enter to continue without this server:",
+                    file=sys.stderr, flush=True)
+                threading.Thread(target=_paste_callback_reader, args=(result, handler_cls.result_lock), daemon=True).start()
+            elapsed = 0.0
             while elapsed < timeout and not _result_taken(result):
                 await asyncio.sleep(0.5)
                 elapsed += 0.5

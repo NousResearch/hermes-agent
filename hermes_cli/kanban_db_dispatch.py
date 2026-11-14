@@ -154,12 +154,12 @@ class DispatchResult:
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    ``active_pr=1, recent_success=2, rate_limited=1, per_profile_capped=2,
+    skipped_locked=1, memory_pressure=critical`` — the respawn-guard reasons
+    counted per task plus the tick-level holds. Feeds the "dispatcher stuck"
+    warnings of the CLI daemon and the embedded gateway dispatcher, which
+    otherwise report a bare zero-spawn count while ``hermes kanban tail`` is
+    the only place the guard reason is written (#111910).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -170,6 +170,10 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_per_profile_capped:
+            counts["per_profile_capped"] = counts.get("per_profile_capped", 0) + len(
+                res.skipped_per_profile_capped
+            )
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -178,6 +182,40 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
     if pressure:
         parts.append(f"memory_pressure={pressure}")
     return ", ".join(parts)
+
+
+def held_ready_task_ids(result: Optional[DispatchResult]) -> set[str]:
+    """Task ids this tick deliberately deferred instead of spawning.
+
+    The per-profile cap (``skipped_per_profile_capped``), the respawn guard
+    (``respawn_guarded``) and rate-limit releases (``rate_limited``) all keep
+    their tasks in ``ready`` on purpose. The dispatcher-stuck health telemetry
+    subtracts these ids from the ready queue before deciding whether a
+    zero-spawn tick is "stuck" — a queue held back by configuration is
+    "correctly idle", the same category ``has_spawnable_ready`` already forms
+    for control-plane ``claim_task`` lanes. Without this, a saturated
+    ``kanban.max_in_progress_per_profile`` reads to the operator as a broken
+    profile (venv / PATH / credentials) forever.
+    """
+    if result is None:
+        return set()
+    ids = {task_id for task_id, _assignee, _current in result.skipped_per_profile_capped}
+    ids.update(task_id for task_id, _reason in result.respawn_guarded)
+    ids.update(result.rate_limited)
+    return ids
+
+
+def whole_tick_hold(result: Optional[DispatchResult]) -> bool:
+    """True when this tick held the board's ENTIRE ready queue back by
+    configuration: another dispatcher owns the board lock (``skipped_locked``)
+    or the memory-pressure guard restricted new workers (``memory_pressure``).
+
+    Neither hold leaves per-task ids (the tick did no lane work at all, or was
+    globally restricted), so the health telemetry treats the whole queue as
+    correctly idle for such a tick — see :func:`held_ready_task_ids` for the
+    per-task half of the same rule.
+    """
+    return bool(result is not None and (result.skipped_locked or result.memory_pressure))
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1787,12 +1825,19 @@ def dispatch_profile_allowlist_summary() -> str:
             "profile, or the config could not be read — omit the key to allow any)")
 
 
-def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
+def _has_spawnable(
+    conn: sqlite3.Connection,
+    status: str,
+    exclude_task_ids: Iterable[str] = (),
+) -> bool:
+    exclude = frozenset(exclude_task_ids)
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
         (status,),
     ).fetchall()
+    if exclude:
+        rows = [row for row in rows if row["id"] not in exclude]
     if not rows:
         return False
     profile_exists = _profile_exists_fn()
@@ -1802,19 +1847,30 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     return any(profile_exists(row["assignee"]) for row in rows)
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def has_spawnable_ready(
+    conn: sqlite3.Connection,
+    exclude_task_ids: Iterable[str] = (),
+) -> bool:
     """True iff a ready+assigned+unclaimed task maps to a real Hermes profile.
 
     Lets health telemetry tell "stuck" (``0 spawned`` with spawnable work) from
     "correctly idle" (only control-plane lanes waiting on ``claim_task``). Falls
     back to "any assigned" when profiles cannot import and no allowlist is set.
+
+    ``exclude_task_ids`` extends the same "correctly idle" category to work the
+    last tick deliberately held back — pass :func:`held_ready_task_ids` of that
+    tick's result so a queue parked at ``kanban.max_in_progress_per_profile``
+    (or by the respawn guard / a rate-limit release) does not read as stuck.
     """
-    return _has_spawnable(conn, "ready")
+    return _has_spawnable(conn, "ready", exclude_task_ids)
 
 
-def has_spawnable_review(conn: sqlite3.Connection) -> bool:
+def has_spawnable_review(
+    conn: sqlite3.Connection,
+    exclude_task_ids: Iterable[str] = (),
+) -> bool:
     """:func:`has_spawnable_ready` for the review column."""
-    return _has_spawnable(conn, "review")
+    return _has_spawnable(conn, "review", exclude_task_ids)
 
 
 def review_dispatch_enabled() -> bool:

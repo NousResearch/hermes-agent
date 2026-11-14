@@ -61,3 +61,22 @@ def test_gateway_skips_a_dynamic_route_with_an_unknown_target(tmp_path, caplog):
     adapter._reload_dynamic_routes()
     assert "broken" not in adapter._routes and "good" in adapter._routes
     assert "unknown delivery target 'telegram/all'" in caplog.text
+
+
+@pytest.mark.parametrize("bad", [[], {"chat": 1}, None])
+def test_list_flags_a_non_string_target_instead_of_crashing(bad, capsys):
+    _mutate_subscriptions(lambda subs: subs.update(
+        odd={"secret": "dynamic-secret", "prompt": "t", "deliver": bad},
+        fine={"secret": "dynamic-secret", "prompt": "t", "deliver": "telegram"}))
+    webhook_command(_args(webhook_action="list"))
+    out = capsys.readouterr().out
+    assert "(INVALID)" in out and "fine" in out
+
+
+def test_list_repair_hint_keeps_the_rest_of_the_route(capsys):
+    _mutate_subscriptions(lambda subs: subs.update(
+        broken={"secret": "dynamic-secret", "prompt": "t", "deliver": "telegram/all", "deliver_only": True}))
+    webhook_command(_args(webhook_action="list"))
+    out = capsys.readouterr().out
+    # subscribe replaces the whole route, so the hint must say to resupply the existing options.
+    assert "--deliver-only" in out and "replaces the whole route" in out

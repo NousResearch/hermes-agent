@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import secrets
+import shlex
 import threading
 import time
 import urllib.request
@@ -189,16 +190,35 @@ def _route_signature(args, existing: dict, is_update: bool) -> dict:
     return {"signature": existing["signature"]} if "signature" in existing else {}
 
 
-def _is_known_delivery_target(target: str) -> bool:
+def _is_known_delivery_target(target: object) -> bool:
     """Whether the gateway can dispatch ``target``; plugin platforms register only after discovery."""
-    from gateway.platforms.webhook import _is_known_platform
+    from gateway.webhook_targets import is_dispatchable_target
 
-    if target in {"log", "github_comment"} or _is_known_platform(target):
-        return True
+    if not isinstance(target, str) or is_dispatchable_target(target):
+        return isinstance(target, str)
     from hermes_cli.plugins import discover_plugins
 
     discover_plugins()
-    return _is_known_platform(target)
+    return is_dispatchable_target(target)
+
+
+_REPAIR_FLAGS = (("prompt", "--prompt"), ("description", "--description"), ("script", "--script"),
+                 ("cron_job", "--cron-job"))
+
+
+def _repair_command(name: str, route: dict) -> str:
+    """A ``subscribe`` line that fixes the target AND resupplies the route's other saved options: subscribe
+    replaces the whole route (secret, signature and profile are kept on update by themselves)."""
+    parts = ["hermes", "webhook", "subscribe", name, "--deliver", "telegram", "--deliver-chat-id", "<CHAT_ID>"]
+    for key, flag in _REPAIR_FLAGS:
+        if isinstance(route.get(key), str) and route[key]:
+            parts += [flag, shlex.quote(route[key])]
+    for key, flag in (("events", "--events"), ("skills", "--skills")):
+        if isinstance(route.get(key), list) and route[key]:
+            parts += [flag, shlex.quote(",".join(map(str, route[key])))]
+    parts += [flag for key, flag in (("deliver_only", "--deliver-only"), ("mirror_to_session", "--mirror-to-session"))
+              if route.get(key) is True]
+    return " ".join(parts)
 
 
 def _subscribe_input_error(name: str, deliver: str) -> str | None:
@@ -362,7 +382,8 @@ def _cmd_list(args):
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
         if invalid_delivery:
-            print(f"    Fix:     hermes webhook subscribe {name} --deliver telegram --deliver-chat-id <CHAT_ID>")
+            print(f"    Fix:     {_repair_command(name, route)}")
+            print("             (subscribe replaces the whole route; adjust the platform and chat ID as needed)")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()

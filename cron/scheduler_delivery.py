@@ -79,6 +79,12 @@ def _fresh_thread_overrides_origin_topic(pconfig) -> bool:
     return False
 
 
+def _origin_thread_is(job: dict, thread_id) -> bool:
+    """Whether ``thread_id`` is the thread/topic recorded on the job's own origin."""
+    origin_thread = (_resolve_origin(job) or {}).get("thread_id")
+    return origin_thread is not None and str(origin_thread) == str(thread_id)
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job. Non-dict origins (provenance strings, hand-edited
     jobs.json) are treated as missing — otherwise every fire crashed on ``origin.get``.
@@ -1655,8 +1661,11 @@ def _prepare_target_delivery(
         and not in_channel_surface
         and runtime_adapter is not None
         and loop is not None
-        # Never override an origin thread/topic unless the platform opted in (#76548).
-        and (not thread_id or (origin_target and _fresh_thread_overrides_origin_topic(pconfig)))
+        # Never override a target thread/topic unless the platform opted in AND it is the job's own
+        # origin topic (#76548): an origin without a thread matches any thread as a wildcard, so a
+        # topic the user named explicitly must not count as the origin's.
+        and (not thread_id or (
+            origin_target and _origin_thread_is(job, thread_id) and _fresh_thread_overrides_origin_topic(pconfig)))
     ):
         opened_thread_id = _open_continuable_cron_thread(
             job, runtime_adapter, chat_id, loop) or None

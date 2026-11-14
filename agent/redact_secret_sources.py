@@ -39,14 +39,15 @@ _VALUES_BY_HOME: dict[str, tuple[str, ...]] = {}
 
 
 def _worth_registering(name: str, value: str) -> bool:
-    from agent.redact import _has_password_keyword, _key_has_secret_keyword, redact_credential_shapes
+    from agent.redact import (_has_password_keyword, _is_glued_credential_env, _key_has_secret_keyword,
+                              redact_credential_shapes)
 
     stripped = value.strip()
     if len(stripped) < _MIN_VALUE_CHARS:
         return False
     if "\n" in stripped or redact_credential_shapes(stripped, force=True) != stripped:
         return True
-    if _has_password_keyword(name):
+    if _has_password_keyword(name) or _is_glued_credential_env(name):  # PGPASSWORD, MYSQL_PWD, SSHPASS
         return True
     return _key_has_secret_keyword(name) and not _PLAIN_WORD_OR_HOST_RE.fullmatch(stripped)
 

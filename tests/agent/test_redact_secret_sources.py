@@ -121,13 +121,25 @@ def test_secret_named_settings_holding_a_word_or_host_are_not_a_global_scrub(tmp
     home = _home(tmp_path, "a")
     settings = {"AUTH_MODE": "password", "AUTH_PROVIDER": "localhost", "SECRET_BACKEND": "bitwarden",
                 "API_KEY_HEADER": "Authorization", "AUTH_HOST": "auth-server-01.example.com"}
-    secrets = {"VENDOR_TOKEN": OPAQUE, "DB_PASSWORD": "correcthorse"}
+    secrets = {"VENDOR_TOKEN": OPAQUE, "DB_PASSWORD": "correcthorse", "MYSQL_PWD": "rootpassword",
+               "SSHPASS": "sunflowers"}
     redact_secret_sources.publish_secret_source_values(home, {**settings, **secrets})
     text = "use password auth on localhost via bitwarden; Authorization at auth-server-01.example.com"
     with _profile(home):
         assert redact_secret_sources.redact_secret_source_values(text) == text
         for value in secrets.values():
             assert value not in redact_secret_sources.redact_secret_source_values(f"x {value}")
+
+
+def test_short_values_stay_readable_and_overlapping_values_mask_whole(tmp_path):
+    home = _home(tmp_path, "a")
+    longer = OPAQUE + "Xy9"
+    redact_secret_sources.publish_secret_source_values(
+        home, {"API_KEY": "k3y-42", "VENDOR_TOKEN": OPAQUE, "SVC_TOKEN": longer, "SVC_CERT": "line-one\nline-two"})
+    with _profile(home):
+        assert redact_secret_sources.redact_secret_source_values("port k3y-42") == "port k3y-42"
+        assert redact_secret_sources.redact_secret_source_values(f"x {longer}") == "x «redacted:secret-source»"
+        assert "line-two" not in redact_secret_sources.redact_secret_source_values("cert line-one\nline-two")
 
 
 def test_json_serialised_value_is_masked(tmp_path):

@@ -257,6 +257,12 @@ def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
     )
 
 
+# Home-root dotfiles that hold plaintext credentials. Writes to them are denied here, and
+# agent/redact.py treats a read of one as secret-bearing output.
+# ``_netrc`` is the name curl and git use for the same file on Windows.
+_HOME_CREDENTIAL_BASENAMES = (".netrc", "_netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
@@ -264,7 +270,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # approval gate instead (build_write_approval_paths).
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
-        (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
+        *((name,) for name in _HOME_CREDENTIAL_BASENAMES),
     )
     # Secret material under HERMES_HOME, on the active profile, every sibling profile
     # and the global root: overwriting the root .env leaks credentials across every profile that

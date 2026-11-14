@@ -30,7 +30,7 @@ GITHUB_TAP_PROVIDERS = {
     "nvidia/skills": "NVIDIA", "voltagent/awesome-agent-skills": "VoltAgent", "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax", "wandb/skills": "Weights & Biases", "qdrant/skills": "Qdrant",
     "pinecone-io/skills": "Pinecone", "makenotion/skills": "Notion", "airtable/skills": "Airtable",
-    "shopify/shopify-ai-toolkit": "Shopify",
+    "shopify/shopify-ai-toolkit": "Shopify", "cloudflare/skills": "Cloudflare",
 }
 
 # Accepted ``--source`` provider filters (lowercased). Not real source ids —
@@ -224,6 +224,7 @@ class GitHubSource(SkillSource):
         {"repo": "makenotion/skills", "path": "skills/"},
         {"repo": "Airtable/skills", "path": "plugins/airtable/skills/"},
         {"repo": "Shopify/Shopify-AI-Toolkit", "path": "skills/"},
+        {"repo": "cloudflare/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so

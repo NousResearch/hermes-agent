@@ -75,3 +75,18 @@ def test_escaped_dir_is_not_treated_as_bundled(tmp_path, monkeypatch, module, lo
 
     assert host.calls
     assert not (tmp_path / "ran").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_user_dir_symlink_into_the_bundled_root_is_not_bundled(tmp_path):
+    """A ``$HERMES_HOME/plugins/<x>`` symlink into a bundled dir resolves under the bundled root, but
+    is not bundled: it would load in-process past isolation, and the link can be swapped later."""
+    from plugins import plugin_loader
+    root = tmp_path / "bundled"
+    bundled = root / "real"
+    bundled.mkdir(parents=True)
+    link = tmp_path / "plugins" / "alias"
+    link.parent.mkdir()
+    link.symlink_to(bundled, target_is_directory=True)
+    assert plugin_loader.is_direct_child(bundled, root)
+    assert not plugin_loader.is_direct_child(link, root)

@@ -99,9 +99,11 @@ def plugin_child_dir(root: Path, name: str) -> Optional[Path]:
 
 
 def is_direct_child(path: Path, root: Path) -> bool:
-    """Whether *path* really sits directly under *root*. Resolved, because ``Path.parents`` is
-    lexical: ``root / "../../x"`` lists *root* among its parents."""
-    return path.resolve().parent == root.resolve()
+    """Whether *path* really sits directly under *root*, both as written and resolved. Resolved,
+    because ``Path.parents`` is lexical (``root / "../../x"`` lists *root* among its parents); as
+    written, because a user-dir symlink into *root* must not count as bundled (it would load
+    in-process past ``plugins.isolation: host``, and can be swapped between check and import)."""
+    return path.parent == root and path.resolve().parent == root.resolve()
 
 
 def iter_plugin_dirs(root: Path) -> list[Path]:

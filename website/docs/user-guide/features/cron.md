@@ -225,6 +225,24 @@ hermes cron create "0 9 * * 1-5" --timezone America/New_York "US market open bri
 - An offset-less one-shot timestamp (`2026-06-01T09:00:00`) is also read in the job's zone; a timestamp that carries its own offset is already an instant.
 - Changing the zone recomputes `next_run_at` immediately, so the next fire happens at the new zone's wall clock.
 - An `interval` job has a fixed duration and no wall clock, so a pin has no effect on it.
+- The run-time line the job's prompt carries (`[CURRENT RUN TIME: ...]`) is stated in the pinned zone, so a 09:00 New York job is told 09:00 EST, not the profile's local time. `hermes cron list`, `/cron list` and `cronjob(action="list")` show the pinned zone next to the schedule.
+
+### Pinned and local-time jobs in a shipped profile
+
+A [profile distribution](../profile-distributions.md) can ship both kinds of job in one `cron/jobs.json`. Jobs that pin `timezone` fire on that zone's wall clock for every installer. Jobs without it follow each user's own `timezone:` in their `config.yaml`. Leave `timezone:` out of the shipped `config.yaml` if users should keep their own zone: `hermes profile update` preserves a user's `config.yaml` by default.
+
+```json
+{
+  "jobs": [
+    {"id": "premarket0001", "name": "pre-market", "prompt": "US pre-market update before the 09:30 NYSE open.",
+     "schedule": "0 9 * * 1-5", "timezone": "America/New_York", "deliver": "origin"},
+    {"id": "morningbrf01", "name": "morning-brief", "prompt": "My personal morning brief.",
+     "schedule": "0 7 * * *", "deliver": "origin"}
+  ]
+}
+```
+
+With this file a London user gets the pre-market update at 14:00 (13:00 during the week in between, when the UK has left summer time and the US has not), a Hong Kong user at 21:00 or 22:00, and a Los Angeles user at 06:00. All three get the morning brief at 07:00 their own time. Install and update reject a shipped job whose `timezone` is not an IANA zone and name the job, so a typo cannot silently become each user's local time. Write a job with `hermes cron create ... --timezone America/New_York` in the authoring profile and commit the resulting `cron/jobs.json`, or write it by hand: `schedule` may be the same string `hermes cron create` takes, and the scheduler fills in `next_run_at` and the runtime fields. Give every shipped job a stable `id`, because update matches on it.
 
 ## Catch-up window
 

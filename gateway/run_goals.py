@@ -15,6 +15,7 @@ from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.config import Platform
+from gateway.delivery import prime_revived_egress
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -154,6 +155,8 @@ class GatewayGoalsMixin:
             return
         if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
+        # Both lanes below answer through this adapter: warm a Relay's egress routing first.
+        prime_revived_egress(adapter, MessageEvent(text="", source=source))
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)

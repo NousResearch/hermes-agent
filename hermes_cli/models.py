@@ -1257,11 +1257,10 @@ def _fast_mode_route_supported(
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
-        allowed = {
-            "openai": "api.openai.com",
-            "openai-api": "api.openai.com",
-            "openai-codex": "chatgpt.com",
-        }
+        from hermes_cli.models_fast_regions import openai_fast_region_allows
+        if openai_fast_region_allows(base_url, model_id):
+            base_url = "https://api.openai.com"  # Eligibility only; the runtime URL stays regional.
+        allowed = {"openai": "api.openai.com", "openai-api": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:
         return False
     host = (urlparse(str(base_url or "")).hostname or "").lower()
@@ -1473,12 +1472,8 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     if not base_url:
         return None
     model_cfg = _get_model_config_dict()
-    # Try common API key env vars for custom endpoints.
-    api_key = (
-        str(model_cfg.get("api_key", "") or "").strip()
-        or os.getenv("CUSTOM_API_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-        or os.getenv("OPENROUTER_API_KEY", ""))
+    from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+    api_key = custom_catalog_probe_api_key(model_cfg, base_url)
     api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 
@@ -1690,12 +1685,12 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
         profile = get_provider_profile(normalized)
         if profile is None or getattr(profile, "auth_type", "") != "api_key":
             return None
-        api_key, _ = _api_key_credentials(normalized)
+        from hermes_cli.auth_declared_providers import relay_probe_api_key
+        api_key = relay_probe_api_key(normalized, relay, *_api_key_credentials(normalized))
         live = profile.fetch_models(api_key=api_key, base_url=relay)
         return [str(m) for m in (live or []) if m] or None
     except Exception:
         return None
-
 
 
 # Canonical fetchers that already resolve `model.base_url` themselves for the configured

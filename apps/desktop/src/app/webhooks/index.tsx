@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Field } from '@/components/ui/field'
+import { Field, FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -27,6 +27,7 @@ import {
   getWebhooks,
   setWebhookEnabled,
   type WebhookRoute,
+  type WebhookSignature,
   type WebhooksResponse
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -55,6 +56,7 @@ import {
 import { ListRow } from '../settings/primitives'
 
 const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
+const SIGNATURE_OPTIONS: readonly WebhookSignature[] = ['generic', 'github', 'gitlab', 'linear']
 
 interface CreatedWebhook {
   secret: string
@@ -128,6 +130,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
   const [events, setEvents] = useState('')
   const [deliver, setDeliver] = useState('log')
   const [deliverOnly, setDeliverOnly] = useState(false)
+  const [signature, setSignature] = useState<WebhookSignature>('generic')
   const [prompt, setPrompt] = useState('')
   const [skills, setSkills] = useState('')
   const [creating, setCreating] = useState(false)
@@ -244,6 +247,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
     setEvents('')
     setDeliver('log')
     setDeliverOnly(false)
+    setSignature('generic')
     setPrompt('')
     setSkills('')
   }, [])
@@ -285,6 +289,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
           events: eventsList.length ? eventsList : undefined,
           name: name.trim(),
           prompt: prompt.trim() || undefined,
+          signature,
           skills: skillsList.length ? skillsList : undefined
         },
         backendProfile
@@ -307,7 +312,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
         setCreating(false)
       }
     }
-  }, [backendProfile, deliver, deliverOnly, description, events, name, prompt, reload, resetForm, skills, w])
+  }, [backendProfile, deliver, deliverOnly, description, events, name, prompt, reload, resetForm, signature, skills, w])
 
   const handleToggle = useCallback(
     async (subName: string, nextEnabled: boolean) => {
@@ -595,6 +600,22 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
                   </div>
                 </Field>
               </div>
+
+              <Field htmlFor="webhook-signature" label={w.fieldSignature}>
+                <Select onValueChange={value => setSignature(value as WebhookSignature)} value={signature}>
+                  <SelectTrigger className="h-9 rounded-md" id="webhook-signature">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SIGNATURE_OPTIONS.map(opt => (
+                      <SelectItem key={opt} value={opt}>
+                        {w.signatureOptions[opt] ?? opt}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldHint>{w.fieldSignatureHint}</FieldHint>
+              </Field>
 
               <DialogFooter>
                 <Button disabled={creating} size="sm" type="submit">

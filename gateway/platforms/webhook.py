@@ -1075,6 +1075,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            # Runtime gate on the FINAL target (payload-rendered chat_id included): a shared-bot
+            # satellite rides the primary's bot only to chats routed to it (#147602).
+            if not self.gateway_runner._shared_bot_target_allowed(target_platform, profile, chat_id, thread_id):
+                return SendResult(success=False, error=f"{platform_name}:{chat_id} is not routed to profile {profile}")
             result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)

@@ -59,6 +59,11 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+# Database path -> ((device, inode), schema_version) last reconciled by this process.
+# Per connection the replay ran ~30 PRAGMA table_info plus the DDL on every ledger call,
+# three times per 30 s orphan sweep (after #135351).
+_SCHEMA_READY: dict[str, tuple[tuple[int, int], int]] = {}
+_SCHEMA_READY_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -134,19 +139,45 @@ def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
 
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
+    identity = _db_identity(path)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label=db_label, busy_timeout_ms=10_000,
-                   wal=False, row_factory=None, initialize=_initialize_schema)
+                   wal=False, row_factory=None,
+                   initialize=lambda conn: _initialize_schema(conn, identity=identity))
     _secure_state_db_files(path)
     return conn
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
+def _db_identity(path) -> tuple[int, int] | None:
+    """Stat only: opening/closing another fd would release SQLite's POSIX locks."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def _initialize_schema(conn: sqlite3.Connection, *, identity: tuple[int, int] | None = None) -> None:
     from hermes_state_repair import apply_durability_barriers
     from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
+    # schema_version is a per-file DDL counter, not an identity: different files can share it.
+    # Pair it with the inode to detect replacements, retaining the version for recycled empty
+    # files and same-file migrations. In-place restores must be done offline with a process
+    # restart: neither an inode nor a DDL counter identifies arbitrary overwritten bytes.
+    row = conn.execute("PRAGMA database_list").fetchone()
+    key = os.path.normcase(os.path.abspath(row[2])) if row and row[2] else None
+    # Match a stat taken BEFORE open to one after it; never associate an old connection's
+    # schema with a replacement path. Unnamed, unstatable or unverified connections don't cache.
+    if key is None or identity is None or _db_identity(key) != identity:
+        reconcile_state_schema(conn)
+        return
+    version = conn.execute("PRAGMA schema_version").fetchone()[0]
+    with _SCHEMA_READY_LOCK:
+        if _SCHEMA_READY.get(key) == (identity, version):
+            return
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This
@@ -155,6 +186,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # nullability/defaults depending on which authority touched the database
     # first (#94691).
     reconcile_state_schema(conn)
+    if _db_identity(key) == identity:
+        with _SCHEMA_READY_LOCK:  # version AFTER replay; don't mark a replacement as reconciled
+            _SCHEMA_READY[key] = (identity, conn.execute("PRAGMA schema_version").fetchone()[0])
 
 
 def _transaction():
@@ -1561,3 +1595,5 @@ def _reset_for_tests() -> None:
         _reoffered_at.clear()
     with _held_lock:
         _held_copies.clear()
+    with _SCHEMA_READY_LOCK:
+        _SCHEMA_READY.clear()

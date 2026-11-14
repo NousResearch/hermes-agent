@@ -167,7 +167,7 @@ gateway:
     upload_failed: "✗ Nem sikerült feltölteni a hibakeresési jelentést: {error}"
     header: "**Hibakeresési jelentés feltöltve:**"
     auto_delete: "⏱ A beillesztések 6 óra múlva automatikusan törlődnek."
-    full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
+    full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share --nous` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
     local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
@@ -1726,7 +1726,7 @@ slash:
   version:
     description: "A Hermes Agent verziójának megjelenítése"
   debug:
-    description: "Hibakeresési jelentés (rendszerinfó + naplók): előbb az adatvédelmi tájékoztató; a /debug upload linkeket oszt meg"
+    description: "Hibakeresési jelentés (verziók, konfigurációs kulcsok, hibaszámok; naplószöveg nélkül): előbb az adatvédelmi tájékoztató; a /debug upload linkeket oszt meg"
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
@@ -3937,7 +3937,7 @@ tips:
   t343: "A /voice tts a csak-TTS módot kapcsolja — az ügynök hangosan válaszol, de a promptjaidat továbbra is gépeled."
   t344: "A /reload-skills újraolvassa a ~/.hermes/skills/ mappát, így a bemásolt skillek a munkamenet újraindítása nélkül megjelennek."
   t345: "A /indicator kaomoji|emoji|unicode|ascii kiválasztja a TUI elfoglaltságjelzőjének stílusát, amely az ügynök futása alatt látszik."
-  t346: "A /debug feltölt egy támogatási csomagot (rendszerinfó + naplók), és megosztható linkeket ad vissza — chatben is működik."
+  t346: "A /debug upload feltölt egy összefoglalót (verziók, konfigurációs kulcsok, hibaszámok; naplószöveg nélkül), és megosztható linket ad vissza — chatben is működik."
   t347: "A hermes -z \"<prompt>\" a legtisztább egylövetű mód: csak a végső válasz a stdout-on, semmi más — ideális szkriptekben csövezéshez."
   t348: "A hermes chat --pass-session-id beszúrja a munkamenet-azonosítót a rendszerpromptba, hogy az ügynök hivatkozhasson rá."
   t349: "A hermes chat --image path/to/pic.png helyi képet csatol egyetlen -q lekérdezéshez külön feltöltési lépés nélkül."

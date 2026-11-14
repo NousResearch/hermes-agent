@@ -6,7 +6,7 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 # Environment Variables Reference
 
-Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here.
+Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here. Values written by the platform YAML bridge (and the Telegram/Signal mention fallbacks) are refreshed when that config changes, including across a daemon replacement. After a successful full YAML load, a removed key also retracts its unchanged bridge-owned value; failed loads do not trigger this cleanup, and explicit process, user `.env`, or managed `.env` values still take precedence. The bridge tracks what it wrote in `HERMES_BRIDGED_<NAME>` variables holding a SHA-256 digest of the value, never the value itself, and they are removed from every agent subprocess; a process export whose value happens to equal the bridge's own earlier write is treated as the bridge's and follows `config.yaml`.
 
 ## LLM Providers
 
@@ -256,7 +256,7 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
-| `SUDO_PASSWORD` | Enable sudo without interactive prompt |
+| `SUDO_PASSWORD` | Enable sudo without interactive prompt. Sent to the backend that runs the command; see [Sudo Support](../user-guide/features/tools.md#sudo-support) |
 
 For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
 

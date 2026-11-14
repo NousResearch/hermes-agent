@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header: "**Tuairisc dhífhabhtaithe uaslódáilte:**"
     auto_delete: "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
-    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
+    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share --nous` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
     local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug upload` chun an achoimre a uaslódáil."
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Taispeáin leagan Hermes Agent"
   debug:
-    description: "Tuarascáil dhífhabhtaithe (eolas córais + logaí): taispeántar an fógra príobháideachta ar dtús; roinneann /debug upload naisc"
+    description: "Tuarascáil dhífhabhtaithe (leaganacha, eochracha cumraíochta, comhaireamh earráidí; gan téacs loga): taispeántar an fógra príobháideachta ar dtús; roinneann /debug upload naisc"
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "Scoránaíonn /voice tts mód TTS amháin — freagraíonn an gníomhaire os ard ach clóscríobhann tú do leideanna fós."
   t344: "Athscanann /reload-skills ~/.hermes/skills/ ionas go dtagann scileanna drop-in chun cinn gan an seisiún a atosú."
   t345: "Roghnaíonn /indicator kaomoji|emoji|unicode|ascii stíl an táscaire gnóthach TUI a thaispeántar le linn rití gníomhaire."
-  t346: "Uaslódálann /debug cuach tacaíochta (eolas córais + logaí) agus filleann naisc inroinnte — oibríonn sé sa chomhrá freisin."
+  t346: "Uaslódálann /debug upload achoimre (leaganacha, eochracha cumraíochta, comhaireamh earráidí; gan téacs loga) agus filleann nasc inroinnte — oibríonn sé sa chomhrá freisin."
   t347: "Is é hermes -z \"<prompt>\" an aon-uaire is glaine: an freagra deiridh ar stdout, gan aon rud eile — foirfe le haghaidh píopála i scripteanna."
   t348: "Instealann hermes chat --pass-session-id ID an tseisiúin i leid an chórais ionas gur féidir leis an ngníomhaire tagairt dó féin."
   t349: "Ceanglaíonn hermes chat --image path/to/pic.png íomhá áitiúil le hiarratas -q amháin gan céim uaslódála ar leith."

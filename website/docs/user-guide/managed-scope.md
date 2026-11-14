@@ -47,7 +47,21 @@ the feature.
 The location can be relocated with the `HERMES_MANAGED_DIR` environment variable
 (for containers or non-`/etc` deployments). This is a deployment/bootstrap path
 knob — like `HERMES_HOME` — set by the same administrator who owns the managed
-files. It is **never persisted** to any `.env` by Hermes.
+files. Hermes ignores the variable (in any letter case) in every `.env`, secret
+source and top-level `config.yaml` key, and logs a warning when it skips one: set
+it in the launch environment (service unit `Environment=`, container image), not
+in `~/.hermes/.env`. On NixOS, `services.hermes-agent.environment` is written to
+`$HERMES_HOME/.env`, so it can't carry this variable: use
+`systemd.services.hermes-agent.environment` (and
+`systemd.services.hermes-backend.environment` when the backend runs),
+`environment.variables` for interactive shells, or, in container mode, an `--env`
+entry in `services.hermes-agent.container.extraOptions` with the directory mounted
+through `container.extraVolumes`. The Home Manager module writes
+`services.hermes-agent.environment` to the same `.env`: set the variable on the
+user units instead, with `systemd.user.services.hermes-agent.Service.Environment`
+(and `hermes-backend`) on Linux, or
+`launchd.agents.hermes-agent.config.EnvironmentVariables` (and `hermes-backend`)
+on macOS.
 
 ```bash
 # Point managed scope at a custom directory (set by IT / the deployment, not the user)

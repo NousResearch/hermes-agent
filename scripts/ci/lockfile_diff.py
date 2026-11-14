@@ -116,7 +116,7 @@ def _reference(name: str, ref: object, where: str) -> str:
 
 def _target(name: str, reference: str) -> tuple[str, str]:
     """The ``packages`` entry a reference points to: ``(real name, version)``."""
-    if reference.startswith("@") or "@" in reference.split(":", 1)[0]:
+    if "@" in reference.split(":", 1)[0]:
         return _split_key(reference)
     return name, reference
 

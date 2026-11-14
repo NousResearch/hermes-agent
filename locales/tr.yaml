@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Hata ayıklama raporu yüklenemedi: {error}"
     header: "**Hata ayıklama raporu yüklendi:**"
     auto_delete: "⏱ Paste'ler 6 saat içinde otomatik olarak silinecek."
-    full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
+    full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share --nous` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
     local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent sürümünü göster"
   debug:
-    description: "Hata ayıklama raporu (sistem bilgisi + günlükler): önce gizlilik bildirimini gösterir; /debug upload bağlantı paylaşır"
+    description: "Hata ayıklama raporu (sürümler, yapılandırma anahtarları, hata sayıları; günlük metni yok): önce gizlilik bildirimini gösterir; /debug upload bağlantı paylaşır"
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts, yalnızca TTS modunu açıp kapatır — ajan yanıtlarını sesli okur ama istemlerinizi yine siz yazarsınız."
   t344: "/reload-skills, ~/.hermes/skills/ dizinini yeniden tarar; böylece eklenen skill'ler oturumu yeniden başlatmadan görünür."
   t345: "/indicator kaomoji|emoji|unicode|ascii, ajan çalışırken TUI'de gösterilen meşgul göstergesi stilini seçer."
-  t346: "/debug, bir destek paketi (sistem bilgisi + günlükler) yükler ve paylaşılabilir bağlantılar döndürür — sohbette de çalışır."
+  t346: "/debug upload bir özet (sürümler, yapılandırma anahtarları, hata sayıları; günlük metni yok) yükler ve paylaşılabilir bir bağlantı döndürür — sohbette de çalışır."
   t347: "hermes -z \"<prompt>\" en saf tek seferlik kullanımdır: stdout'a yalnızca nihai yanıt, başka hiçbir şey yok — betiklerde borulamak için idealdir."
   t348: "hermes chat --pass-session-id, oturum kimliğini sistem istemine ekler; böylece ajan kendi oturumuna atıfta bulunabilir."
   t349: "hermes chat --image path/to/pic.png, ayrı bir yükleme adımı olmadan tek bir -q sorgusuna yerel bir görüntü ekler."

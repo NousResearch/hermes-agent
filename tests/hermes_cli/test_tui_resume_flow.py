@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 import pytest
-from hermes_cli import main_tui_launch
+from hermes_cli import main_tui_launch, session_worktree
 
 
 def _args(**overrides):
@@ -142,7 +142,7 @@ def test_launch_tui_worktree_still_outranks_the_launch_cwd(monkeypatch, main_mod
     monkeypatch.chdir(launch)
 
     captured = {}
-    monkeypatch.setattr(main_tui_launch, "_setup_tui_worktree", lambda: {"path": str(worktree)})
+    monkeypatch.setattr(session_worktree, "create", lambda: {"path": str(worktree)})
     monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
         lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")),
     )

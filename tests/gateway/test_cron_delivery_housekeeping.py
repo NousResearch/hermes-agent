@@ -134,16 +134,12 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
     def fake_scope(_home):
         yield
 
-    class FakeSharedRouteAdapters:
-        def __new__(cls, adapters, routes):
-            calls.append(("routed", adapters, routes))
-            return routed
+    def fake_shared(adapters):
+        calls.append(("routed", adapters))
+        return routed
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
-    monkeypatch.setattr(sched_preflight, "SharedRouteAdapters", FakeSharedRouteAdapters)
-    monkeypatch.setattr(sched_preflight, "_primary_profile_routes_for_current_home",
-        lambda: ["route-to-secondary"],
-    )
+    monkeypatch.setattr(sched_preflight, "shared_route_adapters_for_current_home", fake_shared)
     monkeypatch.setattr(
         scheduler,
         "drain_delivery_queue",
@@ -156,7 +152,7 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
 
     assert calls == [
         ("drain", root_adapters),
-        ("routed", root_adapters, ["route-to-secondary"]),
+        ("routed", root_adapters),
         ("drain", routed),
     ]
 

@@ -97,7 +97,16 @@ class Finder(importlib.abc.MetaPathFinder):
         if displaced not in (None, new) and importlib.machinery.PathFinder.find_spec(displaced, path) is not None:
             raise ImportError(f"{fullname} cannot be served as {new}: the shared package {moved_parent} already "
                               f"has a module {displaced}", name=fullname)
-        spec = importlib.util.find_spec(new)
+        try:
+            spec = importlib.util.find_spec(new)
+        except ModuleNotFoundError as error:
+            if not f"{new}.".startswith(f"{error.name}."):
+                raise  # the current package exists and failed to import: that is the error to report
+            spec = None
         if spec is None:
+            # A process that outlived a return to the old layout (a repaired or rolled-back update)
+            # still has this finder: the module is at its old path again, and the ordinary finders load it.
+            if importlib.machinery.PathFinder.find_spec(fullname, path) is not None:
+                return None
             raise ModuleNotFoundError(f"No module named {new!r}", name=new)
         return _AliasSpec(fullname, new, _canonical(spec))

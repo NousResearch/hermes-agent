@@ -22,7 +22,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -36,8 +36,7 @@ from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_rel
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
     _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
-    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
-    validate_config_schema,
+    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order, validate_config_schema,
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
@@ -66,6 +65,7 @@ from hermes_cli.plugins_state import (
 )
 # PluginContext lives in plugins_context.py; this facade stays its public import path.
 from hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
+from hermes_cli._startup_fast import project_root_str
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -74,7 +74,7 @@ def get_bundled_plugins_dir() -> Path:
     env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
     if env_override:
         return Path(env_override)
-    return Path(__file__).resolve().parent.parent / "plugins"
+    return Path(project_root_str()) / "plugins"
 
 
 class PluginToolOverrideError(PermissionError):
@@ -436,6 +436,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                     # Re-register so force-reload is symmetric (#60036; tracking #64178 — salvaged from PR
                     # #64188; outbound webhooks added per #92682 review).
                     self._re_register_config_hooks_after_force()
+                    # Model providers load through providers/ discovery, which this sweep skips: re-scan
+                    # this home's provider plugins too, so an updated one reloads now (#153300). A
+                    # process that never imported providers has nothing stale to reload.
+                    if (providers := sys.modules.get("providers")) is not None:
+                        providers.refresh_bound_home()
             except BaseException:
                 self._discovered = False
                 raise

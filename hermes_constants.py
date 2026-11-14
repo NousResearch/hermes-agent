@@ -860,6 +860,27 @@ def socket_safe_tmpdir() -> str:
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 
 
+# ---- Launch-only env vars ----
+# Only the real launch environment (service unit ``Environment=``, container image, operator
+# export) may set these. Every Hermes user-writable layer skips them, so a user ``.env`` or a
+# user-configured secret source cannot repoint a deployment bootstrap value. ``HERMES_MANAGED_DIR``
+# would void administrator policy at a directory the user controls (#135200); ``HERMES_HOME``
+# moves identity, policy and plugin scope wholesale — one write to ``~/.hermes/.env`` would
+# otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
+# Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
+# ``hermes_cli.config.reload_env``, ``agent.secret_sources.registry.apply_all`` (reported as
+# ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
+# writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
+LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME"})
+
+
+def is_launch_only_env_key(name: str) -> bool:
+    """True when ``name`` is a launch-only key in any letter case. Windows env names are
+    case-insensitive, so ``hermes_managed_dir=`` in a ``.env`` would set ``HERMES_MANAGED_DIR``;
+    folding on POSIX too is harmless (a lowercase name there is a distinct var nothing reads)."""
+    return name.upper() in LAUNCH_ONLY_ENV_KEYS
+
+
 # ---- Managed mode (NixOS declarative config) ----
 # Canonical home of "is this install package-manager managed": ``hermes_cli.config`` re-exports
 # these, and :func:`apply_secure_dir_policy` below reads them. Lives here because constants
@@ -1480,7 +1501,7 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 # update post-probe shares this set so the guard that BLOCKS and the hint that EXPLAINS agree.
 FIRST_PARTY_MODULE_ROOTS = frozenset({
     "agent", "acp_adapter", "cli", "cron", "gateway", "model_tools", "plugins",
-    "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils",
+    "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils", "hermes_agent",
 })
 
 

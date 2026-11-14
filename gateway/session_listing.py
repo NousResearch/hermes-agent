@@ -1,4 +1,9 @@
 """Read-only native picker history; enumeration never adopts a transcript."""
+import base64
+import binascii
+import hashlib
+import json
+
 from hermes_state_local_migration import client_history_row, validate_legacy_row
 from hermes_state_mutation_binding import authorize_history
 from hermes_state_runtime import RuntimeStoreError
@@ -8,6 +13,47 @@ from gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
 _LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron')
+_CURSOR_TAG = 'l1'
+_CURSOR_MAX_CHARS = 1024
+_QUERY_MAX_CHARS = 200
+_BATCH = 200
+
+
+def check_page_params(params):
+    """``query`` and ``cursor`` filter and page the stored listing only; anything else is ``invalid_params``."""
+    query, cursor = params.get('query'), params.get('cursor')
+    if query is None and cursor is None:
+        return
+    if params.get('scope') != 'stored' or 'title' in params:
+        raise RuntimeStoreError('invalid_params', field='cursor' if query is None else 'query')
+    if query is not None and not (isinstance(query, str) and query.strip() and len(query) <= _QUERY_MAX_CHARS):
+        raise RuntimeStoreError('invalid_params', field='query')
+    if cursor is not None and not isinstance(cursor, str):
+        raise RuntimeStoreError('invalid_params', field='cursor')
+
+
+def _binding_digest(binding):
+    """The filters a cursor pages, at a fixed size: a cursor must fit ``_CURSOR_MAX_CHARS`` whatever their length."""
+    return hashlib.sha256(json.dumps(list(binding)).encode()).hexdigest()[:32]
+
+
+def _encode_cursor(offset, binding):
+    """*offset*: the storage offset of the first row no page has examined; *binding*: the filters it pages."""
+    held = [_CURSOR_TAG, offset, _binding_digest(binding)]
+    return base64.urlsafe_b64encode(json.dumps(held).encode()).decode().rstrip('=')
+
+
+def _decode_cursor(cursor, binding):
+    try:
+        if len(cursor) > _CURSOR_MAX_CHARS:
+            raise ValueError('cursor too long')
+        tag, offset, held = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+    except (TypeError, ValueError, binascii.Error):
+        raise RuntimeStoreError('invalid_params', field='cursor') from None
+    if (tag != _CURSOR_TAG or type(offset) is not int or not 0 <= offset < 2**63
+            or held != _binding_digest(binding)):
+        raise RuntimeStoreError('invalid_params', field='cursor')
+    return offset
 
 
 def _excluded_sources():
@@ -47,25 +93,33 @@ def legacy_readable(authority, actor, sid):
         return False
 
 
-def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False):
+def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False,
+                           query=None, cursor=None):
     """Offer legacy local rows only to the same native transport that may resume them.
 
     Canonical sessions are already in the live feed. Old local rows have no policy
     receipt until explicit resume; listing them must not claim or restore anything.
     *workspace*: only the folder's rows (``hermes -c``'s rule). *picker*: each row carries the picker
     fields, from the columns the listing already read (``gateway/session_picker_fields.py``).
+    *query*: only titles or ids containing it (``list_sessions_rich(search_query=)``). *cursor*: continue after
+    the page that returned it; ``next_cursor`` is None once the storage listing is exhausted.
     """
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
+    binding = (workspace, query, include_hidden)
+    offset = _decode_cursor(cursor, binding) if cursor is not None else 0
     if not _native_reader(authority, actor):
-        return {'sessions': [], 'scope': 'stored'}
+        return {'sessions': [], 'scope': 'stored', 'next_cursor': None}
     db = authority.db
     own_profile = db._own_profile_name() or 'default'
-    sessions, offset, seen, sources = [], 0, set(), []  # sources: (first row, current segment, listed row)
+    sessions, seen, sources, exhausted = [], set(), [], False  # sources: (first row, current segment, listed row)
     while len(sessions) < limit:
-        rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
-            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace)
+        rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=_BATCH, offset=offset,
+            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace,
+            search_query=query)
+        end = offset + len(rows)
         for row in rows:
+            offset += 1
             local = row['source'] in _LOCAL_SOURCES or client_history_row(row)
             if not local and _messaging_platform(row['source']) is None:
                 continue  # neither a local nor a messaging label (acp, unknown, ...): nothing this picker resumes
@@ -100,13 +154,14 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
             sources.append((row.get('_lineage_root_id') or row['id'], sid, row))
             if len(sessions) == limit:
                 break
-        if len(rows) < 200:
+        if len(rows) < _BATCH:
+            exhausted = offset == end
             break
-        offset += len(rows)
     if picker and sessions:
         from gateway.session_picker_fields import fill_picker_fields
         fill_picker_fields(db, [(row, *source) for row, source in zip(sessions, sources)])
-    return {'sessions': sessions, 'scope': 'stored'}
+    return {'sessions': sessions, 'scope': 'stored',
+            'next_cursor': None if exhausted else _encode_cursor(offset, binding)}
 
 
 def _closed_local_session(authority, actor, row, tip):

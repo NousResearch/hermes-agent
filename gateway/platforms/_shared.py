@@ -10,11 +10,14 @@ import contextlib
 import json
 import logging
 import os
+import threading
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
 
 logger = logging.getLogger(__name__)
 
@@ -148,23 +151,311 @@ def profile_scoped() -> bool:
 # (apply_yaml_config_fn, #25443)
 # ---------------------------------------------------------------------------
 
-def yaml_env_setter() -> Callable[[str, Any], None]:
-    """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]`` only
-    when the var is unset (explicit env wins over YAML) and NEVER while a multiplexed secondary
-    profile's scope is active — the gateway loads every secondary's config inside
+# Marker prefix for values this bridge itself wrote into ``os.environ``. A CLI-started gateway
+# hands its environment to the restart child, so a bridged value outlives the YAML read that
+# produced it; without the marker the bridge would skip on the next start ("env is set") and the
+# edited YAML would never take effect (#109032's mirror image). The marker holds a digest, never
+# the value: bridged names include credential-bearing ones (``TELEGRAM_PROXY``) and allowlists the
+# subprocess scrub strips, and ownership only needs equality. The scrub also drops the markers
+# (``local_env_policy._is_hermes_internal_secret``); only a same-profile restart child gets them back. The prefix and digest live in the
+# stdlib-only ``gateway.bridged_env`` so the spawn path never imports ``gateway.platforms``.
+
+
+def bridged_env_marker(name: str) -> str:
+    return f"{BRIDGED_ENV_MARKER_PREFIX}{name}"
+
+
+def _is_bridge_leftover(name: str, marker_value: Optional[str]) -> bool:
+    return marker_value is not None and bridged_env_digest(os.getenv(name)) == marker_value
+
+
+def bridge_env_skipped() -> bool:
+    """True when this load must not touch the launch profile's ``os.environ`` bridge values.
+
+    A multiplexed secondary's scope (``profile_scoped``), and also any load for a home other than the
+    process's own: a HERMES_HOME override or a secret scope stamped with another home. Without the
+    second half a cross-home load with no bound secret scope would refresh or retract the launch
+    profile's allowlist with another profile's YAML. The default profile's own unscoped loads under
+    multiplex still bridge, as on main.
+    """
+    if profile_scoped():
+        return True
+    from agent.secret_scope import current_secret_scope_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_routing_process_hermes_home())
+    return any(home and hermes_home_key(home) != own
+               for home in (get_hermes_home_override(), current_secret_scope_home()))
+
+
+def _supplied_by_operator(name: str) -> bool:
+    """True when ``name`` came from the launch profile's ``.env`` or an external secret source (vault,
+    1Password...): a deliberate value that wins (#109032).
+
+    Either can hold exactly the value a previous bridge wrote (a proxy URL moved from YAML into the
+    vault), so value comparison alone cannot tell it from the bridge's own leftover — the one case it
+    must not clobber or retract.
+    """
+    try:
+        from hermes_cli.env_loader import get_secret_source_values, has_nonblank_dotenv_value
+    except ImportError:  # bridging must not fail because the loader is unavailable
+        return False
+    from hermes_constants import get_routing_process_hermes_home
+    # The launch home's CURRENT source snapshot, never the lifetime all-homes name history
+    # (``source_supplied_names``): a mapping removed since, or another profile's vault, owns nothing here.
+    return has_nonblank_dotenv_value(name) or name in get_secret_source_values(get_routing_process_hermes_home())
+
+
+@dataclass
+class _YamlEnvLoad:
+    seen: set[str] = field(default_factory=set)
+    failed: bool = False
+    # name -> (value, marker) before this load's first write: a load that raises restores them, so the
+    # adapter (last good lists) and the runner (process env) never check different policies.
+    prior: dict[str, tuple[Optional[str], Optional[str]]] = field(default_factory=dict)
+    undo: list[Callable[[], None]] = field(default_factory=list)  # ownership state kept outside the env
+
+    def restore(self) -> None:
+        for name, values in self.prior.items():
+            for key, value in zip((name, bridged_env_marker(name)), values):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        for undo in self.undo:
+            undo()
+
+
+# Loads are synchronous; copied contexts must not inherit another thread's partial seen-set.
+_YAML_ENV_LOAD = threading.local()
+_YAML_ENV_LOCK = threading.RLock()
+
+
+def cancel_yaml_env_refresh() -> None:
+    """A swallowed discovery/hook failure is not evidence that settings were deleted."""
+    load = getattr(_YAML_ENV_LOAD, "current", None)
+    if load is not None:
+        load.failed = True
+
+
+def abort_yaml_env_refresh() -> None:
+    """Undo this load's bridged writes now: its caller caught a failure and continues on a fallback
+    config, so neither the writes nor a retraction of missing settings may be published."""
+    with _YAML_ENV_LOCK:
+        load = getattr(_YAML_ENV_LOAD, "current", None)
+        if load is not None:
+            load.restore()
+            load.prior.clear()
+            load.undo.clear()
+            load.failed = True
+
+
+@contextlib.contextmanager
+def yaml_env_refresh():
+    """Retract only unchanged bridge-owned leftovers after one complete, successful YAML load."""
+    if bridge_env_skipped():
+        yield
+        return
+    with _YAML_ENV_LOCK:
+        if getattr(_YAML_ENV_LOAD, "current", None) is not None:
+            yield  # A nested load participates in the outer load, never clears its partial writes.
+            return
+        before = {key[len(BRIDGED_ENV_MARKER_PREFIX):]: value for key, value in os.environ.items()
+                  if key.startswith(BRIDGED_ENV_MARKER_PREFIX) and key != BRIDGED_ENV_MARKER_PREFIX}
+        load = _YamlEnvLoad()
+        _YAML_ENV_LOAD.current = load
+        try:
+            try:
+                yield
+            except BaseException:
+                load.restore()
+                raise
+            if not load.failed:
+                for name, digest in before.items():
+                    marker = bridged_env_marker(name)
+                    if (name not in load.seen and os.getenv(marker) == digest
+                            and _is_bridge_leftover(name, digest) and not _supplied_by_operator(name)):
+                        os.environ.pop(name, None)
+                        os.environ.pop(marker, None)
+        finally:
+            del _YAML_ENV_LOAD.current
+
+
+def record_yaml_env_prior(name: str, undo: Callable[[], None]) -> None:
+    """Record *name* before a bridge writes it outside :func:`yaml_env_setter` (the allow-all grant),
+    so a load that raises restores it and runs *undo* to roll back that writer's ownership flag."""
+    with _YAML_ENV_LOCK:
+        load = getattr(_YAML_ENV_LOAD, "current", None)
+        if load is not None and name not in load.prior:
+            load.prior[name] = (os.getenv(name), os.getenv(bridged_env_marker(name)))
+            load.undo.append(undo)
+
+
+def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
+    """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]``
+    unless the operator set that var themselves, and NEVER while a multiplexed secondary
+    profile's scope (or any other home's load, ``bridge_env_skipped``) is active — the gateway loads every secondary's config inside
     ``_profile_runtime_scope``, so a write there would pin that profile's policy process-wide and the
     default profile's adapters would read it as their own (first-writer-wins poisoning, #80099).
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
     Lists are comma-joined; ``None`` is skipped.
+
+    Precedence is per *value*, not just per name: a var whose current value is the one this bridge
+    wrote last time is the bridge's own leftover (a restarted gateway inherits it) and is refreshed
+    from YAML, while any other preset value is an operator's and wins.
     """
-    skip = profile_scoped()
+    skip = bridge_env_skipped()
 
     def set_env(name: str, value: Any) -> None:
-        if value is None or skip or os.getenv(name):
+        if value is None or skip:
             return
-        os.environ[name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        with _YAML_ENV_LOCK:
+            load = getattr(_YAML_ENV_LOAD, "current", None)
+            if load is not None:
+                if fallback and name in load.seen:
+                    return  # The plugin already resolved authored/managed precedence this load.
+                load.seen.add(name)
+            bridged = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+            marker = bridged_env_marker(name)
+            current = os.getenv(name)
+            if current is not None and current.strip():
+                if not _is_bridge_leftover(name, os.getenv(marker)) or _supplied_by_operator(name):
+                    return  # the operator's value, not this bridge's leftover
+            if load is not None:
+                load.prior.setdefault(name, (current, os.getenv(marker)))
+            os.environ[name] = bridged
+            os.environ[marker] = bridged_env_digest(bridged)
 
     return set_env
+
+
+def bridge_owns_env(name: str) -> bool:
+    """True when ``os.environ[name]`` is this bridge's own value (YAML-derived, maybe canonicalized
+    by :func:`replace_bridged_env`), not an operator's."""
+    return _is_bridge_leftover(name, os.getenv(bridged_env_marker(name))) and not _supplied_by_operator(name)
+
+
+def replace_bridged_env(name: str, value: str) -> None:
+    """Rewrite ``os.environ[name]`` (an adapter canonicalizing a list it reads, e.g. Discord usernames
+    resolved to IDs) without turning a bridge-owned value into one that looks operator-set: the marker
+    follows the new value, so the next YAML load still refreshes or retracts it."""
+    with _YAML_ENV_LOCK:
+        marker = bridged_env_marker(name)
+        owned = _is_bridge_leftover(name, os.getenv(marker))
+        os.environ[name] = value
+        if owned:
+            os.environ[marker] = bridged_env_digest(value) or ""
+
+
+# ---------------------------------------------------------------------------
+# Live allowlists: a config.yaml edit reaches the next inbound event, no reconnect
+# ---------------------------------------------------------------------------
+# Adapters copy their gate lists at connect time (per-profile isolation, #72348). These helpers keep
+# that copy and refresh it when the owning profile's config.yaml changes. An unchanged file costs a
+# stat; a changed one costs one ``load_gateway_config()`` (~20 ms on a 1,000-line config), which also
+# refreshes the launch profile's bridged env, so an operator's own env/.env value still wins (#109032).
+
+_LIVE_GATE_LOCK = threading.RLock()
+
+
+def gate_config_version(home: Any = None) -> tuple:
+    """Change signature of *home*'s config.yaml (default: the active home) plus the managed overlay's."""
+    from pathlib import Path
+
+    from hermes_cli.config_backend import config_cache_version_or_none, config_version_or_none, get_config_backend
+    from hermes_cli.managed_scope import get_managed_dir
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home() if home is None else Path(home)
+    managed = get_managed_dir()
+    managed_sig = None
+    if managed is not None and get_config_backend().honors_managed_config():
+        managed_sig = config_version_or_none(managed / "config.yaml")
+    return str(home), config_cache_version_or_none(home / "config.yaml"), managed_sig
+
+
+def mark_live_gate_baseline(adapter: Any) -> None:
+    """Record, on the adapter's first connect, which config the connect-time gate copy came from.
+    A reconnect keeps the first baseline so an edit made before it is still picked up. The
+    baseline's home is the adapter's OWNING profile: every later refresh reads that home.
+
+    Only a config ``load_gateway_config()`` stamped has a known source. Any other (``gateway
+    --config <file>``, a programmatic config) keeps its loaded gates: refreshing it from a home
+    config.yaml would replace the operator's chosen policy with a file it never came from."""
+    if getattr(adapter, "_live_gate_version", None) is None:
+        loaded = getattr(getattr(adapter, "config", None), "loaded_version", None)
+        adapter._live_gate_version = loaded if loaded is not None else ()
+
+
+@contextlib.contextmanager
+def _owner_scope(home: str):
+    """Bind the owning profile's scope when the ambient one is another home's: a routed command
+    (``/voice join`` served by another profile's runtime) starts adapter tasks in that runtime's
+    scope, and its home's lists and .env must never become this adapter's gate."""
+    from hermes_constants import get_hermes_home
+
+    if str(get_hermes_home()) == home:
+        yield True
+        return
+    from pathlib import Path
+
+    from gateway.run import _profile_runtime_scope
+    with _profile_runtime_scope(Path(home)):
+        yield False
+
+
+def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Optional[Callable[[], None]] = None) -> bool:
+    """Bring ``adapter.config.extra[keys]`` up to date with the OWNING profile's config.yaml when it changed.
+
+    The owner is the home the connect-time baseline was read from, never the ambient scope: a task
+    started under another profile's scope still reads (and re-derives from) the owner's file and
+    .env, bound for the reload; ``on_reload`` re-derives the adapter's gate sets inside that bind.
+    Returns True when the config was reloaded. An adapter that never connected (owner unknown)
+    keeps its state. A config that fails to parse keeps the last good lists rather than dropping them.
+    """
+    baseline = getattr(adapter, "_live_gate_version", None)
+    if not baseline or not baseline[0]:
+        return False
+    home = baseline[0]
+    version = gate_config_version(home)
+    if version == adapter._live_gate_version:
+        return False
+    with _LIVE_GATE_LOCK:
+        if version == adapter._live_gate_version:
+            return False
+        with _owner_scope(home) as own_scope:
+            # Provisional only for the LAUNCH profile bound from another scope: its YAML lists live in the
+            # process env, which a bound scope's bridge skips. A secondary owner's load is complete.
+            from hermes_constants import get_routing_process_hermes_home
+            final = own_scope or str(get_routing_process_hermes_home()) != home
+            return _reload_live_gate_extra(adapter, keys, version, on_reload, acknowledge=final)
+
+
+def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
+                            on_reload: Optional[Callable[[], None]], acknowledge: bool = True) -> bool:
+    from gateway.config import PlatformConfig, load_gateway_config
+    try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
+        loaded = load_gateway_config(strict=True)
+    except Exception:
+        if getattr(adapter, "_live_gate_failed_version", None) != version:  # once per edit, not per event
+            adapter._live_gate_failed_version = version
+            logger.warning("[%s] config.yaml changed but cannot be loaded; keeping the current allowlists",
+                           getattr(adapter, "name", "?"), exc_info=True)
+        return False
+    current = loaded.platforms.get(adapter.platform) or PlatformConfig()
+    extra = adapter.config.extra
+    for key in keys:
+        if key in current.extra:
+            extra[key] = current.extra[key]
+        else:
+            extra.pop(key, None)
+    if on_reload is not None:
+        on_reload()
+    # Retry this same edit after a transient read failure, without requiring a second write. A reload under
+    # a bound scope is provisional: the launch profile's bound scope skips its YAML env bridge, so the
+    # snapshot can still hold the pre-edit values; the owner's own next event redoes it.
+    if acknowledge:
+        adapter._live_gate_version = version
+    return True
 
 
 def send_error(message: Any, *, nothing_sent: bool = False) -> dict:

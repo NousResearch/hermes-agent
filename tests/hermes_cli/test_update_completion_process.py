@@ -121,6 +121,8 @@ def transition(tmp_path):
     shutil.copy2(Path(update_completion.__file__).with_name("_startup_fast.py"), package / "_startup_fast.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
+    shutil.copytree(Path(update_completion.__file__).parents[1] / "hermes_agent", root / "hermes_agent",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     (package / "gitlock.py").write_text(
         "from hermes_cli.probe import event\n"
         "convert_treeless_checkout_first = lambda root: event('convert')\n"

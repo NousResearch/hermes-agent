@@ -105,7 +105,7 @@ def _is_bundled(provider_dir: Path) -> bool:
 def _module_name(provider_dir: Path, name: str) -> str:
     """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
     if _is_bundled(provider_dir):
-        return f"plugins.memory.{name}"
+        return f"{__package__}.{name}"
     # Separate package trees, including relative imports, across homes/sources.
     digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
     return f"{_USER_NAMESPACE}.{name}__source_{digest}"
@@ -285,7 +285,7 @@ def _load_package(provider_dir: Path, name: str):
     (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
     return _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
-        parents=("plugins", "plugins.memory"),
+        parents=(__package__.rpartition(".")[0], __package__),
         logger=logger,
         synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
     )

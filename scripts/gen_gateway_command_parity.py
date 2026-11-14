@@ -13,6 +13,7 @@ on drift.
 
 from __future__ import annotations
 
+import importlib
 import re
 import sys
 from pathlib import Path
@@ -30,7 +31,7 @@ NOT_A_LOCAL_READ = {
     "agents": "gateway-wide: lists every chat's running agents and the process's async jobs",
     "platform": "messaging adapters; `pause`/`resume` mutate them",
     "sessions": "messaging origin-scoped listing (`/sessions all` needs a messaging admin)",
-    "debug": "`/debug upload` uploads logs to a public paste (bare `/debug` is the privacy notice)",
+    "debug": "`/debug upload` uploads a summary to a public paste (bare `/debug` is the privacy notice)",
     "save": "the gateway handler writes its file on the gateway host; Desktop saves `session.export` text "
             "through its own dialog",
     "rollback": "restores filesystem checkpoints",
@@ -149,7 +150,8 @@ def ink_cell(cmd, gateway, ink, served):
 def _sidecar_live_session_methods():
     """Sidecar RPCs that resolve their ``session_id`` in the sidecar's own session map
     (``@_rpc(..., live_session=True)``), which never holds a shared-gateway session."""
-    text = "".join(p.read_text(encoding="utf-8-sig") for p in sorted((ROOT / "tui_gateway").glob("*.py")))
+    from hermes_agent.compat.paths import current_path
+    text = "".join(p.read_text(encoding="utf-8-sig") for p in sorted((ROOT / current_path("tui_gateway")).glob("*.py")))
     return set(re.findall(r'_rpc\(\s*"([\w.]+)"[^)]*\blive_session=True', text))
 
 
@@ -157,7 +159,10 @@ def _rpc_cell(methods, served):
     """An RPC the authority does not serve: session-namespace verbs answer -32601 (the client's
     "out of sync" error); any other method reaches the legacy sidecar (``tui_gateway/ws.py``),
     where a live-session handler answers 4001 for every shared-gateway session."""
-    from tui_gateway.ws_legacy_fallback import _SESSION_FALLBACK_ALLOWED, _SESSION_NAMESPACES
+    from hermes_agent.compat.paths import current_module
+    fallback = importlib.import_module(current_module("tui_gateway.ws_legacy_fallback"))
+    _SESSION_FALLBACK_ALLOWED = fallback._SESSION_FALLBACK_ALLOWED
+    _SESSION_NAMESPACES = fallback._SESSION_NAMESPACES
     broken = sorted(m for m in methods - served
                     if m.startswith(_SESSION_NAMESPACES) and m not in _SESSION_FALLBACK_ALLOWED)
     if broken:

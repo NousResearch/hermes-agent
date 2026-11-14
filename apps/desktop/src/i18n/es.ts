@@ -2893,10 +2893,10 @@ export const esOverrides = {
       backupDesc: 'Comprimir la configuración, memorias, skills y sesiones en un archivo ZIP',
       debugShare: 'Compartir datos de depuración',
       debugShareDesc:
-        'Sube un informe y registros con datos sensibles ocultos y obtén enlaces para compartir (se eliminan automáticamente en 6 h)',
+        'Sube un resumen (versiones, claves de configuración, recuentos de errores; sin texto de registros) y obtén un enlace para compartir (se elimina automáticamente en 6 h)',
       debugShareConfirm: '¿Subir el informe de depuración a un paste público?',
       debugShareConfirmDesc:
-        'Sube información del sistema + registros completos a un servicio de paste público. Los secretos se ocultan, pero tus mensajes recientes, la salida de herramientas y las rutas y nombres de archivo permanecen en los registros y cualquiera con el enlace puede leerlos. Los pastes se eliminan automáticamente a las 6 horas; si paste.rs no está disponible, la alternativa dpaste.com los mantiene públicos 1 día y no se pueden eliminar antes.',
+        'Sube un resumen a un servicio de paste público: versiones de Hermes, Python y del sistema operativo, nombres de las plataformas conectadas y de los toolsets, claves de configuración (sin valores) y recuentos de advertencias/errores. No contiene líneas de registro ni texto de mensajes. Los pastes se eliminan automáticamente a las 6 horas; si paste.rs no está disponible, la alternativa dpaste.com los mantiene públicos 1 día y no se pueden eliminar antes.',
       debugShareRunning: 'Subiendo informe de depuración…',
       debugShareLinks: 'Enlaces para compartir',
       debugShareFailed: 'No se pudieron compartir los datos de depuración',
@@ -3251,6 +3251,14 @@ export const esOverrides = {
     fieldSkillsPlaceholder: 'nombres de skills separados por comas (opcional)',
     fieldDeliver: 'Entregar a',
     fieldDeliverOnly: 'Entregar solo la carga útil',
+    fieldSignature: 'Firma',
+    fieldSignatureHint: 'El único esquema de firma que acepta esta ruta. Las entregas de GitHub, GitLab y Linear necesitan su propio esquema.',
+    signatureOptions: {
+      generic: 'Genérica (con marca de tiempo)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instrucciones para el agente cuando se active este webhook (opcional)',
     nameRequired: 'Nombre obligatorio',
@@ -3923,7 +3931,7 @@ export const esOverrides = {
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
       '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
-      '/debug': 'Informe de depuración (info del sistema + registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces',
+      '/debug': 'Informe de depuración (versiones, claves de configuración, recuentos de errores; sin texto de registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces',
       '/model': 'Cambiar el modelo de esta sesión'
     },
     hotkeyDescs: {

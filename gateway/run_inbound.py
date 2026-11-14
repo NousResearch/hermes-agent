@@ -449,15 +449,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _refused_clarify(self, event: MessageEvent, clarify_id: str) -> Optional[str]:
         """The localized refusal when *event*'s sender may not answer clarify *clarify_id* (not its
         requester, an approver, or this bot's admin), else None."""
+        from gateway.relay.admitted_authors import answer_admitted
         from gateway.approval_actor import clarify_refusal, refusal_text
-        requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event))
+        requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event),
+                                    admitted=answer_admitted(event))
         return refusal_text(requester) if requester else None
 
     def _refused_slash_confirm(self, event: MessageEvent, session_key: str, confirm_id: str) -> Optional[str]:
         """The localized refusal when *event*'s sender may not answer slash confirm *confirm_id*, else None."""
+        from gateway.relay.admitted_authors import answer_admitted
         from gateway.approval_actor import refusal_text, slash_confirm_refusal
         requester = slash_confirm_refusal(session_key, confirm_id, event.sender_id() or "",
-                                          admin_ids=self._prompt_admin_ids(event))
+                                          admin_ids=self._prompt_admin_ids(event), admitted=answer_admitted(event))
         return refusal_text(requester) if requester else None
 
     def _prompt_admin_ids(self, event: MessageEvent):

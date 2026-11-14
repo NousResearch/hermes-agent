@@ -24,9 +24,11 @@ import ast
 import re
 from pathlib import Path
 
+from hermes_agent.compat.paths import current_path
+
 # gateway/relay package directory: tests/gateway/relay/ -> repo root parents[3].
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_RELAY_PKG = _REPO_ROOT / "gateway" / "relay"
+_RELAY_PKG = _REPO_ROOT / current_path("gateway/relay")
 
 # Modules / symbols that mean "platform crypto re-validation". If the relay path
 # imports any of these it has re-coupled the gateway to a platform secret.

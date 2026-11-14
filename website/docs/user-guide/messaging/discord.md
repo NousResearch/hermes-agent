@@ -994,6 +994,8 @@ Semantics:
 
 This is the preferred pattern when the moderation team churns — new moderators get access the moment the role is granted, with no `.env` edit or gateway restart.
 
+**Editing the lists in `config.yaml` takes effect on the next message.** `discord.allowed_roles`, `discord.allow_from` and the channel lists are re-read when `config.yaml` changes, with no gateway restart: a role or user you remove is refused from their next message, slash command or button click. In a gateway that serves several profiles (`gateway.multiplex_profiles`), the host profile — the one the gateway was started with — keeps the lists it had at startup: restart the gateway after editing its lists. A value set in `.env` still wins over `config.yaml`. Adding the *first* role or username to a bot connected without the Server Members intent still needs a restart, because the intent is chosen at connect. A username added later is matched only after the next reconnect resolves it to an ID.
+
 ### Mention Control
 
 By default, Hermes blocks the bot from pinging `@everyone`, `@here`, and role mentions, even if its reply contains those tokens. This prevents a poorly-worded prompt or echoed user content from spamming a whole server. Individual `@user` pings and reply-reference pings (the little "replying to…" chip) stay enabled so normal conversation still works.

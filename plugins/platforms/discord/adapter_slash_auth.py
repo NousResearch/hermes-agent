@@ -15,6 +15,7 @@ class DiscordSlashAuthMixin:
     _get_allowed_channels: Callable[[], set]
     _get_ignored_channels: Callable[[], set]
     _is_allowed_user: Callable[..., bool]
+    _refresh_live_gates: Callable[[], None]
 
     # ── Slash command authorization ─────────────────────────────────────
     # ``_check_slash_authorization`` mirrors the on_message gates one-for-one. No allowlist =>
@@ -27,6 +28,7 @@ class DiscordSlashAuthMixin:
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
         """
+        self._refresh_live_gates()  # a config.yaml edit applies to the next invocation
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
         channel_ids: set = set()
@@ -88,5 +90,5 @@ class DiscordSlashAuthMixin:
         meaning (_discord_message_admission): a role allowlist exists and THIS actor passes the gate.
         Re-evaluated for the interaction instead of trusted from call order, so a builder can never
         stamp the grant on an actor the slash gate would refuse."""
-        return bool(getattr(self, "_allowed_role_ids", set())) and self._evaluate_slash_authorization(
-            interaction)[0]
+        allowed = self._evaluate_slash_authorization(interaction)[0]  # refreshes the gate first
+        return allowed and bool(getattr(self, "_allowed_role_ids", set()))

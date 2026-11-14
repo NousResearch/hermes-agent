@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Kon nie ontfoutverslag oplaai nie: {error}"
     header: "**Ontfoutverslag opgelaai:**"
     auto_delete: "⏱ Plakke sal outomaties oor 6 uur uitgevee word."
-    full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
+    full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share --nous` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
     local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Wys Hermes Agent-weergawe"
   debug:
-    description: "Ontfoutverslag (stelselinligting + loglêers): wys eers die privaatheidskennisgewing; /debug upload deel skakels"
+    description: "Ontfoutverslag (weergawes, konfigurasiesleutels, foutetellings; geen logteks nie): wys eers die privaatheidskennisgewing; /debug upload deel skakels"
   quit:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts skakel slegs-TTS-modus aan of af — die agent antwoord hardop, maar jy tik steeds jou prompte."
   t344: "/reload-skills skandeer ~/.hermes/skills/ weer sodat inprop-vaardighede verskyn sonder om die sessie te herbegin."
   t345: "/indicator kaomoji|emoji|unicode|ascii kies die styl van die TUI-besig-aanwyser wat tydens agent-lopies gewys word."
-  t346: "/debug laai 'n ondersteuningsbundel (stelselinligting + logs) op en gee deelbare skakels terug — werk ook in die klets."
+  t346: "/debug upload laai 'n opsomming op (weergawes, konfigurasiesleutels, foutetellings; geen logteks nie) en gee 'n deelbare skakel terug — werk ook in die klets."
   t347: "hermes -z \"<prompt>\" is die suiwerste eenmalige lopie: finale antwoord op stdout, niks anders nie — ideaal om in skripte te pyp."
   t348: "hermes chat --pass-session-id spuit die sessie-ID in die stelselprompt in sodat die agent daarna kan verwys."
   t349: "hermes chat --image path/to/pic.png heg 'n plaaslike beeld aan 'n enkele -q-navraag sonder 'n aparte oplaaistap."

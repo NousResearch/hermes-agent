@@ -32,6 +32,7 @@ from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("gateway.run")
 
@@ -1211,11 +1212,12 @@ class GatewaySlashCommandsMixin(
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
+            from gateway.relay.admitted_authors import answer_admitted
             from gateway.approval_actor import answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
                 session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
-                admin_ids=policy_for_runner_source(self, event.source))
+                admin_ids=policy_for_runner_source(self, event.source), admitted=answer_admitted(event))
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         _approval_state = self._peek_session_state(session_key)
         if _approval_state is not None and _approval_state.persistent.approvals is not None:
@@ -1294,12 +1296,13 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the summary (system
-        info + log tails), never full logs; ``hermes debug share`` from the CLI does full uploads."""
+        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the allowlisted public
+        summary (no log or message text); full logs go to private storage via
+        ``hermes debug share --nous`` from the CLI."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
-                                      collect_debug_report, upload_to_pastebin)
+                                      _is_dpaste_url, _schedule_auto_delete, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
+        from hermes_cli.debug_summary import collect_public_summary
 
         words = {w.lower() for w in (event.get_command_args() or "").split()}
         wants_local = "local" in words
@@ -1330,7 +1333,7 @@ class GatewaySlashCommandsMixin(
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
-            report = collect_debug_report(log_lines=200, dump_text=_capture_dump())
+            report = collect_public_summary(log_lines=200)
             try:
                 urls = {t("gateway.debug.report_label"): upload_to_pastebin(report)}
             except Exception as exc:
@@ -1372,7 +1375,7 @@ class GatewaySlashCommandsMixin(
         if is_managed():
             return f"✗ {format_managed_message(t('gateway.update.managed_action'))}"
 
-        project_root = Path(__file__).parent.parent.resolve()
+        project_root = Path(project_root_str())
 
         # Not a git-managed install (docker/nix/desktop-app/source): refuse
         # with the steward's own update mechanism instead of git-pulling a

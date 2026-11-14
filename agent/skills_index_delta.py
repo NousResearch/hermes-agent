@@ -29,7 +29,10 @@ _REMOVED_HEAD = "No longer available:"
 _ACCURATE_AGAIN = " The skills listed in the system prompt are accurate again; earlier skill-change notes are superseded."
 _ROW = "    - "
 
-_BLOCK_RE = re.compile(r"<available_skills>\n?(.*?)</available_skills>", re.DOTALL)
+# The block owns whole lines: ``prompt_builder`` emits it as ``\n<available_skills>\n…\n</available_skills>``,
+# while a context file only ever *mentions* the tag in prose. Context files also precede the volatile band
+# that carries the index, so the LAST block is the real one — a quoted example cannot shadow it (#151915).
+_BLOCK_RE = re.compile(r"^<available_skills>\n?(.*?)^</available_skills>", re.DOTALL | re.MULTILINE)
 _NAMES_ONLY_RE = re.compile(r"\[names only\]:\s*(.+)$")
 
 _Delta = tuple[frozenset, frozenset]
@@ -44,7 +47,8 @@ def _row_name(line: str) -> str:
 def index_entries(prompt: Any) -> dict[str, str]:
     """``{name: index row}`` for every skill in ``prompt``'s ``<available_skills>`` block; names-only
     category rows (focus mode) map to ``""``. ``{}`` without a block."""
-    match = _BLOCK_RE.search(prompt) if isinstance(prompt, str) else None
+    blocks = list(_BLOCK_RE.finditer(prompt)) if isinstance(prompt, str) else []
+    match = blocks[-1] if blocks else None
     entries: dict[str, str] = {}
     for line in match.group(1).splitlines() if match else ():
         if line.strip().startswith("- ") and (name := _row_name(line)):

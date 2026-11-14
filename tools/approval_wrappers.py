@@ -266,8 +266,10 @@ def carried_command_variants(command: str):
                 if payload in seen:
                     continue
                 seen.add(payload)
-                nested.append(payload)
                 yield from _command_detection_variants(payload)
+                # A literal heredoc body inside the payload is text here too, as at the top level.
+                payload = _blank_literal_heredoc_bodies(payload)
+                nested.append(payload)
                 peeled = strip_wrapper_prefixes(payload)
                 yield from _command_detection_variants(peeled)
                 # The peeled form can expose a carrier the raw walk stops before (`xargs su -c ...`).
@@ -345,6 +347,12 @@ def dequote_rm_operands(variant: str) -> str:
 # only copy it. Any other consumer may run it (`bash`, `ssh host`, `cat <<'EOF' | sh`).
 _QUOTED_HEREDOC_RE = re.compile(r"""<<-?[ \t]*(['"])([A-Za-z0-9_.-]+)\1([^\n]*)\n""")
 _LITERAL_HEREDOC_READERS = frozenset({"cat", "tee"})
+_MAX_HEADER_CONTINUATIONS = 8
+
+
+def _continues(line: str) -> bool:
+    """True when *line* ends in an unescaped ``\\`` (a line continuation)."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
 
 
 def literal_heredoc_bodies(command: str) -> list[tuple[int, int]]:
@@ -355,10 +363,20 @@ def literal_heredoc_bodies(command: str) -> list[tuple[int, int]]:
             continue  # inside an earlier body: text, not a redirection
         line_start = command.rfind("\n", 0, match.start()) + 1
         words = re.split(r"[;&|(]", command[line_start:match.start()])[-1].split()
-        if not words or os.path.basename(words[0]).lower() not in _LITERAL_HEREDOC_READERS or re.search(
-                r"[|;&]", match.group(3)):
+        if not words or os.path.basename(words[0]).lower() not in _LITERAL_HEREDOC_READERS:
             continue
-        close = re.compile(r"^\t*" + re.escape(match.group(2)) + r"$", re.MULTILINE).search(command, match.end())
+        # A `\`-newline continues the header (`cat <<'EOF' \` then `| sh`): the body starts after it.
+        # Past a few continued lines the body is treated as runnable (never blanked), keeping this linear.
+        header, body_start = match.group(3), match.end()
+        for _ in range(_MAX_HEADER_CONTINUATIONS + 1):
+            if not _continues(header) or re.search(r"[|;&]", header):
+                break
+            line_end = command.find("\n", body_start)
+            line_end = len(command) if line_end < 0 else line_end
+            header, body_start = header[:-1] + command[body_start:line_end], line_end + 1
+        if re.search(r"[|;&]", header) or _continues(header) or body_start > len(command):
+            continue
+        close = re.compile(r"^\t*" + re.escape(match.group(2)) + r"$", re.MULTILINE).search(command, body_start)
         cursor = close.end() if close else len(command)
-        spans.append((match.end(), close.start() if close else cursor))
+        spans.append((body_start, close.start() if close else cursor))
     return spans

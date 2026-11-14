@@ -47,6 +47,11 @@ _BLOCKED = [
     "cat <<'EOF' | sh\nnice reboot\nEOF",
     "bash <<'EOF'\nsu -c reboot\nEOF",
     "cat <<'EOF'\nx\nEOF\nnice reboot",
+    # A `\\`-newline carries the header onto a `| sh` line, so the body runs.
+    "cat <<'EOF' \\\n| sh\nnice reboot\nEOF",
+    "cat <<'EOF' \\\n  \\\n| sh\nsu -c reboot\nEOF",
+    # A carried command after a literal heredoc in the payload runs.
+    "su -c " + _Q + "cat <<'EOF'\nx\nEOF\nnice reboot" + _Q,
     "ls; " + _Q + "reboot" + _Q,
 ]
 
@@ -74,6 +79,9 @@ _ALLOWED = [
     # ...including wrapper and carrier lines in that text.
     "cat <<'EOF'\nnice reboot\nEOF",
     "cat <<'EOF'\nsu -c reboot\nEOF",
+    "cat <<'EOF' \\\n> notes.md\nnice reboot\nEOF",
+    # ...also inside a carried payload.
+    "su -c " + _Q + "cat <<'EOF'\nnice reboot\nEOF" + _Q,
 ]
 
 

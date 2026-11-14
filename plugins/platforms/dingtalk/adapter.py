@@ -6,6 +6,9 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 import asyncio
 import json
 import logging
+import os
+import shutil
+import tempfile
 import re
 import time
 import traceback
@@ -215,6 +218,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=1000)
         self._session_webhooks: dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
         self._message_contexts: dict[str, Any] = {}  # chat_id -> last inbound ChatbotMessage (per-chat: no clobber)
+        # chat_id -> sender_staff_id，从入站消息学习并落盘：钉钉单聊推送唯一可用的收件人 id，
+        # 网关重启后仍能从磁盘恢复，让 cron / kanban 在用户还没说话时也能推送。
+        self._staff_ids: dict[str, str] = {}
+        self._staff_ids.update(self._load_staff_ids())
         self._card_template_id: Optional[str] = extra.get("card_template_id")
         self._done_emoji_fired: set[str] = set()  # chats whose Done reaction fired this turn; reset per inbound
         # Open streaming cards: chat_id -> {out_track_id: last_content}. ``edit_message(finalize=False)``
@@ -473,6 +480,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         if chat_id:
             self._message_contexts[chat_id] = message
             self._done_emoji_fired.discard(chat_id)
+            self._remember_staff_id(chat_id, sender_staff_id)
         session_webhook = getattr(message, "session_webhook", None) or ""
         if session_webhook and chat_id and _DINGTALK_WEBHOOK_RE.match(session_webhook):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
@@ -506,6 +514,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         logger.debug("[%s] send() chat_id=%s card_enabled=%s", self.name, chat_id, bool(self._card_template_id and self._card_sdk))
         session_webhook = metadata.get("session_webhook") or (self._get_valid_webhook(chat_id) or ("",))[0]
         if not session_webhook:
+            # 没有入站消息可回复：cron 输出、后台任务、或超出 webhook TTL 的回合。
+            proactive = await self._proactive_push(chat_id, content)
+            if proactive and proactive.success:
+                return proactive
             logger.warning("[%s] No valid session_webhook for chat_id=%s", self.name, chat_id)
             return SendResult(success=False, error="No valid session_webhook available. Reply must follow an incoming message.")
         if not self._http_client:
@@ -550,16 +562,238 @@ class DingTalkAdapter(BasePlatformAdapter):
         return await self.send(chat_id=chat_id, content=f"{caption}\n\n{image_block}" if caption else image_block, reply_to=reply_to, metadata=metadata)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata=None, **kwargs) -> SendResult:
-        """Webhook replies cannot upload local images."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("image uploads", "media upload"))
+        """上传到钉钉媒体库后以 sampleImageMsg 发出（photoURL 接受 media_id）。"""
+        return await self._send_media(chat_id, image_path, "image")
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        """Webhook replies cannot upload local files."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"))
+        """上传后以 sampleFile 发出；扩展名不在钉钉白名单内直接报错。"""
+        return await self._send_media(chat_id, file_path, "file", file_name=file_name)
+
+    async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata=None, **kwargs) -> SendResult:
+        """上传后以 sampleVideo 发出（毫秒时长 + ffmpeg 抽帧封面）。"""
+        return await self._send_media(chat_id, video_path, "video")
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
         return {"name": chat_id, "type": "group" if "group" in chat_id.lower() else "dm"}
+
+    # --- proactive push (no inbound session webhook) -------------------------------------------
+    def _staff_ids_path(self):
+        """chat_id -> staffId 映射的落盘位置（按 profile 隔离，网关重启后仍可读）。"""
+        try:
+            from pathlib import Path
+            from hermes_constants import get_hermes_home
+            return Path(get_hermes_home()) / "cache" / "dingtalk_staff_ids.json"
+        except Exception:
+            return None
+
+    def _load_staff_ids(self) -> dict:
+        path = self._staff_ids_path()
+        if not path:
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return {str(k): str(v) for k, v in data.items() if v}
+        except Exception:
+            return {}
+
+    def _remember_staff_id(self, chat_id: str, staff_id: str) -> None:
+        if not chat_id or not staff_id or self._staff_ids.get(chat_id) == staff_id:
+            return
+        self._staff_ids[chat_id] = staff_id
+        path = self._staff_ids_path()
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._staff_ids, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            logger.debug("[%s] Could not persist staff id map", self.name, exc_info=True)
+
+    def _staff_id_for(self, chat_id: str) -> str:
+        """四级查找：本进程学到的 -> 本进程缓存的入站消息 -> 配置 -> 环境变量。"""
+        staff_id = self._staff_ids.get(chat_id, "")
+        if not staff_id:
+            context = self._message_contexts.get(chat_id)
+            staff_id = getattr(context, "sender_staff_id", "") or "" if context is not None else ""
+        if not staff_id:
+            staff_id = (self.config.extra or {}).get("staff_id") or _get_scoped_secret("DINGTALK_STAFF_ID", "")
+        return staff_id or ""
+
+    def _is_group_chat(self, chat_id: str) -> bool:
+        context = self._message_contexts.get(chat_id)
+        return str(getattr(context, "conversation_type", "") or "") == "2" if context is not None else False
+
+    async def _proactive_push(self, chat_id: str, content: str) -> Optional[SendResult]:
+        """无 session webhook 时的主动推送：群 groupMessages / 单聊 oToMessages。"""
+        text = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
+        if not text.strip():
+            return None
+        client = self._http_client
+        is_group = self._is_group_chat(chat_id)
+        staff_id = "" if is_group else self._staff_id_for(chat_id)
+        token = await self._get_access_token() if client is not None and (is_group or staff_id) else None
+        if token and client is not None:
+            body = {"robotCode": self._robot_code, "msgKey": "sampleMarkdown",
+                    "msgParam": json.dumps({"title": "Hermes", "text": text}, ensure_ascii=False)}
+            if is_group:
+                path = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+                body["openConversationId"] = chat_id
+                target = f"group:{chat_id[:24]}"
+            else:
+                path = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+                body["userIds"] = [staff_id]
+                target = f"staff:{staff_id}"
+            try:
+                resp = await client.post(path, json=body, timeout=15.0,
+                                         headers={"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"})
+                data = resp.json() if resp.content else {}
+                rejected = data.get("invalidStaffIdList") or data.get("filteredStaffIdList")
+                if resp.status_code < 300 and not rejected:
+                    logger.info("[%s] Proactive push delivered via %s", self.name, target)
+                    return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+                logger.warning("[%s] Proactive push rejected (%s) HTTP %s: %s", self.name, target, resp.status_code, resp.text[:200])
+            except Exception as e:
+                logger.warning("[%s] Proactive push error (%s): %s", self.name, target, e)
+        return None
+
+    # --- media: upload -> media_id -------------------------------------------------------
+    MEDIA_LIMIT_BYTES = 20 * 1024 * 1024  # 钉钉对 image/file/video 的硬上限
+    FILE_TYPES = ("xlsx", "pdf", "zip", "rar", "doc", "docx")  # sampleFile 白名单
+
+    async def _upload_media(self, path: str, kind: str) -> tuple[Optional[str], Optional[str]]:
+        """POST oapi /media/upload -> (media_id, error)。kind: image | file | video。"""
+        client = self._http_client
+        token = await self._get_access_token()
+        if client is None or not token:
+            return None, "DingTalk client/token unavailable"
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return None, f"cannot read {path}: {exc}"
+        if size > self.MEDIA_LIMIT_BYTES:
+            return None, f"{size / 1048576:.1f}MB 超过钉钉 20MB 上限"
+        try:
+            with open(path, "rb") as fh:
+                resp = await client.post(
+                    "https://oapi.dingtalk.com/media/upload",
+                    params={"access_token": token, "type": kind},
+                    files={"media": (os.path.basename(path), fh, "application/octet-stream")},
+                    timeout=180.0)
+            data = resp.json() if resp.content else {}
+        except Exception as exc:
+            return None, f"upload failed: {exc}"
+        if data.get("errcode") == 0 and data.get("media_id"):
+            return str(data["media_id"]), None
+        return None, f"upload rejected: errcode={data.get('errcode')} {data.get('errmsg')}"
+
+    async def _robot_message(self, chat_id: str, msg_key: str, msg_param: dict) -> SendResult:
+        """群 -> groupMessages/send；单聊 -> oToMessages/batchSend。"""
+        client = self._http_client
+        token = await self._get_access_token()
+        if client is None or not token:
+            return SendResult(success=False, error="DingTalk client/token unavailable")
+        is_group = self._is_group_chat(chat_id)
+        staff_id = "" if is_group else self._staff_id_for(chat_id)
+        if not is_group and not staff_id:
+            return SendResult(success=False, error="单聊推送需要 staffId，而本会话还没有入站消息")
+        body = {"robotCode": self._robot_code, "msgKey": msg_key,
+                "msgParam": json.dumps(msg_param, ensure_ascii=False)}
+        if is_group:
+            url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+            body["openConversationId"] = chat_id
+        else:
+            url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+            body["userIds"] = [staff_id]
+        try:
+            resp = await client.post(url, json=body, timeout=60.0,
+                                     headers={"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"})
+            data = resp.json() if resp.content else {}
+            if resp.status_code < 300 and not (data.get("invalidStaffIdList") or data.get("filteredStaffIdList")):
+                logger.info("[%s] Robot message %s delivered", self.name, msg_key)
+                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+            logger.warning("[%s] Robot message %s rejected HTTP %s: %s", self.name, msg_key, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"{msg_key} rejected: {resp.text[:200]}")
+        except Exception as exc:
+            return SendResult(success=False, error=f"{msg_key} failed: {exc}")
+
+    async def _probe_video(self, path: str) -> dict:
+        """ffprobe 取 duration(**毫秒**) / width / height。
+
+        duration 必须是毫秒：传秒会让客户端认为这是一条 0 秒的坏视频，于是连封面都不渲染
+        （实测 24 -> 无封面，24532 -> 有封面）。
+        """
+        ffprobe = os.environ.get("FFPROBE_BIN") or shutil.which("ffprobe")
+        if not ffprobe:
+            return {}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                "stream=width,height:format=duration", "-of", "json", path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await proc.communicate()
+            info = json.loads(out or b"{}")
+            stream = (info.get("streams") or [{}])[0]
+            seconds = float((info.get("format") or {}).get("duration") or 0)
+            return {"duration": str(int(seconds * 1000)),
+                    "width": str(stream.get("width") or 0), "height": str(stream.get("height") or 0)}
+        except Exception:
+            return {}
+
+    async def _extract_cover(self, path: str) -> Optional[str]:
+        """sampleVideo 必须有封面（picMediaId），用 ffmpeg 抽第 1 秒一帧。"""
+        ffmpeg = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg")
+        if not ffmpeg:
+            return None
+        out = os.path.join(tempfile.mkdtemp(prefix="dt-cover-"), "cover.jpg")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg, "-y", "-ss", "1", "-i", path, "-frames:v", "1", "-q:v", "3", out,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await proc.communicate()
+            return out if os.path.exists(out) else None
+        except Exception:
+            return None
+
+    async def _send_media(self, chat_id: str, path: str, kind: str,
+                          file_name: Optional[str] = None) -> SendResult:
+        """本地媒体 -> media_id -> 机器人消息。超限或扩展名不合规直接报错，不做任何兜底。"""
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return SendResult(success=False, error=f"cannot read {path}: {exc}")
+        if size > self.MEDIA_LIMIT_BYTES:
+            return SendResult(success=False,
+                              error=f"{size / 1048576:.1f}MB 超过钉钉 20MB 上限（{kind}），请先自行压缩")
+        if kind == "image":
+            media_id, error = await self._upload_media(path, "image")
+            if not media_id:
+                return SendResult(success=False, error=error or "image upload failed")
+            return await self._robot_message(chat_id, "sampleImageMsg", {"photoURL": media_id})
+        if kind == "video":
+            media_id, error = await self._upload_media(path, "video")
+            if not media_id:
+                return SendResult(success=False, error=error or "video upload failed")
+            cover = await self._extract_cover(path)
+            if not cover:
+                return SendResult(success=False, error="抽帧失败：钉钉视频消息必须有封面（需要 ffmpeg）")
+            cover_id, cover_error = await self._upload_media(cover, "image")
+            if not cover_id:
+                return SendResult(success=False, error=cover_error or "封面图上传失败")
+            info = await self._probe_video(path)
+            return await self._robot_message(chat_id, "sampleVideo", {
+                "duration": info.get("duration", "0"), "videoMediaId": media_id, "videoType": "mp4",
+                "picMediaId": cover_id, "height": info.get("height", "0"), "width": info.get("width", "0")})
+        name = file_name or os.path.basename(path)
+        ext = os.path.splitext(name)[1].lstrip(".").lower()
+        if ext not in self.FILE_TYPES:
+            return SendResult(success=False,
+                              error=f"钉钉 sampleFile 只支持 {'/'.join(self.FILE_TYPES)}，不支持 .{ext or '?'}")
+        media_id, error = await self._upload_media(path, "file")
+        if not media_id:
+            return SendResult(success=False, error=error or "file upload failed")
+        return await self._robot_message(chat_id, "sampleFile",
+                                         {"mediaId": media_id, "fileName": name, "fileType": ext})
 
     def _get_valid_webhook(self, chat_id: str) -> Optional[tuple[str, int]]:
         """Get a non-expired session webhook for chat_id (5-minute safety margin)."""

@@ -151,6 +151,37 @@ class TestPluginSTTProviders:
         provider.available = True
         assert tools_config_providers.provider_readiness_status(row, {}) == "ready"
 
+    def test_configured_plugin_keys_do_not_mask_unavailable_backend(self):
+        """A configured API key is not proof of readiness.
+
+        Regression: an ``env_vars`` row short-circuited to ``ready`` before the
+        plugin's ``is_available()`` ran, so a plugin with valid credentials but a
+        missing SDK/binary reported ``ready``.
+        """
+        provider = _FakeSTTProvider(available=False)
+        transcription_registry.register_provider(provider)
+        row = next(r for r in tools_config_providers._plugin_stt_providers()
+                   if r.get("stt_provider") == "fake-stt")
+        row["env_vars"] = [{"key": "FAKE_STT_KEY", "prompt": "API key"}]
+
+        with patch("hermes_cli.tools_config._provider_env_ready", return_value=False):
+            assert tools_config_providers.provider_readiness_status(row, {}) == "needs_keys"
+        with patch("hermes_cli.tools_config._provider_env_ready", return_value=True):
+            assert tools_config_providers.provider_readiness_status(row, {}) == "needs_setup"
+            provider.available = True
+            assert tools_config_providers.provider_readiness_status(row, {}) == "ready"
+
+    def test_raising_plugin_availability_does_not_break_the_picker(self):
+        class _RaisingSTTProvider(_FakeSTTProvider):
+            def is_available(self) -> bool:
+                raise RuntimeError("bad plugin")
+
+        transcription_registry.register_provider(_RaisingSTTProvider())
+        row = next(r for r in tools_config_providers._plugin_stt_providers()
+                   if r.get("stt_provider") == "fake-stt")
+
+        assert tools_config_providers.provider_readiness_status(row, {}) == "ready"
+
     def test_route_forwards_provider_id(self, _isolate_hermes_home):
         transcription_registry.register_provider(_FakeSTTProvider())
 

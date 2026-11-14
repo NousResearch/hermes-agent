@@ -185,7 +185,12 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
     if provider.get("env_vars", []):
-        return "ready" if _provider_env_ready(provider) else "needs_keys"
+        if not _provider_env_ready(provider):
+            return "needs_keys"
+        # Configured credentials prove only the credential half. A plugin backend can still be
+        # unserviceable (missing SDK or binary), so fall through to its own `is_available()`.
+        if not provider.get("stt_plugin_name"):
+            return "ready"
 
     managed_feature = provider.get("managed_nous_feature")
     if provider.get("requires_nous_auth") or managed_feature:
@@ -227,7 +232,15 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
         from agent.transcription_registry import get_provider as _get_stt_provider
 
         registered = _get_stt_provider(plugin_stt)
-        return "ready" if registered is None or registered.is_available() else "needs_setup"
+        if registered is None:
+            return "ready"
+        try:
+            return "ready" if registered.is_available() else "needs_setup"
+        except Exception:  # health: allow BLE001 -- a raising third-party plugin must not fail the whole picker paint
+            # `is_available()` is documented not to raise, but a plugin can; downgrade to the
+            # non-blocking default and keep the traceback instead of breaking the readiness matrix.
+            logger.exception("STT plugin %r raised in is_available(); treating it as ready", plugin_stt)
+            return "ready"
 
     return _web_registry_readiness(provider)
 

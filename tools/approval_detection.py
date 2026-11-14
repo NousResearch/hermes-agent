@@ -331,6 +331,26 @@ class _PipeRemoteToShellMatcher:
         return None
 
 
+_DEV_SOCKET_RE = re.compile(r"/dev/(?:tcp|udp)/", re.IGNORECASE)
+# Redirect operators bash opens a /dev/tcp target for (`<<` is a heredoc delimiter, `>&N` a dup).
+# No leading fd digits: search() only reads op.end(), and a `[0-9]*` prefix rescans a digit run from every offset.
+_DEV_SOCKET_REDIRECT_OP_RE = re.compile(r"&>>?|<>|>>|>&|<&|>\||(?<!<)<(?!<)|>")
+
+
+class _DevSocketRedirectMatcher:
+    """`... > /dev/tcp/h/p` reverse shells. The operator is found on the quote-masked text, so prose that
+    quotes a redirect stays quiet; the operand is then read and dequoted from the real text, so a quoted
+    target (`> "/dev/tcp/h/1"`, `3<>'/dev/udp/h/53'`, `> /dev/"tcp"/h/1`) still counts."""
+
+    def search(self, text: str):
+        # No literal "/dev/" prefilter: the operand is dequoted below, so `> /"dev"/tcp/h/1` must reach it.
+        for op in _DEV_SOCKET_REDIRECT_OP_RE.finditer(_mask_quoted_prose(text)):
+            _, _, word = _read_shell_word(text, op.end())
+            if _DEV_SOCKET_RE.match(_deobfuscate_shell_word_for_detection(word)):
+                return op
+        return None
+
+
 def _contains_shell_carrier(command: str) -> bool:
     """Return whether any command-position word is a shell-carrying command."""
     return any(
@@ -419,6 +439,8 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"|(?:^|[;&|({`\n])[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
+
+_DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -533,6 +555,14 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Reverse shells (parity with Skills Guard's network rows). Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in
+    # _DevSocketRedirectMatcher, which dequotes the redirect operand; nc/socat are command-position anchored.
+    (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
+    # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
+    # the span stops there and `nc -z h 80 # -e note` stays quiet. The flag is case-sensitive (`-C` is CRLF).
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=\s)(?:[^\n;&|#]|(?<!\s)#)*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
+     "reverse shell via netcat -e/-c"),
+    (_CMDPOS + r'(?:\S*/)?socat\b(?:[^\n;&|#]|(?<!\s)#)*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
@@ -706,6 +736,7 @@ _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+    _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
 }
 DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)

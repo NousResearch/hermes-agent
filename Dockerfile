@@ -543,13 +543,13 @@ COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # image these are shared, non-secret package metadata, read by UID 10000.
 # uv's environment locks are build-only and may be world-writable. Remove
 # them after all builds; never relax permissions on mutable PM/home state.
-# uv's cache tree scatters its own .lock files (cache root, per-sdist
-# build dirs) through /opt/hermes/uv-cache — sweep those too, they only
-# exist so concurrent build-time uv processes can flock them and the
-# runtime re-creates any it needs in the writable machine cache.
+# uv also creates its cache locks 0666 (the root .lock and one <entry>.lock
+# per wheel/sdist entry), and the seed copy into $HERMES_HOME/cache/uv keeps
+# modes. Drop the world bit instead of deleting by name: "*.lock" also matches
+# files inside unpacked wheels (setuptools/_vendor/.lock).
 RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json && \
     rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock && \
-    find /opt/hermes/uv-cache -name .lock -delete
+    find /opt/hermes/uv-cache ! -type l -perm -0002 -exec chmod o-w {} +
 # Build helpers use system Python above; TUI gateway children need the sealed runtime.
 ENV HERMES_PYTHON=/opt/hermes/.venv/bin/python
 VOLUME [ "/opt/data" ]

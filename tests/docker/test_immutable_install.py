@@ -62,7 +62,7 @@ for relative in ('pm-runtime/pm-runtime.json', 'tools/facts.json', 'manifest.jso
 for relative in ('.venv/.lock', 'pm-runtime/.lock'):
     path = Path('/opt/hermes') / relative
     assert not path.exists() or not os.access(path, os.W_OK), path
-# uv creates its cache .lock files 0666 under buildkit's umask; the seed copies modes.
+# uv creates its cache lock files 0666 whatever the umask; the seed copies modes.
 for parent, dirs, files in os.walk('/opt/hermes/uv-cache'):
     for name in dirs + files:
         path = Path(parent) / name

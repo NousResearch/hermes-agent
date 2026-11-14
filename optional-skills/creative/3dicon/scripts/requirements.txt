@@ -1,0 +1,6 @@
+# Matting and image work. Everything else is stdlib (urllib, json, base64),
+# deliberately: a skill people install should not drag in a web stack.
+pillow>=10.0
+numpy>=1.24
+rembg>=2.0.60
+onnxruntime>=1.16

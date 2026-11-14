@@ -54,6 +54,10 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
                 restart.killed_pids.add(pid)
                 if pid not in service_pids:
                     manual.append(pid)
+            else:
+                # Still running live work past the wait: it restarts itself once idle; never stopped.
+                from hermes_cli.update_cmd_fleet import _restart_left_pending
+                _restart_left_pending(pid, label, None, supervised=pid in service_pids)
         except Exception as exc:
             logger.warning("Could not signal stale gateway PID %s: %s", pid, exc)
             print(f"  ⚠ {label}: could not be signalled ({exc}) — restart it by hand")

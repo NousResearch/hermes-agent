@@ -206,13 +206,15 @@ The restart happens when the gateway is idle: the running gateway keeps serving 
 
 ```
   → hermes-gateway: draining (up to 1875s)...
-  ⏳ still draining — 1560s left before the forced restart
+  ⏳ still waiting for idle — 1560s left of this wait (live work is never interrupted; past it the gateway keeps its restart pending)
      waiting on 1 active work unit(s):
        • cron job 6ba19dab68df (nightly-scout) in external worker pid 573597, running 6m40s
-     finish or kill the work above to release the drain now; agent.restart_after_turn_timeout in config.yaml caps this wait
+     finish or kill the work above to restart now, or `hermes update --force` to stop it now
 ```
 
 Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or start the update with `hermes update --force`, which stops every gateway at once and interrupts that work (see [Gateway downtime during an update](#gateway-downtime-during-an-update)). A second `hermes update --force` cannot cut short an update that is already waiting: that update holds the update lock, so the second one is refused until it finishes.
+
+The updater's wait is bounded (the `draining (up to …)` figure), the work is not: when that wait runs out on a gateway that is still doing work, the updater and the gateway restart command leave it running and print one line naming what it is still doing. The gateway keeps its restart pending and exits at its first idle moment; its service (systemd, launchd or an external supervisor) then starts it on the new code, and the update's fleet check lists it as `restart pending`, not stale. A gateway started by hand with `gateway run` exits the same way and needs starting again. The pre-swap pause works the same way: it stops nothing that is still working and the update carries on without the pause.
 
 Wedged work does not hold the restart: a chat turn idle past `agent.gateway_timeout`, or a cron run older than the scheduler's in-flight allowance (`max(2 × the job's interval, cron.inflight_max_minutes)`, 30 minutes by default), is excluded from the wait and interrupted by the restart instead.
 

@@ -21,7 +21,8 @@ when this process dies.
   marker (the gateway's marker watcher would take the immediate stop path instead).
 * systemd ``hermes-gateway*`` units and launchd ``ai.hermes.gateway*`` jobs are then stopped and
   later started through their supervisor, so it cannot respawn them on old code mid-update; one
-  that does not take the drain gets its supervisor's stop at once.
+  that does not take the drain gets its supervisor's stop at once. One still doing live work when
+  the wait runs out is never stopped: it keeps its pending restart and the update runs unpaused.
 * bare ``gateway run`` processes that do not answer get marker + SIGTERM, and are replayed from
   their recorded argv + home.
 * the updater never kills itself: a unit whose cgroup holds this process (``/update`` from
@@ -51,6 +52,9 @@ _RESTARTED: dict = {"units": set(), "labels": set(), "pids": set()}
 #: The replay environment of each paused bare gateway's home, built at the commit point: built after
 #: the move, it would import the new tree's modules into this process.
 _REPLAY_ENVS: dict[str, dict] = {}
+#: Gateways the pause left running with their restart pending (live work past the wait): the fleet
+#: restart in this process does not wait on them a second time.
+_LEFT_PENDING: set[int] = set()
 
 _STOP_TIMEOUT_S = 120.0
 _READY_TIMEOUT_S = 30.0
@@ -78,6 +82,7 @@ def arm_pause(*, no_gateway_restart: bool, force: bool = False) -> dict | None:
     even an update that never moves the checkout restarts it at exit."""
     global _RUN
     _REPLAY_ENVS.clear()
+    _LEFT_PENDING.clear()
     if sys.platform == "win32" or no_gateway_restart:
         return None
     from hermes_cli import update_pause_record as pause_record
@@ -475,18 +480,20 @@ def _stop_gateways(token: dict, entries: list[dict]) -> None:
     """Drain every gateway (bare ones SIGTERMed when they do not answer), then wait for all of them
     within one drain budget. A supervised gateway that exited through the drain is stopped through
     its supervisor at once: its exit 75 asks for a restart, which systemd honours after
-    ``RestartSec=5`` and launchd immediately, still on the old tree. Past the budget a supervised
-    survivor gets its supervisor's stop and a bare one SIGKILL, as the restart path escalates."""
+    ``RestartSec=5`` and launchd immediately, still on the old tree. Past the budget a survivor still
+    doing live work is left running with its restart pending (``_leave_running``) and the pause rolls
+    back: the budget bounds this wait, never the gateway's work."""
     from hermes_cli import update_pause_record as pause_record
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
     if token.get("force"):
         from hermes_cli.update_cmd_force_stop import force_stop_gateways
         return force_stop_gateways(token, entries)
-    budget, waiting = _drain_budget(), []
+    budget, waiting, drained = _drain_budget(), [], set()
     for entry in entries:
         pause_record.mark_stop_sent(token, entry["pid"])  # before the request: see _ask_to_drain
         if _ask_to_drain(entry):
             waiting.append(entry)
+            drained.add(entry["pid"])
         else:
             _stop_at_once(entry)
             if not entry.get("kind"):
@@ -503,15 +510,37 @@ def _stop_gateways(token: dict, entries: list[dict]) -> None:
         for tick in ticks if waiting else ():
             tick()
         time.sleep(0.2)
-    for entry in waiting:
-        if entry.get("kind"):
-            _stop_at_once(entry)
-        else:
-            with suppress(ProcessLookupError, PermissionError):
-                os.kill(entry["pid"], getattr(signal, "SIGKILL", signal.SIGTERM))
-    bare = [e for e in waiting if not e.get("kind")]
-    if left := _wait_gone([e["pid"] for e in bare], 10.0, {e["pid"]: e.get("ct") for e in bare}):
+    killed = [e for e in waiting if e["pid"] not in drained]  # SIGTERMed (no drain verb): already stopping
+    for entry in killed:
+        with suppress(ProcessLookupError, PermissionError):
+            os.kill(entry["pid"], getattr(signal, "SIGKILL", signal.SIGTERM))
+    if left := _wait_gone([e["pid"] for e in killed], 10.0, {e["pid"]: e.get("ct") for e in killed}):
         raise PauseRefused("gateway PID(s) " + ", ".join(map(str, sorted(left))) + " did not stop")
+    if live := [e for e in waiting if e["pid"] in drained]:
+        _leave_running(token, live)
+        raise PauseRefused(f"{_names(live)} still running live work past the {budget:.0f}s wait")
+
+
+def _leave_running(token: dict, entries: list[dict]) -> None:
+    """The wait ran out on gateways still doing live work. Nothing stops them: each holds the restart
+    the drain asked for and takes it at its first idle moment, and its supervisor relaunches it on the
+    new tree (a live process is not live work only when its loop is provably wedged: that one gets the
+    bounded escalation). They leave the token, so the rollback neither restarts nor replays a second
+    copy beside them; the pause then rolls back and the update continues unpaused."""
+    from hermes_cli.gateway import GATEWAY_LOOP_WEDGED, _escalate_wedged_gateway, probe_gateway_loop_liveness
+    from hermes_cli.update_cmd_drain_report import report_restart_left_pending
+    for entry in entries:
+        home = Path(entry["home"]) if entry.get("home") else None
+        if probe_gateway_loop_liveness(entry["pid"], home=home) == GATEWAY_LOOP_WEDGED:
+            print(f"  ⚠ {_names([entry])}: event loop is unresponsive — forcing a bounded stop")
+            _escalate_wedged_gateway(entry["pid"])
+            continue  # stopped: the rollback restarts it like any other paused entry
+        report_restart_left_pending(_names([entry]), home, supervised=bool(entry.get("kind")))
+        _LEFT_PENDING.add(int(entry["pid"]))
+        pids = {str(entry["pid"])}
+        token["posix_units"] = [u for u in token.get("posix_units") or [] if str(u.get("pid")) not in pids]
+        token["unmapped"] = [u for u in token.get("unmapped") or [] if str(u.get("pid")) not in pids]
+        token["unmapped_pids"] = [p for p in token.get("unmapped_pids") or [] if str(p) not in pids]
 
 
 def _disarm(entry: dict) -> None:
@@ -745,6 +774,11 @@ def resume_paused_set(token: dict) -> None:
         raise RuntimeError("Could not restart every paused gateway: " + "; ".join(failures))
     token["resume_needed"] = False
     token["posix_stopped"] = False
+
+
+def left_pending() -> set[int]:
+    """Gateways this run's pause left running with their restart pending."""
+    return _LEFT_PENDING
 
 
 def already_restarted() -> dict:

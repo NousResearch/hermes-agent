@@ -156,6 +156,45 @@ def test_a_record_that_cannot_be_written_leaves_the_update_unpaused_and_ungated(
 
 
 @pytest.mark.platforms("posix")
+def test_a_gateway_still_working_past_the_wait_is_left_running_with_its_restart_pending(tmp_path, monkeypatch,
+                                                                                        capsys):
+    """Owner ruling: a non-forced update never stops live work. Both gateways took the drain and are
+    still busy when the wait runs out: neither is stopped, SIGKILLed or relaunched beside itself by
+    the rollback, and the update continues unpaused naming what each is still running."""
+    from hermes_cli import update_cmd_posix_pause as m
+    gateways = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+                for _ in range(2)]
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "gateway_state.json").write_text(json.dumps({"active_work": [
+        {"kind": "chat", "session": "agent:main:telegram:dm:1", "elapsed_s": 75}]}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    unit = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-p2probe.service", "pid": gateways[0].pid,
+            "cgroup": None, "home": str(home)}
+    bare = {"pid": gateways[1].pid, "argv": ["hermes", "gateway", "run"], "home": str(home)}
+    touched = []
+    monkeypatch.setattr(m, "_discover_systemd", lambda: [dict(unit)])
+    monkeypatch.setattr(m, "_discover_launchd", list)
+    monkeypatch.setattr(m, "_left_running", lambda units, jobs: (units, jobs, []))
+    monkeypatch.setattr(m, "_discover_bare", lambda service_pids: ([dict(bare)], []))
+    monkeypatch.setattr(m, "_ask_to_drain", lambda entry: True)
+    monkeypatch.setattr(m, "_drain_budget", lambda: 0.5)
+    for name in ("_stop_unit", "_stop_job", "_start_unit", "_start_job", "_relaunch_bare"):
+        monkeypatch.setattr(m, name, lambda *a, _n=name, **k: touched.append(_n) or 0)
+    try:
+        assert m._pause(m._empty_token()) is None
+        assert [g.poll() for g in gateways] == [None, None], "a busy gateway was killed"
+    finally:
+        for g in gateways:
+            g.kill()
+            g.wait(timeout=10)
+    assert touched == [], f"a busy gateway was stopped or a second copy started: {touched}"
+    out = capsys.readouterr().out
+    assert out.count("still running live work (chat turn agent:main:telegram:dm:1") == 2, out
+    assert "`hermes update --force` stops it now" in out
+
+
+@pytest.mark.platforms("posix")
 def test_a_replayed_gateway_keeps_its_own_exported_token_and_no_one_elses(tmp_path):
     """A named profile's hand-started gateway, replayed by an update launched under that profile,
     starts as the restart watcher started it: with the launcher's environment (an exported bot

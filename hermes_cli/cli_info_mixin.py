@@ -658,7 +658,7 @@ class CLIInfoMixin:
         engine as the desktop popover (agent.context_breakdown) — no provider calls, no cache impact."""
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
-            return self._show_gateway_context_breakdown(connection)
+            return self._show_gateway_context_breakdown(connection, cmd_original)
         if not self.agent:
             print(f"  {t('cli.shared.no_active_agent')}")
             return
@@ -695,14 +695,18 @@ class CLIInfoMixin:
             print(f"  {line}")
         print()
 
-    def _show_gateway_context_breakdown(self, connection):
+    def _show_gateway_context_breakdown(self, connection, cmd_original: str = ""):
         """Main's ``/context`` grid and table over the gateway agent's own breakdown
         (``session.context_breakdown``): the session's prompt, tools and transcript live there."""
         from agent.context_breakdown import render_context_breakdown_lines
         from agent.context_file_sources import render_context_file_lines
         from hermes_cli.gateway_client import GatewayClientError
         try:
-            payload = connection.call("session.context_breakdown", session_id=self.session_id)
+            args = cmd_original.split(maxsplit=1)[1].strip().lower() if " " in cmd_original else ""
+            params: dict[str, Any] = {"session_id": self.session_id}
+            if args in {"all", "full", "details"}:
+                params["include_details"] = True
+            payload = connection.call("session.context_breakdown", **params)
         except GatewayClientError as e:
             print(f"  {t('cli.context.compute_failed', error=str(e))}")
             return
@@ -713,7 +717,7 @@ class CLIInfoMixin:
         print()
         print(f"  {t('cli.context.header', model=payload.get('model') or self.model)}")
         print()
-        for line in render_context_breakdown_lines(payload, grid=True) + (["", *file_lines] if file_lines else []):
+        for line in render_context_breakdown_lines(payload, details=payload.get("details"), grid=True) + (["", *file_lines] if file_lines else []):
             print(f"  {line}")
         print()
 

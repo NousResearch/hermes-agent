@@ -3634,6 +3634,7 @@ export interface SessionUsageResult {
 export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
+  include_details?: boolean
 }
 /** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
 export interface SessionContextBreakdownResult {
@@ -3646,6 +3647,7 @@ export interface SessionContextBreakdownResult {
   context_source: string
   model: string
   context_files?: ContextFileSource[]
+  details?: ContextDetails | null
 }
 export interface ContextCategory {
   color: string
@@ -3661,6 +3663,20 @@ export interface ContextFileSource {
   est_tokens: number
   loaded: boolean
   status: string
+}
+export interface ContextDetails {
+  skills: ContextSkillCost[]
+  toolsets: ContextToolsetCost[]
+}
+export interface ContextSkillCost {
+  name: string
+  index_tokens: number
+  skill_md_tokens: number | null
+}
+export interface ContextToolsetCost {
+  toolset: string
+  tool_count: number
+  schema_tokens: number
 }
 export interface SessionCompressParams {
   session_id: string

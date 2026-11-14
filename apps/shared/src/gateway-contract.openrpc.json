@@ -15973,6 +15973,31 @@
         "title": "ContextCategory",
         "type": "object"
       },
+      "ContextDetails": {
+        "additionalProperties": false,
+        "properties": {
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSkillCost"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "toolsets": {
+            "items": {
+              "$ref": "#/components/schemas/ContextToolsetCost"
+            },
+            "title": "Toolsets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills",
+          "toolsets"
+        ],
+        "title": "ContextDetails",
+        "type": "object"
+      },
       "ContextFileSource": {
         "additionalProperties": false,
         "description": "One row of ``agent.context_file_sources.list_context_file_sources``.",
@@ -16011,6 +16036,61 @@
           "status"
         ],
         "title": "ContextFileSource",
+        "type": "object"
+      },
+      "ContextSkillCost": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "index_tokens": {
+            "title": "Index Tokens",
+            "type": "integer"
+          },
+          "skill_md_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skill Md Tokens"
+          }
+        },
+        "required": [
+          "name",
+          "index_tokens",
+          "skill_md_tokens"
+        ],
+        "title": "ContextSkillCost",
+        "type": "object"
+      },
+      "ContextToolsetCost": {
+        "additionalProperties": false,
+        "properties": {
+          "toolset": {
+            "title": "Toolset",
+            "type": "string"
+          },
+          "tool_count": {
+            "title": "Tool Count",
+            "type": "integer"
+          },
+          "schema_tokens": {
+            "title": "Schema Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "toolset",
+          "tool_count",
+          "schema_tokens"
+        ],
+        "title": "ContextToolsetCost",
         "type": "object"
       },
       "CorrectionStatus": {
@@ -37608,6 +37688,11 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "include_details": {
+            "default": false,
+            "title": "Include Details",
+            "type": "boolean"
           }
         },
         "required": [
@@ -37662,6 +37747,17 @@
             },
             "title": "Context Files",
             "type": "array"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

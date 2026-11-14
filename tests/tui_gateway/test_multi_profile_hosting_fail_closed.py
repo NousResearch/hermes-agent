@@ -384,7 +384,8 @@ def _prompt_building_session(profile_home, key):
             "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd()}
 
 
-def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes, monkeypatch):
+@pytest.mark.parametrize("include_details", [False, True])
+def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes, monkeypatch, include_details):
     """Regression for #112927: ``session.context_breakdown`` (Desktop refetches it after every turn) and the
     model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
     provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
@@ -403,8 +404,10 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     assert _probe("b")["b_ref"] == B_VAL  # flips the process to fail-closed multi-profile hosting
 
     for sid, home, key in (("sa", root, "launch-mem-key"), ("sb", b, "b-mem-key"), ("sa", root, "launch-mem-key")):
-        resp = server._methods["session.context_breakdown"]("rid", {"session_id": sid})
+        resp = server._methods["session.context_breakdown"]("rid", {
+            "session_id": sid, "include_details": include_details})
         assert "error" not in resp, resp
+        assert ("details" in resp["result"]) == include_details
         server._persist_live_session_system_prompt(sessions[sid])
         assert sessions[sid]["agent"]._cached_system_prompt == f"{home}|{key}"
     assert os.environ.get("MEM_PROVIDER_KEY") is None

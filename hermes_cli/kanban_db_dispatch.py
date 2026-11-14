@@ -260,16 +260,12 @@ _EXIT_TRAILER_RE = re.compile(
 )
 
 
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
-    """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
-
-    The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
-    """
+def _worker_log_exit_code(
+    task_id: str, run_id: Optional[int], board: Optional[str] = None,
+) -> Optional[int]:
+    """Exit code from this run's worker log trailer, if it exists."""
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board, run_id=run_id)
     except Exception:
         return None
     matches = _EXIT_TRAILER_RE.findall(raw or "")
@@ -1003,7 +999,9 @@ def _log_noise_prefixes() -> tuple[str, ...]:
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
-def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
+def _worker_final_output(
+    task_id: str, run_id: Optional[int], board: Optional[str] = None,
+) -> str:
     """Best-effort read of a dead worker's last printed text, for the board diagnostic.
 
     A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
@@ -1019,7 +1017,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     "current", so the log would silently not be found.
     """
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board, run_id=run_id)
     except Exception:
         return ""
     if not raw:
@@ -1034,6 +1032,16 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
         if ln and not ln.startswith(_log_noise_prefixes()):
             lines.append(ln)
     return " ".join(lines)[-400:]
+
+
+def _stderr_first_60s(task_id: str, run_id: Optional[int], started_at, board: Optional[str]) -> str:
+    """Bounded early worker stderr evidence from the run's merged output log."""
+    if run_id is None or started_at is None or time.time() - float(started_at) > 60:
+        return ""
+    try:
+        return (_kb.read_worker_log(task_id, board=board, run_id=run_id) or "")[:4096]
+    except OSError:
+        return ""
 
 
 @dataclass
@@ -1053,14 +1061,12 @@ class _DeadWorker:
 
     @property
     def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
         return "rate_limited" if self.rate_limited else "crashed"
 
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
-    board: Optional[str] = None,
+    run_id: Optional[int] = None, board: Optional[str] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1068,9 +1074,11 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(
+        pid, claimer, exit_code, task_id=task_id, run_id=run_id, board=board,
+    )
     if task_id and not dead.rate_limited:
-        worker_output = _worker_final_output(task_id, board=board)
+        worker_output = _worker_final_output(task_id, run_id, board=board)
         if worker_output:
             dead.error_text += f"{WORKER_OUTPUT_SEP}{worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
@@ -1082,7 +1090,7 @@ def _classify_dead_worker_exit(
     claimer: Optional[str],
     exit_code=None,
     *,
-    task_id: Optional[str] = None,
+    task_id: Optional[str] = None, run_id: Optional[int] = None,
     board: Optional[str] = None,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
@@ -1098,7 +1106,7 @@ def _classify_dead_worker_exit(
     if exit_code is not None:
         kind, code = _exit_code_kind(int(exit_code))
     elif kind == "unknown" and task_id:
-        logged = _worker_log_exit_code(task_id, board=board)
+        logged = _worker_log_exit_code(task_id, run_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":
@@ -1167,7 +1175,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, current_run_id "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1192,7 +1200,20 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             pid = int(row["worker_pid"])
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            run_started_at = (
+                _kb._to_epoch(_kb._row_get(row, "worker_started_at")) or started_at
+            )
+            dead = _classify_dead_worker(
+                pid, row["claim_lock"], exit_code, task_id=row["id"],
+                run_id=_kb._row_get(row, "current_run_id"), board=board,
+            )
+            if dead.protocol_violation:
+                early_stderr = _stderr_first_60s(
+                    row["id"], _kb._row_get(row, "current_run_id"),
+                    run_started_at, board,
+                )
+                if early_stderr:
+                    dead.event_payload["stderr_first_60s"] = early_stderr
             apply_attempt_note(conn, row["id"], pid, dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
@@ -2609,31 +2630,9 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
-_retagged_workspace_roots: set[str] = set()
-
 def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
-    """Reclaim pre-tag worker rows in state.db so they leave the session lists.
-
-    Best-effort: the durable gate is ``state_meta`` in
-    ``retag_kanban_worker_sessions``; the in-process set avoids reopening
-    state.db on every spawn. A tick must never fail because a session DB was
-    busy or missing.
-    """
-    if workspaces_root_path in _retagged_workspace_roots:
-        return
-    try:
-        from hermes_state_registry import acquire, release_or_close
-
-        # Inside the gateway the dispatcher shares the process's registry handle; a bare
-        # SessionDB() here was one more writer connection on the same state.db (#100896).
-        db = acquire()
-        try:
-            db.retag_kanban_worker_sessions(workspaces_root_path)
-        finally:
-            release_or_close(db)
-        _retagged_workspace_roots.add(workspaces_root_path)
-    except Exception as exc:
-        _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+    from hermes_cli.kanban_db_dispatch_sessions import retag_legacy_worker_sessions
+    retag_legacy_worker_sessions(workspaces_root_path)
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
@@ -2641,15 +2640,16 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     import sys
     return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
-
 def _open_worker_log(task: Task, board: Optional[str]):
-    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
-    rotated first. Anchored at the board root (not the shared kanban root) so
-    `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
+    """Open the durable log for this claimed run, retaining prior attempts."""
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
+    run_id = getattr(task, "current_run_id", None)
+    log_path = (
+        _kb.worker_run_log_path(task.id, run_id, board=board)
+        if run_id is not None
+        else _kb.worker_log_path(task.id, board=board)
+    )
     from hermes_cli.kanban_worker_log import open_worker_log
     return open_worker_log(log_path)
 

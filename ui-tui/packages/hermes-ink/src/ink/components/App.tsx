@@ -41,6 +41,7 @@ import {
   FOCUS_OUT
 } from '../termio/csi.js'
 import { DBP, DEC, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
+import { isDashboardHosted } from '../termio/host.js'
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
@@ -51,8 +52,16 @@ import StdinContext from './StdinContext.js'
 import { TerminalFocusProvider } from './TerminalFocusContext.js'
 import { TerminalSizeContext } from './TerminalSizeContext.js'
 
-// Platforms that support Unix-style process suspension (SIGSTOP/SIGCONT)
-const SUPPORTS_SUSPEND = false
+// Ctrl+Z job-control suspend (SIGSTOP/SIGCONT) is opt-in: by default Ctrl+Z reaches the composer, where it is
+// undo on Linux. HERMES_TUI_CTRL_Z_SUSPEND (set from display.tui_ctrl_z_suspend) hands it to the shell instead.
+// Never on Windows, and never under the dashboard PTY, which has no shell to `fg` the stopped process back.
+export const suspendOnCtrlZ = (
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): boolean =>
+  platform !== 'win32' && !isDashboardHosted(env) && /^(1|true|yes|on)$/i.test(env.HERMES_TUI_CTRL_Z_SUSPEND ?? '')
+
+const SUPPORTS_SUSPEND = suspendOnCtrlZ()
 
 // After this many milliseconds of stdin silence, the next chunk triggers
 // a terminal mode re-assert (mouse tracking). Catches tmux detach→attach,

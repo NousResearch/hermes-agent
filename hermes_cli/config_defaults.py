@@ -828,6 +828,9 @@ DEFAULT_CONFIG = {
         # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
         # HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # Ctrl+Z in the TUI suspends to the shell (`fg` resumes), as in the classic CLI, instead of
+        # composer undo. Ignored in the dashboard Chat tab. HERMES_TUI_CTRL_Z_SUSPEND wins.
+        "tui_ctrl_z_suspend": False,
         # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
         "resume_last_session": True,
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.

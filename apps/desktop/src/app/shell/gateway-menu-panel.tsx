@@ -44,7 +44,10 @@ function useGatewayLogTail(): string[] {
     // error boundary before the .catch even attaches.
     const load = async () => {
       try {
-        const res = await getLogs({ file: 'gui', lines: LOG_TAIL })
+        // Desktop attaches to the per-home gateway owner, which logs in
+        // mode="gateway"; gui.log is only written by the legacy gui backend and
+        // may be days stale (#155027).
+        const res = await getLogs({ file: 'gateway', lines: LOG_TAIL })
 
         if (cancelled) {
           return

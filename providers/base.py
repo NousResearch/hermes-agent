@@ -575,7 +575,7 @@ class ProviderProfile:
         import json
         import urllib.request
 
-        from hermes_cli.urllib_security import open_credentialed_url
+        from hermes_cli.urllib_security import decode_response_body, open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
@@ -590,7 +590,7 @@ class ProviderProfile:
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(decode_response_body(resp, resp.read()).decode())
             items = data if isinstance(data, list) else data.get("data", [])
             from hermes_cli.chat_catalog import chat_catalog_ids
 

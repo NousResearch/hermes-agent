@@ -4112,19 +4112,19 @@ def _failed_backend_skip(
     failed_provider: str, failed_model: Optional[str], *, failed_base_url: str = "",
     failure_scope: Any = None,
 ) -> Callable[..., bool]:
-    """Predicate ``skip(provider, model, base_url="")`` → True when a candidate must be skipped for the failed
-    route. Scope: ``failed_model`` → model-scoped (only that deployment; timeout/connection/rate-limit);
-    None → credential-wide (whole provider; auth/payment)."""
-    from agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
+    """Predicate ``skip(provider, model, base_url="", entry=None)`` → True when a candidate must be skipped for
+    the failed route. Scope: ``failed_model`` → model-scoped (timeout/connection/rate-limit); None → credential-wide
+    (auth/payment). Both sides carry their credential fingerprint: a second account is tried (#154428)."""
+    from agent.backend_identity import BackendIdentity, FailureScope, route_credential, should_skip_candidate
     skip_model = (failed_model or "").strip().lower() or None
     failed_ident = BackendIdentity.build(
-        provider=failed_provider, model=skip_model, base_url=failed_base_url)
+        provider=failed_provider, model=skip_model, base_url=failed_base_url, api_key=route_credential(failed_provider))
     failure_scope = failure_scope or (FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL)
 
-    def _skip(provider: str, model: Optional[str], base_url: str = "") -> bool:
-        return should_skip_candidate(
-            BackendIdentity.build(provider=provider, model=model, base_url=base_url), failed_ident, failure_scope,
-        )
+    def _skip(provider: str, model: Optional[str], base_url: str = "", entry: Optional[dict] = None) -> bool:
+        candidate = BackendIdentity.build(
+            provider=provider, model=model, base_url=base_url, api_key=route_credential(provider, entry))
+        return should_skip_candidate(candidate, failed_ident, failure_scope)
     return _skip
 
 
@@ -4248,7 +4248,7 @@ def _try_configured_fallback_chain(
             continue
         fb_model_raw = str(entry.get("model", "")).strip()
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
-        if skip(fb_provider, fb_model_raw, fb_base_url):
+        if skip(fb_provider, fb_model_raw, fb_base_url, entry):
             continue
         if _is_provider_unhealthy(fb_provider, fb_base_url, fb_model_raw):
             _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url, model=fb_model_raw)
@@ -4340,7 +4340,7 @@ def _try_main_fallback_chain(
         fb_norm = fb_provider.lower()
         label = f"fallback_providers[{i}]({fb_provider})"
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
-        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
+        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url, entry):
             tried.append(f"{label} (skipped)")
             continue
         if _is_provider_unhealthy(fb_norm, fb_base_url, fb_model):

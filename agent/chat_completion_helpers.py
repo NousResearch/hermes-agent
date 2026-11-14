@@ -1940,18 +1940,18 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         unavailable.add(fb_key)
         logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
         return True
-    # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
-    # are owned by agent.backend_identity — do not re-implement comparisons here.
-    # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
-    # See #22548, #62984, #70893.
-    from agent.backend_identity import BackendIdentity, should_skip_candidate
+    # Identity semantics (axes, shim aliases, credential surfaces, pools) are owned by
+    # agent.backend_identity — do not re-implement comparisons here. A static api_key keeps two
+    # accounts on one URL+model distinct: two quotas, not one backend (#151321, #22548, #62984, #70893).
+    from agent.backend_identity import BackendIdentity, route_credential, should_skip_candidate
     current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
-        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
-    fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
+        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""),
+        api_key=getattr(agent, "api_key", None))  # key_cmd hashes its command; other callables stay unknown
+    fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model,
+        base_url=(fb.get("base_url") or ""), api_key=route_credential(fb_provider, fb))
     if should_skip_candidate(fb_ident, current_ident):
-        logger.warning(
-            "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
-            fb_provider, fb_model, current_ident.base_url or current_ident.provider)
+        logger.warning("Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
+                       fb_provider, fb_model, current_ident.base_url or current_ident.provider)
         return True
     return False
 

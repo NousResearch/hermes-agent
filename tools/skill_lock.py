@@ -46,6 +46,15 @@ _WRITEISH_CODE = re.compile(
     r"(?:write|append)File(?:Sync)?|(?:rm|unlink|rename|mkdir|copyFile|cp)Sync|"
     r"(?:^|[\s;|&])>{1,2}|\bsed\s+-i|\b(?:mv|rm|cp|tee|touch)\s", re.IGNORECASE)
 _SEPARATORS = frozenset({";", "&", "&&", "|", "||", "(", ")", "|&", ";;"})
+# A literal path opened read-only (read mode, Path.read_*, readFileSync) is a source, never a write
+# target, so naming a locked skill there does not make the code write to it.
+_LITERAL_READS = re.compile(
+    r"\bopen\s*\(\s*(['\"])[^'\"]+\1(?:\s*,\s*(?:mode\s*=\s*)?(['\"])[rbt]*\2)?"
+    r"(?:\s*,\s*encoding\s*=\s*(['\"])[\w-]+\3)?\s*\)|"
+    r"\bPath\s*\(\s*(['\"])[^'\"]+\4\s*\)\s*\.read_(?:text|bytes)\s*\(|"
+    r"\breadFileSync\s*\(\s*(['\"])[^'\"]+\5")
+_PATH_DELIMITERS = frozenset(" \t\r\n'\"`(),;=<>|&[]")
+_UNRESOLVED_PATH_CHARS = frozenset("$`{}*?%:" + ("" if os.sep == "\\" else "\\"))
 
 
 def _skill_usage():
@@ -380,9 +389,35 @@ def _argv_refusal(argv: list[str], cwd: str, locked, record, depth: int,
     return next((r for check in _ARGV_CHECKS if (r := check(verb, argv[1:], scope))), None)
 
 
+def _elsewhere(text: str, start: int, end: int, root: str) -> bool:
+    """True when the mention ``text[start:end]`` sits in a plain absolute path that cannot reach
+    *root*: it resolves outside it, and its head up to the mention is not a trailing part of *root*
+    (``home + '/skills/x/SKILL.md'`` or Node's ``path.join(home, '/hh/skills/x')`` append such a
+    fragment). Relative, variable, f-string or glob paths still count as the skill."""
+    while start > 0 and text[start - 1] not in _PATH_DELIMITERS:
+        start -= 1
+    tail = end
+    while tail < len(text) and text[tail] not in _PATH_DELIMITERS:
+        tail += 1
+    token = text[start:tail]
+    if not os.path.isabs(token) or _UNRESOLVED_PATH_CHARS & set(os.path.splitdrive(token)[1]):
+        return False
+    if _inside(os.path.realpath(token), root):
+        return False
+    head = os.path.normpath(text[start:end]).lstrip(os.sep)
+    return root != os.sep + head and not root.endswith(os.sep + head)
+
+
+def _names_skill(text: str, root: str, needles: Iterable[str]) -> bool:
+    return any(not _elsewhere(text, m.start(), m.end(), root)
+               for needle in needles for m in re.finditer(re.escape(needle), text))
+
+
 def _code_refusal(code: str, locked, record, cwd: str = "") -> str | None:
     """Inline interpreter code that looks like it writes AND names a locked skill (or the record),
-    or runs with its working directory inside one (relative paths)."""
+    or runs with its working directory inside one (relative paths). A literal path that is only
+    read, or an absolute path outside the skill that merely shares its ``skills/<name>`` segment
+    (another checkout), does not name it."""
     from hermes_constants import get_hermes_home
     if not _WRITEISH_CODE.search(code):
         return None
@@ -393,9 +428,11 @@ def _code_refusal(code: str, locked, record, cwd: str = "") -> str | None:
     skills_root = os.path.realpath(_skill_usage()._skills_dir())
     if ".usage.json" in text:
         return RECORD_REFUSAL
+    text = _LITERAL_READS.sub(" ", text)
     for name, root in locked:
         rel = os.path.relpath(root, skills_root) if skills_root and _inside(root, skills_root) else ""
-        if root in text or (rel and f"skills/{rel}" in text) or f"skills/{os.path.basename(root)}" in text:
+        needles = [root, f"skills/{os.path.basename(root)}"] + ([f"skills/{rel}"] if rel else [])
+        if _names_skill(text, root, needles):
             return skill_refusal(name)
     return None
 

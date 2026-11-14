@@ -116,7 +116,7 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -131,7 +131,7 @@ except ImportError as _import_exc:
     # Not installed is a normal optional state (debug); installed-but-broken logs its traceback (#87455).
     logger.log(logging.DEBUG if _import_exc.name == "telegram" else logging.WARNING, "[Telegram] python-telegram-bot import failed: %s", _import_exc, exc_info=True)
     TELEGRAM_AVAILABLE = False
-    Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = ForceReply = Application = Any
+    Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
     LinkPreviewOptions = filters = ParseMode = ChatType = None
 

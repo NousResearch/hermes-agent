@@ -72,7 +72,8 @@ class TelegramVaultCodeMixin:
     async def send_vault_code_prompt(self, chat_id: str, site: str, hint: str, *, user_id: str,
                                      submit: Callable[[str], bool], timeout_s: float,
                                      metadata: Optional[dict] = None) -> SendResult:
-        from plugins.platforms.telegram.adapter import ForceReply, ParseMode
+        from telegram import ForceReply  # late: test doubles of the telegram package need not define it
+        from plugins.platforms.telegram.adapter import ParseMode
         import html as _html
 
         text = f"<b>{_html.escape(_t('platform.shared.vault_code.title', site=site))}</b>\n" + _html.escape(

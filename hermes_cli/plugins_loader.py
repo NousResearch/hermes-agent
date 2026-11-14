@@ -633,7 +633,7 @@ class PluginLoaderMixin:
             # whole process (and every other plugin's registry) down with it; KeyboardInterrupt still propagates.
             # PluginLoadTimeout lands here as well: the abandoned worker's later registrations are refused
             # by ``ctx``, and whatever it registered before hanging is disposed below.
-            owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
+            owned = list(self._ownership_ledger.get(plugin_key, ()))
             self._dispose_registrations(owned)
             self._forget_registrations(owned)
             loaded.error = _load_error_text(exc)
@@ -641,8 +641,7 @@ class PluginLoaderMixin:
             # from later event dispatch.
             self._remove_plugin_subscriptions(plugin_key)
             logger.warning("Failed to load plugin '%s': %s", manifest.name, _load_error_text(exc), exc_info=_PLUGINS_DEBUG)
-        # The failure path swept this plugin's whole ledger (not just the registration_start slice), so
-        # discovery-time pre-registrations are gone too.
+        # Failure disposes this plugin's ledger, including persistent and discovery-time registrations.
         # There is no live tool left to credit — attribution and the registry agree at zero. Only the
         # success path pops _predeclared_tools, so drop the entry here rather than let the bookkeeping
         # outlive the load attempt (#78050).

@@ -179,6 +179,11 @@ def in_process_router_refused(name: str) -> bool:
     return secondary_profile_home() is not None and not _runs_in_process(secondary_plugin(name))
 
 
+def selected_plugin_profile(scope) -> Optional[str]:
+    """Read routing's last non-blank profile selector without entering its scope."""
+    return dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"))).get("profile")
+
+
 @contextmanager
 def plugin_request_scope(scope) -> Iterator[None]:
     """Bind a plugin request's ``?profile=`` selection for its routing decision (the route
@@ -186,7 +191,7 @@ def plugin_request_scope(scope) -> Iterator[None]:
     dependency answers it as for any other route."""
     from fastapi import HTTPException
     from hermes_cli.web_server_profiles import _config_profile_scope, _is_current_profile
-    profile = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"))).get("profile")
+    profile = selected_plugin_profile(scope)
     with ExitStack() as stack:
         if not _is_current_profile(profile):
             try:

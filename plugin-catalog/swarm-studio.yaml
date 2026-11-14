@@ -1,0 +1,27 @@
+name: swarm-studio
+repo: https://github.com/Pukujan/swarm-studio
+sha: b8aad6e3c84509c8050dbdb4e1f02f93d2e592ee
+title: Swarm Studio
+description: "A whole creative studio inside Hermes. One prompt, and a crew of agents you can watch and steer builds the whole launch on a live canvas: a multi-page website, a working web app with a database, a playable game (also as a Godot, Unity or Unreal project), a promo film and the social posts. Open it from the Desktop sidebar, ask for a site in any chat (the swarm_design tool), type /swarm, or run `hermes swarm`. The crew uses the models you already set up in Hermes, through three Hermes auxiliary slots (planner, builder and reviewer, set in hermes model). Builds can be posted to Swarm Feed, where others try them live and remix them with credit. Disclosure — starts a small Node server (Node 18+ needed) that listens on 127.0.0.1 only and keeps running after Hermes closes. Model calls (planner, builders, reviewer, and the app engine) go to Hermes through a loopback bridge with a per-process token and are answered with ctx.llm on the plugin's three auxiliary slots, so no provider key leaves Hermes; only when you set SWARM_STUDIO_API_KEY does the server call SWARM_STUDIO_BASE_URL itself with that key. Pictures go through Hermes's image_generate tool; MCP tools (e.g. Supabase) go through ctx.call_mcp, only for servers you grant in mcp_allowlist (the studio never edits it). Every child process gets a minimal environment (PATH, HOME, TMPDIR, locale, plus only the keys that program needs). Generated pages and apps run in frames sandboxed with allow-scripts only, and /site/ and the live video pages are served with a sandbox CSP. When the model asks to publish, deploy or post, Hermes's approval prompt asks you first, and it is refused with nobody present. The canvas loads Tailwind from cdn.tailwindcss.com and fonts from Google Fonts; Publish runs your gh CLI (GitHub Pages) or calls Vercel / Cloudflare Pages with a token you connect, stored under $HERMES_HOME/swarm-studio/ with mode 0600; the first promo video installs hyperframes, and ffmpeg/ffprobe when not on PATH, from npm at exact versions, checking the binaries' SHA-256 before running them; the first app build installs the vendored dyad app engine's packages from npm (about 1.5 GB, once); while a picture is painted its slot shows a stock photo found on Openverse (and Pexels, with a key) by the prompt's words, and photos from the studio's own library come from files.design-bakery.com; the one-time Setup sheet sends \"Say ok\" to your planner and builder slots to check they answer; Swarm Feed (https://swarm.design-bakery.com) is contacted only when you run /swarm connect, post, remix or login. No telemetry. It writes only under $HERMES_HOME/swarm-studio/. Keys are read only through Hermes's secret scope (get_secret) when the server starts (SWARM_STUDIO_API_KEY, ELEVENLABS_API_KEY and the optional keys listed in plugin.yaml) and passed to it in its environment; it reads no .env file, Hermes's included, and stops the app engine from reading one."
+maintainer: Pukujan
+tier: community
+category: desktop
+requires_hermes: ">=0.23"
+version: "0.3.0"
+docs_url: https://github.com/Pukujan/swarm-studio#readme
+screenshots:
+- https://raw.githubusercontent.com/Pukujan/swarm-studio/b8aad6e3c84509c8050dbdb4e1f02f93d2e592ee/docs/catalog/studio-home.png
+- https://raw.githubusercontent.com/Pukujan/swarm-studio/b8aad6e3c84509c8050dbdb4e1f02f93d2e592ee/docs/catalog/studio-canvas.png
+platforms: []
+known_issues:
+- "Needs Node.js 18 or newer on PATH (or set SWARM_STUDIO_NODE)."
+- "The first app build downloads the app engine's packages from npm (about 1.5 GB, once)."
+capabilities:
+  provides_tools:
+  - swarm_design
+  - swarm_canvas
+  - swarm_studio
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []   # SWARM_STUDIO_API_KEY is optional_env in plugin.yaml: without it, model calls go through Hermes

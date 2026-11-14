@@ -786,7 +786,7 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 # recency window); CREDENTIAL_STORE_DIRS and webapp/ (the Webapp's credential) are whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     *HOME_ENV_FILES, "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
+    "google_token.json", "google_client_secret.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
     "webhook_subscriptions.json", *SECRET_CACHE_STORES, *CREDENTIAL_STORE_DIRS, "webapp",
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed

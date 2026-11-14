@@ -160,7 +160,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
     # Canonicalize where the answer is stored, not only in ``grant``: coalesced followers
     # (``choice == "once"`` covers only the leader) and the protected-write and elicitation
     # gates read ``entry.result`` directly, so an alias of "once" must already be "once" here.
-    choice = _canonical_choice(choice)
+    choice = canonical_approval_choice(choice)
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -875,15 +875,15 @@ CONSENT_ANSWERS = frozenset({"once", "session", "always"})
 #   * affirmative aliases -> "once". The WhatsApp Cloud adapter's Approve button emits a literal
 #     "approve" (the ``appr:<id>:approve`` payload goes straight to ``resolve_gateway_approval``),
 #     so without this a real Approve tap is refused while the adapter still replies "✅ Approved."
-#     to the user. The alias set is the one the API server already applies at
-#     ``gateway/platforms/api_server_runs.py::_APPROVAL_CHOICE_ALIASES`` so the two stay in step.
+#     to the user. This is the single definition: the API server's ``POST /v1/runs/{id}/approval``
+#     (``gateway/platforms/api_server_runs.py``) calls ``canonical_approval_choice`` too.
 #
 # Every alias maps to "once", the NARROWEST scope: an Approve tap is one operation and must never
 # persist a session or permanent grant. Anything not listed is returned unchanged and refused.
 _CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
 
 
-def _canonical_choice(choice):
+def canonical_approval_choice(choice):
     """Normalize a platform adapter's approval answer onto the canonical vocabulary."""
     if not isinstance(choice, str):
         return ""  # a JSON list/object/number is no decision; "" is refused, and hashable for the checks
@@ -1027,7 +1027,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     def grant(choice: str) -> dict:
         # Consent is an allow-list, not a deny-list: normalize the answer, then refuse anything
         # that is not one of CONSENT_ANSWERS rather than executing it. See the constant for why.
-        choice = _canonical_choice(choice)
+        choice = canonical_approval_choice(choice)
         if choice not in CONSENT_ANSWERS:
             logger.warning(
                 "approval: refusing unrecognized approval answer %r (pattern_key=%s, session=%s); "

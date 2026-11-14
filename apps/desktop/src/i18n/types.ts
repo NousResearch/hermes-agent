@@ -4268,6 +4268,30 @@ export interface Translations extends NoticeTranslations {
     modelSwitchKeepLabel: string
     modelSwitchStaleNotice: string
     hydrationSyncing: (profile: string) => string
+    sessionExportAction: string
+    sessionExportFormat: string
+    sessionExportNeedsLive: string
+    sessionExportRedact: string
+    sessionExportRedactHint: string
+    sessionExportTitle: string
+    sessionExportUnsupported: string
+    sessionExportAsides: string
+    sessionExportCollapse: string
+    sessionExportContents: string
+    sessionExportFiles: string
+    sessionExportFoldDocx: string
+    sessionExportFoldHtml: string
+    sessionExportFoldJson: string
+    sessionExportFoldMd: string
+    sessionExportFoldOdt: string
+    sessionExportImagePrivacy: string
+    sessionExportImages: string
+    sessionExportLinkHint: string
+    sessionExportLinks: string
+    sessionExportMediaHint: string
+    sessionExportReasoning: string
+    sessionExportTools: string
+    sessionExportVideos: string
     sessionExported: string
     sessionExportFailed: string
     imageSaved: string

@@ -2531,7 +2531,8 @@ export const zhOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: '无需机器人令牌',
-      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      intro: (platform: string) =>
+        `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
       link: (platform: string) => `关联 ${platform}`,
       linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
       linkedAccounts: '已关联账号',
@@ -2549,10 +2550,12 @@ export const zhOverrides = {
       refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
       qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
       managed: '由 Team Gateway 管理',
-      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
+      managedNote: (platform: string) =>
+        `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
       managedIntro: '此代理的账号在 Nous Portal 中关联。',
       openPortal: '在 Nous Portal 中关联账号',
-      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+      noNewAccount: (platform: string) =>
+        `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
     },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
@@ -4154,12 +4157,9 @@ export const zhOverrides = {
     terminalCloseAll: '关闭全部',
     terminalNewOn: '新建终端于…',
     terminalGatewayRemoved: '已移除的网关',
-    terminalGatewayRemovedBody:
-      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
-    terminalGatewayNoShellBody:
-      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
-    terminalDisconnectedBody:
-      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
+    terminalGatewayRemovedBody: '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody: '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody: '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 
@@ -4706,6 +4706,31 @@ export const zhOverrides = {
     modelSwitchKeepLabel: '保留当前模型',
     modelSwitchStaleNotice: '选择已更改 — 未应用模型切换。',
     hydrationSyncing: (profile: string) => `正在同步 ${profile}\u2026`,
+    sessionExportAction: '导出',
+    sessionExportFormat: '文件格式',
+    sessionExportNeedsLive: '请打开此对话后重试。此格式或敏感信息隐藏功能需要连接支持导出的后端。',
+    sessionExportRedact: '隐藏检测到的敏感信息',
+    sessionExportRedactHint: '保存前隐藏检测到的敏感信息。分享前请检查文件。',
+    sessionExportTitle: '导出对话',
+    sessionExportUnsupported: '此窗口不支持导出文件。',
+    sessionExportAsides: '已保存的 /btw 旁支对话',
+    sessionExportCollapse: '折叠已包含的详细内容',
+    sessionExportContents: '转录内容',
+    sessionExportFiles: '文件引用',
+    sessionExportFoldDocx: '受支持的桌面版 Word 可以折叠详细内容标题。其他阅读器可能会展开显示。',
+    sessionExportFoldHtml: '已包含的工具调用和推理可在文件内展开。',
+    sessionExportFoldJson: 'JSON 包含选定数据，不提供可视化折叠。',
+    sessionExportFoldMd: '折叠和内嵌图像的显示取决于 Markdown 阅读器。',
+    sessionExportFoldOdt: 'ODT 使用详细内容标题；能否折叠取决于编辑器。',
+    sessionExportImagePrivacy: '不会检测图像中的机密信息。分享前请检查图像。',
+    sessionExportImages: '图像',
+    sessionExportLinkHint: '关闭可点击链接仍会保留原文。不会自动获取外部内容或上传文件。',
+    sessionExportLinks: '可点击链接',
+    sessionExportMediaHint:
+      '可用图像会嵌入文件。视频和文件仅保留引用；本地路径可能无法在其他计算机上使用。 未保存的 /btw 对话无法恢复。',
+    sessionExportReasoning: '已保存的推理',
+    sessionExportTools: '工具调用及结果',
+    sessionExportVideos: '视频引用',
     sessionExported: '会话已导出',
     sessionExportFailed: '无法导出会话',
     imageSaved: '图片已保存',

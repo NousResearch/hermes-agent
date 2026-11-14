@@ -4936,18 +4936,31 @@ export interface RollbackSessionDiffResult {
   empty?: boolean
   error?: string | null
 }
-/** ``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``). */
+/** ``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``). ``transcript_options``, when present, asks for the filtered JSON transcript. */
 export interface SessionExportParams {
   session_id: string
   profile?: string | null
   format?: string
   redact?: boolean
+  transcript_options?: SessionTranscriptOptions | null
 }
-/** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
+/** The eight boolean keys the Desktop chooser sends and ``validate_options`` accepts. */
+export interface SessionTranscriptOptions {
+  include_tools: boolean
+  include_reasoning: boolean
+  include_images: boolean
+  include_videos: boolean
+  include_files: boolean
+  include_links: boolean
+  include_asides: boolean
+  collapse_details: boolean
+}
+/** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. ``transcript_version`` is 1 only for that filtered transcript. */
 export interface SessionExportResult {
   format: string
   filename: string
   content: string
+  transcript_version?: 1 | null
 }
 export interface SessionAutomationParams {
   session_id: string

@@ -26,7 +26,6 @@ import {
   Trash2,
   Wrench
 } from '@/lib/icons'
-import { exportSession } from '@/lib/session-export'
 import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -39,6 +38,7 @@ import { $sessionProfilesTruncated, $sessions, sessionPinId } from '@/store/sess
 import { confirmSharedGatewayRestart } from '@/store/system-actions'
 
 import { SidebarLoadMoreRow } from '../chat/sidebar/load-more-row'
+import { SessionExportDialog } from '../chat/sidebar/session-export-dialog'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
@@ -187,6 +187,7 @@ export function CommandCenterView({
 
   const [query, setQuery] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
+  const [exportTarget, setExportTarget] = useState<{ sessionId: string; profile?: string; title: string } | null>(null)
   const [loadMorePending, setLoadMorePending] = useState(false)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
@@ -456,7 +457,11 @@ export function CommandCenterView({
                               </RowIconButton>
                               <RowIconButton
                                 onClick={() =>
-                                  void exportSession(session.id, { session, title: sessionTitle(session) })
+                                  setExportTarget({
+                                    sessionId: session.id,
+                                    profile: session.profile ?? undefined,
+                                    title: sessionTitle(session)
+                                  })
                                 }
                                 title={cc.exportSession}
                               >
@@ -589,6 +594,7 @@ export function CommandCenterView({
           </div>
         </OverlayMain>
       </OverlaySplitLayout>
+      <SessionExportDialog onClose={() => setExportTarget(null)} target={exportTarget} />
       {pendingDelete && (
         <ConfirmDialog
           busyLabel={t.sidebar.row.deleting}

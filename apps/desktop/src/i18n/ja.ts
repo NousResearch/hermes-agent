@@ -1638,7 +1638,8 @@ export const jaOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'ボットトークン不要',
-      intro: (platform: string) => `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
+      intro: (platform: string) =>
+        `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
       link: (platform: string) => `${platform} をリンク`,
       linkAnother: (platform: string) => `別の ${platform} アカウントをリンク`,
       linkedAccounts: 'リンク済みアカウント',
@@ -1651,15 +1652,19 @@ export const jaOverrides = {
       copied: 'コピーしました',
       copyFailed: (command: string) => `コピーできませんでした。${command} と入力してください。`,
       waiting: 'ボットがメッセージを受け取るのを待っています。コードは1回だけ使えます。',
-      linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
+      linked: (platform: string) =>
+        `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
       expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
-      refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
+      refused: (platform: string) =>
+        `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
       qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
       managed: 'Team Gateway が管理',
-      managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
+      managedNote: (platform: string) =>
+        `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
       managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
       openPortal: 'Nous Portal でアカウントをリンク',
-      noNewAccount: (platform: string) => `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
+      noNewAccount: (platform: string) =>
+        `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
     },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
@@ -3722,6 +3727,33 @@ export const jaOverrides = {
     modelSwitchKeepLabel: '現在のモデルを維持',
     modelSwitchStaleNotice: '選択が変更されたため、モデルの切り替えは適用されませんでした。',
     hydrationSyncing: (profile: string) => `${profile} を同期中\u2026`,
+    sessionExportAction: 'エクスポート',
+    sessionExportFormat: 'ファイル形式',
+    sessionExportNeedsLive:
+      'この会話を開いて再試行してください。この形式またはマスク機能には、エクスポートに対応した接続済みバックエンドが必要です。',
+    sessionExportRedact: '検出された機密情報をマスク',
+    sessionExportRedactHint: '保存前に検出された機密情報をマスクします。共有する前にファイルを確認してください。',
+    sessionExportTitle: '会話をエクスポート',
+    sessionExportUnsupported: 'このウィンドウではファイルをエクスポートできません。',
+    sessionExportAsides: '保存済みの /btw 余談',
+    sessionExportCollapse: '含めた詳細を折りたたむ',
+    sessionExportContents: '文字起こしの内容',
+    sessionExportFiles: 'ファイルへの参照',
+    sessionExportFoldDocx:
+      '対応するデスクトップ版 Word では詳細見出しを折りたためます。他のアプリでは展開表示になる場合があります。',
+    sessionExportFoldHtml: '含めたツール呼び出しと推論はファイル内で展開できます。',
+    sessionExportFoldJson: 'JSON には選択したデータが含まれます。視覚的な折りたたみはありません。',
+    sessionExportFoldMd: '折りたたみと埋め込み画像の表示は Markdown ビューアーによって異なります。',
+    sessionExportFoldOdt: 'ODT は詳細見出しを使用します。折りたたみはエディターによって異なります。',
+    sessionExportImagePrivacy: '画像内の機密情報は検出されません。共有前に画像を確認してください。',
+    sessionExportImages: '画像',
+    sessionExportLinkHint: 'リンクをクリック不可にしても原文は保持されます。外部からの取得やアップロードは行いません。',
+    sessionExportLinks: 'クリック可能なリンク',
+    sessionExportMediaHint:
+      '利用可能な画像を埋め込みます。動画とファイルは参照のみです。ローカルパスは別のコンピューターでは使えない場合があります。 保存されていない /btw のやり取りは復元できません。',
+    sessionExportReasoning: '保存された推論',
+    sessionExportTools: 'ツール呼び出しと結果',
+    sessionExportVideos: '動画への参照',
     sessionExported: 'セッションをエクスポートしました',
     sessionExportFailed: 'セッションをエクスポートできませんでした',
     imageSaved: '画像を保存しました',

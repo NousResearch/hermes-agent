@@ -38775,7 +38775,7 @@
       },
       "SessionExportParams": {
         "additionalProperties": false,
-        "description": "``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).",
+        "description": "``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).\n``transcript_options``, when present, asks for the filtered JSON transcript.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -38802,6 +38802,17 @@
             "default": false,
             "title": "Redact",
             "type": "boolean"
+          },
+          "transcript_options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionTranscriptOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -38812,7 +38823,7 @@
       },
       "SessionExportResult": {
         "additionalProperties": false,
-        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
+        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.\n``transcript_version`` is 1 only for that filtered transcript.",
         "properties": {
           "format": {
             "title": "Format",
@@ -38825,6 +38836,19 @@
           "content": {
             "title": "Content",
             "type": "string"
+          },
+          "transcript_version": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transcript Version"
           }
         },
         "required": [
@@ -40605,6 +40629,56 @@
           "title"
         ],
         "title": "SessionTitleResult",
+        "type": "object"
+      },
+      "SessionTranscriptOptions": {
+        "additionalProperties": false,
+        "description": "The eight boolean keys the Desktop chooser sends and ``validate_options`` accepts.",
+        "properties": {
+          "include_tools": {
+            "title": "Include Tools",
+            "type": "boolean"
+          },
+          "include_reasoning": {
+            "title": "Include Reasoning",
+            "type": "boolean"
+          },
+          "include_images": {
+            "title": "Include Images",
+            "type": "boolean"
+          },
+          "include_videos": {
+            "title": "Include Videos",
+            "type": "boolean"
+          },
+          "include_files": {
+            "title": "Include Files",
+            "type": "boolean"
+          },
+          "include_links": {
+            "title": "Include Links",
+            "type": "boolean"
+          },
+          "include_asides": {
+            "title": "Include Asides",
+            "type": "boolean"
+          },
+          "collapse_details": {
+            "title": "Collapse Details",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "include_tools",
+          "include_reasoning",
+          "include_images",
+          "include_videos",
+          "include_files",
+          "include_links",
+          "include_asides",
+          "collapse_details"
+        ],
+        "title": "SessionTranscriptOptions",
         "type": "object"
       },
       "SessionUndoParams": {

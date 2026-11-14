@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
@@ -230,7 +231,7 @@ def _require_task_id(args: dict) -> str:
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
-    return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
+    return os.environ.get(var) if task_id and owned_kanban_task() == task_id else None
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
@@ -247,6 +248,17 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
+def _reject_inherited_task_mutation(tid: str, env_tid: Optional[str] = None) -> None:
+    """Refuse a mutation of the card whose ``HERMES_KANBAN_TASK`` this execution inherited
+    without owning it; naming it explicitly must not stand in for the dispatcher's grant."""
+    env_tid = env_tid if env_tid is not None else (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if env_tid and tid == env_tid and not owned_kanban_task():
+        raise _Reject(
+            f"refusing to mutate task {tid}: this run inherited it from the Kanban worker that "
+            "fired it and does not own it. Report findings in this run's output or file a new "
+            "card with kanban_create; only the card's own worker may change it.")
+
+
 def _enforce_worker_task_ownership(tid: str) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
@@ -256,7 +268,12 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     a buggy or prompt-injected worker that passed an explicit ``task_id`` for some other task could corrupt
     sibling or cross-tenant runs (see #19534).
     """
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if env_tid and not owned_kanban_task():
+        # Inherited, not owned (cron run fired from the worker): the worker's card is
+        # read-only here, while other cards keep the orchestrator path.
+        _reject_inherited_task_mutation(tid, env_tid)
+        return
     if env_tid and tid != env_tid:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
@@ -284,7 +301,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     _enforce_worker_task_ownership(tid)
     if (
         tool_name in _RUN_LIFECYCLE_TOOLS
-        and os.environ.get("HERMES_KANBAN_TASK")
+        and owned_kanban_task()
         and _worker_run_id(tid) is None
     ):
         raise _Reject(
@@ -571,6 +588,10 @@ def heartbeat_current_worker_from_env() -> bool:
     if _is_delegated_child_context():
         # An in-process delegate child's activity is not the worker's liveness; checked before
         # stamping the window so a chatty child cannot starve the worker's own heartbeat.
+        return False
+    if not _is_dispatcher_owned_worker() and not _delegation_ctx(
+            "is_delegated_child_process_context", False):
+        # A cron run fired in-process from the worker is not the worker's liveness either.
         return False
     _auto_heartbeat_last_attempt = now
     try:
@@ -958,6 +979,7 @@ def _handle_comment(args: dict, **kw) -> str:
             "task_id is required: comments are per-task and this session has no "
             "dispatcher-assigned task to default to. Discover task ids with "
             "kanban_list, or pass the task id you mean.")
+    _reject_inherited_task_mutation(str(tid))
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity (``_persisted_identity``), never
     # caller args: comments are injected into future workers' system prompts, so an

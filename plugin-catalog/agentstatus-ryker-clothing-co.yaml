@@ -1,0 +1,19 @@
+name: agentstatus-ryker-clothing-co
+title: "Ryker Clothing Co"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: c3e5e0859555cd3d431f5d2c73ded17fd250d0c3
+subdir: plugins/ryker-clothing-co
+version: "1.0.0"
+description: "Public MCP for Ryker Clothing Co, hosted by AgentStatus at https://ryker-clothing-co.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://ryker-clothing-co.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

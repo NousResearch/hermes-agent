@@ -1,0 +1,19 @@
+name: agentstatus-wayve-wear-2
+title: "Wayve Wear 2"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 2e7b830272df93213a60f8245a832fba6e21c260
+subdir: plugins/wayve-wear-2
+version: "1.0.0"
+description: "Public MCP for Wayve Wear 2, hosted by AgentStatus at https://wayve-wear-2.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://wayve-wear-2.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

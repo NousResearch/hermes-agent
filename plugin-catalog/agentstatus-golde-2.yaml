@@ -1,0 +1,19 @@
+name: agentstatus-golde-2
+title: "golde.co"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 27e84c0fb73038cf1cea12eb891b69f54bd27d6e
+subdir: plugins/golde-2
+version: "1.0.0"
+description: "Public MCP for golde.co, hosted by AgentStatus at https://golde-2.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://golde-2.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

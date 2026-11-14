@@ -1,0 +1,19 @@
+name: agentstatus-the-outgoing-co
+title: "The Outgoing Co"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 1e8f94e4e71b560c58ec8d13f3ccafae3a6ecbd5
+subdir: plugins/the-outgoing-co
+version: "1.0.0"
+description: "Public MCP for The Outgoing Co, hosted by AgentStatus at https://the-outgoing-co.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://the-outgoing-co.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

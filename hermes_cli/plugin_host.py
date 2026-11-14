@@ -40,6 +40,7 @@ from hermes_cli.plugin_host_wire import (
     Channel, Opaque, PluginHostUnavailable, PluginHostUnsupported, declared_return, decode, encode, restore,
     signature_from,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -132,7 +133,7 @@ class PluginHost:
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
         env.update(self._base_context.run(_hosted_ambient_credentials, self._home))
-        repo_root = str(Path(__file__).resolve().parents[1])
+        repo_root = project_root_str()
         env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
         env.setdefault("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING")
         from hermes_cli.plugin_isolation import HOST_PROCESS_ENV

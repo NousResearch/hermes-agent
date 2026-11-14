@@ -1,0 +1,33 @@
+name: afriradar
+version: "1.0.0"
+repo: https://github.com/Risingtell/hermes-afriradar
+sha: 425fadf6e5dd5696e03a9876727b619a722c8176
+title: AfriRadar
+description: "Nigerian and Kenyan fund data from the regulators (SEC Nigeria weekly, CMA Kenya quarterly): rank, compare and project funds, keep a watchlist, and get a weekly report of what moved. Eight tools, a zero-token /afriradar command, two automation blueprints and one switchable routing hook; stdlib only, no API key, no telemetry. Disclosure — fetches public fund CSVs from www.afriradar.com (the author's site; the Data URL setting can point at a mirror) and caches them under the plugin's data directory; sends no prompts, files or keys; stores your watchlist (fund names, amounts, notes) in Hermes plugin state; its pre_llm_call hook adds a one-line note steering fund questions to its tools (on by default, `routing` setting); the two automation blueprints run weekly only if you install them."
+maintainer: Risingtell
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Risingtell/hermes-afriradar#readme
+image: https://raw.githubusercontent.com/Risingtell/hermes-afriradar/425fadf6e5dd5696e03a9876727b619a722c8176/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Risingtell/hermes-afriradar/425fadf6e5dd5696e03a9876727b619a722c8176/docs/2-watch.png
+  - https://raw.githubusercontent.com/Risingtell/hermes-afriradar/425fadf6e5dd5696e03a9876727b619a722c8176/docs/5-weekly-report.png
+  - https://raw.githubusercontent.com/Risingtell/hermes-afriradar/425fadf6e5dd5696e03a9876727b619a722c8176/docs/1-top-funds.png
+  - https://raw.githubusercontent.com/Risingtell/hermes-afriradar/425fadf6e5dd5696e03a9876727b619a722c8176/docs/3-project.png
+  - https://raw.githubusercontent.com/Risingtell/hermes-afriradar/425fadf6e5dd5696e03a9876727b619a722c8176/docs/4-slash.png
+platforms: []
+capabilities:
+  provides_tools:
+    - afriradar_market_overview
+    - afriradar_find_funds
+    - afriradar_top_funds
+    - afriradar_fund_detail
+    - afriradar_compare_funds
+    - afriradar_project_returns
+    - afriradar_watchlist
+    - afriradar_watch_report
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

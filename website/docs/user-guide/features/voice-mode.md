@@ -496,7 +496,8 @@ DISCORD_ALLOWED_USERS=284102345871466496
 voice:
   record_key: "ctrl+b"            # Key to start/stop recording
   max_recording_seconds: 120       # Maximum recording length
-  auto_tts: false                  # Auto-enable TTS when voice mode starts
+  auto_tts: false                  # Enable automatic spoken replies in gateway chats
+  auto_tts_mode: "all"             # "all" (legacy default) | "voice_only"
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
@@ -508,7 +509,11 @@ stt:
                                     # the gateway still caches the audio file and
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
-                                    # (diarization, alignment, archival, etc.)
+                                    # (diarization, alignment, archival, etc.).
+                                    # When enabled, the agent gets the quoted
+                                    # transcript followed by a
+                                    # "[User sent audio: <path>]" line, so the
+                                    # recording stays reachable after STT succeeds
   provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
   language: "en"                     # global hint for every provider; set "" to auto-detect
   local:

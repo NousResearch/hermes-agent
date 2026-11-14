@@ -29,6 +29,7 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
         _notif_log_failure=lambda *args: None)
     for module, names in [(prompt_turn, ('_admit_prompt_turn', '_run_prompt_submit')),
                           (session_notifications, ('_notif_submit', '_notif_claim_turn', '_notif_release_turn',
+                           '_notif_release_claim',
                            '_notif_dispatch_event', '_notif_dispatch_completions', '_async_delegation_display_metadata'))]:
         for name in names:
             namespace[name] = rebind(getattr(module, name), namespace)

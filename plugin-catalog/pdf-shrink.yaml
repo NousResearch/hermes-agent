@@ -1,0 +1,55 @@
+name: pdf-shrink
+repo: https://github.com/Hazem-Samak/hermes-pdf-shrink
+sha: 6145a74a9e9e2a0d0d03ba859d8ea59a6d448a4c
+description: >-
+  Shrink a PDF to a size limit (2 MB, 500 KB, whatever the upload form says) with
+  everything running locally — no upload, no API key, no third-party service. Two
+  tools and a bundled skill. pdf_inspect reports what makes a file heavy: image
+  share of the bytes, the resolution each image is actually displayed at, fonts,
+  embedded attachments and duplicates, with a verdict (images dominate / images
+  not reclaimable / vector-heavy / already small) so a shrink that cannot work is
+  caught before it runs. pdf_shrink downsamples images it can re-encode safely to
+  the resolution they are displayed at, recovered by replaying each page's content
+  stream (q/Q/cm/Do, including nested Form XObjects), then walks a measured ladder
+  of DPI/JPEG-quality rungs from the mildest down and keeps the first that fits —
+  each rung rebuilt from the pristine original, so the copy is one generation of
+  compression rather than six. Text, fonts and vector art are never rasterised;
+  images that cannot be re-encoded safely (JBIG2, CCITT, 1-bit or non-8-bit
+  samples, soft/stencil masks, /Mask, /Matte or /Decode arrays, CMYK and other
+  print colour spaces, tiny logos) are left byte-for-byte alone. When the limit
+  cannot be reached without making the document unreadable it stops at the safe
+  floor, reports the smallest safe size, saves that copy when it is meaningfully
+  smaller, and names the levers that can actually help (a reachable higher target,
+  or aggressive=true when it can do better) instead of handing back mush. Every
+  copy is re-opened and verified (page count, blank pages, structural syntax)
+  before delivery; a copy that fails is reported as failed, not as a success. The
+  source is re-hashed before and after every completed run, and a change is
+  reported rather
+  than claimed untouched. A before/after render of page 1 comes back when PDFium
+  is available and a verified copy was written. Writes only new files; an
+  existing output path is refused, never overwritten. Ladder rungs are built in a
+  private system-temp directory, never beside the PDF; a read-only source folder
+  still works, and the default output falls back to the current directory when
+  the source folder cannot be written. An explicit output_path must end in .pdf, and a location that
+  Hermes's own write denylist refuses is rejected before anything is written. The only destructive
+  option is drop_attachments=true, off by default.
+maintainer: Hazem-Samak
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Hazem-Samak/hermes-pdf-shrink#readme
+version: "1.0.3"
+title: PDF Shrink
+image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/6145a74a9e9e2a0d0d03ba859d8ea59a6d448a4c/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/6145a74a9e9e2a0d0d03ba859d8ea59a6d448a4c/assets/screenshot.jpg
+platforms: [linux, macos, windows]
+known_issues:
+  - '`hermes plugins validate` warns (catalog rule 9) about the one private core import in `engine.py`: `agent.file_safety.is_write_denied`. It is the confinement check the catalog review asked for, imported lazily and failing closed if the module is present but broken; there is no public equivalent, no core function is patched, and it exists in every Hermes >= 0.22.0.'
+capabilities:
+  provides_tools:
+    - pdf_shrink
+    - pdf_inspect
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -439,16 +439,21 @@ def _host_derived_api_key(base_url: str) -> str:
     return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
 
 
+def openai_env_key_authoritative_for(base_url: str, env_openai_base: str) -> bool:
+    """Whether ``OPENAI_API_KEY`` may be sent to *base_url*: an OpenAI-owned host, or exactly the
+    ``OPENAI_BASE_URL`` the key is paired with (the user's own proxy/gateway, not an unrelated host)."""
+    if base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com"):
+        return True
+    env_openai_base = (env_openai_base or "").strip().rstrip("/")
+    return bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base
+
+
 def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
     """Env API keys gated on their authoritative hosts, then the host-derived ``<VENDOR>_API_KEY``.
     Sending OPENAI/OPENROUTER/OLLAMA keys to an unrelated endpoint leaks credentials
     (GHSA-76xc-57q6-vm5m); match on HOST, not substring. ``_host_derived_api_key`` skips OLLAMA, so
     callers that want it opt in via ``ollama``."""
-    is_openai = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    # OPENAI_BASE_URL names the proxy/gateway the OPENAI_API_KEY was issued for (the ``openai`` alias
-    # expands onto it); an exact match is the user's own pairing, not a leak to an unrelated host.
-    env_openai_base = get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/")
-    is_openai = is_openai or (bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base)
+    is_openai = openai_env_key_authoritative_for(base_url, get_secret_str("OPENAI_BASE_URL", ""))
     candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
     return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
                          get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
@@ -635,9 +640,19 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     model_cfg = model_cfg or _get_model_config()
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
     base_url = _finalize_base_url(provider, api_mode, base_url)
+    if declared:  # the URL's owner supplies the key; the built-in's pool rows are another account's
+        return _runtime(provider, api_mode, base_url, entry_key, source="config:providers", requested_provider=requested_provider)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
+
+
+def _owned_url_credential(base_url: str, model_cfg: dict[str, Any], provider: str) -> tuple[bool, Any]:
+    """``(declared, key)`` when ``base_url`` came from ``model.base_url`` and a ``providers:`` entry
+    that owns it declares its own credential: a built-in env or pool key never goes to that URL."""
+    from hermes_cli.runtime_provider_custom import owned_config_url_credential
+    return owned_config_url_credential(base_url, model_cfg, provider)
 
 
 def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) -> bool:
@@ -676,6 +691,92 @@ def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str
     return entry, pool_api_key
 
 
+@dataclass
+class PoolKey:
+    """One credential a pool chose for a request: the pool, the entry and the key that goes out."""
+    pool: CredentialPool
+    entry: PooledCredential
+    api_key: str
+
+
+def choose_pool_key(pool: Optional[CredentialPool], provider: str, *, model: Optional[str] = None,
+                    endpoint_url: Optional[str] = None, as_called: Any = None,
+                    mode: str = "select") -> Optional[PoolKey]:
+    """The key ``pool`` serves for ``provider``, taken the way a direct pick of the provider takes it:
+    the pool's choice among the entries for ``endpoint_url`` (compared through ``as_called``, see
+    ``credential_pool_selection.AsCalled``), the provider profile's preparation of its secret, and a
+    usable-secret check. ``mode``: ``select`` counts and rotates as the pick is made; ``choose`` makes
+    the same pick without touching the pool (the caller ``pool.commit``s it once the key is sent);
+    ``peek`` reads the entry the pool is already on. None when no entry qualifies."""
+    if pool is None or not pool.has_credentials():
+        return None
+    model = model or None
+    where = {"endpoint_url": endpoint_url} if endpoint_url else {}  # a direct pick calls the pool exactly as before
+    if mode == "select":
+        entry = pool.select(model=model, **where)
+    elif mode == "choose":
+        entry = pool.choose(model=model, as_called=as_called, **where)
+    else:
+        entry = pool.peek(model=model, **where)
+    if entry is None:
+        return None
+    api_key = _pool_entry_api_key(entry)
+    if provider == "nous":
+        if mode == "select":  # a refresh writes the pool; the read-only modes leave it alone
+            entry, api_key = _refresh_nous_pool_entry(pool, entry, api_key)
+    else:
+        from providers import get_provider_profile
+        if (profile := get_provider_profile(provider)) is not None:
+            api_key = profile.prepare_pool_entry(entry, api_key)
+    return PoolKey(pool, entry, api_key) if has_usable_secret(api_key) else None
+
+
+class PoolChoice:
+    """``resolve_provider_client``'s opt-in for a registry API-key provider: its key comes from its
+    credential pool the way a direct pick takes it, instead of ``.env`` first. ``choose`` runs inside
+    the resolver, once the endpoint is known, and leaves the pool untouched; the caller ``commit``s
+    once the route is in use, so a route it then refuses moves nothing. ``commit=False`` callers
+    (a readiness probe) never commit."""
+
+    def __init__(self, model: Optional[str] = None):
+        self.model, self.picked, self._endpoint_url = model or None, None, None
+
+    @property
+    def pool(self) -> Optional[CredentialPool]:
+        return self.picked.pool if self.picked is not None else None
+
+    def choose(self, pool_name: str, provider: str, model: Optional[str], endpoint_url: str) -> Optional[PoolKey]:
+        """The pool entry for ``endpoint_url`` a direct pick would send. ``pool_name`` is the provider as
+        the caller named it (an alias keeps its own pool, which recovery after a 429 matches against).
+        Providers whose endpoint follows from the key, or whose profile resolves its own secret, keep
+        the resolver's key: a pool row's key would go to the endpoint derived from another key."""
+        from agent.auxiliary_client import _normalize_resolved_model, _to_openai_base_url
+        from hermes_cli.auth import _API_KEY_BASE_URL_RESOLVERS
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if provider in _API_KEY_BASE_URL_RESOLVERS or (profile is not None and profile.resolve_api_key_secret() is not None):
+            return None
+        try:
+            pool = load_pool(pool_name)
+        except Exception as exc:  # health: allow BLE001 -- an unreadable pool leaves the resolver's own key
+            logger.warning("Could not load the %s credential pool: %s", pool_name, exc)
+            return None
+        self.model = _normalize_resolved_model(model or self.model, provider)  # the model recovery benches under
+        self.picked = choose_pool_key(pool, provider, model=self.model, endpoint_url=endpoint_url,
+                                      as_called=_to_openai_base_url, mode="choose")
+        self._endpoint_url = endpoint_url
+        return self.picked
+
+    def commit(self) -> None:
+        """Record the chosen entry as used (request count, round-robin order), as a direct pick does."""
+        if self.picked is None:
+            return
+        from agent.auxiliary_client import _to_openai_base_url
+        if self.picked.pool.commit(self.picked.entry.id, model=self.model, endpoint_url=self._endpoint_url,
+                                   as_called=_to_openai_base_url) is None:
+            logger.info("Credential pool entry %s left the pool before its first request", self.picked.entry.id)
+
+
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
@@ -685,21 +786,11 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
         pool = load_pool(provider) if should_use_pool else None
     except Exception:
         pool = None
-    if not (pool and pool.has_credentials()):
+    picked = choose_pool_key(pool, provider, model=target_model)
+    if picked is None:
         return None
-    entry = pool.select(model=target_model or None)
-    if entry is None:
-        return None
-    pool_api_key = _pool_entry_api_key(entry)
-    if provider == "nous":
-        entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
-    else:
-        from providers import get_provider_profile
-        if (profile := get_provider_profile(provider)) is not None:
-            pool_api_key = profile.prepare_pool_entry(entry, pool_api_key)
-    if not has_usable_secret(pool_api_key):
-        return None
-    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
+    pool, entry = picked.pool, picked.entry
+    if credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)
     return None
@@ -876,6 +967,10 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, "anthropic")
+    if declared:  # the URL's owner supplies the key; ANTHROPIC_API_KEY / Claude OAuth are another account's
+        return _runtime("anthropic", "anthropic_messages", base_url, entry_key, source="config:providers",
+                        requested_provider=requested_provider)
     # Microsoft Foundry endpoints reject Claude Code OAuth tokens, which resolve_anthropic_token()
     # would return first — use the env key directly.
     if base_url_host_matches(base_url, "azure.com"):
@@ -897,16 +992,19 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
         cfg_url = _config_base_url_for_provider(model_cfg, provider)
         if is_actual_local_base_url(normalize_actual_base_url(cfg_url or creds.get("base_url", "").rstrip("/"))):
             creds = {**creds, "api_key": ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, "source": creds.get("source") or "local-offline"}
+    # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
+    base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
+    if declared:  # the URL's owner supplies the key; the built-in's env key is another account's
+        creds = {**creds, "api_key": entry_key, "source": "config:providers"}
     # An explicitly selected API-key provider is authoritative: an empty key would defer failure
     # to the first request and make a later fallback look like a silent provider switch.
-    if not has_usable_secret(creds.get("api_key")):
+    if not has_usable_secret(creds.get("api_key")) and not (declared and entry_key):
         from hermes_cli.runtime_readiness import missing_credentials_suffix
         from hermes_cli.runtime_provider_missing_key import named_profile_key_hint
         hint = (f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else "") + missing_credentials_suffix(provider)
         hint += named_profile_key_hint(pconfig.api_key_env_vars)
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
-    # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
-    base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
     api_mode = _api_key_provider_api_mode(provider, model_cfg, creds.get("api_key", ""), base_url,
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
@@ -1176,19 +1274,14 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
-        from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
+        from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs, get_fallback_chain
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()
             if not provider or not model:
                 continue
-            kwargs: dict[str, Any] = {"requested": provider, "target_model": model}
-            if entry.get("base_url"):
-                kwargs["explicit_base_url"] = entry["base_url"]
-            if entry_key := resolve_entry_api_key(entry):
-                kwargs["explicit_api_key"] = entry_key
             try:
-                runtime = resolve_runtime_provider(**kwargs)
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
                 continue

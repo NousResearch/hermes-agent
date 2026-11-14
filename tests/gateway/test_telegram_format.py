@@ -287,6 +287,32 @@ async def test_final_send_does_not_retrigger_typing(adapter):
     adapter._bot.send_chat_action.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rich", [False, True])
+async def test_silent_cron_delivery_does_not_retrigger_typing(adapter, rich):
+    """A ``cron.delivery.notify: false`` delivery (job_id, notify=False) owns no typing loop, so a re-arm
+    would leave '...typing' showing after the scheduled message; an intermediate send still re-arms."""
+    import asyncio
+
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._rich_messages_enabled = rich
+    adapter._should_attempt_rich = lambda *_a, **_k: rich
+    adapter._try_send_rich = AsyncMock(return_value=SimpleNamespace(success=True, message_id="1"))
+    adapter.send_typing = AsyncMock()  # the re-arm itself; per-chat typing pacing is telegram_typing_gate's job
+
+    result = await adapter.send("12345", "Cron brief", metadata={"job_id": "j1", "notify": False})
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert result.success is True
+    adapter.send_typing.assert_not_called()
+
+    await adapter.send("67890", "Working on it")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    adapter.send_typing.assert_called_once()
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================
@@ -954,3 +980,20 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+def test_ignore_root_dm_makes_the_root_dm_a_command_lobby():
+    """``extra.ignore_root_dm`` drops plain root-DM text for chats with ``dm_topics``; commands, topic messages
+    and chats without topics still pass."""
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={
+        "ignore_root_dm": True, "dm_topics": [{"chat_id": 111, "topics": []}]}))
+
+    def msg(chat, thread=None):
+        return SimpleNamespace(chat=SimpleNamespace(id=chat, type="private"), message_thread_id=thread,
+                               is_topic_message=thread is not None, from_user=SimpleNamespace(id=chat, is_bot=False),
+                               text="hi", entities=None, caption_entities=None, reply_to_message=None)
+
+    assert a._should_process_message(msg(111)) is False
+    assert a._should_process_message(msg(111), is_command=True) is True
+    assert a._should_process_message(msg(111, 7)) is True
+    assert a._should_process_message(msg(222)) is True

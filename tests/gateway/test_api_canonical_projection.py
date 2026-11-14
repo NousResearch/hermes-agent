@@ -12,6 +12,7 @@ from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
 from tests.waiting import async_wait_until
+from tests.gateway.session_claims import claim
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
@@ -62,7 +63,7 @@ async def test_api_images_are_committed_media_in_canonical_history(api, owner):
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     committed = media[0]['path']
     assert f'[Image attached at: {committed}]' in seen['text']
     assert seen['content'][0]['text'].endswith(f'[Image attached at: {committed}]')
@@ -76,7 +77,7 @@ async def test_initialization_failure_is_a_failed_receipt_not_completed(api, own
     async def handle(event):
         return 'Sorry, I encountered an unexpected error.'  # handler apology, no TurnRunner result
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     result = owner.pending_results[row['admission_id']]['result']
     assert result['failed'] is True and result['completed'] is False
     assert result['final_response'] == '' and 'unexpected error' in result['error']

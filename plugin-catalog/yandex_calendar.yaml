@@ -1,9 +1,10 @@
 name: yandex_calendar
 repo: https://github.com/akinfold/hermes-yandex-calendar
-sha: cad2a6b8e1cad82753b9f57d4f388645210702a0
+sha: 7a717f0bcece2037d1a894fb19dfd2d4742ac470
 subdir: hermes_yandex_calendar
 title: "Yandex Calendar"
-description: "List, create, update, RSVP to, move and delete Yandex Calendar events over CalDAV, with attendees, busy status and several calendars. Disclosure — sends every request to caldav.yandex.ru, or to the HTTPS URL in YANDEX_CALENDAR_BASE_URL if you set one, with your YANDEX_CALENDAR_LOGIN and YANDEX_CALENDAR_APP_PASSWORD read through Hermes; all seven tools, delete included, are offered unless YANDEX_CALENDAR_ACTIONS narrows them; the tools act as your Yandex account, so adding attendees makes Yandex email each of them an invitation from you, and changing, answering, moving or deleting a meeting may notify the people on it; delete removes the event from the server and the plugin keeps no copy; event text written by other people, such as whoever invites you, reaches the agent as tool output; no other endpoint, no telemetry, no file or shell access, no background process. Independent community plugin, not affiliated with Yandex."
+image: https://raw.githubusercontent.com/akinfold/hermes-yandex-calendar/7a717f0bcece2037d1a894fb19dfd2d4742ac470/docs/banner.png
+description: "Manage events, invitations and RSVPs across Yandex calendars through CalDAV. Choose which calendars and actions Hermes can use. Disclosure — sends every request to caldav.yandex.ru, or to the HTTPS URL in YANDEX_CALENDAR_BASE_URL if you set one, with your YANDEX_CALENDAR_LOGIN and YANDEX_CALENDAR_APP_PASSWORD read through Hermes; all seven tools, delete included, are offered unless YANDEX_CALENDAR_ACTIONS narrows them; the tools act as your Yandex account, so adding attendees makes Yandex email each of them an invitation from you, and changing, answering, moving or deleting a meeting may notify the people on it; delete removes the event from the server and the plugin keeps no copy; event text written by other people, such as whoever invites you, reaches the agent as tool output; no other endpoint, no telemetry, no file or shell access, no background process. Independent community plugin, not affiliated with Yandex."
 maintainer: akinfold
 tier: community
 category: tools

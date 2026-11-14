@@ -13,7 +13,7 @@ the TUI gateway. A process with no surface (setup wizard, updates) records nothi
 Hermes makes itself inside a surfaced process (migrations, under :func:`hermes_applied_write`): those
 are Hermes applying choices, not a user turning something off.
 
-``save_config``'s callers may hold their own write lock (the dashboard's ``_CONFIG_MUTATION_LOCK``), so
+``save_config``'s callers may hold their own write lock (``config_backend.CONFIG_MUTATION_LOCK``), so
 the hook only runs the cheap gate inline; the diff and the record run on a thread bound to the owning
 profile.
 """
@@ -69,9 +69,9 @@ def current_surface() -> str | None:
 
 @functools.cache
 def _bundled_plugin_names() -> frozenset[str]:
-    from .shared_metrics_catalog import _REPO_ROOT
+    from hermes_cli.plugins import get_bundled_plugins_dir
 
-    root = _REPO_ROOT / "plugins"
+    root = get_bundled_plugins_dir()
     try:
         return frozenset(
             p.parent.name.lower() for p in [*root.glob("*/plugin.yaml"), *root.glob("*/*/plugin.yaml")]

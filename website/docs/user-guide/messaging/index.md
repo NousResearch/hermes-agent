@@ -348,42 +348,70 @@ platforms:
 
 Details:
 
-- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also opt into intentional silence with `allow_silence` (below).
+- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also set intentional silence with `allow_silence`, which overrides the platform's own `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
-## Per-Room Intentional Silence
+## Per-Platform and Per-Room Intentional Silence
 
-In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as
-`NO_REPLY` or `[SILENT]`. To let a successful marker-only turn stay silent even when Hermes was
-mentioned or directly addressed, enable `allow_silence` for that room in the serving profile's
-`config.yaml`:
+In shared chats, a model may choose to end its turn with an explicit silence marker such as
+`NO_REPLY` or `[SILENT]` when a message is not meant for it. To let a successful marker-only turn
+stay silent even when Hermes was mentioned, directly addressed, or the adapter cannot tell (for
+example an unmentioned follow-up in a Slack thread, or WhatsApp group chatter), enable
+`allow_silence` in the serving profile's `config.yaml`, either for a whole platform or for one room:
 
 ```yaml
 platforms:
+  slack:
+    allow_silence: true            # every Slack chat this profile serves
+    channel_overrides:
+      "C0123456789":
+        allow_silence: false       # except this channel: keep the visible notice
+  whatsapp:
+    allow_silence: true            # every WhatsApp group and DM
   matrix:
     channel_overrides:
       "!exampleTeamRoom:example.org":
-        allow_silence: true
+        allow_silence: true        # only this room
 ```
+
+The top-level `slack:` / `whatsapp:` block form works the same way. A relay-fronted chat uses the
+block of its underlying platform (`platforms.slack` for Slack through the relay), as its
+`channel_overrides` do.
 
 The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
 when a human message needs a reply (or the adapter cannot tell). Internal notifications,
 scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
-even with `allow_silence: false`. This is a room override, not a profile-wide setting.
-It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
-matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
-thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
-parent's opt-in.
+even with `allow_silence: false`.
+
+A room's `allow_silence` overrides the platform's. Hermes looks the room up chat ID → thread ID →
+parent ID, as for other channel overrides, and the first matching entry is the room's, including
+an explicit `false`. An entry that sets only other keys (say a thread with just `model:`) also
+matches first, so it takes the platform's value, not its parent channel's: repeat `allow_silence`
+there to keep a parent's room opt-in. A quoted `"false"` counts as `false`; opting in takes a real
+`true`. With nothing set anywhere, the default reply policy applies. Room IDs must match the chat ID exactly: a WhatsApp group is
+`<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
+
+With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is
+hidden in group chats, channels, threads and webhook sources, so a healthy marker-only turn there stays silent where
+`allow_silence` is unset (see
+[Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)). An
+explicit `allow_silence: false`, on the room or the platform, still keeps the notice there.
+Suppression never silences a direct message: there the notice is the only answer a question gets,
+so a DM stays silent only where `allow_silence: true` is set for it or its platform.
+
+The platform setting covers direct messages too. There, a question the model answers with only a
+marker gets no reply at all, so set `allow_silence: false` on any DM or channel that must always
+get an answer.
 
 Restart the gateway after editing configuration so all serving profiles use the updated settings.
-The override affects final delivery only: it does not undo tool actions, retract progress already
+The setting affects final delivery only: it does not undo tool actions, retract progress already
 sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
 not gain permission to disappear. Ordinary replies and conversation history stay unchanged. When
 the model wrote a reply beside a housekeeping-only tool call (memory, todo list, skill management
 or session search) and then ended a complete turn on a bare marker, that reply is delivered as the
-final answer, in opted-in rooms too.
+final answer, in opted-in platforms and rooms too.
 Crash recovery honors a suppression decision only after it was saved for that exact final reply;
 a crash before that point keeps the human-turn safeguard.
 
@@ -472,6 +500,8 @@ gateway:
 
 **Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
 
+**Answering prompts counts as running the command.** Answering a dangerous-command approval is `/approve` or `/deny`, and answering a slash-command confirmation (`/reset`, `/reload-mcp`, …) runs that command. So in a gated scope a non-admin cannot answer them any other way either: typing a bare `yes` / `always`, a typed confirm reply, or tapping a native button (Telegram, Discord, Slack, Matrix, Feishu, Teams, WhatsApp Cloud, QQ Bot, relay) gets the same *⛔ /approve is admin-only here* note and the prompt stays pending for an admin. Adding `approve` (or `deny`, or the confirmed command) to `user_allowed_commands` lets members answer, exactly as it lets them type it. Clarify questions are not commands and are unaffected. A narrowed [`approvals.approvers`](../security.md#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers) takes precedence over this: then the requester, the listed ids and the admins answer.
+
 #### Inspecting your access
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. When an admin list is configured, `/help` and `/commands` show a non-admin only the commands they can actually run (`/help`, `/whoami`, plus `user_allowed_commands`); admins see the full catalog. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.
@@ -491,6 +521,10 @@ By default, messaging a busy agent redirects its active turn (a running foregrou
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+
+A steer carries text only, so a message with an attachment (a photo, file or video, including one captioned `/steer ...`) is queued with its attachment as the next turn instead. With no agent running, `/queue` or `/steer` as an attachment's caption (bare, or with text) sends the attachment as a normal message.
+
+A small text file is normally inlined into the message. When its caption is a slash command (`/goal summarize this`), the file is attached without its text inlined so the command still runs, and the agent is told to read the saved file.
 
 Gateway steers (including explicit `/steer`) and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. With `privacy.redact_pii: true`, identifiers in this model-visible context are hashed on supported platforms, including alternate and parent identifiers; the original event identifiers remain internal for routing. Otherwise identifiers are preserved exactly. Neither mode changes the session's system prompt or chooses a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.
 
@@ -531,6 +565,10 @@ display:
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
 ```
+
+An unrecognised `tool_progress` value — a typo, or a mode copied from another tool — is not read as a
+request for more output: the gateway logs it once and keeps the platform's own default, so a Telegram
+chat whose tier is `off` stays quiet.
 
 ### `log` mode — audit file instead of chat messages
 
@@ -740,7 +778,7 @@ Without an installed service, the gateway Hermes starts for you (Hermes Desktop,
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`
 Agents run as threads inside the one gateway process; the only child processes are tool subprocesses (terminal commands, browsers), which never hold provider credentials. A running gateway also re-reads the `openai-codex` login it seeded from `auth.json` the next time its pool selects that entry after it had gone `exhausted` or `dead` (entries added with `hermes auth add openai-codex` are independent accounts and are not resynced). When you want every session on the fresh login at once, restart the gateway — but prefer the drain-aware path over a bare kill:
 
-- `hermes gateway restart` asks the gateway (SIGUSR1) to refuse new turns, waits up to `agent.restart_after_turn_timeout` (default 1800 s) for in-flight turns to finish, exits, and lets launchd's `KeepAlive` relaunch it; the new process reads `auth.json` from scratch.
+- `hermes gateway restart` asks the gateway (SIGUSR1) to restart when idle: it keeps serving, exits at the first moment no work is in flight (warning every `agent.restart_after_turn_timeout` seconds, default 1800, with what it is still waiting on), and lets launchd's `KeepAlive` relaunch it; the new process reads `auth.json` from scratch.
 - `launchctl kickstart -k gui/$UID/ai.hermes.gateway` sends SIGTERM instead: the gateway interrupts in-flight chat turns after `agent.restart_drain_timeout` (default `0` — immediately; the user is told and the turn resumes on their next message), gives cron runs and api_server (`/v1`) runs `agent.cron_drain_timeout` (default 30 s), kills tool subprocesses and exits, then launchd relaunches it. Nothing from the old process survives, so a session that still fails with `401` after the relaunch is talking to a different gateway process — check `hermes gateway status` (and `launchctl list | grep hermes`) for a second PID, such as a manually started `hermes gateway run`, and stop that one too.
 :::
 
@@ -890,18 +928,28 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
+The "shutting down" and "online" home-channel notices come as a pair: once a home chat was told the gateway is going down, the next start says it is back online, whatever stopped it (a `/restart`, `hermes gateway restart`, or the service manager, such as `systemctl restart`). A `--replace` takeover sends neither, because the replacing gateway keeps serving. When the gateway is stopped over and over in a short time (a restart loop), it sends at most `gateway.restart_loop_guard.max_restarts` shutdown notices (default 3, chained while the gaps between them stay under `max_gap_seconds`) and then goes quiet until it stays up. The same settings drive the restart-loop breaker for session auto-resume.
+
+Configure the destination with a `home_channel` object containing both `platform` and `chat_id`:
+
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
+      home_channel:
+        platform: telegram
+        chat_id: "123456789"
       gateway_restart_notification: false   # opt out for this platform
     discord:
-      home_chat_id: "987654321"
+      home_channel:
+        platform: discord
+        chat_id: "987654321"
       # gateway_restart_notification omitted → defaults to true
 ```
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+
+A notice that cannot go out yet is kept, not dropped. This covers the home-channel notice and the "restarted successfully" reply to the chat that sent `/restart`. A platform can still be reconnecting, or Telegram can be waiting for its first successful poll. The gateway sends the notice once that platform reconnects or its send path is ready. A `/restart` reply still undelivered 30 minutes later is discarded.
 
 ### Typing indicators
 
@@ -980,7 +1028,13 @@ suppression.
 The setting controls automatic engine warnings, retry/fallback diagnostics,
 watchdog and database notices, cron failure notifications, Kanban failure
 notifications, background/delegation diagnostics, and adapter-generated error
-notices. It applies to messaging platforms, CLI/TUI presentation and API
+notices. It also covers the silence-marker notice ("The model returned only a
+silence marker..."): where suppression is on for the chat's platform, a
+successful turn that ends on a bare `[SILENT]`/`NO_REPLY` in a group chat, channel or
+thread stays silent, as if
+[`allow_silence`](#per-platform-and-per-room-intentional-silence) were set, unless that
+room or platform sets `allow_silence: false`. Direct messages keep the notice. Failed,
+partial, interrupted and empty results are presented as before. It applies to messaging platforms, CLI/TUI presentation and API
 notification presentation. Classification belongs to the producer: warning-like
 text in a user request or an ordinary result is not filtered by its wording.
 

@@ -139,6 +139,32 @@ class TelegramTopicRoutingMixin:
         logger.info("[%s] Ignoring messages in chat %s topic %s: not in %s %s (a message without "
                     "message_thread_id counts as the General topic 1)", self.name, key[0], key[1], gate, allowed)
 
+    def _is_ignored_root_dm(self, message: Any, *, is_command: bool) -> bool:
+        """``extra.ignore_root_dm``: a non-command root-DM message (no topic) from a chat with ``dm_topics``
+        configured is dropped, so the root DM is a command lobby; other chats are unaffected. A thread-less
+        opener of a just-created topic is not root chatter: it adopts that topic (``_admit_topic_follow``),
+        nor is a client-split continuation of an admitted near-limit command (``_continues_lobby_split``)."""
+        lobby = None if is_command else self._root_lobby_key(message)
+        return (lobby is not None and self._admit_topic_follow(message) is None
+                and not self._continues_lobby_split(message, lobby))
+
+    def _root_lobby_key(self, message: Any) -> Optional[tuple]:
+        """(chat, sender) when ``extra.ignore_root_dm`` makes ``message``'s root DM a command lobby, else None."""
+        if (not self.config.extra.get("ignore_root_dm", False) or self._effective_message_thread_id(message) is not None
+                or self._chat_id_str(message) not in self._dm_topic_chat_ids):
+            return None
+        return self._chat_id_str(message), self._creator_key(message)
+
+    def _continues_lobby_split(self, message: Any, lobby: tuple) -> bool:
+        """A text chunk while this sender's admitted lobby command (``_handle_command`` tags it
+        ``_lobby_split_owner``) is still buffered with a near-limit last chunk: Telegram split a >4096-char
+        command, and dropping the TEXT remainder would run the command truncated. Root chatter after a
+        short final chunk, or after the batch flushed, is still dropped."""
+        return bool(getattr(message, "text", None)) and any(
+            getattr(event, "_lobby_split_owner", None) == lobby
+            and getattr(event, "_last_chunk_len", 0) >= self._SPLIT_THRESHOLD
+            for event in self._pending_text_batches.values())
+
     def _text_batch_key(self, event: Any) -> str:
         """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
         self._apply_topic_recovery(event)

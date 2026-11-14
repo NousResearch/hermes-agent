@@ -43,7 +43,7 @@ async def test_gateway_status_belongs_to_turn_lane_and_event(
         ctx = TurnContext(
             source=SimpleNamespace(platform=Platform.TELEGRAM),
             session_key=lane, run_generation=generation, _run_still_current=lambda: True,
-            _status_adapter=status_adapter, _status_chat_id="-100123",
+            _status_adapter_pinned=status_adapter, _status_chat_id="-100123",
             _status_thread_metadata={"thread_id": thread_id}, user_config={},
         )
         TurnRunner(MagicMock(), ctx)._status_callback_sync(event, "Recalling memories")

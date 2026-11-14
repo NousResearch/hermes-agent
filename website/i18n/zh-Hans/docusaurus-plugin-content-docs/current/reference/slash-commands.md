@@ -115,7 +115,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/paste` | 附加剪贴板图片 |
 | `/copy [number]` | 将最后一条助手回复复制到剪贴板（或用数字指定倒数第 N 条）。仅限 CLI。 |
 | `/image <path>` | 为下一条 prompt 附加本地图片文件。 |
-| `/debug` | 上传调试报告（系统信息 + 日志）并获取可分享链接。消息平台中也可用。 |
+| `/debug [upload]` | 单独的 `/debug` 只显示隐私说明，不上传任何内容；`/debug upload` 上传调试摘要（版本、配置键名、错误计数；不含日志或消息文本）并获取可分享链接。消息平台中也可用。 |
 | `/profile` | 显示活动 profile 名称和主目录 |
 
 ### 退出
@@ -243,7 +243,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/deny` | 拒绝待处理的危险命令。 |
 | `/update` | 将 Hermes Agent 更新到最新版本。 |
 | `/restart` | 在排空活动运行后优雅重启 gateway。gateway 重新上线后，会向请求者的聊天/线程发送确认消息。 |
-| `/debug` | 上传调试报告（系统信息 + 日志）并获取可分享链接。 |
+| `/debug [upload]` | 单独的 `/debug` 只显示隐私说明，不上传任何内容；`/debug upload` 上传调试摘要（版本、配置键名、错误计数；不含日志或消息文本）并获取可分享链接。 |
 | `/help` | 显示消息平台帮助。 |
 | `/<skill-name>` | 按名称调用任意已安装的 skill。 |
 

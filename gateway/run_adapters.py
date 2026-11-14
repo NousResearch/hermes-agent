@@ -30,6 +30,7 @@ from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inboun
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,
+    discount_suspended_wait,
 )
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
@@ -256,7 +257,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             "predecessor": adapter,
         }
 
-    def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
+    def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter, delay: float = 0.0) -> bool:
         """Queue a retryable fatal adapter for background reconnection (True when newly queued).
 
         Must not await: callers run this BEFORE any disconnect so a wedged close can't strand it.
@@ -284,7 +285,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self._ensure_reconnect_watcher_running()
             return False
         self._failed_platforms[adapter.platform] = self._reconnect_queue_entry(
-            adapter.platform, adapter, platform_config, attempts=0, delay=0.0,
+            adapter.platform, adapter, platform_config, attempts=0, delay=delay,
         )
         logger.info("%s queued for background reconnection", adapter.platform.value)
         # Ensure the reconnect watcher is alive — if it died (e.g. from exhausting its restart budget),
@@ -382,6 +383,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             "Fatal %s adapter error (%s): %s", adapter.platform.value,
             adapter.fatal_error_code or "unknown", adapter.fatal_error_message or "unknown error",
         )
+        # Another poller on the token: reconnect on the contention table, or park it non-retryable once exhausted.
+        delay = self._token_contention_reconnect_delay(adapter.platform.value, adapter)
         # relay_disabled (credential revoked by opt-out) renders "disabled", not red fatal/retrying.
         self._update_platform_runtime_status(
             adapter.platform.value,
@@ -398,7 +401,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
         # Queue BEFORE any disconnect await: a wedged close() once left platforms permanently deaf.
-        self._queue_retryable_fatal_platform(adapter)
+        self._queue_retryable_fatal_platform(adapter, delay)
         if existing is adapter:
             # Bounded by the shutdown-path timeout so this always returns to the stranded check.
             # Queue retryable failures BEFORE any disconnect await (#80598). A half-dead transport can wedge
@@ -720,16 +723,23 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Periodically retry failed platforms: backoff 30s → 300s cap, retryable failures retry
         forever (self-heal), non-retryable drop out. Pausing is manual only (``/platform pause``)."""
         async def _idle(seconds: int, until_queued: bool = False) -> bool:
-            """Sleep in 1s steps; False once the runner stops (or, if asked, once work is queued)."""
+            """Sleep in 1s steps; False once the runner stops (or, if asked, once work is queued). The
+            empty-queue wait measures each step: a fatal queued during it just before the host sleeps
+            must not age by the suspend either. The post-pass wait is measured once by its caller."""
             for _ in range(seconds):
                 if not self._running:
                     return False
                 if until_queued and self._failed_platforms:
                     break
+                step_from = time.monotonic()
                 await asyncio.sleep(1)
+                if until_queued:
+                    discount_suspended_wait(self._failed_platforms.values(), step_from, 1)
             return True
 
+        started = time.monotonic()
         await asyncio.sleep(10)  # initial delay — let startup finish
+        discount_suspended_wait(self._failed_platforms.values(), started, 10)  # startup-queued entries
         while self._running:
             if not self._failed_platforms:
                 if not await _idle(30, until_queued=True):
@@ -740,17 +750,21 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 if not self._running:
                     return
                 await self._reconnect_failed_platform(platform, now)
+            idle_from = time.monotonic()
             if not await _idle(10):  # re-check every 10 seconds
                 return
+            discount_suspended_wait(self._failed_platforms.values(), idle_from, 10)
 
     def _flag_reconnect_needs_attention(
         self, platform, info: dict, now: float, *, status_key: Optional[str] = None
     ) -> bool:
         """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
         is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
-        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now."""
+        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now.
+        Only after a failed attempt: time queued with no retry yet proves nothing failed (#126825)."""
         from gateway.run import _reconnect_needs_attention
-        if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
+        if (info.get("attention_flagged") or info.get("attempts", 0) < 1
+                or not _reconnect_needs_attention(info, now)):
             return False
         info["attention_flagged"] = True
         queued_for = now - info.get("queued_at", now)
@@ -901,16 +915,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
-    def _schedule_planned_restart_replay(self) -> None:
-        """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
-        must not hold up adapter recovery or other platforms' reconnects."""
-        from gateway.run import _planned_restart_notification_pending
-        if _planned_restart_notification_pending():
-            task = self._retain_background_task(asyncio.create_task(
-                self._replay_pending_planned_restart_notification(),
-            ))
-            task.add_done_callback(self._late_failure_callback("planned-restart notification replay failed"))
-
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
         self._publish_primary_adapter(platform, adapter)
@@ -929,7 +933,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
-        self._schedule_planned_restart_replay()
+        self._schedule_restart_notice_replay()
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
@@ -940,6 +944,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
+        # A late Relay connection must retry the durable FIFO, not only legacy resume_pending rows.
+        if platform == Platform.RELAY:
+            from gateway.session_native_recovery_routes import recover_after_late_connection
+            await recover_after_late_connection(self)
         # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
         try:
             self._schedule_resume_pending_sessions(platform=platform)
@@ -1471,7 +1479,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             await self._safe_adapter_disconnect(adapter, platform)
             if not self._running or getattr(self, "_profile_adapters", {}).get(profile_name) is not profile_map:
                 return  # shutting down, or the profile was unserved while it tore down: nothing to reconnect
-            self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
+            self._schedule_secondary_profile_reconnect(
+                profile_name, platform, adapter,
+                self._token_contention_reconnect_delay(f"{profile_name}:{platform.value}", adapter))
         finally:
             self._release_secondary_claims(profile_name, platform, adapter)
         logger.error(

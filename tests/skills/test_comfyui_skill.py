@@ -125,3 +125,62 @@ def test_load_schema_tolerates_utf8_bom(tmp_path):
         f"load_schema rejected a BOM-prefixed schema:\n{result.stderr}"
     )
     assert "SUCCESS" in result.stdout
+
+
+def _run_ws_monitor(monkeypatch, capsys, argv, env_key=None):
+    """Run ws_monitor.main() against a websocket double; return (stderr, urls)."""
+    import types
+
+    connected: list[str] = []
+
+    class _Timeout(Exception):
+        pass
+
+    class _Conn:
+        def settimeout(self, _t):
+            pass
+
+        def recv(self):
+            raise _Timeout()
+
+        def close(self):
+            pass
+
+    def _create_connection(url, timeout=None):
+        connected.append(url)
+        return _Conn()
+
+    fake = types.ModuleType("websocket")
+    fake.WebSocketTimeoutException = _Timeout
+    fake.create_connection = _create_connection
+    monkeypatch.setitem(sys.modules, "websocket", fake)
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    if env_key is None:
+        monkeypatch.delenv("COMFY_CLOUD_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("COMFY_CLOUD_API_KEY", env_key)
+    import ws_monitor
+
+    assert ws_monitor.main(argv + ["--client-id", "cid-1", "--timeout", "1"]) == 0
+    return capsys.readouterr().err, connected
+
+
+def test_ws_monitor_connect_diagnostic_omits_cloud_token(monkeypatch, capsys):
+    secret = "synthetic-" + "cloud-key-1234"
+    err, urls = _run_ws_monitor(
+        monkeypatch, capsys, ["--host", "https://cloud.comfy.org"], env_key=secret
+    )
+    assert secret not in err
+    assert "wss://cloud.comfy.org/ws" in err
+    # Authentication of the real connection is unchanged.
+    assert urls and secret in urls[0]
+
+
+def test_ws_monitor_connect_diagnostic_omits_url_userinfo(monkeypatch, capsys):
+    password = "synthetic-" + "pw-5678"
+    err, urls = _run_ws_monitor(
+        monkeypatch, capsys, ["--host", f"http://user:{password}@[::1]:8188/comfy"]
+    )
+    assert password not in err
+    assert "ws://[::1]:8188/comfy/ws" in err
+    assert urls == [f"ws://user:{password}@[::1]:8188/comfy/ws?clientId=cid-1"]

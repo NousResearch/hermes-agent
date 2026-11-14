@@ -1,0 +1,18 @@
+name: usage-watch
+repo: https://github.com/Fadhil-Sabar/hermes-usage-watch
+sha: ff47033d1e0314d4fa0b24431517fdb7a027471c
+description: Shows how much of your Claude or Codex usage window is left as one line in the chat, every few turns, with reset times. No LLM calls.
+maintainer: Fadhil-Sabar
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.2.0"
+title: Usage Watch
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_llm_call
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

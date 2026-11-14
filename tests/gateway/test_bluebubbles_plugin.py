@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import httpx
@@ -23,7 +24,9 @@ def _make_adapter(monkeypatch, **extra):
             **extra,
         },
     )
-    return BlueBubblesAdapter(cfg)
+    adapter = BlueBubblesAdapter(cfg)
+    adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
+    return adapter
 
 
 class TestBlueBubblesConfigLoading:
@@ -546,6 +549,74 @@ class TestBlueBubblesTimeoutErrorNormalization:
 
 
 
+class TestBlueBubblesErrorTextNeverCarriesThePassword:
+    """Every REST URL carries ``?password=``; httpx's HTTPStatusError text embeds it (#146420)."""
+
+    @staticmethod
+    def _status_error(url):
+        response = httpx.Response(401, request=httpx.Request("GET", url))
+        return httpx.HTTPStatusError(f"Client error '401 Unauthorized' for url '{url}'",
+                                     request=response.request, response=response)
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_log_masks_password(self, monkeypatch, caplog):
+        adapter = _make_adapter(monkeypatch)
+
+        async def failing_get(path):
+            raise self._status_error(adapter._api_url(path))
+        monkeypatch.setattr(adapter, "_api_get", failing_get)
+
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.bluebubbles.adapter"):
+            assert await adapter.connect() is False
+        assert "/api/v1/ping?password=***" in caplog.text
+        assert "password=secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_send_failure_result_masks_password(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def failing_post(path, payload):
+            raise self._status_error(adapter._api_url(path))
+        monkeypatch.setattr(adapter, "_api_post", failing_post)
+
+        result = await adapter.send("chat-1", "hello")
+        assert not result.success
+        assert "401 Unauthorized" in result.error
+        assert "password=secret" not in result.error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["register", "unregister", "upload", "download"])
+    async def test_every_rest_failure_masks_password(self, monkeypatch, caplog, tmp_path, path):
+        """Real httpx 401s (MockTransport) through each remaining REST path's log line or SendResult."""
+        adapter = _make_adapter(monkeypatch)
+        listed = [{"id": 7, "url": adapter._webhook_register_url}] if path == "unregister" else []
+
+        def answer(request):
+            if request.method == "GET" and request.url.path == "/api/v1/webhook":
+                return httpx.Response(200, json={"data": listed})
+            return httpx.Response(401)
+        adapter.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        attachment = tmp_path / "a.txt"
+        attachment.write_bytes(b"x")
+        calls = {
+            "register": adapter._register_webhook,
+            "unregister": adapter._unregister_webhook,
+            "upload": lambda: adapter._send_attachment("iMessage;-;chat-1", str(attachment)),
+            "download": lambda: adapter._download_attachment("att-1", {}),
+        }
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.bluebubbles.adapter"):
+            result = await calls[path]()
+        await adapter.client.aclose()
+        text = caplog.text + str(getattr(result, "error", ""))
+        assert "401 Unauthorized" in text
+        assert "password=secret" not in text
+
+
+
 
 class TestBlueBubblesGateBeforeDownload:
     """The require_mention gate must run BEFORE attachments are downloaded (review follow-up)."""
@@ -625,3 +696,35 @@ class TestBlueBubblesPluginRegistration:
         assert policy is None or not policy.text_direct
         assert not hasattr(senders, "_send_bluebubbles")
         assert all(p["key"] != "bluebubbles" for p in wiz._PLATFORMS)
+
+
+class TestBlueBubblesAttachmentAuthorization:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict", [False, None])
+    async def test_attachment_from_unauthorized_sender_is_not_downloaded(self, monkeypatch, verdict):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.set_authorization_check(None if verdict is None else (lambda *args, **kwargs: verdict))
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        download = AsyncMock(return_value="/tmp/cached.jpg")
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-stranger",
+                "text": "",
+                "handle": {"address": "+155****0199"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+155****0199"}],
+                "attachments": [{"guid": "att-1", "mimeType": "image/jpeg"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        download.assert_not_awaited()
+        assert [e.media_urls for e in handled] == [[]]  # still dispatched so the runner can deny/pair

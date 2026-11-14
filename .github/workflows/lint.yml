@@ -108,6 +108,10 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only config-readers
 
+      - name: Forbid profile creation outside the provisioning entry point
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: just check --only profile-create-entry
+
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on
       # Linux over a faked branch and never runs on macOS (#111866, tests/AGENTS.md § Don't fake the host OS).
@@ -120,6 +124,12 @@ jobs:
       - name: Keep every AGENTS.md under its truncation cap
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only agents-md
+
+      # Files at old module paths that shipped updaters still reach after a move are generated from
+      # hermes_agent/compat/{moves,required_names}.py and must match the generator byte for byte.
+      - name: Keep the move shims in sync with their generator
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: just check --only shims
 
       # ── Advisory footgun-family reports (pull requests, python lane) ──────────────────────
 

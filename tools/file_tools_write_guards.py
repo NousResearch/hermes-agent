@@ -468,7 +468,7 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     """Is a REGULAR file at *filepath* present where the write will execute
     (the task's backend, not the controller's disk — #122662)?
 
-    Returns ``"exists"``, ``"absent"`` or ``"unavailable"``. Host-backed envs
+    Returns ``"exists"``, ``"absent"``, ``"denied"`` or ``"unavailable"``. Host-backed envs
     keep ``Path.is_file`` semantics; anything not proven absent is
     ``"unavailable"`` and callers must fail closed.
     """
@@ -502,7 +502,7 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
         # not_regular: no REGULAR file at the path (dir/FIFO/dangling link) —
         # the same answer Path.is_file gives on the host.
         return "absent"
-    return "unavailable"
+    return "denied" if status == "denied" else "unavailable"
 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
@@ -560,6 +560,10 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
                 "the file. Use a binary-aware tool via the terminal to modify it "
                 "(for SQLite databases, the sqlite3 CLI or a SQLite library). "
                 "(Creating a NEW file with this extension is allowed.)")
+        if state == "denied":
+            return (
+                f"Refusing to write to '{filepath}': permission denied while checking whether "
+                "it already exists. The file was NOT modified. Do not retry: tell the user.")
         if state == "unavailable":
             # Fail closed: absence not proven on the filesystem the write would
             # hit, so proceeding could destroy a binary the guard never saw.
@@ -577,6 +581,12 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "File unchanged since last read. The content from "
     "the earlier read_file result in this conversation is "
     "still current — refer to that instead of re-reading.")
+
+
+_UNREADABLE_OVERWRITE_REASON = (
+    "it exists but cannot be read (permission denied), so its current content cannot be checked "
+    "before a whole-file overwrite. Do not retry read_file or write_file on it: tell the user, or "
+    "change its permissions first if that is what they asked for.")
 
 
 def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:
@@ -610,6 +620,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return None
     if not exists:
         return None
+    if not os.access(resolved, os.R_OK):
+        # "Read it first" can never be satisfied here: read_file answers Permission denied,
+        # and the model loops between the two refusals.
+        return _UNREADABLE_OVERWRITE_REASON
     if _is_own_blind_patch(resolved, task_id):
         return (
             "Your patch changed this file without a full view of its current content. Read the current file "
@@ -625,13 +639,12 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
 def _stale_write_refusal(filepath: str, reason: str, resolved: str | None = None) -> dict:
     """Model-facing refusal payload for write_file; ``stale_write_blocked`` lets
     callers tell it apart from I/O errors."""
+    retry = "" if reason == _UNREADABLE_OVERWRITE_REASON else (
+        " Reload the current contents with read_file (every page, for a file that needs "
+        "offset/limit), merge the requested change, then call write_file again. For small "
+        "edits, prefer patch so existing unrelated changes are preserved.")
     result = {
-        "error": (
-            f"Refusing to overwrite {filepath}: {reason} "
-            "The file was NOT modified. Reload the current contents with read_file "
-            "(every page, for a file that needs offset/limit), merge the requested "
-            "change, then call write_file again. For small edits, prefer patch so "
-            "existing unrelated changes are preserved."),
+        "error": f"Refusing to overwrite {filepath}: {reason} The file was NOT modified.{retry}",
         "stale_write_blocked": True,
         "path": filepath,
     }

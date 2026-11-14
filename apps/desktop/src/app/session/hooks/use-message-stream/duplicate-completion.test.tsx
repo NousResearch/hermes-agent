@@ -51,6 +51,49 @@ it('settles identical tool-interim completion once while retaining every complet
   }
 })
 
+it('collapses a final past an intervening system notice without deleting that notice', async () => {
+  const { stream, send, hydrate } = mount()
+  await send('message.start')
+  await send('message.delta', { text: 'same reply' })
+  await send('message.interim', { text: 'same reply', already_streamed: true })
+  const keptId = stream.state().messages.at(-1)!.id
+
+  await send('tool.start', { name: 'terminal', tool_id: 'after-notice', args: { command: 'pwd' } })
+  await send('tool.complete', { name: 'terminal', tool_id: 'after-notice', result: 'ok' })
+  const before = stream.state()
+  const liveId = before.streamId
+  const liveIndex = before.messages.findIndex(message => message.id === liveId)
+  expect(liveIndex).toBeGreaterThan(0)
+
+  // A timeline notice is not a user correction or another assistant reply.
+  stream.states.set(SID, {
+    ...before,
+    messages: [
+      ...before.messages.slice(0, liveIndex),
+      {
+        id: 'background-review',
+        role: 'system',
+        parts: [textPart('Background review complete.')],
+        systemNotice: true
+      },
+      ...before.messages.slice(liveIndex)
+    ]
+  })
+  await send('message.complete', { text: 'same reply' })
+
+  const messages = stream.state().messages
+  const matchingReplies = messages.filter(
+    message => message.role === 'assistant' && chatMessageText(message) === 'same reply'
+  )
+  expect(matchingReplies).toHaveLength(1)
+  expect(messages.find(message => message.id === keptId)).toMatchObject({ interim: false, pending: false })
+  expect(messages.some(message => message.id === liveId)).toBe(false)
+  expect(messages.find(message => message.id === 'background-review')).toMatchObject({ role: 'system' })
+  expect(messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toHaveLength(1)
+  expect(hydrate).not.toHaveBeenCalled()
+  cleanup()
+})
+
 it('keeps distinct segments, user boundaries, and failures on their own side of completion', async () => {
   const cases = [
     { name: 'distinct interim', interim: 'Checking.' },

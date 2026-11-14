@@ -249,7 +249,7 @@ class GatewayUpdateNotificationsMixin:
             await target.send(t("gateway.update.prompt", prompt=prompt_text, default_hint=default_hint, prefix=_p))
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
         self._session_state(target.session_key).persistent.update_prompt_pending = True
-        logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
+        logger.info("Forwarded update prompt to %s (%d chars)", target.session_key, len(prompt_text))
 
     def _clear_update_markers(self, paths: _UpdatePaths, session_key: Optional[str]) -> None:
         paths.unlink_all()

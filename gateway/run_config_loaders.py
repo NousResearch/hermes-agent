@@ -39,22 +39,30 @@ logger = logging.getLogger("gateway.run")
 
 
 def _profile_channel_overrides(home: Path, platform: Platform):
-    """A config holding only *platform*'s ``channel_overrides`` from *home*'s config.yaml, read the
-    way the loader does: merge every nested platform block, then the block ``platform_section``
-    picks (a top-level ``<platform>:`` block first) wins. ``GatewayConfig.from_dict(raw)`` alone
-    reads only the nested ``platforms`` form."""
-    from gateway.config import GatewayConfig
+    """A config holding only *platform*'s ``channel_overrides`` and ``allow_silence`` from *home*'s
+    config.yaml, read the way the loader does: merge every nested platform block, then the block
+    ``platform_section`` picks (a top-level ``<platform>:`` block first) wins for the overrides and
+    the platform keys it sets. ``GatewayConfig.from_dict(raw)`` alone reads only the nested form."""
+    from gateway.config import GatewayConfig, PlatformConfig
     from gateway.config_loader import merge_platform_sections, platform_section
     from gateway.run import _load_gateway_config
     raw = _load_gateway_config(home / "config.yaml")
     name, gateway_section = str(platform.value), raw.get("gateway")
-    overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
-    section, _ = platform_section(raw, name, (
+    merged = merge_platform_sections(raw, gateway_section, {}).get(name) or {}
+    overrides, extra = merged.get("channel_overrides"), PlatformConfig.from_dict(merged).extra
+    section, toplevel = platform_section(raw, name, (
         gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
     if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
         overrides = section["channel_overrides"]
+    if toplevel and isinstance(section, dict):
+        # A root block's keys win, except over what the user authored under ``platforms.<p>.extra``.
+        authored = merged.get("extra")
+        extra = {**extra, **PlatformConfig.from_dict(section).extra,
+                 **(authored if isinstance(authored, dict) else {})}
     return GatewayConfig.from_dict({"platforms": {name: {
-        "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+        "channel_overrides": overrides if isinstance(overrides, dict) else {},
+        "allow_silence": extra.get("allow_silence")}}})
+
 
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
@@ -76,6 +84,42 @@ def streaming_config_for_source(runner, source):
         if runtime and runtime != (getattr(runner, "_primary_profile_name", None) or "default"):
             config = (getattr(runner, "_profile_configs", None) or {}).get(runtime, config)
     return getattr(config, "streaming", None) or StreamingConfig()
+
+
+def _allow_silence_value(value: Any) -> Optional[bool]:
+    """One parse for a room's and a platform's ``allow_silence``: a bool as is; a falsy token
+    (a quoted ``"false"``) is False at both levels; anything else, a quoted ``"true"`` included,
+    is None: opting in to silence takes a real boolean."""
+    from gateway.config import _bool_token
+    if isinstance(value, bool):
+        return value
+    return False if isinstance(value, str) and _bool_token(value) is False else None
+
+
+def _effective_allow_silence(platform_config, source: SessionSource) -> Optional[bool]:
+    """``allow_silence`` for ``source``: the room entry's, else the platform's.
+
+    The room entry is the first ``channel_overrides`` match along chat -> thread -> parent, as for
+    every channel override; an entry that sets only ``model``/``provider``/``system_prompt`` still
+    matches first, so its unset ``allow_silence`` falls to the platform, not to a parent entry.
+    """
+    if platform_config is None:
+        return None
+    from gateway.run import _channel_override_lookup_keys
+    overrides = platform_config.channel_overrides or {}
+    for key in _channel_override_lookup_keys(
+            source.chat_id, thread_id=source.thread_id, parent_id=source.parent_chat_id):
+        entry = overrides.get(key)
+        if entry is not None:
+            allow = _allow_silence_value(entry.allow_silence)
+            if allow is not None:
+                return allow
+            break
+    return _allow_silence_value((platform_config.extra or {}).get("allow_silence"))
+
+
+# "" = an unclassified source: treated as a DM, where a question must get a visible answer.
+_DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
 
 
 class GatewayConfigLoadersMixin:
@@ -164,25 +208,57 @@ class GatewayConfigLoadersMixin:
         return config
 
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
-        """Evaluate existing exemptions before consulting the optional room permission."""
+        """Evaluate existing exemptions before consulting the optional room/platform permission.
+
+        An explicit ``allow_silence`` (room or platform, true or false) decides. Only where it is
+        unset everywhere does the warning policy apply: with warning notifications hidden for the
+        turn's platform, the unexpected-silence notice is one of them, so a healthy marker-only
+        final in a shared chat stays silent instead. Never in a DM: there the notice is the only
+        answer a direct question gets, and suppression predates this rule (legacy default).
+        """
         from gateway.response_filters import silence_allowed
-        return silence_allowed(display_kind, reply_expected) or silence_allowed(
-            display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
-            agent_result=agent_result)
+        if silence_allowed(display_kind, reply_expected):
+            return True
+        allow = self._room_allow_silence(source)
+        shared = str(getattr(source, "chat_type", "") or "").strip().lower() not in _DM_CHAT_TYPES
+        if allow is None and shared and self._silence_notice_suppressed(source):
+            silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
+            if silent:
+                logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",
+                            source.platform.value, source.chat_id or "unknown")
+            return silent
+        return silence_allowed(display_kind, reply_expected, allow_silence=allow, agent_result=agent_result)
+
+    def _silence_notice_suppressed(self, source: SessionSource) -> bool:
+        """``display.suppress_warning_notifications`` for ``source.platform`` in the serving profile.
+
+        Read under the routed profile's scope, as crash recovery reads the diagnostic policy; a
+        failed read keeps the notice (presentation fails open).
+        """
+        from gateway.warning_notifications import warning_notifications_enabled
+        try:
+            with self._media_delivery_scope_for_source(source):
+                return not warning_notifications_enabled(source.platform)
+        except Exception:
+            logger.debug("Warning policy lookup failed for %s; keeping the notice", source.chat_id, exc_info=True)
+            return False
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
-        """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
-        from gateway.run import _get_channel_override
+        """Resolve ``allow_silence`` in the serving profile, never the launch snapshot for a route.
+
+        The first ``channel_overrides`` entry along chat -> thread -> parent decides when it sets
+        it (true or false); otherwise the platform's own ``platforms.<platform>.allow_silence``
+        applies, else None (the default reply rule).
+        """
         try:
-            override = _get_channel_override(
-                self._serving_channel_config(source, unbound_reads_home=True), source.platform, source.chat_id,
-                thread_id=source.thread_id, parent_id=source.parent_chat_id)
+            config = self._serving_channel_config(source, unbound_reads_home=True)
+            platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
+            return _effective_allow_silence(platform_config, source)
         except Exception:
             # No permission means the default reply rule; a lookup failure must not become an error reply.
             logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
                            source.chat_id, exc_info=True)
             return None
-        return override.allow_silence if override is not None else None
 
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,

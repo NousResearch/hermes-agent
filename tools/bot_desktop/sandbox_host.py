@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import shlex
 import subprocess
 import time
@@ -211,12 +212,44 @@ def _published(env: Any, rdir: str) -> dict[str, str]:
                           user=_user_for(env), timeout=15)
     if proc.returncode != 0:
         return {}
+    return parse_published(proc.stdout.decode("utf-8", "replace"))
+
+
+# The keys launcher.sh writes into the env file (its `printf "DISPLAY=%s...` line inside the
+# dbus-run-session block); a test runs the launcher and reads its file back, so the two stay in step.
+# Only these keys are read back.
+PUBLISHED_KEYS = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+                  "XDG_DATA_HOME")
+_X_DISPLAY = re.compile(r":[0-9]+(\.[0-9]+)?")
+_REPORTED_DROPS: set[str] = set()  # key names already logged as dropped (each is reported once per process)
+_REPORTED_DROPS_MAX = 64
+
+
+def _valid_published(key: str, value: str) -> bool:
+    if key not in PUBLISHED_KEYS or not value or not value.isprintable():
+        return False
+    return key != "DISPLAY" or _X_DISPLAY.fullmatch(value) is not None
+
+
+def parse_published(text: str) -> dict[str, str]:
+    """The launcher's env file read back from inside the sandbox. Only :data:`PUBLISHED_KEYS` with a non-empty,
+    printable value are kept, and DISPLAY must be a plain X display (``:20``, ``:20.0``); any other line is
+    dropped. Without a valid DISPLAY the screen counts as not published: ``{}``."""
     out: dict[str, str] = {}
-    for line in proc.stdout.decode("utf-8", "replace").splitlines():
-        k, sep, v = line.partition("=")
-        if sep:
-            out[k.strip()] = v.strip()
-    return out
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key, value = key.strip(), value.strip()
+        if _valid_published(key, value):
+            out[key] = value
+            continue
+        name = repr(key[:64])  # the name only, never the value
+        if name not in _REPORTED_DROPS and len(_REPORTED_DROPS) < _REPORTED_DROPS_MAX:
+            _REPORTED_DROPS.add(name)
+            logger.warning("Bot Desktop: ignored %s in the sandbox screen's env file (not a key the launcher "
+                           "writes, or not a valid value for it)", name)
+    return out if "DISPLAY" in out else {}
 
 
 def published_env(env: Any, profile: str) -> dict[str, str]:

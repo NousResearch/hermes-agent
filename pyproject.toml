@@ -612,7 +612,8 @@ update-startup-files = [
   "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
   "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
   "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
-  "hermes_constants.py",
+  "hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+  "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
 ]
 
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is

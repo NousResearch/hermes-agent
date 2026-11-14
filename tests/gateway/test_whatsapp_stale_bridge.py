@@ -65,6 +65,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
+    adapter._bridge_token = ""  # mirror __init__; connect() loads it
     adapter._reply_prefix = None
     adapter._send_read_receipts = False
     adapter._dm_policy = adapter._group_policy = "pairing"
@@ -199,7 +200,9 @@ class TestStaleBridgeHandshake:
         """Two profiles default to one bridge_port; only this profile's own session may be adopted. Another profile's
         bridge is never killed, even while it reports ``disconnected`` (startup, reconnect, QR wait), and neither is a
         port holder that gives no /health answer, which proves no ownership."""
-        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_FINGERPRINT_FILE, _bridge_config_fingerprint, _bridge_source_hash,
+        )
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -207,6 +210,12 @@ class TestStaleBridgeHandshake:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        if holder == "own":
+            # An own-session bridge is adopted only when its recorded spawn-config
+            # fingerprint matches the env this adapter would spawn with now (#126824).
+            (adapter._session_path / _BRIDGE_FINGERPRINT_FILE).write_text(
+                _bridge_config_fingerprint(adapter._bridge_env(), adapter._bridge_package_hash()), encoding="utf-8"
+            )
         reported = tmp_path / ("session" if holder == "own" else "other-profile-session")
         mock_client = _mock_health(
             {
@@ -320,11 +329,15 @@ class TestStaleBridgeHandshake:
     @pytest.mark.asyncio
     async def test_adopted_bridge_is_driven_with_the_bearer(self, tmp_path):
         """A healthy own-session bridge that proves the token is adopted and every later request to it is authenticated."""
-        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_FINGERPRINT_FILE, _bridge_config_fingerprint, _bridge_source_hash,
+        )
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
         adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
+        (adapter._session_path / _BRIDGE_FINGERPRINT_FILE).write_text(  # adopted only on a matching spawn config
+            _bridge_config_fingerprint(adapter._bridge_env(), adapter._bridge_package_hash()), encoding="utf-8")
         mock_client = _mock_health(
             {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
              "sendReadReceipts": False, "session": str(tmp_path / "session")})
@@ -403,3 +416,210 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
         assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"
+
+
+class TestConfigFingerprintAdoption:
+    """Adoption must also verify the spawn-time config: bridge.js reads its policy/allowlist env
+    once at startup, so adopting a bridge spawned with older env keeps gating DMs with the stale
+    allowlist until the bridge is killed by hand (#126824)."""
+
+    def _record_fingerprint(self, adapter, bridge_env: dict) -> None:
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_FINGERPRINT_FILE, _bridge_config_fingerprint,
+        )
+        (adapter._session_path / _BRIDGE_FINGERPRINT_FILE).write_text(
+            _bridge_config_fingerprint(bridge_env, adapter._bridge_package_hash()), encoding="utf-8"
+        )
+
+    async def _reuse(self, adapter, bridge_path):
+        adapter._bridge_token = _TEST_TOKEN  # connect() loads it from the session dir before probing
+        with patch.object(adapter, "_mark_connected"), \
+             patch.object(adapter, "_attach_to_bridge"), \
+             patch.object(adapter, "_wire_plugin_handlers"):
+            return await adapter._reuse_running_bridge(bridge_path)
+
+    @pytest.mark.asyncio
+    async def test_adopts_bridge_when_fingerprint_matches(self, tmp_path, monkeypatch, capsys):
+        for key in ("WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS", "WHATSAPP_MODE", "WHATSAPP_REPLY_PREFIX"):
+            monkeypatch.delenv(key, raising=False)
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        self._record_fingerprint(adapter, adapter._bridge_env())
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False, "uptime": 230000.5})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is True
+
+        assert "uptime: 2d 15h" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_when_allowlist_changed(self, tmp_path, monkeypatch, capsys):
+        for key in ("WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS", "WHATSAPP_MODE", "WHATSAPP_REPLY_PREFIX"):
+            monkeypatch.delenv(key, raising=False)
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        stale_env = dict(adapter._bridge_env())
+        stale_env["WHATSAPP_DM_POLICY"] = "allowlist"
+        stale_env["WHATSAPP_ALLOWED_USERS"] = "1111111111@s.whatsapp.net"
+        self._record_fingerprint(adapter, stale_env)
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is False
+
+        assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_when_package_json_changed(self, tmp_path, capsys):
+        """_ensure_bridge_deps() reinstalls node_modules on package.json drift; the running bridge
+        still holds the old modules, so it must not be adopted either."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        self._record_fingerprint(adapter, adapter._bridge_env())
+        (bridge_dir / "package.json").write_text('{"name": "bridge", "version": "2"}\n', encoding="utf-8")
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is False
+
+        assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_when_reply_prefix_goes_from_unset_to_empty(self, tmp_path, monkeypatch, capsys):
+        """bridge.js sends its default prefix when WHATSAPP_REPLY_PREFIX is unset and none when it is "",
+        so a bridge spawned without the key must not be adopted once config sets ``reply_prefix: ""``."""
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        self._record_fingerprint(adapter, adapter._bridge_env())  # spawned with reply_prefix unset
+        adapter._reply_prefix = ""
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is False
+
+        assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_missing_fingerprint_file_is_stale(self, tmp_path):
+        """A bridge from before the fingerprint existed (or a lost file) is never adopted."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is False
+
+    @pytest.mark.asyncio
+    async def test_spawn_writes_fingerprint_of_spawn_env(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_FINGERPRINT_FILE, _bridge_config_fingerprint,
+        )
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", _mock_health({"status": "disconnected"})), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        recorded = (tmp_path / "session" / _BRIDGE_FINGERPRINT_FILE).read_text(encoding="utf-8").strip()
+        assert recorded == _bridge_config_fingerprint(mock_popen.call_args.kwargs["env"], adapter._bridge_package_hash())
+
+    @pytest.mark.asyncio
+    async def test_disconnect_keeps_fingerprint_file_for_adopted_bridge(self, tmp_path):
+        """The adopted bridge keeps running with its recorded config; the next gateway start
+        still needs the record to decide adoption, so disconnect() must not remove it."""
+        from plugins.platforms.whatsapp.adapter import _BRIDGE_FINGERPRINT_FILE
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        self._record_fingerprint(adapter, adapter._bridge_env())
+        (tmp_path / "session" / "bridge.pid").write_text("4242\n12345", encoding="utf-8")
+        adapter._bridge_process = None  # adopted: not managed by us
+        adapter._poll_task = None
+
+        with patch.object(adapter, "_release_platform_lock", create=True), \
+             patch.object(adapter, "_mark_disconnected", create=True):
+            await adapter.disconnect()
+
+        assert not (tmp_path / "session" / "bridge.pid").exists()
+        assert (tmp_path / "session" / _BRIDGE_FINGERPRINT_FILE).exists()
+
+    # Named from bridge.js's startup reads, not from _BRIDGE_CONSUMED_ENV, so dropping a key from that tuple fails here.
+    @pytest.mark.parametrize("key", [
+        "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_SEND_READ_RECEIPTS", "WHATSAPP_DEBUG",
+        "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH", "WHATSAPP_CHUNK_DELAY_MS",
+        "WHATSAPP_SEND_TIMEOUT_MS", "HERMES_IMAGE_CACHE_DIR", "HERMES_AUDIO_CACHE_DIR", "HERMES_DOCUMENT_CACHE_DIR",
+    ])
+    def test_every_key_bridge_js_reads_at_startup_is_fingerprinted(self, key):
+        from plugins.platforms.whatsapp.adapter import _bridge_config_fingerprint
+
+        spawned = _bridge_config_fingerprint({key: "spawned"})
+        assert spawned != _bridge_config_fingerprint({key: "edited"})
+        assert spawned != _bridge_config_fingerprint({})
+
+
+class TestFmtUptime:
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (None, ""),
+            ("not-a-number", ""),
+            (0, "0s"),
+            (59.9, "59s"),
+            (60, "1m"),
+            (3661, "1h 1m"),
+            (230000.5, "2d 15h"),
+        ],
+    )
+    def test_compact_rendering(self, seconds, expected):
+        from plugins.platforms.whatsapp.adapter import _fmt_uptime
+
+        assert _fmt_uptime(seconds) == expected

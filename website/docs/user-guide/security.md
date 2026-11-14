@@ -322,6 +322,8 @@ When both are set, a narrowed `approvers` takes precedence: it is the explicit a
 
 A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
 
+Discord interactions through the relay are checked more tightly. The relay forwards a Discord button press or application command (such as `/approve` or `/deny`) without checking who sent it. So under `approvers: ["*"]`, a member answers with one only once the relay has delivered one of their messages to this gateway (since it last started); anyone else must be the requester or one of the scope's admins, on top of the rules above. Other senders get the same note and the prompt stays pending. Any other Discord interaction (an application command such as `/status` or `/new`, a modal) from a sender the relay has not delivered a message from is dropped unless they are one of the scope's admins. When Hermes starts again, a member's application commands do nothing until they have sent a message. Ordinary messages, and button presses on the relay's other platforms, keep the rules above.
+
 Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
 
 The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
@@ -768,6 +770,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 Plus any `XDG_*` variables. All other environment variables (API keys, tokens, secrets) are **stripped**.
 
+Variables supplied by an [external secret source](secrets/index.md) (Bitwarden, 1Password, a command helper) are also passed, except Hermes-managed credentials: model-provider keys, tool keys Hermes uses itself, and bot, gateway and relay tokens. That covers every name Hermes reads such a credential by: the numbered rotation keys (`DEEPSEEK_API_KEY_2`), any variable a [credential pool](features/credential-pools.md) entry points at (`source: env:MY_KEY`), any variable the profile's `config.yaml` names as a provider key (`key_env` / `api_key_env` on `model`, `custom_providers`, `providers`, `auxiliary` or fallback entries, or a credential field such as `api_key` written as `${VAR}` / `${env:VAR}`), and the profile-suffixed form the active profile uses (`TELEGRAM_BOT_TOKEN_<PROFILE>`). Those are stripped wherever they are stored. If a server needs one, declare it in that server's `env` (for example `OPENAI_API_KEY: "${OPENAI_API_KEY}"`).
+
 Variables explicitly defined in the MCP server's `env` config are passed through:
 
 ```yaml
@@ -832,7 +836,7 @@ security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, gateway media downloads, and cron `monitor_url` fetches no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, gateway media downloads, cron `monitor_url` fetches, and A2A push callbacks no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 

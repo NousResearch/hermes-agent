@@ -17,5 +17,5 @@ Official docs: https://developer.1password.com/docs/cli/get-started/
 
 ## Non-interactive / automation
 
-- Use service accounts and `OP_SERVICE_ACCOUNT_TOKEN`
+- Use service accounts and `OP_SERVICE_ACCOUNT_TOKEN` (in your own shell; Hermes strips the token from its terminal)
 - Prefer `op run` and `op inject` for runtime secret handling

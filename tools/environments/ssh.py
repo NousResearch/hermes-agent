@@ -6,6 +6,7 @@ import logging
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -50,6 +51,19 @@ _CONTROL_DIR_MAX_BYTES = 103 - len("/0123456789abcdef.sock") - 17
 _SHORT_TMP_ROOT = "/tmp"  # no-tmp: ok — AF_UNIX sun_path budget; every dir under it is ownership-checked
 
 
+def _is_private_runtime_dir(path: str) -> bool:
+    """``$XDG_RUNTIME_DIR`` as the spec promises it (a real dir we own, no group/other access), the same
+    test the gateway's control socket applies: an inherited or mis-set value naming a shared dir must
+    not host a ``hermes-ssh`` leaf another user could create first."""
+    try:
+        # Path drops trailing / and /. before lstat (which would otherwise follow a symlink),
+        # while retaining .. components so lstat checks the actual traversed directory.
+        st = Path(path).lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)
+
+
 def _open_control_dir() -> tuple[Path, bool]:
     """Per-user ControlMaster socket dir that fits ``sun_path`` (#133436) and is proven ours (#80284).
 
@@ -65,7 +79,7 @@ def _open_control_dir() -> tuple[Path, bool]:
     roots = list(dict.fromkeys(r for r in (socket_safe_tmpdir(), _SHORT_TMP_ROOT) if os.path.isdir(r)))
     candidates = [Path(root) / per_user for root in roots]
     xdg = os.environ.get("XDG_RUNTIME_DIR", "")
-    if os.path.isabs(xdg) and os.path.isdir(xdg):
+    if os.path.isabs(xdg) and _is_private_runtime_dir(xdg):
         candidates.insert(0, Path(xdg) / "hermes-ssh")
     for candidate in candidates:
         if len(os.fsencode(candidate)) > _CONTROL_DIR_MAX_BYTES:

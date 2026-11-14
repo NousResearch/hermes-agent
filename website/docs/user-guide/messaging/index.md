@@ -348,42 +348,70 @@ platforms:
 
 Details:
 
-- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also opt into intentional silence with `allow_silence` (below).
+- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also set intentional silence with `allow_silence`, which overrides the platform's own `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
-## Per-Room Intentional Silence
+## Per-Platform and Per-Room Intentional Silence
 
-In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as
-`NO_REPLY` or `[SILENT]`. To let a successful marker-only turn stay silent even when Hermes was
-mentioned or directly addressed, enable `allow_silence` for that room in the serving profile's
-`config.yaml`:
+In shared chats, a model may choose to end its turn with an explicit silence marker such as
+`NO_REPLY` or `[SILENT]` when a message is not meant for it. To let a successful marker-only turn
+stay silent even when Hermes was mentioned, directly addressed, or the adapter cannot tell (for
+example an unmentioned follow-up in a Slack thread, or WhatsApp group chatter), enable
+`allow_silence` in the serving profile's `config.yaml`, either for a whole platform or for one room:
 
 ```yaml
 platforms:
+  slack:
+    allow_silence: true            # every Slack chat this profile serves
+    channel_overrides:
+      "C0123456789":
+        allow_silence: false       # except this channel: keep the visible notice
+  whatsapp:
+    allow_silence: true            # every WhatsApp group and DM
   matrix:
     channel_overrides:
       "!exampleTeamRoom:example.org":
-        allow_silence: true
+        allow_silence: true        # only this room
 ```
+
+The top-level `slack:` / `whatsapp:` block form works the same way. A relay-fronted chat uses the
+block of its underlying platform (`platforms.slack` for Slack through the relay), as its
+`channel_overrides` do.
 
 The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
 when a human message needs a reply (or the adapter cannot tell). Internal notifications,
 scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
-even with `allow_silence: false`. This is a room override, not a profile-wide setting.
-It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
-matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
-thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
-parent's opt-in.
+even with `allow_silence: false`.
+
+A room's `allow_silence` overrides the platform's. Hermes looks the room up chat ID → thread ID →
+parent ID, as for other channel overrides, and the first matching entry is the room's, including
+an explicit `false`. An entry that sets only other keys (say a thread with just `model:`) also
+matches first, so it takes the platform's value, not its parent channel's: repeat `allow_silence`
+there to keep a parent's room opt-in. A quoted `"false"` counts as `false`; opting in takes a real
+`true`. With nothing set anywhere, the default reply policy applies. Room IDs must match the chat ID exactly: a WhatsApp group is
+`<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
+
+With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is
+hidden in group chats, channels, threads and webhook sources, so a healthy marker-only turn there stays silent where
+`allow_silence` is unset (see
+[Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)). An
+explicit `allow_silence: false`, on the room or the platform, still keeps the notice there.
+Suppression never silences a direct message: there the notice is the only answer a question gets,
+so a DM stays silent only where `allow_silence: true` is set for it or its platform.
+
+The platform setting covers direct messages too. There, a question the model answers with only a
+marker gets no reply at all, so set `allow_silence: false` on any DM or channel that must always
+get an answer.
 
 Restart the gateway after editing configuration so all serving profiles use the updated settings.
-The override affects final delivery only: it does not undo tool actions, retract progress already
+The setting affects final delivery only: it does not undo tool actions, retract progress already
 sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
 not gain permission to disappear. Ordinary replies and conversation history stay unchanged. When
 the model wrote a reply beside a housekeeping-only tool call (memory, todo list, skill management
 or session search) and then ended a complete turn on a bare marker, that reply is delivered as the
-final answer, in opted-in rooms too.
+final answer, in opted-in platforms and rooms too.
 Crash recovery honors a suppression decision only after it was saved for that exact final reply;
 a crash before that point keeps the human-turn safeguard.
 
@@ -900,6 +928,8 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
+The "shutting down" and "online" home-channel notices come as a pair: once a home chat was told the gateway is going down, the next start says it is back online, whatever stopped it (a `/restart`, `hermes gateway restart`, or the service manager, such as `systemctl restart`). A `--replace` takeover sends neither, because the replacing gateway keeps serving. When the gateway is stopped over and over in a short time (a restart loop), it sends at most `gateway.restart_loop_guard.max_restarts` shutdown notices (default 3, chained while the gaps between them stay under `max_gap_seconds`) and then goes quiet until it stays up. The same settings drive the restart-loop breaker for session auto-resume.
+
 Configure the destination with a `home_channel` object containing both `platform` and `chat_id`:
 
 ```yaml
@@ -996,7 +1026,13 @@ suppression.
 The setting controls automatic engine warnings, retry/fallback diagnostics,
 watchdog and database notices, cron failure notifications, Kanban failure
 notifications, background/delegation diagnostics, and adapter-generated error
-notices. It applies to messaging platforms, CLI/TUI presentation and API
+notices. It also covers the silence-marker notice ("The model returned only a
+silence marker..."): where suppression is on for the chat's platform, a
+successful turn that ends on a bare `[SILENT]`/`NO_REPLY` in a group chat, channel or
+thread stays silent, as if
+[`allow_silence`](#per-platform-and-per-room-intentional-silence) were set, unless that
+room or platform sets `allow_silence: false`. Direct messages keep the notice. Failed,
+partial, interrupted and empty results are presented as before. It applies to messaging platforms, CLI/TUI presentation and API
 notification presentation. Classification belongs to the producer: warning-like
 text in a user request or an ordinary result is not filtered by its wording.
 

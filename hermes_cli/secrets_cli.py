@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-
+from hermes_constants import is_launch_only_env_key
 from hermes_cli._secrets_common import (
     arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
     prompt_index, register_subcommands, require_enabled, rotate_token, secret_cli_env, section_cfg,
@@ -360,6 +360,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
         already = bool(os.environ.get(key))
         if key == token_env:
             action = "[dim]skip (bootstrap token)[/dim]"
+        elif is_launch_only_env_key(key):  # #135200: launch environment only
+            action = "[dim]skip (launch-only)[/dim]"
         elif already and not override:
             action = "[dim]skip (already set)[/dim]"
         elif args.apply:
@@ -445,7 +447,7 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[list[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    env = secret_cli_env()
+    env = secret_cli_env(*_load_bw().BWS_ENV_ALLOW)
     env["BWS_ACCESS_TOKEN"] = token
     if dropped := _load_bw().apply_server_url_to_env(env, server_url):
         console.print(f"  [yellow]{dropped}[/yellow]")

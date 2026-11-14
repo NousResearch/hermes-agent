@@ -129,3 +129,22 @@ def test_interpolated_satellite_cron_timeout_matches_tick_and_job_scope(two_home
         assert sched._cron_inactivity_seconds() == 1800.0
     finally:
         reset_secret_scope(token)
+
+
+def test_child_env_keeps_launch_managed_dir(two_homes, monkeypatch):
+    """``HERMES_MANAGED_DIR`` is deployment bootstrap, not launch-profile residue: a served
+    profile's children keep the launch value even when the launch ``.env`` names the key
+    (pre-fix the leftover file entry would strip it and silently drop managed scope, #135200)."""
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    root, alpha = two_homes
+    (root / ".env").write_text(
+        (root / ".env").read_text() + "HERMES_MANAGED_DIR=/user/controlled\n")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
+
+    token = set_secret_scope(build_profile_secret_scope(alpha))
+    try:
+        env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True, inherit_profile_home=True))
+    finally:
+        reset_secret_scope(token)
+    assert env.get("HERMES_MANAGED_DIR") == "/launch/admin-dir"

@@ -32,6 +32,7 @@ from hermes_cli._subprocess_compat import (
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def _hermes_home() -> Path:
 def hermes_service_roots() -> tuple[str, ...]:
     """Directories a Hermes-owned SCM service binary lives under: the checkout (its ``venv`` included),
     the running interpreter's ``Scripts`` dir (``hermes.exe`` shim) and the ``gateway-service`` launcher dir."""
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(project_root_str())
     return (str(project_root), str(Path(sys.executable).parent), str(_hermes_home() / "gateway-service"))
 
 
@@ -250,7 +251,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
     _assert_windows()
     args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command, *(extra_args or [])]
     params = subprocess.list2cmdline(args)
-    cwd = str(Path(__file__).resolve().parent.parent)
+    cwd = project_root_str()
     try:
         result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, cwd, 0)  # 0 = SW_HIDE
     except Exception as exc:
@@ -378,7 +379,7 @@ def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
 
 def _launcher_pythonpath_entries(extra_pythonpath: list[str]) -> list[str]:
     return [
-        _preserve_hermes_home_path(Path(__file__).resolve().parent.parent),
+        _preserve_hermes_home_path(Path(project_root_str())),
         *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath],
     ]
 

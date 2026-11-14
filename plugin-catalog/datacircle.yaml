@@ -3,7 +3,7 @@ title: Datacircle
 repo: https://github.com/waynehamadi/hermes-datacircle
 sha: "9a96a1c52370c00412a78d39b6cbd4c988c6b72f"
 version: "0.1.0"
-description: "Find the best GTM APIs. Four tools on Datacircle's open API, with no key and no account: every API on Datacircle's sheet, who is best for each by score out of 100, every plan and its price, and one provider's ranks. Disclosure: each tool call makes one HTTPS GET to api.datacircle.dev with the tool's own arguments and nothing else. No key, no stored data, no shell commands, no background process, no telemetry. Tool results enter the session context and so reach the user's model provider."
+description: "Find the best GTM APIs. Four tools on Datacircle's open API, with no key and no account: every API on Datacircle's sheet, who is best for each by score out of 100, every plan and its price, and one provider's ranks. Disclosure — each tool call makes one HTTPS GET to api.datacircle.dev with the tool's own arguments and nothing else; no key, no stored data, no shell commands, no background process, no telemetry; tool results reach your model provider."
 maintainer: waynehamadi
 tier: community
 category: tools

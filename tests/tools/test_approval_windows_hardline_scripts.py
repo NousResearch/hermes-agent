@@ -38,3 +38,45 @@ def test_script_paths_and_longer_names_are_not_hardline(cmd):
 def test_script_files_still_need_approval():
     # Not hardline, but running a PowerShell script is still gated as script execution.
     assert detect_dangerous_command("pwsh -File Stop-Computer.ps1")[0]
+
+
+B = "\\"
+
+
+@pytest.mark.parametrize("cmd", [
+    # A quoted drive root glued to the rest of its shell word names a subdirectory.
+    'rm -rf "C:/"Users/me/build',
+    "rm -rf 'C:/'Users/me/build",
+    'rm -rf "C:/"../work',
+    'rd /s /q "C:' + B + '"Users' + B + 'me',
+    "Remove-Item -Recurse 'C:" + B + "'Users" + B + "me",
+    'Remove-Item -Recurse "C:' + B + '"Users',
+])
+def test_quote_concatenated_subdirectory_delete_is_not_hardline(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+    assert detect_dangerous_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    # The quoted root itself, with root-collapse suffixes, globs or an attached redirect.
+    'rd /s /q "C:' + B + '"',
+    'rd /s /q "C:' + B + '">nul',
+    'rd /s /q "C:' + B + '"*',
+    'del /s /q "C:' + B + '"*.*',
+    "ri -r 'C:" + B + "'",
+    'Remove-Item -Recurse "C:' + B + '"; ls',
+    'rm -rf "C:/"',
+    'rm -rf "C:/"./',
+    'rm -rf "C:/"./*',
+    "rm -rf 'C:/'..",
+    # Marked on the raw command: an escaped quote does not hide the later root delete.
+    'cat "f' + B + '"n"; rd /s /q C:' + B + ' ',
+    'ls; rd /s /q C:' + B + ' ',
+])
+def test_quoted_drive_roots_stay_hardline(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+
+
+def test_escaped_quote_in_prose_does_not_end_the_string():
+    # One echo argument; the backslash-flattened text must not close the quote at `\"`.
+    assert not detect_hardline_command('echo "x' + B + '"; rd /s /q C:' + B + ' later"')[0]

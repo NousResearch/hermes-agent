@@ -128,6 +128,9 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Windows drive root (`C:/`, `C:/*`, `C:/*.*`; backslashes are flattened to `/` by the
 # Windows-path detection variant).
 _HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
+# Quoted root that ENDS its shell word (past `./`, `..`, globs; a glued `>nul` ends it too): `"C:\"*.*` is the
+# root, `"C:\"Users\me` one word naming a subdirectory. Bare roots carry each rule's own terminator.
+_HARDLINE_DRIVE_QUOTED = r'["\'](?:' + _HARDLINE_DRIVE_ROOT + r')["\'](?:(?:\.\.?)?/)*(?:\.\.?)?(?:\*(?:\.\*)?)?(?=\s|$|[)`;|&<>])'
 # PowerShell -Recurse and its unambiguous prefixes (same set as _PS_RECURSE below).
 _PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
 # _CMDPOS, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
@@ -183,9 +186,9 @@ HARDLINE_PATTERNS = [
     # Recursive delete whose target is a drive ROOT (`C:\`, `C:\*`, `C:/*.*`); `C:\build` and
     # `C:` (the drive's current directory) fall through to the DANGEROUS tier.
     (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))'
-     r'[^\n;&|]*\s' + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&"\'<>])'), "recursive delete of drive root"),
+     r'[^\n;&|]*\s(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>]))', "recursive delete of drive root"),
     # An attached redirect (`C:\>nul`) ends the operand too.
-    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&<>])'), "recursive delete of drive root"),
+    (_RM_FLAG_PREFIX + '(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -1743,10 +1746,11 @@ def _command_detection_variants(command: str):
             yield win_variant
             # Its payloads too: from the normalized text `pwsh -c "ls; ri -r C:\\"` loses the root's slash.
             pending.append(win_variant)
-            # Its command starts too, so `Get-Date; rd /s /q C:\` reaches the _CMDPOS drive-root rules.
-            marked_win = _mark_command_starts(win_variant)
-            if fresh(marked_win):
-                yield marked_win
+        # Its command starts (`a; rd /s /q C:\`): marked on the RAW command (faithful quote state), then flattened.
+        marked_win = _normalize_command_for_detection(
+            _mark_command_starts(_mask_quoted_newlines(command), marker=" \n").replace("\\", "/"))
+        if fresh(marked_win):
+            yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     while pending:

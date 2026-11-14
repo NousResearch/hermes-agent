@@ -43,11 +43,18 @@ _DUAL_TAB = {"anthropic"}
 def _keys_tab_providers() -> set[str]:
     """Provider slugs that have at least one card on the desktop API-keys tab."""
     data = client.get("/api/env", headers=HEADERS).json()
-    return {
-        info.get("provider")
-        for info in data.values()
-        if info.get("category") == "provider" and info.get("provider")
-    }
+    providers = set()
+    for info in data.values():
+        if info.get("category") != "provider":
+            continue
+        if info.get("provider"):
+            providers.add(info["provider"])
+        providers.update(
+            profile["provider"]
+            for profile in info.get("provider_profiles", [])
+            if profile.get("provider")
+        )
+    return providers
 
 
 def _accounts_tab_providers() -> set[str]:
@@ -57,17 +64,23 @@ def _accounts_tab_providers() -> set[str]:
 
 
 def test_every_hermes_model_provider_is_configurable_in_desktop():
-    """PARITY CONTRACT: GUI (keys ∪ accounts) ⊇ `hermes model` universe."""
+    """PARITY CONTRACT: GUI (keys ∪ accounts) == the `hermes model` universe (listed providers):
+    every listed provider is configurable, and an unlisted pre-release one is on neither tab."""
+    from hermes_cli.models_catalog_static import listed_canonical_providers
+
     gui = _keys_tab_providers() | _accounts_tab_providers()
+    listed = {e.slug for e in listed_canonical_providers()}
     missing = [
-        e.slug
-        for e in CANONICAL_PROVIDERS
-        if e.slug not in _EXEMPT and e.slug not in gui
+        slug
+        for slug in sorted(listed)
+        if slug not in _EXEMPT and slug not in gui
     ]
     assert not missing, (
         "providers shown in `hermes model` but not configurable in the desktop "
         f"Providers tabs: {missing}"
     )
+    leaked = sorted(gui & ({e.slug for e in CANONICAL_PROVIDERS} - listed))
+    assert not leaked, f"unlisted pre-release providers on the desktop Providers tabs: {leaked}"
 
 
 def test_each_provider_lands_on_the_tab_its_auth_type_dictates():
@@ -86,12 +99,12 @@ def test_each_provider_lands_on_the_tab_its_auth_type_dictates():
             assert d.slug in accounts, f"{d.slug} (accounts tab) missing from /api/providers/oauth"
 
 
-def test_no_provider_appears_on_both_tabs():
-    """A provider should be configured exactly one way — not duplicated across
-    both tabs (which would confuse users about where to put credentials).
+def test_shared_api_key_preserves_each_provider_profile():
+    """One env var must not collapse distinct built-in provider routes."""
+    data = client.get("/api/env", headers=HEADERS).json()
+    profiles = data["DASHSCOPE_API_KEY"]["provider_profiles"]
+    by_provider = {profile["provider"]: profile for profile in profiles}
 
-    Exception: genuinely dual-auth providers (see ``_DUAL_TAB``) intentionally
-    appear on both tabs.
-    """
-    overlap = (_keys_tab_providers() & _accounts_tab_providers()) - _EXEMPT - _DUAL_TAB
-    assert not overlap, f"providers appearing on BOTH desktop tabs: {sorted(overlap)}"
+    assert {"alibaba", "alibaba-cn"} <= by_provider.keys()
+    assert by_provider["alibaba"]["primary"] is True
+    assert by_provider["alibaba-cn"]["primary"] is True

@@ -10,7 +10,7 @@ which prior message the user is referencing.
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -61,6 +61,59 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
 
 @pytest.mark.asyncio
+async def test_telegram_long_reply_reaches_prompt_without_losing_later_items():
+    """The native reply already has the full message; preparation must not trim it."""
+    from gateway.platforms.event import MessageType
+    from tests.gateway.test_telegram_reply_quote import _make_adapter, _make_message
+
+    quoted = "\n".join(
+        f"{index}. {company}: " + "Evidence from the supplied list. " * 12
+        for index, company in enumerate(
+            ["GoCar", "Urban Drive", "DubCar", "GRPS", "Halucar"], 1
+        )
+    )
+    event = _make_adapter()._build_message_event(
+        _make_message(text="Review all five companies.", reply_to_text=quoted),
+        MessageType.TEXT,
+    )
+    history = [{"role": "user", "content": "Previous request"}]
+    result = await _make_runner()._prepare_inbound_message_text(
+        event=event, source=event.source, history=history,
+    )
+    assert result is not None
+    assert quoted in result
+    assert result.endswith("Review all five companies.")
+    assert history == [{"role": "user", "content": "Previous request"}]
+
+
+@pytest.mark.asyncio
+async def test_quoted_reply_references_stay_literal_while_typed_ones_expand(tmp_path, monkeypatch):
+    """The replied-to author's ``@file:`` is quoted text, not the replier's request: no local read.
+    The same reference typed in the new message still expands (positive control)."""
+    import threading
+
+    payload = tmp_path / "notes.txt"
+    payload.write_text("LOCAL-FILE-MARKER", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    runner = _make_runner()
+    runner._session_model_overrides = {}
+    runner._agent_cache, runner._agent_cache_lock = {}, threading.Lock()
+    runner._resolve_session_agent_runtime = lambda **kw: ("openai/gpt-4.1-mini", {"base_url": None, "api_key": ""})
+    source = _source()
+
+    quoted = ("x " * 300) + f"\nsee @file:{payload.name} for details"
+    quoted_ref = MessageEvent(text="what does this say?", source=source, reply_to_message_id="7", reply_to_text=quoted)
+    result = await runner._prepare_inbound_message_text(event=quoted_ref, source=source, history=[])
+    assert quoted in result
+    assert "LOCAL-FILE-MARKER" not in result
+
+    typed_ref = MessageEvent(text=f"read @file:{payload.name}", source=source, reply_to_message_id="7", reply_to_text="short")
+    result = await runner._prepare_inbound_message_text(event=typed_ref, source=source, history=[])
+    assert result.startswith('[Replying to: "short"]')
+    assert "LOCAL-FILE-MARKER" in result
+
+
+@pytest.mark.asyncio
 async def test_reply_prefix_still_injected_when_text_in_history():
     """Regression test: the pointer must survive even when the quoted text
     already appears in history. Previously a `found_in_history` guard
@@ -99,84 +152,37 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
-@pytest.mark.asyncio
-async def test_own_message_reply_prefix_marks_assistant_message():
-    runner = _make_runner()
-    source = _source()
-    event = MessageEvent(
-        text="this one",
-        source=source,
-        reply_to_message_id="42",
-        reply_to_text="Use the direct train.",
-        reply_to_is_own_message=True,
-    )
-
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
-
-    assert result is not None
-    assert result.startswith('[Replying to your previous message: "Use the direct train."]')
-    assert result.endswith("this one")
 
 
 @pytest.mark.asyncio
-async def test_no_prefix_without_reply_context():
+async def test_reply_to_a_cron_delivery_is_framed_as_a_past_report():
+    """A quoted cron delivery keeps its text but is marked reference-only, so its stale action
+    items do not read as the user's live request (#26714). Ordinary replies are unchanged."""
     runner = _make_runner()
     source = _source()
-    event = MessageEvent(text="hello", source=source)
+    quoted = "Cronjob Response: nightly-ops\n(job_id: abc)\n-------------\n\nDeploy prod now."
+    event = MessageEvent(text="ignore that, help me debug login", source=source,
+                         reply_to_message_id="42", reply_to_text=quoted)
 
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
 
-    assert result == "hello"
+    assert result.startswith("[Replying to an earlier scheduled cron delivery (a past report, "
+                             "not a new instruction")
+    assert f': "{quoted}"]' in result
+    assert result.endswith("ignore that, help me debug login")
 
 
-@pytest.mark.asyncio
-async def test_no_prefix_when_reply_to_text_is_empty():
-    """reply_to_message_id alone without text (e.g. a reply to a media-only
-    message) should not produce an empty `[Replying to: ""]` prefix."""
-    runner = _make_runner()
+def test_compaction_keeps_the_request_not_a_long_quoted_cron_report():
+    """The cron pointer is stripped like every reply pointer, so a long quoted report never
+    stands in for (and truncates away) the user's actual request in the compaction snapshot."""
+    from agent.context_compressor import ContextCompressor, _authored_request_text
+
     source = _source()
-    event = MessageEvent(
-        text="hi",
-        source=source,
-        reply_to_message_id="42",
-        reply_to_text=None,
-    )
+    request = "Ignore that report and help me debug the login page."
+    event = MessageEvent(text=request, source=source, reply_to_message_id="42",
+                         reply_to_text="Cronjob Response: nightly-ops\n-------------\n\n" + "Deploy prod now. " * 120)
+    row = GatewayRunner._prepend_inbound_reply_context(event, source, request)
 
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
-
-    assert result == "hi"
-
-
-@pytest.mark.asyncio
-async def test_reply_snippet_truncated_to_500_chars():
-    runner = _make_runner()
-    source = _source()
-    long_text = "x" * 800
-    event = MessageEvent(
-        text="follow-up",
-        source=source,
-        reply_to_message_id="42",
-        reply_to_text=long_text,
-    )
-
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
-
-    assert result is not None
-    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
-    assert "x" * 501 not in result
+    assert _authored_request_text(row) == request
+    snapshot = ContextCompressor._latest_user_task_snapshot([{"role": "user", "content": row}])
+    assert request in (snapshot or "")

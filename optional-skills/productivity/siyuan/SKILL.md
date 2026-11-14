@@ -1,6 +1,6 @@
 ---
 name: siyuan
-description: SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base via curl.
+description: Query and edit a SiYuan knowledge base via its API.
 version: 1.0.0
 author: FEUAZUR
 license: MIT
@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [SiYuan, Notes, Knowledge Base, PKM, API]
-    related_skills: [obsidian, notion]
+    related_skills: [obsidian]
     homepage: https://github.com/siyuan-note/siyuan
 prerequisites:
   env_vars: [SIYUAN_TOKEN]

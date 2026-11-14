@@ -1,0 +1,296 @@
+"""Reproduction tests for #18370 fallout: lazy session creation regressions.
+
+Tests cover:
+1. Bug #20001 — _finalize_session() uses stale session_key after compression rotation
+2. Bug #20001 — _sync_session_key_after_compress called post-run_conversation
+3. Bug #19029 — pending_title ValueError leaves title wedged
+4. Bug #18765 — gateway surfaces null response when agent did work
+5. Prune — finalize_orphaned_compression_sessions catches ghost continuations
+"""
+
+import threading
+import time
+import types
+from unittest.mock import MagicMock, patch
+
+
+
+# ===========================================================================
+# Helpers
+# ===========================================================================
+
+def _make_session_db(tmp_path):
+    """Create a real SessionDB for integration-style tests."""
+    from hermes_state import SessionDB
+    db_path = tmp_path / "test_state.db"
+    return SessionDB(db_path=db_path)
+
+
+def _tui_session(agent=None, session_key="session-key-old", **extra):
+    """Minimal TUI gateway session dict matching server._sessions values."""
+    return {
+        "agent": agent if agent is not None else types.SimpleNamespace(session_id=session_key),
+        "session_key": session_key,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "pending_title": None,
+        **extra,
+    }
+
+
+# ===========================================================================
+# Bug #20001: _finalize_session uses stale session_key
+# ===========================================================================
+
+class TestFinalizeSessionUsesAgentSessionId:
+    """After compression rotates agent.session_id, _finalize_session()
+    must call end_session() on the NEW (current) session_id, not the stale
+    session_key stored in the session dict."""
+
+    def test_finalize_targets_agent_session_id_not_stale_key(self, tmp_path):
+        """Reproduction: agent.session_id rotated by compression, but
+        session['session_key'] still holds old value. _finalize_session()
+        should end the agent's current session."""
+        from tui_gateway import server
+
+        db = _make_session_db(tmp_path)
+
+        # Create two sessions: parent (already ended by compression) and continuation
+        db.create_session(session_id="parent-session", source="tui", model="test")
+        db.end_session("parent-session", "compression")
+
+        db.create_session(
+            session_id="continuation-session",
+            source="tui",
+            model="test",
+            parent_session_id="parent-session",
+        )
+        # Continuation is NOT ended — this is the bug state
+
+        # Agent has rotated to continuation session
+        agent = types.SimpleNamespace(
+            session_id="continuation-session",
+            commit_memory_session=lambda h: None,
+        )
+
+        # Session dict still holds stale key (the bug condition)
+        session = _tui_session(
+            agent=agent,
+            session_key="parent-session",
+            history=[{"role": "user", "content": "hello"}],
+        )
+
+        # Monkeypatch _get_db to return our test DB
+        with patch.object(server, "_get_db", return_value=db):
+            with patch.object(server, "_notify_session_boundary", lambda *a: None):
+                server._finalize_session(session, end_reason="tui_close")
+
+        # The continuation session should be ended
+        continuation = db.get_session("continuation-session")
+        assert continuation["ended_at"] is not None, (
+            "_finalize_session should end the agent's current session (continuation), "
+            "not the already-ended parent"
+        )
+        assert continuation["end_reason"] == "tui_close"
+
+
+
+# ===========================================================================
+# Bug #20001: _sync_session_key_after_compress post-run_conversation
+# ===========================================================================
+
+
+
+# ===========================================================================
+# Bug #19029: pending_title ValueError wedge
+# ===========================================================================
+
+class TestPendingTitleValueError:
+    """When set_session_title raises ValueError (duplicate/invalid title),
+    pending_title must be cleared — not left wedged forever."""
+
+    def test_valueerror_clears_pending_title(self, monkeypatch):
+        """ValueError from set_session_title should drop pending_title."""
+        from tui_gateway import server
+
+        mock_db = MagicMock()
+        mock_db.set_session_title.side_effect = ValueError("duplicate title")
+
+        class _Agent:
+            session_id = "test-session"
+            _cached_system_prompt = ""
+            def run_conversation(self, prompt, **kw):
+                return {
+                    "final_response": "ok",
+                    "messages": [{"role": "assistant", "content": "ok"}],
+                }
+
+        session = _tui_session(
+            agent=_Agent(),
+            session_key="test-session",
+            pending_title="My Title",
+        )
+
+        monkeypatch.setattr(server, "_get_db", lambda: mock_db)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+        monkeypatch.setattr(
+            server, "_sync_session_key_after_compress", lambda *a, **kw: None
+        )
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                self._target = target
+            def start(self):
+                self._target()
+
+        server._sessions["sid"] = session
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+        try:
+            server.handle_request({
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            })
+
+            # pending_title should be cleared on ValueError, not left wedged
+            assert session.get("pending_title") is None, (
+                "ValueError from set_session_title must clear pending_title "
+                "so auto-title can take over"
+            )
+        finally:
+            server._sessions.pop("sid", None)
+
+
+
+# ===========================================================================
+# Bug #18765: Gateway surfaces null response
+# ===========================================================================
+
+class TestGatewaySurfacesNullResponse:
+    """When the agent does work (api_calls > 0) but returns no final_response,
+    the gateway must surface an error to the user instead of silently sending
+    nothing. Tests exercise the production _normalize_empty_agent_response helper."""
+
+    def test_partial_response_surfaces_error(self):
+        """Agent returns partial=True with no response → user sees error."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 5,
+            "partial": True,
+            "interrupted": False,
+            "error": "Model generated invalid tool call: nonexistent_tool",
+        }
+
+        response = agent_result.get("final_response") or ""
+        response = _normalize_empty_agent_response(
+            agent_result, response, history_len=10,
+        )
+
+        assert response != "", "Null response with api_calls>0 must be surfaced"
+        assert "nonexistent_tool" in response
+
+
+
+    def test_failed_generic_error(self):
+        """Agent failed with non-context error → generic error message."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "failed": True,
+            "error": "500 Internal Server Error",
+        }
+
+        response = agent_result.get("final_response") or ""
+        response = _normalize_empty_agent_response(
+            agent_result, response, history_len=5,
+        )
+
+        # Plain outcome plus the way forward; the raw provider text stays in the log.
+        assert "500 Internal Server Error" not in response
+        assert response
+
+
+    def test_silent_drop_after_stop_surfaces_hint(self):
+        """Regression for #31884: after /stop, the next user message hits a
+        stale generation token in _run_agent and returns with api_calls=0,
+        no failure, no interruption. Without normalization the gateway
+        silently drops the turn (response=0 chars). Surface a retry hint
+        so the user knows the message was lost."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "",
+            "api_calls": 0,
+            "failed": False,
+            "interrupted": False,
+            "partial": False,
+        }
+
+        response = agent_result.get("final_response") or ""
+        result = _normalize_empty_agent_response(
+            agent_result, response, history_len=10,
+        )
+
+        assert result, "Silent-drop turn must surface a user-facing hint"
+
+
+# ===========================================================================
+# Prune: finalize_orphaned_compression_sessions
+# ===========================================================================
+
+class TestFinalizeOrphanedCompressionSessions:
+    """The prune migration marks ghost compression continuations as ended."""
+
+    def test_marks_ghost_continuation_with_compression_parent(self, tmp_path):
+        """Ghost session with compression-ended parent + messages → finalized."""
+        db = _make_session_db(tmp_path)
+
+        # Parent session (ended by compression — this is the key condition)
+        db.create_session(session_id="parent", source="tui", model="test")
+        db.end_session("parent", "compression")
+
+        # Ghost continuation (has messages, never finalized)
+        db.create_session(
+            session_id="ghost-cont",
+            source="tui",
+            model="test",
+            parent_session_id="parent",
+        )
+        db.append_message("ghost-cont", role="user", content="hello")
+        db.append_message("ghost-cont", role="assistant", content="hi")
+
+        # Make it old enough (fake started_at)
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (time.time() - 800000, "ghost-cont"),  # ~9 days old
+            )
+        )
+
+        count = db.finalize_orphaned_compression_sessions()
+        assert count == 1
+
+        session = db.get_session("ghost-cont")
+        assert session["ended_at"] is not None
+        assert session["end_reason"] == "orphaned_compression"
+
+
+
+
+
+

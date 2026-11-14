@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: linear
+connector_slug: linear
 description: Find, create, and update Linear issues, projects, and comments.
 source: https://linear.app/docs/mcp
 
@@ -29,6 +30,13 @@ auth:
 # If you want to encode a curated subset here once it stabilizes, list the
 # tool names under `tools.default_enabled`. Probe failure would then apply
 # that list directly.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - linear
+  hosts:
+    - linear.app
 
 post_install: |
   On first connection, Hermes will open a browser to authenticate with Linear.

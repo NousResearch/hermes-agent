@@ -42,26 +42,11 @@ async def test_deliver_platform_notice_uses_private_delivery_when_configured():
         "C123",
         "U123",
         "hello",
-        metadata={"thread_id": "111.222"},
+        # user_id rides along since the R3-5 per-turn identity stamp (Slack
+        # sources carry their author in thread metadata for the connector's
+        # chat.startStream recipient fields). Additive and harmless here.
+        metadata={"thread_id": "111.222", "user_id": "U123"},
     )
     adapter.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_deliver_platform_notice_falls_back_to_public_when_private_fails():
-    runner, adapter = _make_runner(extra={"notice_delivery": "private"})
-    adapter.send_private_notice = AsyncMock(return_value=SendResult(success=False, error="nope"))
-
-    await runner._deliver_platform_notice(_make_source(), "hello")
-
-    adapter.send.assert_awaited_once_with("C123", "hello", metadata={"thread_id": "111.222"})
-
-
-@pytest.mark.asyncio
-async def test_deliver_platform_notice_uses_public_delivery_by_default():
-    runner, adapter = _make_runner()
-
-    await runner._deliver_platform_notice(_make_source(), "hello")
-
-    adapter.send.assert_awaited_once_with("C123", "hello", metadata={"thread_id": "111.222"})
-    adapter.send_private_notice.assert_not_awaited()

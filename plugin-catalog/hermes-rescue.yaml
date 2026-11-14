@@ -1,0 +1,39 @@
+name: hermes-rescue
+repo: https://github.com/0xNexuz/hermes-rescue
+sha: 5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd
+subdir: hermes_rescue
+version: "0.1.0"
+title: "Rescue"
+description: "Keeps your agent from breaking Hermes, and says what really went wrong. Refuses agent tool calls that would delete or hand-edit Hermes's own data (sessions, state.db, memories, skills, settings, profiles, keys) and names the supported command instead; sends edits to settings, SOUL.md or memory files to Hermes's approval prompt with a snapshot first (/rescue undo); and when a reply fails or quietly comes from a backup, adds one plain line per attempt with the real cause and the fix (NousResearch/hermes-agent#144562, #147620). /rescue in every surface, plus a Desktop status chip and pane. Disclosure — reads tool-call arguments (command, path, code) to decide; writes plugin-data/hermes-rescue/rescue.db (event kind, short description, up to 200 characters of the command, provider/model/status of failed model calls, Rescue's explanation; about 2,000 events kept); copies files a risky change would touch (config.yaml, SOUL.md, memories/, skills/, cron/, plugins/, state.db up to 300 MB) into plugin-data/hermes-rescue/snapshots/ before the change (newest 30 kept, so up to 30 state.db copies on disk) and writes them back on /rescue undo (for state.db only missing conversations come back, through Hermes's SessionDB export_session/import_sessions; folders are merged; only inside the Hermes folders); never opens, copies, moves or overwrites .env, auth.json or the other credential stores Hermes lists; after a failed model call that ends a turn, a short-lived background thread posts the note to the same conversation with ctx.post_message and edits it if a later attempt answers; never auto-approves (in YOLO mode Hermes itself approves the ask-first edits)."
+maintainer: 0xNexuz
+tier: community
+category: general
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/0xNexuz/hermes-rescue/blob/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/README.md
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/0xNexuz/hermes-rescue/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/docs/screenshots/01-blocked-windows-desktop.png
+  - https://raw.githubusercontent.com/0xNexuz/hermes-rescue/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/docs/screenshots/03-pane-windows-desktop.png
+  - https://raw.githubusercontent.com/0xNexuz/hermes-rescue/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/docs/screenshots/04-undo-windows-desktop.png
+  - https://raw.githubusercontent.com/0xNexuz/hermes-rescue/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/docs/screenshots/06-statusbar-windows-desktop.png
+  - https://raw.githubusercontent.com/0xNexuz/hermes-rescue/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/docs/screenshots/02-approval-windows-desktop.png
+  - https://raw.githubusercontent.com/0xNexuz/hermes-rescue/5d365ba5e0293ce0c6bab22cc000ad99b4cefbcd/docs/screenshots/05-undo-toast-windows-desktop.png
+known_issues:
+  - "The shell check follows quotes, comments, here-documents, $(…), globs, braces, cd/env -C, bash -c, xargs and find patterns (a find -regex on Hermes's folders always counts; the pattern is never run); it does not expand aliases or the scripts a command calls."
+  - "Python passed to execute_code is checked by pattern only, so Rescue asks the human there rather than blocking."
+  - "On Windows, PowerShell and cmd commands are read for deletes, moves, copies and writes; longer PowerShell scripts with their own logic are not followed."
+  - "/rescue undo for state.db only brings back missing conversations (through Hermes's own import); a conversation still there but missing messages is reported, not overwritten; the full copy stays in the snapshot."
+  - "In YOLO mode or with approvals off, Hermes approves Rescue's ask-first edits itself; the snapshot is still saved, so /rescue undo still works."
+  - "In the classic CLI without the gateway, a failed-turn note is only kept in /rescue log."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - api_request_error
+    - post_api_request
+    - transform_llm_output
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

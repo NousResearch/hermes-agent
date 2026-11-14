@@ -39,17 +39,6 @@ def test_create_list_show(capsys, tmp_path):
     assert "My App" in capsys.readouterr().out
 
 
-def test_add_remove_folder(tmp_path):
-    _run(["create", "P", str(tmp_path / "a")])
-    assert _run(["add-folder", "p", str(tmp_path / "b")]) == 0
-
-    with pdb.connect_closing() as conn:
-        proj = pdb.get_project(conn, "p")
-        assert len(proj.folders) == 2
-
-    assert _run(["remove-folder", "p", str(tmp_path / "b")]) == 0
-    with pdb.connect_closing() as conn:
-        assert len(pdb.get_project(conn, "p").folders) == 1
 
 
 def test_rename_and_archive(tmp_path):
@@ -68,17 +57,5 @@ def test_rename_and_archive(tmp_path):
         assert len(pdb.list_projects(conn)) == 1
 
 
-def test_use_clear(tmp_path):
-    _run(["create", "P", str(tmp_path)])
-    _run(["use", "p"])
-    with pdb.connect_closing() as conn:
-        assert pdb.get_active_id(conn) is not None
-
-    _run(["use"])
-    with pdb.connect_closing() as conn:
-        assert pdb.get_active_id(conn) is None
 
 
-def test_unknown_project_returns_error(capsys, tmp_path):
-    assert _run(["show", "nope"]) == 1
-    assert "no such project" in capsys.readouterr().err

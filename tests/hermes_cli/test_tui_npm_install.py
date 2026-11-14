@@ -1,23 +1,13 @@
-"""_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
-
+"""TUI launch consumes the shared dependency preparation and compiler."""
+import json
 import os
-import types
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
-
-
-@pytest.fixture
-def main_mod():
-    import hermes_cli.main as m
-
-    return m
-
-
-def _touch_ink(root: Path) -> None:
-    ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
-    ink.parent.mkdir(parents=True, exist_ok=True)
-    ink.write_text("{}")
+from hermes_cli import main_tui_launch
+from tests.hermes_cli.test_source_build import source_checkout, source_products, _events
 
 
 def _touch_tui_entry(root: Path) -> None:
@@ -26,117 +16,14 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
-def _assert_utf8_replace_capture(kwargs: dict) -> None:
-    assert kwargs["text"] is True
-    assert kwargs["encoding"] == "utf-8"
-    assert kwargs["errors"] == "replace"
-
-
-def test_need_install_when_ink_missing(tmp_path: Path, main_mod) -> None:
-    (tmp_path / "package-lock.json").write_text("{}")
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_when_lock_newer_but_hidden_lock_matches(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text('{"packages":{"node_modules/foo":{"version":"1.0.0"}}}')
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0","ideallyInert":true}}}'
-    )
-    os.utime(tmp_path / "package-lock.json", (200, 200))
-    os.utime(tmp_path / "node_modules" / ".package-lock.json", (100, 100))
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_need_install_when_required_package_missing_from_hidden_lock(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"},"node_modules/bar":{"version":"1.0.0"}}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_when_only_optional_peer_package_missing_from_hidden_lock(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"},"node_modules/optional":{"version":"1.0.0","optional":true,"peer":true}}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_no_install_when_only_peer_annotation_differs(tmp_path: Path, main_mod) -> None:
-    """npm 9 drops the ``peer`` flag from the hidden lock on dev-deps that are
-    *also* declared as peers.  That's a cosmetic difference — the package is
-    installed at the requested version — so it must not trigger a reinstall.
-    Regression for the TUI-in-Docker failure where 16 such mismatches caused
-    `Installing TUI dependencies…` → EACCES on every launch.
-    """
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{'
-        '"node_modules/foo":{"version":"1.0.0","dev":true,"peer":true,"resolved":"https://x/foo.tgz"}'
-        '}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{'
-        '"node_modules/foo":{"version":"1.0.0","dev":true,"resolved":"https://x/foo.tgz"}'
-        '}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_install_when_version_differs_even_with_peer_drop(tmp_path: Path, main_mod) -> None:
-    """The peer-drop tolerance must not mask a real version skew."""
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"2.0.0","dev":true,"peer":true}}}'
-    )
-    (tmp_path / "node_modules" / ".package-lock.json").write_text(
-        '{"packages":{"node_modules/foo":{"version":"1.0.0","dev":true}}}'
-    )
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_when_lock_older_than_marker(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text("{}")
-    (tmp_path / "node_modules" / ".package-lock.json").write_text("{}")
-    os.utime(tmp_path / "package-lock.json", (100, 100))
-    os.utime(tmp_path / "node_modules" / ".package-lock.json", (200, 200))
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_need_install_when_marker_missing(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    (tmp_path / "package-lock.json").write_text("{}")
-    assert main_mod._tui_need_npm_install(tmp_path) is True
-
-
-def test_no_install_without_lockfile_when_ink_present(tmp_path: Path, main_mod) -> None:
-    _touch_ink(tmp_path)
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
-    """dist/entry.js present and no package-lock.json → prebuilt bundle, skip npm install."""
-    _touch_tui_entry(tmp_path)
-    assert main_mod._tui_need_npm_install(tmp_path) is False
-
-
-def test_need_rebuild_when_tui_bundle_missing(tmp_path: Path, main_mod) -> None:
+def test_need_rebuild_when_tui_bundle_missing(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "entry.tsx").write_text("console.log('src')")
 
-    assert main_mod._tui_need_rebuild(tmp_path) is True
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_no_rebuild_when_tui_bundle_newer_than_inputs(tmp_path: Path, main_mod) -> None:
+def test_unreceipted_bundle_is_stale_even_when_newer(tmp_path: Path) -> None:
     _touch_tui_entry(tmp_path)
     src = tmp_path / "src"
     src.mkdir()
@@ -144,429 +31,334 @@ def test_no_rebuild_when_tui_bundle_newer_than_inputs(tmp_path: Path, main_mod) 
     os.utime(src / "entry.tsx", (100, 100))
     os.utime(tmp_path / "dist" / "entry.js", (200, 200))
 
-    assert main_mod._tui_need_rebuild(tmp_path) is False
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path, main_mod) -> None:
-    _touch_tui_entry(tmp_path)
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "entry.tsx").write_text("console.log('src')")
-    os.utime(tmp_path / "dist" / "entry.js", (100, 100))
-    os.utime(src / "entry.tsx", (200, 200))
 
-    assert main_mod._tui_need_rebuild(tmp_path) is True
-
-
-def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    _touch_tui_entry(tmp_path)
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-
-    def fail_run(*_args, **_kwargs):
-        raise AssertionError("fresh Termux TUI launch must not rebuild")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
-
-    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
-
-    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
-    assert cwd == tmp_path
-
-
-def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    _touch_tui_entry(tmp_path)
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-
-    def fail_run(*_args, **_kwargs):
-        raise AssertionError("fresh Termux TUI launch must not run npm")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
-
-    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
-
-    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
-    assert cwd == tmp_path
-
-
-def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    tui_dir = tmp_path / "ui-tui"
-    tui_dir.mkdir()
-    (tui_dir / "package.json").write_text("{}")
-    ink_dir = tui_dir / "packages" / "hermes-ink"
-    ink_dir.mkdir(parents=True)
-    (ink_dir / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    main_mod._make_tui_argv(tui_dir, tui_dev=False)
-
-    install_cmd = calls[0][0][0]
-    assert install_cmd[:7] == [
-        "/bin/npm",
-        "install",
-        "--workspace",
-        "ui-tui",
-        "--workspace",
-        "ui-tui/packages/hermes-ink",
-        "--include-workspace-root=false",
-    ]
-    assert calls[0][1]["cwd"] == str(tmp_path)
-    _assert_utf8_replace_capture(calls[0][1])
-    _assert_utf8_replace_capture(calls[1][1])
-
-
-def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    tui_dir = tmp_path / "ui-tui"
-    tui_dir.mkdir()
-    (tui_dir / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
-    monkeypatch.setenv("PREFIX", "/usr")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    main_mod._make_tui_argv(tui_dir, tui_dev=False)
-
-    assert calls[0][0][0] == [
-        "/bin/npm",
-        "install",
-        "--workspace",
-        "ui-tui",
-        "--silent",
-        "--no-fund",
-        "--no-audit",
-        "--progress=false",
-    ]
-    assert calls[0][1]["cwd"] == str(tmp_path)
-    _assert_utf8_replace_capture(calls[0][1])
-    _assert_utf8_replace_capture(calls[1][1])
-
-
-def test_make_tui_argv_keeps_desktop_always_build_behaviour(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    _touch_tui_entry(tmp_path)
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
-    monkeypatch.setenv("PREFIX", "/usr")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    main_mod._make_tui_argv(tmp_path, tui_dev=False)
-
-    assert calls
-    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
-    _assert_utf8_replace_capture(calls[0][1])
-
-
-def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    ink_dir = tmp_path / "packages" / "hermes-ink"
-    ink_dir.mkdir(parents=True)
-    tsx = tmp_path / "node_modules" / ".bin" / "tsx"
-    tsx.parent.mkdir(parents=True)
-    tsx.write_text("")
-
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=True)
-
-    assert argv == [str(tsx), "src/entry.tsx"]
-    assert cwd == tmp_path
-    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
-    assert calls[0][1]["cwd"] == str(ink_dir)
-    _assert_utf8_replace_capture(calls[0][1])
-
-
-def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
-    tmp_path: Path, main_mod, monkeypatch, capsys
-) -> None:
-    """Missing ui-tui + no git checkout → clean error, never touches node/npm."""
+@pytest.fixture
+def tui_source(source_products, monkeypatch):
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
-    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
-
-    # No .git beside ui-tui → _restore_tui_workspace bails, fallback message fires.
-    def which(name: str) -> str | None:
-        if name == "git":
-            return "/usr/bin/git"
-        raise AssertionError("node/npm lookup must not run when ui-tui is missing")
-
-    monkeypatch.setattr(main_mod.shutil, "which", which)
-
-    with pytest.raises(SystemExit) as exc:
-        main_mod._make_tui_argv(tmp_path / "ui-tui", tui_dev=False)
-
-    assert exc.value.code == 1
-    err = capsys.readouterr().err
-    assert "TUI workspace is missing" in err
-    assert "git restore -- ui-tui" in err
-    assert "hermes update --force" in err
-
-
-def test_make_tui_argv_restores_missing_workspace_from_git(
-    tmp_path: Path, main_mod, monkeypatch, capsys
-) -> None:
-    """Missing ui-tui in a git checkout self-heals via `git restore` and continues."""
-    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
-    monkeypatch.delenv("HERMES_QUIET", raising=False)
-    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
-
-    tui_dir = tmp_path / "ui-tui"
-    (tmp_path / ".git").mkdir()  # mark tmp_path as a checkout
-
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    restore_calls: list[tuple[list[str], object]] = []
-
-    def fake_run(cmd, *args, **kwargs):
-        # Simulate `git restore -- ui-tui` materialising the directory.
-        if cmd[:2] == ["/usr/bin/git", "restore"]:
-            restore_calls.append((cmd, kwargs.get("cwd")))
-            tui_dir.mkdir(exist_ok=True)
-            (tui_dir / "dist").mkdir()
-            (tui_dir / "dist" / "entry.js").write_text("// bundle")
-            (tui_dir / "package.json").write_text("{}")
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-    # node_modules present + lockfile-in-sync so we skip the install/build path
-    # and land straight on the node dist/entry.js return.
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: False)
-
-    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=False)
-
-    assert restore_calls, "expected a `git restore` attempt"
-    assert restore_calls[0][0] == ["/usr/bin/git", "restore", "--", "ui-tui"]
-    assert restore_calls[0][1] == str(tmp_path)
-    assert argv[-1] == str(tui_dir / "dist" / "entry.js")
-    assert cwd == tui_dir
-    assert "Restored missing TUI workspace" in capsys.readouterr().out
-
-
-# ── _workspace_root helper ──────────────────────────────────────────
-
-
-def test_workspace_root_returns_parent_when_subpackage(tmp_path: Path, main_mod) -> None:
-    """Sub-package has package.json, no lockfile; parent has lockfile → parent."""
-    sub = tmp_path / "ui-tui"
-    sub.mkdir()
-    (sub / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-    assert main_mod._workspace_root(sub) == tmp_path
-
-
-def test_workspace_root_returns_dir_when_standalone(tmp_path: Path, main_mod) -> None:
-    """No package.json → not a sub-package, return dir itself."""
-    assert main_mod._workspace_root(tmp_path) == tmp_path
-
-
-def test_workspace_root_returns_dir_when_own_lockfile(tmp_path: Path, main_mod) -> None:
-    """Has package.json AND its own lockfile → standalone, return dir."""
-    (tmp_path / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-    (tmp_path.parent / "package-lock.json").write_text("{}")
-    assert main_mod._workspace_root(tmp_path) == tmp_path
-
-
-def test_workspace_root_returns_dir_when_no_parent_lockfile(
-    tmp_path: Path, main_mod
-) -> None:
-    """Has package.json, no own lockfile, but parent also has no lockfile → standalone."""
-    sub = tmp_path / "ui-tui"
-    sub.mkdir()
-    (sub / "package.json").write_text("{}")
-    # tmp_path has no package-lock.json either
-    assert main_mod._workspace_root(sub) == sub
-
-
-def test_workspace_root_consistent_with_need_npm_install(
-    tmp_path: Path, main_mod
-) -> None:
-    """Divergence regression: if someone creates ui-tui/package-lock.json
-    by accident, _workspace_root (used by both _tui_need_npm_install AND
-    the npm install cwd) returns ui-tui/ for both, so they never disagree.
-
-    Before the shared helper, _tui_need_npm_install used a 3-condition
-    check (falling back to ui-tui/ when its own lockfile exists) while
-    the npm install cwd used a simpler check (still going to the parent
-    because the parent lockfile still exists).  The shared helper
-    eliminates the split.
-    """
-    sub = tmp_path / "ui-tui"
-    sub.mkdir()
-    (sub / "package.json").write_text("{}")
-    # Both sub and parent have lockfiles — accidental state
-    (sub / "package-lock.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    ws = main_mod._workspace_root(sub)
-    # _workspace_root sees sub has its own lockfile → treats it as standalone
-    assert ws == sub
-
-    # _tui_need_npm_install also uses _workspace_root, so both agree
-    assert main_mod._tui_need_npm_install.__code__.co_names
-    # (Smoke test: just confirm _tui_need_npm_install doesn't crash)
-    # It won't need install because the lockfile exists and there's no
-    # hidden lockfile to compare against, and ink is missing → True.
-    # But the key invariant is: ws_root for the need-check == ws_root
-    # for the install cwd — both use _workspace_root(sub).
-
-
-def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
-    """Workspace sub-directories must not contain their own package-lock.json.
-
-    With a single workspace root lockfile, per-directory lockfiles are
-    always accidental (typically from running ``npm install`` inside the
-    wrong directory).  They cause ``_workspace_root`` to treat the
-    sub-package as standalone, which breaks hoisted ``node_modules``
-    resolution and can silently diverge the install cwd from the
-    lockfile-check root.
-
-    This is an invariant, not a change-detector: the workspace structure
-    is not expected to gain per-dir lockfiles.
-    """
-    root = main_mod.PROJECT_ROOT
-    # Workspace members that live one level below the root and should
-    # NOT have their own lockfile.  (ui-tui/packages/* members are
-    # two levels deep and even less likely to get accidental lockfiles,
-    # but we check them too for completeness.)
-    subdirs = [
-        root / "ui-tui",
-        root / "web",
-        root / "apps" / "desktop",
-        root / "apps" / "shared",
-    ]
-    # Also sweep ui-tui/packages/* (hermes-ink etc.)
-    tui_pkgs = root / "ui-tui" / "packages"
-    if tui_pkgs.is_dir():
-        subdirs.extend(d for d in tui_pkgs.iterdir() if d.is_dir())
-
-    stray = [d for d in subdirs if (d / "package-lock.json").is_file()]
-    assert not stray, (
-        "stray package-lock.json found in workspace sub-directory(es); "
-        "delete them and run `npm install` from the repo root instead: "
-        + ", ".join(str(d / "package-lock.json") for d in stray)
-    )
-
-
-def test_tui_launch_install_uses_workspace_scope(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    """TUI launch npm install must pass --workspace ui-tui to avoid pulling apps/desktop."""
-    tui_dir = tmp_path / "ui-tui"
-    tui_dir.mkdir()
-    (tui_dir / "package.json").write_text("{}")
-    (tui_dir / "dist" / "entry.js").parent.mkdir(parents=True)
-    (tui_dir / "dist" / "entry.js").write_text("console.log('tui')")
-    # workspace root: parent has lockfile, tui_dir does not
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    npm_calls = []
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0].endswith("npm"):
-            npm_calls.append(cmd)
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    main_mod._make_tui_argv(tui_dir, tui_dev=False)
-
-    assert npm_calls, "expected npm install to be called"
-    install_cmd = npm_calls[0]
-    assert "--workspace" in install_cmd
-    assert "ui-tui" in install_cmd
-
-def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    """When ui-tui/ has its own package-lock.json, _workspace_root returns
-    tui_dir itself.  npm install --workspace ui-tui would fail in that case
-    because npm cannot find a workspace named "ui-tui" inside ui-tui/.
-    The fix omits --workspace and runs plain npm install from tui_dir.
-    See #42973.
-    """
-    tui_dir = tmp_path / "ui-tui"
-    tui_dir.mkdir()
-    (tui_dir / "package.json").write_text("{}")
-    # Simulate curl-install layout: tui_dir has its own lockfile
-    (tui_dir / "package-lock.json").write_text("{}")
-    # Parent also has lockfile (but _workspace_root prefers tui_dir's own)
-    (tmp_path / "package-lock.json").write_text("{}")
-
+    monkeypatch.delenv("HERMES_TUI_FORCE_BUILD", raising=False)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
+    monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: None)
+    return source_products
 
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+@pytest.mark.platforms("posix")
+def test_source_launch_prepares_base_union_but_compiles_only_tui(tui_source):
+    root, acquired = tui_source
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert cwd == root / "ui-tui"
+    assert argv[-1] == str(cwd / "dist/entry.js")
+    assert (cwd / "dist/entry.js").read_text() == "tui"
+    assert [event["step"] for event in _events(root)] == ["deps", "tui"]
+    assert acquired == ["pnpm"]
+    assert (root / "ui-tui/node_modules").exists()
+    assert (root / "web/node_modules").exists()
+    assert not (root / "apps/desktop/node_modules").exists()
+    # A launch someone waits for, which can fall back, gives up on an unreachable registry sooner.
+    assert _events(root)[0]["retries"] == "1"
 
-    main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
-    install_cmd = calls[0][0][0]
-    # Must NOT contain --workspace when npm_cwd == tui_dir
-    assert "--workspace" not in install_cmd, (
-        f"npm install should omit --workspace when tui_dir has its own lockfile, got: {install_cmd}"
-    )
-    assert install_cmd[:2] == ["/bin/npm", "install"]
-    # cwd must be tui_dir (standalone), not parent
-    assert calls[0][1]["cwd"] == str(tui_dir)
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("where", ["environment", "pnpm global config", "pnpm-workspace.yaml"])
+def test_source_launch_keeps_the_users_download_retries(tui_source, tmp_path, monkeypatch, where):
+    """A retry count the user chose (for a flaky mirror) is theirs: a launch lowers only pnpm's default."""
+    root, _ = tui_source
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    if where == "environment":
+        monkeypatch.setenv("pnpm_config_fetch_retries", "5")
+    elif where == "pnpm global config":
+        (tmp_path / "xdg/pnpm").mkdir(parents=True)
+        (tmp_path / "xdg/pnpm/config.yaml").write_text("fetchRetries: 5\n", encoding="utf-8")
+    else:
+        workspace = root / "pnpm-workspace.yaml"
+        workspace.write_text("fetchRetries: 5\n" + workspace.read_text(encoding="utf-8"), encoding="utf-8")
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root)[0].get("retries") == ("5" if where == "environment" else None)
+
+
+@pytest.mark.platforms("posix")
+def test_source_launch_ignores_an_npm_retry_count_pnpm_ignores(tui_source, monkeypatch):
+    """pnpm 12 reads no fetch-retries from an npmrc, nor npm_config_fetch_retries: a count set only
+    there would leave pnpm's default of 2 retries, so the launch still lowers it."""
+    import os
+
+    root, _ = tui_source
+    npmrc = Path(os.environ["HERMES_HOME"]) / "npmrc"
+    npmrc.write_text(npmrc.read_text(encoding="utf-8") + "fetch-retries=5\n", encoding="utf-8")
+    monkeypatch.setenv("npm_config_fetch_retries", "5")
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root)[0]["retries"] == "1"
+
+
+@pytest.mark.platforms("posix")
+def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
+    root, acquired = tui_source
+    (root / "fail-tui").touch()
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert [event["step"] for event in _events(root)] == ["deps", "tui"]
+    assert acquired == ["pnpm"]
+
+
+@pytest.mark.platforms("posix")
+def test_failed_dependency_preparation_launches_the_previous_build(tui_source, monkeypatch, capsys):
+    """#150031: after an update moved the TUI's inputs, an install that cannot run (here lazy
+    installs are disabled; offline, the registry is unreachable) still starts the previous bundle,
+    and hands the caller the warning to show again after the TUI's screen clear."""
+    root, _ = tui_source
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    _touch_tui_entry(root / "ui-tui")
+    notices = []
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False, notices=notices)
+    assert argv[-1] == str(root / "ui-tui/dist/entry.js")
+    assert subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip() == "tui"
+    assert "previous TUI build was started" in capsys.readouterr().err
+    assert len(notices) == 1 and "hermes update" in notices[0]
+    assert _events(root) == []
+    # --dev runs the sources, and a forced build asks for them: both need the dependencies.
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
+    monkeypatch.setenv("HERMES_TUI_FORCE_BUILD", "1")
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+
+
+@pytest.mark.platforms("posix")
+def test_fallback_names_a_refusal_that_printed_nothing(tui_source, monkeypatch, capsys, caplog):
+    """PM refusing to fetch pnpm raises before any command prints: the fallback names that cause."""
+    from hermes_cli import source_build
+
+    root, _ = tui_source
+    _touch_tui_entry(root / "ui-tui")
+
+    def refuse():
+        raise RuntimeError("pnpm: not installed and lazy installs are disabled")
+
+    monkeypatch.setattr(source_build, "source_build_env", refuse)
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert "lazy installs are disabled" in capsys.readouterr().err
+    assert "lazy installs are disabled" in caplog.text
+
+
+# The TUI's first write (ui-tui/src/entry.tsx): clear the screen and the scrollback.
+_TUI_CLEAR = "\\x1b[2J\\x1b[H\\x1b[3J"
+_FALLBACK_LAUNCH = f"""
+import fcntl, sys, termios
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)  # this new session's controlling terminal, as a shell has
+from hermes_cli import main_tui_launch
+def argv(tui_dir, tui_dev, notices=None):
+    print("fallback notice", file=sys.stderr)
+    if notices is not None:
+        notices.append("fallback notice")
+    return [sys.executable, "-c", "import sys; sys.stdout.write({_TUI_CLEAR!r} + 'TUI RAN')"], tui_dir.parent
+main_tui_launch._make_tui_argv = argv
+main_tui_launch._print_tui_exit_summary = lambda *_: None
+main_tui_launch._NOTICE_WAIT_S = float(sys.argv[1])
+if sys.argv[3]:  # a background job: its own process group, while this one keeps the terminal
+    import os
+    pid = os.fork()
+    if pid:
+        sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+    os.setpgid(0, 0)
+main_tui_launch._launch_tui(query=sys.argv[2] or None)
+"""
+
+
+class _Terminal:
+    """A pty that is the launch's controlling terminal, with the launch in its foreground process
+    group (as a shell runs it) unless *background*."""
+
+    def __init__(self, wait_s: float, *, background: bool = False, query: str = "", stderr=None):
+        import pty
+        import sys
+
+        self.leader, follower = pty.openpty()
+        self.child = subprocess.Popen(
+            [sys.executable, "-c", _FALLBACK_LAUNCH, str(wait_s), query, "1" if background else ""],
+            stdin=follower, stdout=follower,
+            stderr=follower if stderr is None else stderr, close_fds=True, cwd=Path(__file__).resolve().parents[2],
+            start_new_session=True,
+        )
+        os.close(follower)
+        self.seen = b""
+
+    def read_until(self, marker: bytes) -> float:
+        import select
+        import time
+
+        started = time.monotonic()
+        while marker not in self.seen:
+            ready, _, _ = select.select([self.leader], [], [], 30)
+            assert ready, f"timed out waiting for {marker!r}; got {self.seen!r}"
+            try:
+                chunk = os.read(self.leader, 4096)
+            except OSError:  # EIO: the child closed the terminal
+                chunk = b""
+            assert chunk, f"terminal closed before {marker!r}; got {self.seen!r}"
+            self.seen += chunk
+        return time.monotonic() - started
+
+    def close(self) -> None:
+        self.child.kill()
+        self.child.wait()
+        os.close(self.leader)
+
+
+@pytest.mark.platforms("posix")
+def test_fallback_notice_survives_the_tui_screen_clear(monkeypatch):
+    """In a terminal the warning waits for Enter before the TUI clears the screen, and is printed
+    again once the TUI exits, below whatever it drew."""
+    import sys
+
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    terminal = _Terminal(60)
+    try:
+        terminal.read_until(b"Press Enter")
+        assert b"TUI RAN" not in terminal.seen
+        terminal.seen = b""
+        os.write(terminal.leader, b"\r")
+        terminal.read_until(b"TUI RAN")
+        terminal.read_until(b"fallback notice")
+        assert terminal.child.wait(timeout=30) == 0
+    finally:
+        terminal.close()
+    assert b"fallback notice" in terminal.seen.partition(b"TUI RAN")[2]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("case", ["nobody answers", "background job", "query given", "stderr redirected"])
+def test_fallback_notice_never_holds_an_unwatched_launch(monkeypatch, tmp_path, case):
+    """A terminal nobody answers (tmux or expect automation) starts the TUI once the wait ends; a
+    launch in the background, one that carries its query (-q), or one whose stderr (where the
+    prompt goes) is redirected starts it at once. The warning still follows the TUI's output."""
+    import sys
+
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    log = tmp_path / "stderr.log"
+    with log.open("wb") as stderr:
+        terminal = _Terminal(2 if case == "nobody answers" else 60, background=case == "background job",
+                             query="hello" if case == "query given" else "",
+                             stderr=stderr if case == "stderr redirected" else None)
+    try:
+        # Nothing is ever typed: in "nobody answers" only the wait's own timeout starts the TUI.
+        waited = terminal.read_until(b"TUI RAN")
+        before, _, terminal.seen = terminal.seen.partition(b"TUI RAN")
+        if case != "stderr redirected":
+            terminal.read_until(b"fallback notice")  # printed again below the TUI's output
+        assert terminal.child.wait(timeout=30) == 0
+    finally:
+        terminal.close()
+    if case == "stderr redirected":
+        before = log.read_bytes()
+        assert before.count(b"fallback notice") == 2  # and printed again once the TUI exits
+    # The prompt is printed only by a launch that waits; how long it waited is the child's clock,
+    # not this process's, so only the unwatched launches' upper bound is asserted.
+    if case == "nobody answers":
+        assert b"Press Enter" in before
+    else:
+        assert b"Press Enter" not in before and waited < 30
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("termux", [False, True])
+def test_fresh_bundle_does_not_prepare_or_compile(tui_source, monkeypatch, termux):
+    root, acquired = tui_source
+    _touch_tui_entry(root / "ui-tui")
+    from tests.hermes_cli.test_source_build import stamp_product
+    stamp_product(root, "tui", root / "ui-tui/dist")
+    if termux:
+        monkeypatch.setenv("TERMUX_VERSION", "test")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert argv[-1] == str(cwd / "dist/entry.js")
+    assert _events(root) == []
+    assert acquired == []
+
+
+@pytest.mark.platforms("posix")
+def test_prebuilt_bundle_launch_does_not_touch_missing_source(tmp_path, monkeypatch):
+    bundled = tmp_path / "bundle/entry.js"
+    bundled.parent.mkdir()
+    bundled.write_text("console.log('prebuilt')")
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: bundled)
+    argv, cwd = main_tui_launch._make_tui_argv(tmp_path / "missing-source", tui_dev=False)
+    result = subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+    assert result.stdout.strip() == "prebuilt"
+    assert not (tmp_path / "missing-source").exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("local_tsx", [False, True])
+def test_dev_launch_builds_ink_before_running_source(tui_source, local_tsx):
+    root, acquired = tui_source
+    ink = root / "ui-tui/packages/hermes-ink"
+    ink.mkdir(parents=True)
+    (ink / "package.json").write_text(json.dumps({
+        "name": "fixture-ink", "version": "1.0.0", "scripts": {"build": "node build.mjs"},
+    }))
+    (ink / "build.mjs").write_text("import { writeFileSync } from 'node:fs'; writeFileSync('built', 'ink');")
+    workspace = root / "pnpm-workspace.yaml"
+    workspace.write_text(workspace.read_text() + "  - ui-tui/packages/hermes-ink\n")
+    subprocess.run([shutil.which("pnpm"), "install", "--lockfile-only", "--ignore-scripts", "--offline"], cwd=root, check=True,
+                   env={**os.environ, **{f"pnpm_config_{name}_dir": str(root.parent / "pnpm" / name)
+                                         for name in ("store", "cache", "state")}})
+    tsx = root / "ui-tui/node_modules/.bin/tsx"
+    if local_tsx:
+        hook = root / "log.mjs"
+        hook.write_text(hook.read_text() + "\nimport { mkdirSync, writeFileSync } from 'node:fs'; "
+                        "mkdirSync('ui-tui/node_modules/.bin', {recursive: true}); "
+                        "writeFileSync('ui-tui/node_modules/.bin/tsx', 'fixture tsx');\n")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
+    assert (ink / "built").read_text() == "ink"
+    assert argv == ([str(tsx), "src/entry.tsx"] if local_tsx else [shutil.which("pnpm"), "start"])
+    assert cwd == root / "ui-tui"
+    assert acquired == ["pnpm"]
+    assert [event["step"] for event in _events(root)] == ["deps"]
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_node_comes_from_pm_without_legacy_repair(tmp_path, monkeypatch):
+    import pm
+    from pm.package import Runner
+
+    node = shutil.which("node")
+    managed = tmp_path / "bin/node"
+    managed.parent.mkdir()
+    managed.symlink_to(node)
+    monkeypatch.delenv("HERMES_NODE", raising=False)
+    acquired = []
+
+    def acquire(name):
+        acquired.append(name)
+        return Runner(name, {"PATH": str(managed.parent)})
+
+    monkeypatch.setattr(pm, "ensure", acquire)
+    assert main_tui_launch._tui_node_bin("node") == str(managed)
+    assert acquired == ["node"]
+
+
+@pytest.mark.platforms("linux")
+def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
+    from hermes_cli.source_build import build_update_products
+
+    root, acquired = tui_source
+    build_update_products(root, desktop=True)
+    before = _events(root)
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root) == before, "fresh launch must not prepare or rebuild"
+    src = root / "ui-tui/src/entry.tsx"
+    src.parent.mkdir()
+    src.write_text("changed tui source")
+    os.utime(root / "ui-tui/dist/entry.js", (1, 1))
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root) == [*before, {"step": "tui"}]
+    assert acquired == ["pnpm", "pnpm"]
+    assert (root / "web/node_modules").exists()
+    assert (root / "apps/desktop/node_modules").exists()

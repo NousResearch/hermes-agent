@@ -14,8 +14,10 @@ tests construct a real ``TelegramAdapter``.
 """
 
 import pytest
+from markdown_it import MarkdownIt
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.rich_markdown import _rich_separate_ordered_lists
 
 
 @pytest.fixture()
@@ -48,74 +50,21 @@ class TestRichMessageNewlineNormalization:
         # \n\n should remain as-is — no trailing spaces injected
         assert "Paragraph 1\n\nParagraph 2" == md
 
-    def test_mixed_single_and_double_newlines(self, adapter):
-        """Content with both list items and paragraph breaks must be handled correctly."""
-        content = (
-            "Header\n\n"
-            "`/new` -- Start\n"
-            "`/model` -- Switch\n"
-            "`/reset` -- Reset\n\n"
-            "Footer"
-        )
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "OAuth profile: openai:test.user@example.com",
+            "Account test.user@example.com is active",
+        ],
+    )
+    def test_email_tokens_disable_rich_entity_detection(self, adapter, content):
         payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # Paragraph breaks preserved
-        assert "Header\n\n" in md
-        assert "\n\nFooter" in md
-        # Single newlines converted to hard breaks
-        assert "`/new` -- Start  \n`/model` -- Switch  \n`/reset` -- Reset" in md
+        assert payload["skip_entity_detection"] is True
 
-    def test_fenced_code_block_newlines_preserved(self, adapter):
-        """Newlines inside fenced code blocks must NOT gain trailing spaces."""
-        content = "Before\n```\ncode line 1\ncode line 2\n```\nAfter"
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # Code block content should be untouched
-        assert "```\ncode line 1\ncode line 2\n```" in md
-        # But the \n before ``` and after ``` should be hard breaks
-        assert "Before  \n```" in md
-        assert "```  \nAfter" in md
-
-    def test_realistic_command_output(self, adapter):
-        """Simulates /commands output: header + list items + nav line."""
-        lines = [
-            "📊 Commands (24 total, page 1/2)",
-            "",
-            "`/new` -- Start a new session",
-            "`/model` -- Switch model",
-            "`/stop` -- Stop the agent",
-            "",
-            "Use /commands 2 for next page | /commands 1 for prev",
-        ]
-        content = "\n".join(lines)
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # Header paragraph break preserved
-        assert "📊 Commands (24 total, page 1/2)\n\n" in md
-        # List items have hard breaks
-        assert "`/new` -- Start a new session  \n" in md
-        assert "`/model` -- Switch model  \n" in md
-        # Nav paragraph break preserved
-        assert "\n\nUse /commands 2" in md
-
-    def test_no_trailing_space_on_last_line(self, adapter):
-        """The final line should not get trailing spaces (no newline after it)."""
-        content = "Line 1\nLine 2"
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # No trailing spaces at end of string
-        assert md == "Line 1  \nLine 2"
-        assert not md.endswith("  ")
-
-    def test_empty_and_single_line_unchanged(self, adapter):
-        """Empty string and single-line content should pass through."""
-        assert adapter._rich_message_payload("")["markdown"] == ""
-        assert adapter._rich_message_payload("Single line")["markdown"] == "Single line"
-
-    def test_skip_entity_detection_flag_preserved(self, adapter):
-        """The skip_entity_detection flag must still work after normalization."""
-        payload = adapter._rich_message_payload("Line 1\nLine 2", skip_entity_detection=True)
-        assert payload.get("skip_entity_detection") is True
+    def test_non_email_content_keeps_entity_detection(self, adapter):
+        payload = adapter._rich_message_payload("See https://example.com/status")
+        assert "skip_entity_detection" not in payload
 
 
 class TestRichMessageTableProtection:
@@ -128,22 +77,49 @@ class TestRichMessageTableProtection:
         assert "  \n" not in md
         assert md == content
 
-    def test_text_around_table_still_gets_hard_breaks(self, adapter):
-        """Prose lines outside the table keep getting hard breaks."""
-        content = (
-            "Intro line one\n"
-            "Intro line two\n"
-            "| H1 | H2 |\n"
-            "|----|----|\n"
-            "| a | b |\n"
-            "Outro line"
-        )
+
+class TestRichOrderedListAfterProse:
+    """CommonMark lets an ordered list interrupt a paragraph only when it starts at 1, so
+    ``Label\\n7. item`` stays one paragraph and the numbers render as literal text (#124552)."""
+
+    @pytest.mark.parametrize(
+        "content, items",
+        [
+            ("**Facts and Evidence**\n7. **Verbs.** Is.\n8. **Dates.** As of.", 2),
+            ("Intro\n\nNext steps:\n2) second\n3) third\n4) fourth", 3),
+        ],
+    )
+    def test_ordered_list_after_prose_parses_as_list(self, adapter, content, items):
         md = adapter._rich_message_payload(content)["markdown"]
-        # Prose-to-prose newline becomes a hard break.
-        assert "Intro line one  \nIntro line two" in md
-        # Table rows stay bare.
-        assert "| H1 | H2 |\n|----|----|\n| a | b |" in md
-        # Prose lines around the table still hard-break; only the table's own
-        # header/delimiter/data-row newlines stay bare.
-        assert "Intro line two  \n| H1 | H2 |" in md
-        assert "| a | b |  \nOutro line" in md
+        types = [t.type for t in MarkdownIt().parse(md)]
+
+        assert types.count("ordered_list_open") == 1
+        assert types.count("list_item_open") == items
+
+    def test_ordered_list_keeps_authored_start_number(self, adapter):
+        md = adapter._rich_message_payload("**Facts and Evidence**\n7. First\n8. Second")["markdown"]
+        lists = [t for t in MarkdownIt().parse(md) if t.type == "ordered_list_open"]
+
+        assert lists and lists[0].attrs.get("start") == 7
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "1. a\n2. b\n3. c",
+            "- a\n7. b",
+            "1. a\n   continued\n2. b",
+            "```text\nLabel\n7. literal\n```",
+            "Streaming draft\n```text\nLabel\n7. literal",
+            "`Label\n7. literal`\n\n- [x] done",
+        ],
+    )
+    def test_lists_and_code_gain_no_blank_line(self, adapter, content):
+        md = adapter._rich_message_payload(content)["markdown"]
+
+        assert md.count("\n\n") == content.count("\n\n")
+
+    def test_separation_is_idempotent(self):
+        once = _rich_separate_ordered_lists("Label\n7. item\n8. another")
+
+        assert _rich_separate_ordered_lists(once) == once
+

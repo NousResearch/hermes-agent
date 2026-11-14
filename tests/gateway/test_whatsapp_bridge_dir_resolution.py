@@ -20,30 +20,6 @@ def _seed_install_tree(install_bridge: Path) -> None:
     (install_bridge / "package.json").write_text('{"name": "whatsapp-bridge"}\n')
 
 
-def test_writable_install_returns_install_dir(tmp_path, monkeypatch):
-    """When the install tree is writable, the resolver returns it unchanged."""
-    install_root = tmp_path / "install"
-    install_bridge = install_root / "scripts" / "whatsapp-bridge"
-    _seed_install_tree(install_bridge)
-
-    hermes_home = tmp_path / "hermes_home"
-    hermes_home.mkdir()
-
-    # Point the resolver's two anchors at our temp dirs.
-    monkeypatch.setattr(
-        whatsapp_common, "__file__",
-        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
-    )
-    monkeypatch.setattr(
-        "hermes_constants.get_hermes_home", lambda: hermes_home
-    )
-
-    resolved = whatsapp_common.resolve_whatsapp_bridge_dir()
-    assert resolved == install_bridge
-    # Nothing mirrored into HERMES_HOME.
-    assert not (hermes_home / "scripts" / "whatsapp-bridge").exists()
-
-
 def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     """A read-only install tree is mirrored into a writable HERMES_HOME."""
     install_root = tmp_path / "install"
@@ -54,8 +30,7 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     hermes_home.mkdir()
 
     monkeypatch.setattr(
-        whatsapp_common, "__file__",
-        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
+        "hermes_cli._startup_fast.project_root_str", lambda: str(install_root)
     )
     monkeypatch.setattr(
         "hermes_constants.get_hermes_home", lambda: hermes_home
@@ -82,28 +57,23 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     assert (expected / "package.json").exists()
 
 
-def test_readonly_install_reuses_existing_mirror(tmp_path, monkeypatch):
-    """If the HERMES_HOME mirror already exists, return it without re-copying."""
+
+
+def test_existing_mirror_is_refreshed_from_the_install_tree_and_keeps_its_deps(tmp_path, monkeypatch):
+    """After an update the read-only install ships new bridge source (e.g. the token proof); a mirror frozen at its
+    first copy would keep spawning the old bridge forever. Source is refreshed; the mirror's node_modules survive."""
     install_root = tmp_path / "install"
     install_bridge = install_root / "scripts" / "whatsapp-bridge"
     _seed_install_tree(install_bridge)
-
+    (install_bridge / "bridge_auth.js").write_text("// new auth\n")
     hermes_home = tmp_path / "hermes_home"
     mirror = hermes_home / "scripts" / "whatsapp-bridge"
-    mirror.mkdir(parents=True)
-    # A sentinel file proves the resolver returned the EXISTING mirror
-    # rather than wiping/recopying it.
-    (mirror / "node_modules").mkdir()
-    (mirror / "node_modules" / "sentinel").write_text("keep me\n")
+    (mirror / "node_modules" / "dep").mkdir(parents=True)
+    (mirror / "node_modules" / "dep" / "index.js").write_text("// installed\n")
+    (mirror / "bridge.js").write_text("// stale bridge\n")
 
-    monkeypatch.setattr(
-        whatsapp_common, "__file__",
-        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
-    )
-    monkeypatch.setattr(
-        "hermes_constants.get_hermes_home", lambda: hermes_home
-    )
-
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
     _real_touch = Path.touch
 
     def _fake_touch(self, *a, **kw):
@@ -113,8 +83,7 @@ def test_readonly_install_reuses_existing_mirror(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "touch", _fake_touch)
 
-    resolved = whatsapp_common.resolve_whatsapp_bridge_dir()
-
-    assert resolved == mirror
-    # Existing node_modules left intact (no destructive re-copy).
-    assert (mirror / "node_modules" / "sentinel").read_text() == "keep me\n"
+    assert whatsapp_common.resolve_whatsapp_bridge_dir() == mirror
+    assert (mirror / "bridge.js").read_text() == "// bridge\n"
+    assert (mirror / "bridge_auth.js").read_text() == "// new auth\n"
+    assert (mirror / "node_modules" / "dep" / "index.js").read_text() == "// installed\n"

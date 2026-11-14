@@ -3,6 +3,13 @@
 Workflow for empirically measuring (and fixing) typing/submit lag in the
 desktop chat composer.
 
+> **Note (Jul 2026):** the standalone `measure-*` / `profile-*` scripts this
+> doc references have been consolidated into the systematized perf harness at
+> `scripts/perf/` (`pnpm run perf`, `pnpm run perf:serve`). CPU profiling is now a
+> `--cpuprofile` flag on any scenario. This doc is kept as an investigation log;
+> for the current tooling and the scenario→old-script mapping see
+> `scripts/perf/README.md`.
+
 ## Quick boot for profiling
 
 Vite 8 + plugin-react 6 has a known issue where the React Fast Refresh
@@ -18,7 +25,7 @@ node scripts/dev-no-hmr.mjs
 # Terminal B — start Electron with CDP exposed
 cd apps/desktop
 XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 \
-  ../../node_modules/.bin/electron --remote-debugging-port=9222 .
+  node_modules/.bin/electron --remote-debugging-port=9222 .
 ```
 
 Terminal C is yours to run the harnesses.
@@ -94,10 +101,10 @@ you can do a comparison diff in Chrome DevTools Memory tab.
 
 ```bash
 node apps/desktop/scripts/profile-typing.mjs \
-  --chars=400 --cps=30 --out=/tmp/hermes-typing
-# → /tmp/hermes-typing.cpuprofile  (open in Chrome DevTools Performance)
-# → /tmp/hermes-typing.before.heapsnapshot
-# → /tmp/hermes-typing.after.heapsnapshot
+  --chars=400 --cps=30 --out=$HOME/.hermes/cache/scratch/hermes-typing
+# → ~/.hermes/cache/scratch/hermes-typing.cpuprofile  (open in Chrome DevTools Performance)
+# → ~/.hermes/cache/scratch/hermes-typing.before.heapsnapshot
+# → ~/.hermes/cache/scratch/hermes-typing.after.heapsnapshot
 ```
 
 Loading the cpuprofile: Chrome DevTools → Performance tab → drag the file

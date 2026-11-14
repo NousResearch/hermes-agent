@@ -6,16 +6,16 @@ description: "Ready-to-use automation blueprints — scheduled tasks, GitHub eve
 
 # Automation Blueprints
 
-Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
+Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](../user-guide/features/cron.md) for time-based triggers and [webhook platform](../user-guide/messaging/webhooks.md) for event-driven triggers.
 
 Every blueprint works with **any model** — not locked to a single provider.
 
-For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](/reference/automation-blueprints-catalog).
+For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](../reference/automation-blueprints-catalog.mdx).
 
 :::tip Three Trigger Types
 | Trigger | How | Tool |
 |---------|-----|------|
-| **Schedule** | Runs on a cadence (hourly, nightly, weekly) | `cronjob` tool or `/cron` slash command |
+| **Schedule** | Runs on a cadence (hourly, nightly, weekly) | `cronjob_manage` tool or `/cron` slash command |
 | **GitHub Event** | Fires on PR opens, pushes, issues, CI results | Webhook platform (`hermes webhook subscribe`) |
 | **API Call** | External service POSTs JSON to your endpoint | Webhook platform (config.yaml routes or `hermes webhook subscribe`) |
 
@@ -60,6 +60,7 @@ Review every pull request automatically when it's opened. Posts a review comment
 ```bash
 hermes webhook subscribe github-pr-review \
   --events "pull_request" \
+  --signature github \
   --prompt "Review this pull request:
 Repository: {repository.full_name}
 PR #{pull_request.number}: {pull_request.title}
@@ -76,7 +77,7 @@ Review for:
 - Missing tests for new behavior
 
 Post a concise review. If the PR is a trivial docs/typo change, say so briefly." \
-  --skill github-code-review \
+  --skills github-code-review \
   --deliver github_comment
 ```
 
@@ -142,9 +143,9 @@ Daily scan for known vulnerabilities in project dependencies.
 hermes cron create "0 6 * * *" \
   "Run a dependency security audit on the hermes-agent project.
 
-1. cd ~/.hermes/hermes-agent && source .venv/bin/activate
-2. Run: pip audit --format json 2>/dev/null || pip audit 2>&1
-3. Run: npm audit --json 2>/dev/null (in website/ directory if it exists)
+1. Locate the hermes-agent checkout and its pyproject.toml and uv.lock. Do not activate or mutate Hermes's dependency environment.
+2. Scan uv.lock with an independently installed scanner that supports that lock format (check its --help). Preserve the complete findings and errors. If no scanner is available, report the blocker; do not install one into Hermes.
+3. Run: npm audit --json in website/ if it exists. Preserve stderr and distinguish findings from a failed scan.
 4. Check for any CVEs with CVSS score >= 7.0
 
 If vulnerabilities found:
@@ -189,10 +190,14 @@ If healthy, keep it brief. If degraded or failed, provide detailed diagnostics."
 Your CI/CD pipeline triggers it:
 
 ```bash
+BODY='{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
+TS=$(date +%s)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac 'your-secret' | cut -d' ' -f2)
 curl -X POST http://your-server:8644/webhooks/deploy-verify \
   -H "Content-Type: application/json" \
-  -H "X-Hub-Signature-256: sha256=$(echo -n '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}' | openssl dgst -sha256 -hmac 'your-secret' | cut -d' ' -f2)" \
-  -d '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
+  -H "X-Webhook-Timestamp: $TS" \
+  -H "X-Webhook-Signature-V2: $SIG" \
+  -d "$BODY"
 ```
 
 ### Alert Triage
@@ -355,6 +360,7 @@ Automatically label and respond to new issues.
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New GitHub issue received:
 Repository: {repository.full_name}
 Issue #{issue.number}: {issue.title}
@@ -417,6 +423,7 @@ When a PR merges in one repo, automatically port the equivalent change to anothe
 ```bash
 hermes webhook subscribe auto-port \
   --events "pull_request" \
+  --signature github \
   --prompt "PR merged in the source repository:
 Repository: {repository.full_name}
 PR #{pull_request.number}: {pull_request.title}
@@ -432,7 +439,7 @@ If action is 'closed' and pull_request.merged is true:
 5. Reference the original PR in the new PR description
 
 If action is not 'closed' or not merged, respond with [SILENT]." \
-  --skill github-pr-workflow \
+  --skills github-pr-workflow \
   --deliver log
 ```
 

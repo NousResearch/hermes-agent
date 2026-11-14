@@ -1,6 +1,8 @@
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 
 import { renameSessionPreferringRpc } from './session-actions-menu'
 
@@ -10,16 +12,35 @@ import { renameSessionPreferringRpc } from './session-actions-menu'
 // must route the ACTIVE row through the session.title RPC (runtime id), which
 // persists the row on demand, and otherwise fall back to REST.
 
-const renameSession = vi.fn(async () => ({ ok: true, title: 'rest-title' }))
-const request = vi.fn(async () => ({ title: 'rpc-title' }) as never)
-const activeGateway = vi.fn<() => { request: typeof request } | null>(() => ({ request }))
+// Hoisted so the vi.mock factories below (which vitest lifts to the top of the
+// module) can reference these before the module body runs. This matters because
+// projects.ts subscribes to $gateway at import and nanostores fires the
+// subscriber synchronously — that reaches the @/store/gateway mock's
+// activeGateway() during the transitive import on line 4, before a plain
+// module-level const would be initialized (temporal dead zone).
+const { renameSession, request, activeGateway } = vi.hoisted(() => ({
+  renameSession: vi.fn(async () => ({ ok: true, title: 'rest-title' })),
+  request: vi.fn(async () => ({ title: 'rpc-title' }) as never),
+  activeGateway: vi.fn<() => { request: unknown } | null>(() => ({ request: undefined }))
+}))
+
+// Wire activeGateway's default return to the shared request mock now that it exists.
+activeGateway.mockReturnValue({ request })
 
 vi.mock('@/hermes', () => ({
   renameSession: (...args: unknown[]) => renameSession(...(args as [])),
+  // profile.ts calls this at import (its $activeGatewayProfile subscribe fires
+  // immediately), pulled in transitively via session-states.
+  setApiRequestProfile: () => {},
   HermesGateway: class {}
 }))
 
 vi.mock('@/store/gateway', () => ({
+  // projects.ts subscribes to $gateway at module load (its repo-scan sync fires
+  // immediately), pulled in transitively via the session store. Provide a real
+  // atom plus the hoisted activeGateway so the synchronous subscriber doesn't
+  // throw on an incomplete mock or hit an uninitialized reference.
+  $gateway: atom(null),
   activeGateway: () => activeGateway()
 }))
 
@@ -33,6 +54,9 @@ afterEach(() => {
   activeGateway.mockReturnValue({ request })
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
+  $sessionTiles.set([])
+  $sessionStates.set({})
+  $sessions.set([])
 })
 
 describe('renameSessionPreferringRpc', () => {
@@ -45,6 +69,15 @@ describe('renameSessionPreferringRpc', () => {
     expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
     expect(renameSession).not.toHaveBeenCalled()
     expect(result.title).toBe('rpc-title')
+  })
+
+  it('resolves the owning profile from $sessions when profile argument is omitted', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+    $sessions.set([{ id: STORED_ID, profile: 'personal', title: 'Own Google Docs document' } as never])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Prep Butler')
+
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Prep Butler', 'personal')
   })
 
   it('falls back to REST when the RPC fails (e.g. socket mid-reconnect)', async () => {
@@ -62,6 +95,44 @@ describe('renameSessionPreferringRpc', () => {
   it('uses REST for a non-active row (background/persisted session)', async () => {
     $selectedStoredSessionId.set('some-other-active-session')
     $activeSessionId.set(RUNTIME_ID)
+
+    await renameSessionPreferringRpc(STORED_ID, 'My branch', 'work')
+
+    expect(request).not.toHaveBeenCalled()
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'My branch', 'work')
+  })
+
+  it('renames a branched-draft TILE via RPC even when it is not the selected row (#70317)', async () => {
+    // Branch opens as its own tab: NOT the selected primary row, and no DB row
+    // yet — but the tile carries the bound runtime id. REST would 404 here.
+    $selectedStoredSessionId.set('some-other-active-session')
+    $activeSessionId.set('rt-other')
+    $sessionTiles.set([{ storedSessionId: STORED_ID, runtimeId: RUNTIME_ID }])
+
+    const result = await renameSessionPreferringRpc(STORED_ID, 'My branch')
+
+    expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
+    expect(renameSession).not.toHaveBeenCalled()
+    expect(result.title).toBe('rpc-title')
+  })
+
+  it('resolves the runtime id from $sessionStates when no tile holds it (#70317)', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+    $activeSessionId.set('rt-other')
+    $sessionStates.set({
+      [RUNTIME_ID]: { storedSessionId: STORED_ID } as never
+    })
+
+    await renameSessionPreferringRpc(STORED_ID, 'My branch')
+
+    expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
+    expect(renameSession).not.toHaveBeenCalled()
+  })
+
+  it('still uses REST when no surface holds a runtime id (persisted, not open)', async () => {
+    // Nothing selected, no tile, no live state → genuinely a persisted-only
+    // row; REST is correct (and resolves, because it has a DB row).
+    $selectedStoredSessionId.set('some-other-active-session')
 
     await renameSessionPreferringRpc(STORED_ID, 'My branch', 'work')
 

@@ -1,7 +1,8 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
-import type { DesktopBootProgress } from '@/global'
+import type { DesktopBootProgress, UpdateHoldWire } from '@/global'
 import { translateNow } from '@/i18n'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 
 export interface DesktopBootState extends DesktopBootProgress {
   visible: boolean
@@ -20,6 +21,9 @@ const INITIAL_BOOT_STATE: DesktopBootState = {
 
 export const $desktopBoot = atom<DesktopBootState>(INITIAL_BOOT_STATE)
 
+/** A Webapp tab whose sign-in ended: the sign-in view covers it until it signs in again. */
+export const $webappSignedOut = computed($desktopBoot, boot => Boolean(boot.error?.includes(WEBAPP_LAUNCH_REQUIRED)))
+
 function clampProgress(value: number) {
   if (!Number.isFinite(value)) {
     return 0
@@ -33,13 +37,22 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
   const nextProgress = clampProgress(progress.progress)
   const mergedProgress = progress.running ? Math.max(current.progress, nextProgress) : nextProgress
 
+  // Don't let a late progress event (error: null) clobber a previously-set
+  // boot failure — failDesktopBoot is terminal for this boot cycle.
+  const error = progress.error ?? (current.running ? null : current.error)
+
   $desktopBoot.set({
     ...current,
     ...progress,
-    error: progress.error ?? null,
+    error,
     progress: mergedProgress,
-    visible: progress.running || mergedProgress < 100 || Boolean(progress.error)
+    visible: progress.running || mergedProgress < 100 || Boolean(error)
   })
+}
+
+/** The blocked-update screen's hold alone, outside the boot steps (R8 M6). */
+export function applyDesktopUpdateHold(hold: UpdateHoldWire | null) {
+  $desktopBoot.set({ ...$desktopBoot.get(), updateHold: hold })
 }
 
 export function setDesktopBootStep(step: {
@@ -59,6 +72,27 @@ export function setDesktopBootStep(step: {
     progress: step.progress,
     running: step.running ?? true,
     timestamp: Date.now()
+  })
+}
+
+/**
+ * Re-arm the boot overlay for an automatic bounded retry of a failed REMOTE
+ * boot (#82679). Unlike setDesktopBootStep — whose null `error` intentionally
+ * cannot clear a latched failure — this explicitly lifts the error so the
+ * overlay shows the retry status instead of the terminal failure surface
+ * while the retry is in flight. failDesktopBoot() re-latches when the
+ * bounded retries are exhausted.
+ */
+export function resumeDesktopBootForRetry(message: string) {
+  const current = $desktopBoot.get()
+  $desktopBoot.set({
+    ...current,
+    error: null,
+    message,
+    phase: 'renderer.boot.retry',
+    running: true,
+    timestamp: Date.now(),
+    visible: true
   })
 }
 

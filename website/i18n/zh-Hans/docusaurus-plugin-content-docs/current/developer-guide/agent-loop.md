@@ -181,7 +181,7 @@ for each tool_call in response.tool_calls:
 
 agent 通过 `IterationBudget` 追踪迭代次数：
 
-- 默认：90 次迭代（可通过 `agent.max_turns` 配置）
+- 默认：500 次迭代（可通过 `agent.max_turns` 配置）
 - 每个 agent 拥有独立预算。子 agent 获得独立预算，上限为 `delegation.max_iterations`（默认 50）——父 agent 与子 agent 的总迭代次数可超过父 agent 的上限
 - 达到 100% 时，agent 停止并返回已完成工作的摘要
 
@@ -194,7 +194,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 3. 成功后，使用新 provider 继续对话
 4. 遇到 401/403 时，在故障转移前尝试刷新凭据
 
-回退系统也独立覆盖辅助任务——视觉、压缩和网页提取各自拥有独立的回退链，可通过 `auxiliary.*` 配置节进行配置。
+回退系统也独立覆盖辅助任务——视觉、压缩和标题生成各自拥有独立的回退链，可通过 `auxiliary.*` 配置节进行配置。
 
 ## 压缩与持久化
 

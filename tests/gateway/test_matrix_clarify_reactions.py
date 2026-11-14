@@ -8,8 +8,8 @@ override and the clarify branch of ``_on_reaction``:
   * ✏️ arms the gateway text-capture (``mark_awaiting_text``),
   * an unauthorized reaction is ignored,
   * open-ended (no choices) falls back to the base plain-text path,
-  * settlement cleanup (``cleanup_clarify``) retires the tracked prompt and
-    redacts seed reactions for typed-text resolution and waiter timeout,
+  * settlement retirement (``retire_clarify_card``) retires the tracked prompt
+    and redacts seed reactions for typed-text resolution and waiter timeout,
     and stays idempotent after a reaction already cleaned up.
 """
 
@@ -276,7 +276,7 @@ class TestMatrixClarifyReactions:
             assert "$clar1" in adapter._clarify_prompts_by_event
 
             # The user types "2" — the gateway text-intercept
-            # (gateway/run.py _handle_message) resolves via
+            # (gateway/run_inbound.py) resolves via
             # resolve_text_response_for_session, never touching the adapter.
             assert clarify_gateway.resolve_text_response_for_session("sess-1", "2")
             entry = clarify_gateway._entries["c1"]
@@ -287,14 +287,9 @@ class TestMatrixClarifyReactions:
             # this hook fixes.
             assert "$clar1" in adapter._clarify_prompts_by_event
 
-            # The gateway's clarify callback fires cleanup_clarify after
-            # wait_for_response returns.
-            await adapter.cleanup_clarify(
-                chat_id="!room:example.org",
-                clarify_id="c1",
-                message_id="$clar1",
-                session_key="sess-1",
-            )
+            # The gateway fires retire_clarify_card after the typed answer
+            # settles the clarify (run_inbound.py), keyed by clarify_id.
+            await adapter.retire_clarify_card("c1", "answered")
 
             assert "$clar1" not in adapter._clarify_prompts_by_event
             adapter._redact_bot_clarify_reactions.assert_awaited_once()
@@ -303,9 +298,9 @@ class TestMatrixClarifyReactions:
 
     @pytest.mark.asyncio
     async def test_timeout_settlement_retires_prompt(self, monkeypatch):
-        """Waiter timeout evicts only the gateway entry; the settlement
-        cleanup must still retire the Matrix prompt.  Also exercises the
-        clarify_id fallback scan (message_id=None)."""
+        """Waiter timeout evicts only the gateway entry; retirement must still
+        retire the Matrix prompt. ``retire_clarify_card`` is keyed by clarify_id,
+        so it finds the prompt without a message_id."""
         adapter = _make_adapter(monkeypatch)
         adapter.send = AsyncMock(
             return_value=types.SimpleNamespace(success=True, message_id="$clar1")
@@ -332,17 +327,13 @@ class TestMatrixClarifyReactions:
             assert "$clar1" in adapter._clarify_prompts_by_event
 
             # Timeout: wait_for_response evicts the gateway-side entry and
-            # returns None — nothing tells the adapter.
-            assert clarify_gateway.wait_for_response("c1", timeout=0) is None
+            # returns None — nothing tells the adapter. (timeout <= 0 now means
+            # "unlimited", so use a short positive deadline to force expiry.)
+            assert clarify_gateway.wait_for_response("c1", timeout=0.1) is None
             assert "c1" not in clarify_gateway._entries
             assert "$clar1" in adapter._clarify_prompts_by_event
 
-            await adapter.cleanup_clarify(
-                chat_id="!room:example.org",
-                clarify_id="c1",
-                message_id=None,
-                session_key="sess-1",
-            )
+            await adapter.retire_clarify_card("c1", "expired")
 
             assert "$clar1" not in adapter._clarify_prompts_by_event
             adapter._redact_bot_clarify_reactions.assert_awaited_once()
@@ -350,8 +341,8 @@ class TestMatrixClarifyReactions:
             clarify_gateway.clear_session("sess-1")
 
     @pytest.mark.asyncio
-    async def test_cleanup_after_reaction_resolution_is_noop(self, monkeypatch):
-        """The reaction path pops the prompt itself; the settlement cleanup
+    async def test_retire_after_reaction_resolution_is_noop(self, monkeypatch):
+        """The reaction path pops the prompt itself; the retirement call
         that follows must be idempotent (no double redaction)."""
         adapter = _make_adapter(monkeypatch)
         from plugins.platforms.matrix.adapter import _MatrixClarifyPrompt
@@ -381,13 +372,8 @@ class TestMatrixClarifyReactions:
             assert "$clar1" not in adapter._clarify_prompts_by_event
             assert adapter._redact_bot_clarify_reactions.await_count == 1
 
-            # Gateway settlement cleanup arrives after the waiter wakes.
-            await adapter.cleanup_clarify(
-                chat_id="!room:example.org",
-                clarify_id="c1",
-                message_id="$clar1",
-                session_key="sess-1",
-            )
+            # Gateway retirement arrives after the waiter wakes.
+            await adapter.retire_clarify_card("c1", "answered")
 
             # Idempotent — no second redaction pass.
             assert adapter._redact_bot_clarify_reactions.await_count == 1

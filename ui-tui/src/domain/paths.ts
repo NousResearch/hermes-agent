@@ -15,6 +15,34 @@ export const fmtCwdBranch = (cwd: string, branch: null | string, max = 40) => {
   return `${shortCwd(cwd, Math.max(8, max - tag.length))}${tag}`
 }
 
+export const shortProject = (projectName: string, max = 18) => {
+  const name = projectName.trim()
+
+  return name.length <= max ? name : `${name.slice(0, Math.max(1, max - 1))}…`
+}
+
+// Status-bar workspace label: the terminal has no hover tooltip, so the project
+// name is shown INLINE alongside the cwd/branch (`<project> · ~/cwd (branch)`).
+// Falls back to the plain cwd/branch label when the session sits in no named
+// project, and when space is tight the project name wins (it's the identity the
+// user recognizes) with the cwd/branch dropped.
+export const fmtProjectCwdBranch = (cwd: string, branch: null | string, projectName?: null | string, max = 40) => {
+  const project = shortProject(projectName || '')
+
+  if (!project) {
+    return fmtCwdBranch(cwd, branch, max)
+  }
+
+  const separator = ' · '
+  const remaining = max - project.length - separator.length
+
+  if (remaining < 8) {
+    return shortProject(project, max)
+  }
+
+  return `${project}${separator}${fmtCwdBranch(cwd, branch, remaining)}`
+}
+
 /**
  * Compose the terminal titlebar string:
  *   `<marker> <session name> · <model> · <cwd>`

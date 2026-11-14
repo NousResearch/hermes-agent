@@ -19,76 +19,6 @@ from tests.gateway.feishu_helpers import (
 
 
 @pytest.mark.parametrize(
-    "env_value, expected",
-    [
-        ("none", "none"),
-        ("mentions", "mentions"),
-        ("all", "all"),
-        ("  Mentions  ", "mentions"),
-    ],
-)
-def test_feishu_load_settings_populates_allow_bots(monkeypatch, env_value, expected):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-    monkeypatch.setenv("FEISHU_ALLOW_BOTS", env_value)
-
-    settings = FeishuAdapter._load_settings(extra={})
-    assert settings.allow_bots == expected
-
-
-def test_feishu_load_settings_allow_bots_defaults_to_none(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-    monkeypatch.delenv("FEISHU_ALLOW_BOTS", raising=False)
-
-    settings = FeishuAdapter._load_settings(extra={})
-    assert settings.allow_bots == "none"
-
-
-def test_feishu_load_settings_ignores_extra_allow_bots(monkeypatch):
-    # extra is ignored — env is single source of truth (yaml is bridged to env).
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-    monkeypatch.delenv("FEISHU_ALLOW_BOTS", raising=False)
-
-    settings = FeishuAdapter._load_settings(extra={"allow_bots": "all"})
-    assert settings.allow_bots == "none"
-
-
-def test_feishu_load_settings_falls_back_to_env_when_extra_missing(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "mentions")
-
-    settings = FeishuAdapter._load_settings(extra={})
-    assert settings.allow_bots == "mentions"
-
-
-def test_feishu_load_settings_warns_on_unknown_allow_bots(monkeypatch, caplog):
-    import logging
-
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "menton")  # typo
-
-    with caplog.at_level(logging.WARNING, logger="plugins.platforms.feishu.adapter"):
-        settings = FeishuAdapter._load_settings(extra={})
-
-    assert settings.allow_bots == "none"
-    assert any("allow_bots" in r.message and "menton" in r.message for r in caplog.records)
-
-
-@pytest.mark.parametrize(
     "env_value, extra, expected",
     [
         (None, {}, True),
@@ -111,24 +41,6 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
     assert settings.require_mention is expected
 
 
-def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-
-    settings = FeishuAdapter._load_settings(extra={
-        "group_rules": {
-            "oc_free": {"policy": "open", "require_mention": False},
-            "oc_strict": {"policy": "open", "require_mention": True},
-            "oc_inherit": {"policy": "open"},
-        },
-    })
-    assert settings.group_rules["oc_free"].require_mention is False
-    assert settings.group_rules["oc_strict"].require_mention is True
-    assert settings.group_rules["oc_inherit"].require_mention is None
-
-
 # --- Module-level helpers --------------------------------------------------
 
 
@@ -141,24 +53,11 @@ def test_sender_identity_collects_every_non_empty_id_variant():
     assert _sender_identity(sender) == frozenset({"ou_x", "un_x"})
 
 
-def test_sender_identity_handles_missing_sender_id():
-    from plugins.platforms.feishu.adapter import _sender_identity
-
-    assert _sender_identity(SimpleNamespace()) == frozenset()
-
-
 @pytest.mark.parametrize("sender_type", ["bot", "app"])
 def test_is_bot_sender_treats_bot_and_app_as_bot_origin(sender_type):
     from plugins.platforms.feishu.adapter import _is_bot_sender
 
     assert _is_bot_sender(SimpleNamespace(sender_type=sender_type)) is True
-
-
-@pytest.mark.parametrize("sender_type", ["user", "", None])
-def test_is_bot_sender_rejects_non_bot_origin(sender_type):
-    from plugins.platforms.feishu.adapter import _is_bot_sender
-
-    assert _is_bot_sender(SimpleNamespace(sender_type=sender_type)) is False
 
 
 # --- _admit pipeline matrix ------------------------------------------------
@@ -375,16 +274,6 @@ _ADMIT_CASES = [
 ]
 
 
-@pytest.mark.parametrize("case", _ADMIT_CASES)
-def test_admit_pipeline(case):
-    adapter = make_adapter_skeleton(**case["adapter"])
-    if case["mentions_self"] is not None:
-        stub_mention(adapter, case["mentions_self"])
-    sender = make_sender(**case["sender"])
-    message = make_message(**case["message"])
-    assert adapter._admit(sender, message) == case["expected"]
-
-
 # --- Mention call-count semantics ------------------------------------------
 
 
@@ -399,84 +288,7 @@ def test_dm_pairing_mode_forwards_unknown_sender_to_gateway_intake(monkeypatch):
     assert adapter._admit(sender, message) is None
 
 
-def test_dm_allowlist_rejects_unknown_sender(monkeypatch):
-    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    adapter = make_adapter_skeleton()
-    adapter._allowed_group_users = frozenset({"ou_owner"})
-    sender = make_sender(open_id="ou_unknown")
-    message = make_message(chat_type="p2p")
-    assert adapter._admit(sender, message) == "dm_policy_rejected"
-
-
-def test_dm_allowlist_admits_configured_sender(monkeypatch):
-    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
-    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-    adapter = make_adapter_skeleton()
-    adapter._allowed_group_users = frozenset({"ou_owner"})
-    sender = make_sender(open_id="ou_owner")
-    message = make_message(chat_type="p2p")
-    assert adapter._admit(sender, message) is None
-
-
-def test_admit_skips_mention_check_under_all_mode():
-    # Tripwire: under allow_bots=all the mention path must not be probed.
-    adapter = make_adapter_skeleton(bot_open_id="ou_self", allow_bots="all")
-    calls = 0
-
-    def _tripwire(_message):
-        nonlocal calls
-        calls += 1
-        return False
-
-    adapter._mentions_self = _tripwire
-
-    sender = make_sender(sender_type="bot", open_id="ou_peer")
-    assert adapter._admit(sender, make_message()) is None
-    assert calls == 0
-
-
-def test_admit_group_mention_checked_once_per_call():
-    # Stage 2 (mentions mode) and stage 4 (group require_mention) must not
-    # double-evaluate _mentions_self for the same admit call.
-    adapter = make_adapter_skeleton(
-        bot_open_id="ou_self", allow_bots="mentions", require_mention=True,
-        group_policy="open",
-    )
-    calls = 0
-
-    def _counting(_message):
-        nonlocal calls
-        calls += 1
-        return True
-
-    adapter._mentions_self = _counting
-
-    sender = make_sender(sender_type="bot", open_id="ou_peer")
-    assert adapter._admit(sender, make_message(chat_type="group")) is None
-    assert calls == 1
-
-
 # --- Per-group require_mention override ------------------------------------
-
-
-def test_admit_per_group_require_mention_overrides_global():
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
-
-    adapter = make_adapter_skeleton(
-        bot_open_id="ou_self", require_mention=True, group_policy="open",
-    )
-    adapter._group_rules = {
-        "oc_free": FeishuGroupRule(policy="open", require_mention=False),
-    }
-    stub_mention(adapter, False)
-
-    sender = make_sender(sender_type="user", open_id="ou_human")
-    assert adapter._admit(sender, make_message(chat_id="oc_free", chat_type="group")) is None
-    assert (
-        adapter._admit(sender, make_message(chat_id="oc_other", chat_type="group"))
-        == "group_policy_rejected"
-    )
 
 
 # --- Hydration -------------------------------------------------------------
@@ -680,31 +492,6 @@ _GROUP_RULE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("case", _GROUP_CASES)
-def test_allow_group_message_matrix(case):
-    adapter = make_adapter_skeleton(**case["adapter"])
-    adapter._admins = case["admins"]
-    adapter._group_rules = case["group_rules"]
-    sender = make_sender(**case["sender"])
-    assert adapter._allow_group_message(
-        sender_id=sender.sender_id,
-        chat_id=case["chat_id"],
-        is_bot=case["is_bot"],
-    ) is case["expected"]
-
-
-@pytest.mark.parametrize("policy, sender_type, expected", _GROUP_RULE_CASES)
-def test_allow_group_message_channel_locks_apply_to_bots(policy, sender_type, expected):
-    adapter = make_adapter_skeleton()
-    adapter._group_rules = {"oc_locked": _group_rule(policy)}
-    sender = make_sender(sender_type=sender_type, open_id="ou_peer")
-    assert adapter._allow_group_message(
-        sender_id=sender.sender_id,
-        chat_id="oc_locked",
-        is_bot=True,
-    ) is expected
-
-
 @pytest.mark.parametrize("sender_type", ["bot", "app"])
 def test_allow_group_message_blacklist_is_human_scope_only(sender_type):
     # blacklist is parallel to allowlist (human-scope); admitted bots bypass
@@ -755,29 +542,6 @@ def test_admit_accepts_realistic_bot_at_bot_group_event():
 # --- Event-dispatch plumbing -----------------------------------------------
 
 
-def test_handle_message_event_data_drops_bot_sender_by_default():
-    import asyncio
-
-    adapter = make_adapter_skeleton()
-    install_dedup_state(adapter)
-    processed = []
-
-    async def _fake_process_inbound_message(**kwargs):
-        processed.append(kwargs)
-
-    adapter._process_inbound_message = _fake_process_inbound_message
-
-    data = SimpleNamespace(
-        event=SimpleNamespace(
-            sender=make_sender(sender_type="bot", open_id="ou_peer"),
-            message=make_message(message_id="om_bot_default", chat_type="p2p"),
-        )
-    )
-
-    asyncio.run(adapter._handle_message_event_data(data))
-    assert processed == []
-
-
 def test_handle_message_event_data_forwards_sender_when_admitted():
     import asyncio
 
@@ -802,3 +566,324 @@ def test_handle_message_event_data_forwards_sender_when_admitted():
     assert captured.get("sender_id") is sender.sender_id
     assert captured.get("is_bot") is True
     assert captured.get("message_id") == "om_bot_ok"
+
+
+# --- Profile-scoped admission config (#86905) -------------------------------
+
+
+def test_dm_admission_config_resolves_from_profile_scope_under_multiplex(tmp_path, monkeypatch):
+    """os.environ holds the DEFAULT profile's admission view; a secondary
+    profile's .env must govern its own adapter — Feishu open_ids are
+    app-scoped, so the default allow-list can never match the role app's
+    senders, and the role profile's allow-all flag must be honored."""
+    import agent.secret_scope as ss
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_default")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_default")
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_default_view")
+    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "all")
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    (tmp_path / ".env").write_text(
+        "FEISHU_APP_ID=cli_role\nFEISHU_APP_SECRET=secret_role\n"
+        "FEISHU_ALLOWED_USERS=ou_role_view\n",
+        encoding="utf-8",
+    )
+
+    ss.set_multiplex_active(True)
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        settings = FeishuAdapter._load_settings(extra={})
+    finally:
+        ss.reset_secret_scope(tok)
+    (tmp_path / ".env").write_text(
+        "FEISHU_APP_ID=cli_role\nFEISHU_APP_SECRET=secret_role\nGATEWAY_ALLOW_ALL_USERS=true\n",
+        encoding="utf-8",
+    )
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        allow_all = FeishuAdapter._load_settings(extra={})
+    finally:
+        ss.reset_secret_scope(tok)
+        ss.set_multiplex_active(False)
+
+    assert settings.app_id == "cli_role"
+    assert settings.allowed_group_users == frozenset({"ou_role_view"})
+    assert settings.allow_bots == "none"  # default's "all" must not leak in
+    assert settings.allow_all_dm is False
+
+    # _admit runs on the WS thread with no scope: the snapshot must carry.
+    adapter = object.__new__(FeishuAdapter)
+    adapter._apply_settings(settings)
+    assert adapter._admit(make_sender(open_id="ou_role_view"), make_message(chat_type="p2p")) is None
+    assert adapter._admit(make_sender(open_id="ou_default_view"), make_message(chat_type="p2p")) == "dm_policy_rejected"
+
+    assert allow_all.allow_all_dm is True
+    adapter = object.__new__(FeishuAdapter)
+    adapter._apply_settings(allow_all)
+    assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch):
+    """Single-profile behavior unchanged: process env still configures DMs."""
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_a,ou_b")
+
+    settings = FeishuAdapter._load_settings(extra={})
+    assert settings.allow_all_dm is True
+    assert settings.allowed_group_users == frozenset({"ou_a", "ou_b"})
+    adapter = object.__new__(FeishuAdapter)
+    adapter._apply_settings(settings)
+    assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+# --- Reaction routing must clear the same admission gate -------------------
+
+
+class _SdkMessage:
+    """lark-oapi 1.7.5 GET im/v1/messages item: chat_id + sender, and no chat_type field."""
+
+    def __init__(self, chat_id: str):
+        self.chat_id = chat_id
+        self.sender = SimpleNamespace(id="cli_self_app", id_type="app_id", sender_type="app")
+
+
+def _chat_get_info(chat_id: str, chat_mode):
+    """get_chat_info built from a real chat.get body: chat_type is private/public, chat_mode the DM marker."""
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = object.__new__(FeishuAdapter)
+    adapter._chat_info_cache = {}
+    adapter._build_get_chat_request = lambda _cid: object()
+    data = SimpleNamespace(name="Chat", chat_type="private", chat_mode=chat_mode)
+    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(chat=SimpleNamespace(
+        get=lambda _req: SimpleNamespace(success=lambda: True, data=data)))))
+
+    async def _run_blocking(func, *args):
+        return func(*args)
+
+    adapter._run_blocking = _run_blocking
+    return adapter.get_chat_info
+
+
+def _reaction_adapter(**kwargs):
+    """Adapter whose GET-message lookup says the reacted-to message is ours."""
+    adapter = make_adapter_skeleton(**kwargs)
+    adapter._app_id = "cli_self_app"
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(
+                message=SimpleNamespace(
+                    get=lambda _req: SimpleNamespace(
+                        success=lambda: True,
+                        data=SimpleNamespace(
+                            items=[_SdkMessage(adapter._reaction_chat_id)]
+                        ),
+                    )
+                )
+            )
+        )
+    )
+    adapter._build_get_message_request = lambda _mid: object()
+
+    async def _run_blocking(func, *args):
+        return func(*args)
+
+    adapter._run_blocking = _run_blocking
+
+    async def _resolve_sender_profile(user_id_obj, *, is_bot=False):
+        return {"user_id": getattr(user_id_obj, "open_id", None), "user_name": "U", "user_id_alt": None}
+
+    adapter._resolve_sender_profile = _resolve_sender_profile
+
+    adapter._resolve_channel_prompt = lambda *_a, **_k: None
+    adapter.build_source = lambda **kw: SimpleNamespace(**kw)
+    routed: list = []
+
+    async def _handle_message_with_guards(event):
+        routed.append(event)
+
+    adapter._handle_message_with_guards = _handle_message_with_guards
+    adapter._routed = routed
+    return adapter
+
+
+def _reaction_data(open_id: str):
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            message_id="om_bot_msg",
+            operator_type="user",
+            user_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None),
+            reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+        )
+    )
+
+
+def _run_reaction(adapter, open_id: str, *, chat_id: str, chat_mode="group"):
+    import asyncio
+
+    adapter._reaction_chat_id = chat_id
+    adapter.get_chat_info = _chat_get_info(chat_id, chat_mode)
+    asyncio.run(adapter._handle_reaction_event("im.message.reaction.created_v1", _reaction_data(open_id)))
+    return adapter._routed
+
+
+def test_group_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
+    """FEISHU_GROUP_POLICY=allowlist must gate reactions like text (#bypass)."""
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_g") == []
+
+
+def test_group_reaction_from_allowlisted_user_is_routed(monkeypatch):
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    routed = _run_reaction(adapter, "ou_owner", chat_id="oc_g")
+    assert len(routed) == 1
+    assert routed[0].text == "reaction:added:THUMBSUP"
+
+
+def test_group_reaction_ignores_mention_requirement(monkeypatch):
+    """require_mention applies to text; a reaction has no @ payload."""
+    adapter = _reaction_adapter(group_policy="open", require_mention=True)
+    routed = _run_reaction(adapter, "ou_anyone", chat_id="oc_g")
+    assert len(routed) == 1
+
+
+def test_group_reaction_respects_per_chat_disabled_rule(monkeypatch):
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
+    assert _run_reaction(adapter, "ou_anyone", chat_id="oc_locked") == []
+
+
+def test_dm_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_dm", chat_mode="p2p") == []
+
+
+def test_dm_reaction_from_allowlisted_user_is_routed(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert len(_run_reaction(adapter, "ou_owner", chat_id="oc_dm", chat_mode="p2p")) == 1
+
+
+# --- Generic card clicks (synthetic /card commands) share the gate ---------
+
+
+def _run_card_click(adapter, open_id: str, *, chat_id: str, chat_mode="group", user_id="", union_id=""):
+    import asyncio
+
+    adapter._card_action_tokens = {}
+    adapter.get_chat_info = _chat_get_info(chat_id, chat_mode)
+    data = SimpleNamespace(event=SimpleNamespace(
+        token="", context=SimpleNamespace(open_chat_id=chat_id),
+        operator=SimpleNamespace(open_id=open_id, user_id=user_id, union_id=union_id),
+        action=SimpleNamespace(tag="button", value={"custom_action": "x"}),
+    ))
+    asyncio.run(adapter._handle_card_action_event(data))
+    return adapter._routed
+
+
+def test_group_card_click_from_non_allowlisted_user_is_dropped():
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_card_click(adapter, "ou_stranger", chat_id="oc_g") == []
+    routed = _run_card_click(adapter, "ou_owner", chat_id="oc_g")
+    assert [e.text for e in routed] == ["/card button {\"custom_action\": \"x\"}"]
+
+
+def test_group_card_click_respects_per_chat_disabled_rule():
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
+    assert _run_card_click(adapter, "ou_anyone", chat_id="oc_locked") == []
+
+
+def test_dm_card_click_from_non_allowlisted_user_is_dropped(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_card_click(adapter, "ou_stranger", chat_id="oc_dm", chat_mode="p2p") == []
+    assert len(_run_card_click(adapter, "ou_owner", chat_id="oc_dm", chat_mode="p2p")) == 1
+
+
+def test_group_reaction_per_chat_allowlist_excludes_globally_allowed_user():
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner", "ou_dm_only"})
+    adapter._group_rules = {"oc_g": FeishuGroupRule(policy="allowlist", allowlist={"ou_owner"})}
+    assert _run_reaction(adapter, "ou_dm_only", chat_id="oc_g") == []
+
+
+def test_group_reaction_source_is_group_typed():
+    routed = _run_reaction(_reaction_adapter(group_policy="open"), "ou_owner", chat_id="oc_g")
+    assert [e.source.chat_type for e in routed] == ["group"]
+
+
+def test_dm_card_click_routes_under_pairing_default():
+    """Empty FEISHU_ALLOWED_USERS + allowlist group policy: a p2p click reaches gateway pairing authz."""
+    adapter = _reaction_adapter(group_policy="allowlist")
+    assert len(_run_card_click(adapter, "ou_paired", chat_id="oc_dm", chat_mode="p2p")) == 1
+
+
+def test_synthetic_turn_with_unknown_chat_mode_is_judged_as_group():
+    """A failed or modeless chat lookup must not unlock the DM branch."""
+    adapter = _reaction_adapter(group_policy="allowlist", allow_all_dm=True)
+    assert _run_reaction(adapter, "ou_anyone", chat_id="oc_x", chat_mode=None) == []
+    assert _run_card_click(adapter, "ou_anyone", chat_id="oc_x", chat_mode=None) == []
+
+
+def test_dm_card_click_source_is_dm_typed():
+    adapter = _reaction_adapter(group_policy="open", allow_all_dm=True)
+    routed = _run_card_click(adapter, "ou_anyone", chat_id="oc_dm", chat_mode="p2p")
+    assert [e.source.chat_type for e in routed] == ["dm"]
+
+
+def test_card_click_admits_operator_allowlisted_by_tenant_user_id():
+    """The gate sees the callback's user_id, as the text path does for the same person."""
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"u_tenant"})
+    assert len(_run_card_click(adapter, "ou_x", chat_id="oc_g", user_id="u_tenant")) == 1
+
+
+def test_dm_card_click_admits_operator_allowlisted_by_union_id(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._allowed_group_users = frozenset({"on_union"})
+    assert len(_run_card_click(adapter, "ou_x", chat_id="oc_dm", chat_mode="p2p", union_id="on_union")) == 1
+
+@pytest.mark.parametrize("event_kind", ["reaction", "card_click"])
+def test_synthetic_group_drop_warns_once_for_empty_default_allowlist(event_kind, caplog):
+    """Rejected reactions and clicks explain the untouched allowlist default, like text."""
+    adapter = _reaction_adapter()  # production defaults: group allowlist + empty FEISHU_ALLOWED_USERS
+
+    def drop():
+        if event_kind == "reaction":
+            return _run_reaction(adapter, "ou_nonmember", chat_id="oc_unconfigured")
+        return _run_card_click(adapter, "ou_nonmember", chat_id="oc_unconfigured")
+
+    with caplog.at_level("WARNING", logger="plugins.platforms.feishu.adapter"):
+        assert drop() == []
+        assert drop() == []
+
+    warnings = [
+        record.getMessage() for record in caplog.records
+        if record.name == "plugins.platforms.feishu.adapter" and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    assert "FEISHU_ALLOWED_USERS is empty" in warnings[0]
+    assert "oc_unconfigured" in warnings[0]

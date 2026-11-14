@@ -1,0 +1,25 @@
+name: last-price
+repo: https://github.com/iamdflame/last-price
+sha: d1d476fd5ac56d26d7881a2ee1aa5a05b450f88f
+description: "Lets Hermes haggle with buyers in chat while the plugin, not the model, owns every price that leaves. You set an item's floor from your terminal; it stays in plugin state and never reaches a model, tool result, prompt or log. Every deal reply is held and checked, and one offering less is rewritten before anyone sees it; a buyer who offers or accepts a price the plugin would take is closed at their own number; deal sessions can use only Last Price's three tools (plus Hermes's tool-search bridge, whose calls are checked the same way). Includes hermes lastprice duel --vs-prompt, a side-by-side against a seller with the floor in its prompt (inside Hermes, in the 48-duel bench of version 0.1.1: that seller sold below the floor in 10 of 48 duels; Last Price in 0), and hermes lastprice challenge, a public 'buy it below my floor' Telegram challenge. Disclosure — buyer messages and Hermes's draft replies go to your model provider, as in any Hermes chat; a rewrite of a too-low draft goes to the same model (it sees the buyer's message, the draft and the current counter, never the floor). In a duel or bench, the buyer model (your own model, or the one you name with --buyer) receives the buyer's instruction and the whole conversation so far, the seller's replies included. duel and bench start hermes chat child processes in your terminal (no --yolo; with --ignore-rules and --source tool, so your own rules and memory stay out and the duel sessions stay out of your session list): the Last Price seller gets Last Price's three tools only; the stock seller gets Hermes's todo toolset plus every plugin toolset your profile turns on by default, and its system prompt carries the duel item's floor, which by default is a demo item's throwaway floor, never one of yours unless you pass --item <id> --real-item. Hermes saves that prompt with the stock session in state.db; each duel deletes its stock session when it ends (hermes sessions delete), and the stock seller's replies stay in Hermes's 7-day deletion tombstones and in Last Price's duel records (and the deleted bytes in state.db's free pages until hermes sessions optimize). hermes chat starts Hermes's background gateway when none is running; a duel or bench that started it stops it when it ends. challenge start and shop on run only in a profile with memory off (memory.memory_enabled and memory.user_profile_enabled false, no memory.provider; read with hermes config get, and refused if unreadable), so strangers never chat with an agent that knows you: run them from a dedicated profile (hermes -p shop ...) with a neutral SOUL.md. challenge start changes six Hermes settings through hermes config set (Telegram open access, a Last-Price-only Telegram toolset, owner-only slash commands) after reading their earlier values one by one with hermes config get (it reads no .env and parses no config.yaml), and challenge end restores all six. Floors are stored as plain JSON in plugin state: hidden from the model in deal sessions, readable on your machine by you and by any agent you give file tools to. No payment provider is called in 0.1.x, no telemetry."
+maintainer: iamdflame
+tier: community
+category: tools
+version: "0.1.4"
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/iamdflame/last-price#readme
+title: Last Price
+image: https://raw.githubusercontent.com/iamdflame/last-price/d1d476fd5ac56d26d7881a2ee1aa5a05b450f88f/assets/card.png
+screenshots:
+- https://raw.githubusercontent.com/iamdflame/last-price/d1d476fd5ac56d26d7881a2ee1aa5a05b450f88f/docs/screenshots/duel.png
+- https://raw.githubusercontent.com/iamdflame/last-price/d1d476fd5ac56d26d7881a2ee1aa5a05b450f88f/docs/screenshots/report.png
+- https://raw.githubusercontent.com/iamdflame/last-price/d1d476fd5ac56d26d7881a2ee1aa5a05b450f88f/docs/screenshots/doctor.png
+platforms: []
+known_issues:
+- "Pay links are placeholders in 0.1.x (no payment provider is called)."
+- "Telegram and WhatsApp deal chats (hermes lastprice shop on <platform>) and the Telegram challenge (hermes lastprice challenge) are unit-tested; no live messaging run yet, so the live runs so far are terminal duels and benches."
+capabilities:
+  provides_tools: [lastprice_items, lastprice_offer, lastprice_extra]
+  provides_hooks: [pre_llm_call, pre_tool_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

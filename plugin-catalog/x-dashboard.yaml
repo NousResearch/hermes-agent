@@ -1,0 +1,25 @@
+name: x-dashboard
+title: X Dashboard
+repo: https://github.com/omxhub/x-dashboard
+sha: 795dcfc0ed1a204eb223daf2b17b0c0da03b9f65
+version: "0.1.0"
+description: "Zero-cost ($0.00) X analytics dashboard for Hermes Web and Desktop with profile KPIs, verified-follower & impression goal tracking, post/mention feeds, SVG charts, and CSV/JSON export. Disclosure — Free Mode fetches public profile and post metadata from api.fxtwitter.com / api.vxtwitter.com and r.jina.ai and caches snapshots in <hermes_home>/plugin-data/x-dashboard/; when the xurl CLI is on PATH it runs `xurl auth status` locally to detect your linked handle; optional xAI x_search discovery (enable_x_search=true, billed to your xAI account) and Live X API v2 mode (api.x.com with X_BEARER_TOKEN, or the xurl CLI) run only when explicitly opted in."
+maintainer: omxhub
+tier: community
+category: desktop
+docs_url: https://github.com/omxhub/x-dashboard/blob/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/README.md
+image: https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/hero-overview.png
+screenshots:
+  - https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/hero-overview.png
+  - https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/analytics-charts.png
+  - https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/mentions-goals.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - X_DASHBOARD_HANDLE
+    - X_BEARER_TOKEN
+    - XAI_API_KEY

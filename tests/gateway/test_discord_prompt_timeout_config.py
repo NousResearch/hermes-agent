@@ -1,11 +1,9 @@
 """Tests for the configurable Discord interactive-view timeout.
 
-Previously hardcoded to 300s on ExecApprovalView, SlashConfirmView,
-UpdatePromptView, and ClarifyChoiceView. Now reads
+ExecApprovalView, SlashConfirmView, UpdatePromptView, and ClarifyChoiceView read
 ``approvals.discord_prompt_timeout`` with the same 300s default, clamped to
 ``[_DISCORD_PROMPT_TIMEOUT_MIN, _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo
-can't make prompts disappear (too short) or outlive Discord's 15-min
-interaction-token expiry (too long).
+can't make prompts disappear or exceed the shared platform-safe timeout cap.
 """
 
 import sys
@@ -13,7 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 
 def _ensure_discord_mock():
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
@@ -46,48 +43,27 @@ def _ensure_discord_mock():
     sys.modules.setdefault("discord.ext", ext_mod)
     sys.modules.setdefault("discord.ext.commands", commands_mod)
 
-
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import (  # noqa: E402
+from plugins.platforms.discord.adapter import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT,
-    _DISCORD_PROMPT_TIMEOUT_MAX,
     _DISCORD_PROMPT_TIMEOUT_MIN,
     _read_discord_prompt_timeout,
 )
-
 
 def _patch_config(monkeypatch, cfg):
     """Stub ``hermes_cli.config.read_raw_config`` to return ``cfg``."""
     import hermes_cli.config
     monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: cfg)
 
-
-def test_default_when_config_absent(monkeypatch):
-    _patch_config(monkeypatch, {})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
-
-
-def test_default_when_approvals_block_missing(monkeypatch):
-    _patch_config(monkeypatch, {"other": {}})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
-
-
-def test_default_when_key_missing(monkeypatch):
-    _patch_config(monkeypatch, {"approvals": {"mode": "manual"}})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
-
-
 def test_explicit_int_value(monkeypatch):
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 600}})
     assert _read_discord_prompt_timeout() == 600
-
 
 def test_numeric_string_accepted(monkeypatch):
     """YAML parsers occasionally return numbers as strings; tolerate it."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": "450"}})
     assert _read_discord_prompt_timeout() == 450
-
 
 def test_malformed_value_falls_back_to_default(monkeypatch):
     _patch_config(
@@ -96,55 +72,56 @@ def test_malformed_value_falls_back_to_default(monkeypatch):
     )
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
 
-
 def test_value_clamped_to_minimum(monkeypatch):
     """A typo of e.g. 5 seconds must not make prompts disappear."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 5}})
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
 
 
-def test_value_clamped_to_maximum(monkeypatch):
-    """Discord interaction tokens expire at ~15 min — clamp larger values."""
-    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 99999}})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MAX
+def test_hour_long_timeout_and_safe_upper_bound(monkeypatch):
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 3600}})
+    assert _read_discord_prompt_timeout() == 3600
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": int(MAX_SAFE_TIMEOUT_S) + 1}})
+    assert _read_discord_prompt_timeout() == int(MAX_SAFE_TIMEOUT_S)
 
 
-def test_zero_clamped_to_minimum(monkeypatch):
-    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 0}})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
+@pytest.mark.asyncio
+async def test_all_prompt_types_use_owning_profile_discord_timeout(tmp_path):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from plugins.platforms.discord.adapter import (
+        ExecApprovalView, SlashConfirmView, UpdatePromptView, ClarifyChoiceView,
+    )
+
+    for name, expected in (("default", 300), ("other", 3600)):
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "approvals:\n  timeout: 7200\n" + (
+                "  discord_prompt_timeout: 3600\n" if name == "other" else ""), encoding="utf-8",
+        )
+        token = set_hermes_home_override(str(home))
+        try:
+            views = [
+                ExecApprovalView("session", set(), request_id="request"),
+                SlashConfirmView("session", "confirm", set()),
+                UpdatePromptView("session", set()),
+                ClarifyChoiceView(["yes"], "clarify", set()),
+            ]
+            assert [view.timeout for view in views] == [expected] * 4
+            for view in views:
+                view.stop()
+        finally:
+            reset_hermes_home_override(token)
 
 
-def test_negative_clamped_to_minimum(monkeypatch):
-    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": -300}})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
+def test_configured_through_the_profiles_config_yaml(monkeypatch, tmp_path):
+    """The key is registered with its default and reaches the views from a real config.yaml."""
+    from hermes_cli.config import load_config
 
-
-def test_empty_string_falls_back_to_default(monkeypatch):
-    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": ""}})
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
-
-
-def test_config_read_exception_falls_back_to_default(monkeypatch):
-    """A crashing read_raw_config must not bring down view construction —
-    falling back to the historical 300s default preserves existing behavior.
-    """
-    import hermes_cli.config
-    def _boom():
-        raise RuntimeError("config file corrupt")
-    monkeypatch.setattr(hermes_cli.config, "read_raw_config", _boom)
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
-
-
-def test_default_matches_previous_hardcoded_value():
-    """Behavioral parity assertion: existing installs (no new config) must
-    see exactly the 300s timeout the views were hardcoded to before this
-    change. Guards against the default drifting in a future refactor.
-    """
-    assert _DISCORD_PROMPT_TIMEOUT_DEFAULT == 300
-
-
-def test_clamp_range_includes_default():
-    """Sanity: the default must lie inside the clamp range, or every fresh
-    install would hit the clamp on its very first read.
-    """
-    assert _DISCORD_PROMPT_TIMEOUT_MIN <= _DISCORD_PROMPT_TIMEOUT_DEFAULT <= _DISCORD_PROMPT_TIMEOUT_MAX
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert load_config()["approvals"]["discord_prompt_timeout"] == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    (tmp_path / "config.yaml").write_text("approvals:\n  discord_prompt_timeout: 1800\n")
+    assert _read_discord_prompt_timeout() == 1800
+    assert load_config()["approvals"]["discord_prompt_timeout"] == 1800

@@ -8,32 +8,10 @@ message as ``reply_to_text``, which can cause it to act on unrelated
 actionable-looking text the user did not quote (#22619).
 """
 
-import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from gateway.config import PlatformConfig
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():
@@ -46,6 +24,9 @@ def _make_message(
     reply_to_caption=None,
     reply_to_id=42,
     quote_text=None,
+    reply_to_entities=None,
+    reply_to_caption_entities=None,
+    quote_position=None,
 ):
     chat = SimpleNamespace(id=111, type="private", title=None, full_name="Alice")
     user = SimpleNamespace(id=42, full_name="Alice")
@@ -56,11 +37,13 @@ def _make_message(
             message_id=reply_to_id,
             text=reply_to_text,
             caption=reply_to_caption,
+            entities=reply_to_entities,
+            caption_entities=reply_to_caption_entities,
         )
 
     quote = None
     if quote_text is not None:
-        quote = SimpleNamespace(text=quote_text)
+        quote = SimpleNamespace(text=quote_text, position=quote_position)
 
     return SimpleNamespace(
         chat=chat,
@@ -77,7 +60,7 @@ def _make_message(
 
 def test_native_partial_quote_used_as_reply_to_text():
     """When ``message.quote`` is present, prefer the selected substring."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter()
     msg = _make_message(
@@ -94,51 +77,73 @@ def test_native_partial_quote_used_as_reply_to_text():
     assert event.reply_to_message_id == "42"
 
 
-def test_full_reply_text_used_when_no_native_quote():
-    """No ``message.quote`` → fall back to the whole replied-to message text."""
-    from gateway.platforms.base import MessageType
+def _text_link(offset, length, url):
+    return SimpleNamespace(type="text_link", offset=offset, length=length, url=url)
 
-    adapter = _make_adapter()
+
+def test_hidden_link_in_replied_to_text_is_inlined():
+    """A reply to a message whose link sits behind its anchor text still carries the URL."""
+    from gateway.platforms.event import MessageType
+
     msg = _make_message(
-        text="thanks",
-        reply_to_text="Whole prior message body",
-        quote_text=None,
+        text="summarize the linked article",
+        reply_to_text="New post: Read the full report here",
+        reply_to_entities=[_text_link(19, 11, "https://example.com/report-2026")],
     )
 
-    event = adapter._build_message_event(msg, MessageType.TEXT)
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
 
-    assert event.reply_to_text == "Whole prior message body"
-    assert event.reply_to_message_id == "42"
-
-
-def test_caption_fallback_when_no_quote_and_no_text():
-    """Replied-to media message: caption is used when text is absent."""
-    from gateway.platforms.base import MessageType
-
-    adapter = _make_adapter()
-    msg = _make_message(
-        text="see this",
-        reply_to_text=None,
-        reply_to_caption="Photo caption from earlier",
-        quote_text=None,
+    assert event.reply_to_text == (
+        "New post: Read the full report (https://example.com/report-2026) here"
     )
 
-    event = adapter._build_message_event(msg, MessageType.TEXT)
 
-    assert event.reply_to_text == "Photo caption from earlier"
+def test_hidden_link_in_replied_to_caption_is_inlined():
+    from gateway.platforms.event import MessageType
 
-
-def test_empty_quote_text_falls_back_to_full_reply():
-    """Defensive: a present-but-empty quote.text shouldn't blank the prefix."""
-    from gateway.platforms.base import MessageType
-
-    adapter = _make_adapter()
     msg = _make_message(
-        text="follow-up",
-        reply_to_text="Prior message body",
-        quote_text="",
+        text="what is this?",
+        reply_to_caption="Chart from the dashboard",
+        reply_to_caption_entities=[_text_link(15, 9, "https://example.com/dash")],
     )
 
-    event = adapter._build_message_event(msg, MessageType.TEXT)
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
 
-    assert event.reply_to_text == "Prior message body"
+    assert event.reply_to_text == "Chart from the dashboard (https://example.com/dash)"
+
+
+def test_hidden_link_in_native_quote_is_inlined():
+    """Quotes keep no ``text_link`` entities, so the link comes from the replied-to message."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="open this one",
+        reply_to_text="Links: the docs and the changelog",
+        reply_to_entities=[
+            _text_link(11, 4, "https://example.com/docs"),
+            _text_link(24, 9, "https://example.com/changes"),
+        ],
+        quote_text="the changelog",
+        quote_position=20,
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "the changelog (https://example.com/changes)"
+
+
+def test_native_quote_at_a_mismatched_position_is_left_as_quoted():
+    """``position`` is approximate; links are only mapped where the quote matches exactly."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="open this one",
+        reply_to_text="Links: the docs and the changelog",
+        reply_to_entities=[_text_link(24, 9, "https://example.com/changes")],
+        quote_text="the changelog",
+        quote_position=18,
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "the changelog"

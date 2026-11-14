@@ -11,12 +11,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
 import tui_gateway.server as srv
-import hermes_cli.nous_billing as nb
 import agent.billing_view as bv
-from agent.billing_view import BillingState, CardInfo, MonthlyCap
+from agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
 
 
 def _call(method: str, params: dict) -> dict:
@@ -37,12 +35,17 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
         role="OWNER",
         balance_usd=Decimal("142.5"),
         cli_billing_enabled=True,
-        charge_presets=(Decimal("100"), Decimal("250")),
-        min_usd=Decimal("10"),
-        max_usd=Decimal("10000"),
+        charge_presets=(Decimal(100), Decimal(250)),
+        min_usd=Decimal(10),
+        max_usd=Decimal(10000),
         card=CardInfo(brand="visa", last4="4242"),
+        payment_method=PaymentMethodInfo(
+            kind="link",
+            email="billing@example.com",
+            resolved_via="customerDefault",
+        ),
         monthly_cap=MonthlyCap(
-            limit_usd=Decimal("1000"), spent_this_month_usd=Decimal("180"), is_default_ceiling=True
+            limit_usd=Decimal(1000), spent_this_month_usd=Decimal(180), is_default_ceiling=True
         ),
         portal_url="https://portal/billing?topup=open",
     )
@@ -53,154 +56,56 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
     assert res["balance_usd"] == "142.5"
     assert res["balance_display"] == "$142.50"
     assert res["charge_presets"] == ["100", "250"]
-    assert res["card"]["masked"] == "visa ····4242"
+    assert res["card"] == {
+        "brand": "visa",
+        "last4": "4242",
+        "masked": "visa ····4242",
+        "display": "visa ····4242",
+        "resolved_via": None,
+    }
+    assert res["payment_method"] == {
+        "kind": "link",
+        "email": "billing@example.com",
+        "resolved_via": "customerDefault",
+    }
     assert res["monthly_cap"]["is_default_ceiling"] is True
     assert res["is_admin"] is True and res["can_charge"] is True
+    # Not a window plan (or an older portal): no Keep going on credits control.
+    assert res["keep_going_on_credits"] is None
 
 
-def test_billing_state_fail_open(monkeypatch):
-    def _boom(*a, **kw):
-        raise RuntimeError("portal down")
-
-    monkeypatch.setattr(bv, "build_billing_state", _boom)
-    res = _call("billing.state", {})
-    assert res["ok"] is True and res["logged_in"] is False
-
-
-# ---------------------------------------------------------------------------
-# billing.charge — typed error envelopes
-# ---------------------------------------------------------------------------
-
-
-def test_billing_charge_success_echoes_charge_id(monkeypatch):
-    monkeypatch.setattr(nb, "post_charge", lambda **kw: {"chargeId": "ch_123"})
-    res = _call("billing.charge", {"amount_usd": "100", "idempotency_key": "key-1"})
-    assert res["ok"] is True
-    assert res["charge_id"] == "ch_123"
-    assert res["idempotency_key"] == "key-1"
-
-
-def test_billing_charge_mints_key_when_absent(monkeypatch):
-    seen = {}
-
-    def _post(**kw):
-        seen["key"] = kw["idempotency_key"]
-        return {"chargeId": "ch_x"}
-
-    monkeypatch.setattr(nb, "post_charge", _post)
-    res = _call("billing.charge", {"amount_usd": "50"})
-    assert res["ok"] is True
-    assert res["idempotency_key"] == seen["key"]  # minted key echoed back
-    assert len(res["idempotency_key"]) == 36
-
-
-def test_billing_charge_insufficient_scope_envelope(monkeypatch):
-    def _post(**kw):
-        raise nb.BillingScopeRequired("need scope", status=403, error="insufficient_scope")
-
-    monkeypatch.setattr(nb, "post_charge", _post)
-    res = _call("billing.charge", {"amount_usd": "100", "idempotency_key": "k"})
-    assert res["ok"] is False
-    assert res["error"] == "insufficient_scope"
-    assert res["idempotency_key"] == "k"  # preserved for reuse post-stepup
-
-
-def test_billing_charge_no_payment_method_envelope(monkeypatch):
-    def _post(**kw):
-        raise nb.BillingError(
-            "no reusable card", status=403, error="no_payment_method",
-            portal_url="/billing?topup=open",
-        )
-
-    monkeypatch.setattr(nb, "post_charge", _post)
-    res = _call("billing.charge", {"amount_usd": "100", "idempotency_key": "k"})
-    assert res["ok"] is False
-    assert res["error"] == "no_payment_method"
-    assert res["portal_url"] == "/billing?topup=open"
-
-
-def test_billing_charge_rate_limited_envelope(monkeypatch):
-    def _post(**kw):
-        raise nb.BillingRateLimited("slow down", status=429, error="rate_limited", retry_after=60)
-
-    monkeypatch.setattr(nb, "post_charge", _post)
-    res = _call("billing.charge", {"amount_usd": "100", "idempotency_key": "k"})
-    assert res["error"] == "rate_limited"
-    assert res["retry_after"] == 60
+def test_billing_state_carries_keep_going_on_credits(monkeypatch):
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: BillingState(logged_in=True, keep_going_on_credits=False))
+    assert _call("billing.state", {})["keep_going_on_credits"] is False
 
 
 # ---------------------------------------------------------------------------
-# billing.charge_status — the poll
+# billing.keep_going_on_credits
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "server_resp,expected",
-    [
-        ({"status": "pending"}, {"status": "pending"}),
-        (
-            {"status": "settled", "amountUsd": "50", "settledAt": "2026-06-13T00:00:00Z"},
-            {"status": "settled", "amount_usd": "50"},
-        ),
-        ({"status": "failed", "reason": "card_declined"}, {"status": "failed", "reason": "card_declined"}),
-    ],
-)
-def test_billing_charge_status_maps_fields(monkeypatch, server_resp, expected):
-    monkeypatch.setattr(nb, "get_charge_status", lambda cid, **kw: server_resp)
-    res = _call("billing.charge_status", {"charge_id": "ch_1"})
-    assert res["ok"] is True
-    for k, v in expected.items():
-        assert res[k] == v
+def test_keep_going_on_credits_patches_just_enabled(monkeypatch):
+    import hermes_cli.nous_billing as nb
+    sent = []
+    monkeypatch.setattr(nb, "patch_keep_going_on_credits", lambda **kw: sent.append(kw) or {})
+    assert _call("billing.keep_going_on_credits", {"enabled": True}) == {"ok": True}
+    assert _call("billing.keep_going_on_credits", {"enabled": False}) == {"ok": True}
+    assert sent == [{"enabled": True}, {"enabled": False}]
 
 
-def test_billing_charge_status_requires_id():
-    res = _call("billing.charge_status", {})
-    assert res["ok"] is False and res["error"] == "invalid_charge_id"
+def test_keep_going_on_credits_rejects_a_non_bool_without_calling_the_portal(monkeypatch):
+    import hermes_cli.nous_billing as nb
+    monkeypatch.setattr(nb, "patch_keep_going_on_credits", lambda **kw: (_ for _ in ()).throw(AssertionError("called")))
+    for params in ({}, {"enabled": "true"}, {"enabled": 1}):
+        res = _call("billing.keep_going_on_credits", params)
+        assert res["ok"] is False and res["error"] == "invalid_request"
 
 
-# ---------------------------------------------------------------------------
-# billing.auto_reload
-# ---------------------------------------------------------------------------
+def test_keep_going_on_credits_scope_denial_is_an_envelope(monkeypatch):
+    import hermes_cli.nous_billing as nb
 
-
-def test_billing_auto_reload_success(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(nb, "patch_auto_top_up", lambda **kw: seen.update(kw) or {"ok": True})
-    res = _call("billing.auto_reload", {"enabled": True, "threshold": 20, "top_up_amount": 100})
-    assert res["ok"] is True
-    assert seen == {"enabled": True, "threshold": 20, "top_up_amount": 100}
-
-
-def test_billing_auto_reload_validation_error_envelope(monkeypatch):
-    def _patch(**kw):
-        raise nb.BillingError("bad", status=400, error="validation_failed")
-
-    monkeypatch.setattr(nb, "patch_auto_top_up", _patch)
-    res = _call("billing.auto_reload", {"enabled": True, "threshold": 20, "top_up_amount": 100})
-    assert res["ok"] is False and res["error"] == "validation_failed"
-
-
-def test_billing_auto_reload_requires_fields():
-    res = _call("billing.auto_reload", {"enabled": True})
-    assert res["ok"] is False and res["error"] == "invalid_request"
-
-
-# ---------------------------------------------------------------------------
-# billing.step_up
-# ---------------------------------------------------------------------------
-
-
-def test_billing_step_up_granted(monkeypatch):
-    import hermes_cli.auth as auth
-
-    monkeypatch.setattr(auth, "step_up_nous_billing_scope", lambda **kw: True)
-    res = _call("billing.step_up", {})
-    assert res["ok"] is True and res["granted"] is True
-
-
-def test_billing_step_up_downscoped(monkeypatch):
-    import hermes_cli.auth as auth
-
-    monkeypatch.setattr(auth, "step_up_nous_billing_scope", lambda **kw: False)
-    res = _call("billing.step_up", {})
-    assert res["ok"] is True and res["granted"] is False
+    def deny(**_kw):
+        raise nb.BillingScopeRequired("billing:manage required", status=403, error="insufficient_scope")
+    monkeypatch.setattr(nb, "patch_keep_going_on_credits", deny)
+    res = _call("billing.keep_going_on_credits", {"enabled": True})
+    assert res["ok"] is False and res["error"] == "insufficient_scope"

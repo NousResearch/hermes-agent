@@ -1,12 +1,13 @@
 'use client'
 
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Tip } from '@/components/ui/tooltip'
 import { Check, Copy, Maximize, RefreshCw, X, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { useZoomPan } from './use-zoom-pan'
+import { FIT_MIN_SCALE, useZoomPan } from './use-zoom-pan'
 
 interface ZoomableProps {
   /** Inline content; also the default full-view content. */
@@ -34,9 +35,9 @@ export function Zoomable({ children, overlay, onCopy, label = 'Open full view', 
       <div className={cn('group/zoomable relative', className)}>
         {/* The whole content is the trigger — click anywhere to open, like an image. */}
         <button
+          aria-label={label}
           className="block w-full cursor-zoom-in text-left"
           onClick={() => setOpen(true)}
-          title={label}
           type="button"
         >
           {children}
@@ -68,7 +69,12 @@ function ZoomPanViewer({
   onOpenChange: (open: boolean) => void
   open: boolean
 }) {
-  const { panning, reset, stageProps, style, zoomIn, zoomOut } = useZoomPan()
+  // minScale: a wide diagram's fitted view can shrink far below the default
+  // zoom-out floor; the fit (not the clamp) owns how small the view gets.
+  const { panning, ref, reset, setContentEl, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLDivElement>({
+    enabled: open,
+    minScale: FIT_MIN_SCALE
+  })
 
   useEffect(() => {
     if (open) {
@@ -79,7 +85,8 @@ function ZoomPanViewer({
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
-        className="flex h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
+        bodyClassName="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden p-0"
+        className="h-[85vh] w-[90vw] max-w-[90vw]"
         showCloseButton={false}
       >
         <div
@@ -87,10 +94,11 @@ function ZoomPanViewer({
             'relative flex-1 touch-none select-none overflow-hidden',
             panning ? 'cursor-grabbing' : 'cursor-grab'
           )}
+          ref={ref}
           {...stageProps}
         >
           <div className="absolute inset-0 grid place-items-center">
-            <div className="origin-center" style={style}>
+            <div className="origin-center" ref={setContentEl} style={style}>
               {children}
             </div>
           </div>
@@ -115,6 +123,22 @@ function Toolbar({
   zoomOut: () => void
 }) {
   const [copied, setCopied] = useState(false)
+  const resetRef = useRef<null | number>(null)
+
+  // Same reason as the close timer of ConfirmDialog. An unmount inside the
+  // 1500ms window used to leave this armed. The callback then called setState
+  // on a tree that is gone.
+  // The write below is a timer handle, and not a mirror of a reactive value.
+  // It happens on unmount only, and it clears the handle this component owns.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    return () => {
+      if (resetRef.current !== null) {
+        window.clearTimeout(resetRef.current)
+        resetRef.current = null
+      }
+    }
+  }, [])
 
   const copy = async () => {
     if (!onCopy) {
@@ -123,7 +147,15 @@ function Toolbar({
 
     await onCopy()
     setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+
+    if (resetRef.current !== null) {
+      window.clearTimeout(resetRef.current)
+    }
+
+    resetRef.current = window.setTimeout(() => {
+      resetRef.current = null
+      setCopied(false)
+    }, 1500)
   }
 
   return (
@@ -159,14 +191,15 @@ function Divider() {
 
 function ToolbarButton({ children, label, onClick }: { children: ReactNode; label: string; onClick: () => void }) {
   return (
-    <button
-      aria-label={label}
-      className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      onClick={onClick}
-      title={label}
-      type="button"
-    >
-      {children}
-    </button>
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        onClick={onClick}
+        type="button"
+      >
+        {children}
+      </button>
+    </Tip>
   )
 }

@@ -1,0 +1,30 @@
+name: telegram_dashboard_probe
+title: Telegram Dashboard
+repo: https://github.com/bablobanov/hermes-agent-telegram-dashboard
+sha: 07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc
+subdir: plugin/telegram_dashboard_probe
+description: "One pinned Telegram message with your Hermes' state on one phone screen, edited in place from inside the gateway. Read-only, no LLM calls, nothing to press. Disclosure — reads Hermes' files read-only, the agent's context files wherever it works, and the free space of the disk HERMES_HOME lies on. Disclosure — edits the message through the Telegram adapter, private members included. Disclosure — Hermes' usage facade every 5 min, which may read the Claude Code or Codex CLI login and refresh its token. Disclosure — GitHub releases without a token, at most every 15 min, no off switch. Disclosure — opt-in: loopback limit sources, a drift command. Disclosure — its own code writes only its record; the full list is in the README."
+maintainer: bablobanov
+tier: community
+category: automation
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/bablobanov/hermes-agent-telegram-dashboard#readme
+version: "1.1.1"
+image: https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/hero-1.1.1.jpg
+screenshots:
+  - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/screenshots/111-01-healthy.jpg
+  - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/screenshots/111-02-details-open.jpg
+  - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/screenshots/111-03-cron-failed.jpg
+  - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/screenshots/111-04-memory.jpg
+  - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/screenshots/111-05-rules.jpg
+  - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/07dd2ca26d1f456511bb0ecf776f9a9e3bf40dbc/docs/screenshots/111-06-disk-low.jpg
+platforms: []
+known_issues:
+  - "Requires in-process plugin execution: the Telegram handler factory receives the platform's native SDK client, which plugins.isolation: host does not allow; under host the plugin does not load and nothing is delivered."
+  - "Updating from 1.0.0 or older: restart the gateway once; until then a plugin reload leaves the screen still."
+  - "On the launch profile of a gateway that multiplexes profiles, Claude's limits and a keyed limit source show no data: Hermes refuses secret lookups outside a profile scope."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

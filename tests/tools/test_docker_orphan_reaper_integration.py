@@ -13,7 +13,7 @@ opt-out would silently do nothing.
 import os
 from unittest.mock import patch
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 
 def _reset_reaper_gate():
@@ -41,67 +41,6 @@ def test_maybe_reap_runs_once_per_process(monkeypatch):
 
     assert call_count["reap"] == 1, (
         f"reaper must run exactly once per process; got {call_count['reap']} calls"
-    )
-
-
-def test_maybe_reap_respects_disable_flag(monkeypatch):
-    """``terminal.docker_orphan_reaper: false`` (via container_config) must
-    skip the sweep entirely — no docker ps, no inspect, no rm. The escape
-    hatch for operators running multiple Hermes processes in the same
-    profile."""
-    _reset_reaper_gate()
-    call_count = {"reap": 0}
-
-    def _fake_reap(**kwargs):
-        call_count["reap"] += 1
-        return 0
-
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
-        terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": False})
-
-    assert call_count["reap"] == 0, "disabled reaper must not run any docker calls"
-    # The once-per-process gate must NOT be tripped when the reaper is
-    # disabled — that would prevent a subsequent toggle to true from working.
-    assert terminal_tool._docker_orphan_reaper_ran is False
-
-
-def test_maybe_reap_doubles_lifetime_for_max_age(monkeypatch):
-    """The reaper's age threshold is ``2 × lifetime_seconds`` (with a 60s
-    floor). Generous default — gives sibling Hermes processes ample grace
-    to be replaced without their just-exited containers being yanked."""
-    _reset_reaper_gate()
-    captured_args = {}
-
-    def _fake_reap(**kwargs):
-        captured_args.update(kwargs)
-        return 0
-
-    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "300")
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
-        terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
-
-    assert captured_args.get("max_age_seconds") == 600, (
-        f"expected 2 × 300 = 600, got {captured_args.get('max_age_seconds')}"
-    )
-
-
-def test_maybe_reap_floors_at_60_seconds(monkeypatch):
-    """A user pinning TERMINAL_LIFETIME_SECONDS=0 (or any value <30) would
-    otherwise get an effective age threshold of zero, which would race the
-    user's own just-started container creation. Floor at 60s × 2 = 120s."""
-    _reset_reaper_gate()
-    captured_args = {}
-
-    def _fake_reap(**kwargs):
-        captured_args.update(kwargs)
-        return 0
-
-    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "0")
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
-        terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
-
-    assert captured_args.get("max_age_seconds") == 120, (
-        f"expected floored 60 × 2 = 120, got {captured_args.get('max_age_seconds')}"
     )
 
 

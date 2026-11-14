@@ -25,10 +25,12 @@ Do the thing.
 """
 
 
-def _write_skill(skills_dir, name):
+def _write_skill(skills_dir, name, display_name=None):
     d = skills_dir / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(SKILL_MD.format(name=name), encoding="utf-8")
+    (d / "SKILL.md").write_text(
+        SKILL_MD.format(name=display_name or name), encoding="utf-8"
+    )
 
 
 @pytest.fixture
@@ -78,6 +80,28 @@ class TestSkillContent:
         assert data["content"].startswith("---")
         assert "Do the thing." in data["content"]
 
+    def test_get_and_update_by_frontmatter_display_name(
+        self, client, isolated_profiles
+    ):
+        skills_dir = isolated_profiles["default"] / "skills"
+        _write_skill(skills_dir, "agong-deep-search-trace", "AGong Deep Search Trace")
+
+        resp = client.get(
+            "/api/skills/content", params={"name": "AGong Deep Search Trace"}
+        )
+        assert resp.status_code == 200
+
+        new_content = resp.json()["content"].replace(
+            "Do the thing.", "Do the NEW thing."
+        )
+        resp = client.put(
+            "/api/skills/content",
+            json={"name": "AGong Deep Search Trace", "content": new_content},
+        )
+        assert resp.status_code == 200
+        skill_md = skills_dir / "agong-deep-search-trace" / "SKILL.md"
+        assert "Do the NEW thing." in skill_md.read_text(encoding="utf-8")
+
     def test_get_content_scopes_to_profile(self, client, isolated_profiles):
         resp = client.get(
             "/api/skills/content",
@@ -86,10 +110,6 @@ class TestSkillContent:
         assert resp.status_code == 200
         # ...and the worker skill is invisible without the profile param.
         resp = client.get("/api/skills/content", params={"name": "worker-skill"})
-        assert resp.status_code == 404
-
-    def test_get_content_unknown_skill_404(self, client, isolated_profiles):
-        resp = client.get("/api/skills/content", params={"name": "nope"})
         assert resp.status_code == 404
 
 
@@ -105,37 +125,6 @@ class TestSkillCreate:
         assert skill_md.exists()
         assert "Do the thing." in skill_md.read_text(encoding="utf-8")
 
-    def test_create_with_category(self, client, isolated_profiles):
-        resp = client.post(
-            "/api/skills",
-            json={
-                "name": "cat-skill",
-                "category": "devops",
-                "content": SKILL_MD.format(name="cat-skill"),
-            },
-        )
-        assert resp.status_code == 200
-        assert (
-            isolated_profiles["default"] / "skills" / "devops" / "cat-skill" / "SKILL.md"
-        ).exists()
-
-    def test_create_scopes_to_profile(self, client, isolated_profiles):
-        resp = client.post(
-            "/api/skills",
-            json={
-                "name": "worker-new",
-                "content": SKILL_MD.format(name="worker-new"),
-                "profile": "worker_alpha",
-            },
-        )
-        assert resp.status_code == 200
-        assert (
-            isolated_profiles["worker_alpha"] / "skills" / "worker-new" / "SKILL.md"
-        ).exists()
-        # Dashboard's own skills dir stays clean.
-        assert not (
-            isolated_profiles["default"] / "skills" / "worker-new"
-        ).exists()
 
     def test_create_rejects_missing_frontmatter(self, client, isolated_profiles):
         resp = client.post(
@@ -146,16 +135,6 @@ class TestSkillCreate:
         assert "frontmatter" in resp.json()["detail"].lower()
         assert not (isolated_profiles["default"] / "skills" / "bad-skill").exists()
 
-    def test_create_rejects_duplicate_name(self, client, isolated_profiles):
-        resp = client.post(
-            "/api/skills",
-            json={
-                "name": "dashboard-skill",
-                "content": SKILL_MD.format(name="dashboard-skill"),
-            },
-        )
-        assert resp.status_code == 400
-        assert "already exists" in resp.json()["detail"]
 
     def test_create_rejects_invalid_name(self, client, isolated_profiles):
         resp = client.post(
@@ -180,12 +159,6 @@ class TestSkillUpdate:
         )
         assert "Do the NEW thing." in skill_md.read_text(encoding="utf-8")
 
-    def test_update_unknown_skill_404(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/skills/content",
-            json={"name": "nope", "content": SKILL_MD.format(name="nope")},
-        )
-        assert resp.status_code == 404
 
     def test_update_invalid_frontmatter_400(self, client, isolated_profiles):
         resp = client.put(

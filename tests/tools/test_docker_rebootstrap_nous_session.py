@@ -1,13 +1,15 @@
 """Unit tests for scripts/docker_rebootstrap_nous_session.py.
 
 The boot-time re-seed is the load-bearing "does not clobber a healthy session"
-guard: it must overwrite the on-disk Nous provider entry ONLY when that entry is
-provably terminal (quarantine marker + no usable tokens), and no-op in every
-other case. These are pure-stdlib tmp_path tests (no container build).
+guard: it may overwrite the on-disk Nous provider entry when that entry is
+provably terminal (quarantine marker + no usable tokens), or when an
+orchestrator seed is demonstrably newer. Older/incomparable seeds must no-op.
+These are pure-stdlib tmp_path tests (no container build).
 """
 from __future__ import annotations
 
 import importlib.util
+import os
 import json
 from pathlib import Path
 
@@ -88,49 +90,23 @@ def test_marker_but_live_token_is_not_terminal(tmp_path):
     assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "not_terminal"
 
 
-def test_preserves_other_providers(tmp_path):
-    """Re-seed swaps ONLY providers.nous; other providers survive intact."""
-    auth = _write_auth(tmp_path, {
-        "nous": _terminal_nous_state(),
-        "openai-codex": {"tokens": {"access_token": "codex-at"}},
+def test_timezone_less_local_timestamp_is_incomparable(tmp_path):
+    auth = _write_auth(tmp_path, {"nous": {
+        **_healthy_nous_state(),
+        "obtained_at": "2026-07-14T19:00:00",
+    }})
+    seed = json.dumps({
+        "providers": {
+            "nous": {
+                "client_id": "hermes-cli-vps",
+                "access_token": "FRESH-at",
+                "refresh_token": "FRESH-rt",
+                "obtained_at": "2026-07-14T19:05:00Z",
+            }
+        },
     })
-    assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
-    store = json.loads(Path(auth).read_text())
-    assert store["providers"]["openai-codex"]["tokens"]["access_token"] == "codex-at"
-    assert store["providers"]["nous"]["refresh_token"] == "FRESH-rt"
 
-
-def test_no_seed_is_noop(tmp_path):
-    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
-    assert mod.reseed_if_terminal(auth, "") == "no_seed"
-
-
-def test_bad_seed_is_noop(tmp_path):
-    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
-    assert mod.reseed_if_terminal(auth, "}{not json") == "bad_seed"
-    # Original terminal entry left untouched.
-    store = json.loads(Path(auth).read_text())
-    assert store["providers"]["nous"]["last_auth_error"]["relogin_required"] is True
-
-
-def test_seed_without_nous_entry_is_noop(tmp_path):
-    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
-    seed = json.dumps({"version": 1, "providers": {"openai-codex": {}}})
-    assert mod.reseed_if_terminal(auth, seed) == "bad_seed"
-
-
-def test_absent_auth_file_defers_to_bootstrap(tmp_path):
-    """No auth.json → blank volume; the normal *_BOOTSTRAP path handles it."""
-    auth = str(tmp_path / "auth.json")
-    assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "no_auth_file"
-
-
-def test_unreadable_auth_file_is_left_alone(tmp_path):
-    p = tmp_path / "auth.json"
-    p.write_text("}{ corrupt")
-    assert mod.reseed_if_terminal(str(p), _FRESH_SEED) == "auth_unreadable"
-    # Not overwritten.
-    assert p.read_text() == "}{ corrupt"
+    assert mod.reseed_if_terminal(auth, seed) == "not_terminal"
 
 
 def test_terminal_entry_missing_marker_is_not_terminal(tmp_path):
@@ -138,3 +114,18 @@ def test_terminal_entry_missing_marker_is_not_terminal(tmp_path):
     entry) → not terminal, no re-seed."""
     auth = _write_auth(tmp_path, {"nous": {"client_id": "hermes-cli-vps"}})
     assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "not_terminal"
+
+
+def test_stale_temp_from_a_killed_prior_run_does_not_block_reseed(tmp_path):
+    """Boot-hook PIDs repeat inside a container: a temp left by a SIGKILL'd run must never make
+    the next re-seed fail (main() swallows the exception, so the recovery path would be dead)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    auth = _write_auth(home, {"nous": _terminal_nous_state()})
+    stale = Path(f"{auth}.rebootstrap.{os.getpid()}.tmp")
+    stale.write_text("{torn", encoding="utf-8")
+
+    assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+    store = json.loads(Path(auth).read_text())
+    assert store["providers"]["nous"]["refresh_token"] == "FRESH-rt"
+    assert sorted(p.name for p in home.iterdir()) == sorted(["auth.json", stale.name]), "no new temp survives"

@@ -65,8 +65,8 @@ MAPS=~/.hermes/skills/maps/scripts/maps_client.py
 ### search — Geocode a place name
 
 ```bash
-python3 $MAPS search "Eiffel Tower"
-python3 $MAPS search "1600 Pennsylvania Ave, Washington DC"
+python $MAPS search "Eiffel Tower"
+python $MAPS search "1600 Pennsylvania Ave, Washington DC"
 ```
 
 Returns: lat, lon, display name, type, bounding box, importance score.
@@ -74,7 +74,7 @@ Returns: lat, lon, display name, type, bounding box, importance score.
 ### reverse — Coordinates to address
 
 ```bash
-python3 $MAPS reverse 48.8584 2.2945
+python $MAPS reverse 48.8584 2.2945
 ```
 
 Returns: full address breakdown (street, city, state, country, postcode).
@@ -83,15 +83,15 @@ Returns: full address breakdown (street, city, state, country, postcode).
 
 ```bash
 # By coordinates (from a Telegram location pin, for example)
-python3 $MAPS nearby 48.8584 2.2945 restaurant --limit 10
-python3 $MAPS nearby 40.7128 -74.0060 hospital --radius 2000
+python $MAPS nearby 48.8584 2.2945 restaurant --limit 10
+python $MAPS nearby 40.7128 -74.0060 hospital --radius 2000
 
 # By address / city / zip / landmark — --near auto-geocodes
-python3 $MAPS nearby --near "Times Square, New York" --category cafe
-python3 $MAPS nearby --near "90210" --category pharmacy
+python $MAPS nearby --near "Times Square, New York" --category cafe
+python $MAPS nearby --near "90210" --category pharmacy
 
 # Multiple categories merged into one query
-python3 $MAPS nearby --near "downtown austin" --category restaurant --category bar --limit 10
+python $MAPS nearby --near "downtown austin" --category restaurant --category bar --limit 10
 ```
 
 46 categories: restaurant, cafe, bar, hospital, pharmacy, hotel, guest_house,
@@ -110,9 +110,9 @@ directions from the search point), and promoted tags when available —
 ### distance — Travel distance and time
 
 ```bash
-python3 $MAPS distance "Paris" --to "Lyon"
-python3 $MAPS distance "New York" --to "Boston" --mode driving
-python3 $MAPS distance "Big Ben" --to "Tower Bridge" --mode walking
+python $MAPS distance "Paris" --to "Lyon"
+python $MAPS distance "New York" --to "Boston" --mode driving
+python $MAPS distance "Big Ben" --to "Tower Bridge" --mode walking
 ```
 
 Modes: driving (default), walking, cycling. Returns road distance, duration,
@@ -121,8 +121,8 @@ and straight-line distance for comparison.
 ### directions — Turn-by-turn navigation
 
 ```bash
-python3 $MAPS directions "Eiffel Tower" --to "Louvre Museum" --mode walking
-python3 $MAPS directions "JFK Airport" --to "Times Square" --mode driving
+python $MAPS directions "Eiffel Tower" --to "Louvre Museum" --mode walking
+python $MAPS directions "JFK Airport" --to "Times Square" --mode driving
 ```
 
 Returns numbered steps with instruction, distance, duration, road name, and
@@ -131,8 +131,8 @@ maneuver type (turn, depart, arrive, etc.).
 ### timezone — Timezone for coordinates
 
 ```bash
-python3 $MAPS timezone 48.8584 2.2945
-python3 $MAPS timezone 35.6762 139.6503
+python $MAPS timezone 48.8584 2.2945
+python $MAPS timezone 35.6762 139.6503
 ```
 
 Returns timezone name, UTC offset, and current local time.
@@ -140,8 +140,8 @@ Returns timezone name, UTC offset, and current local time.
 ### area — Bounding box and area for a place
 
 ```bash
-python3 $MAPS area "Manhattan, New York"
-python3 $MAPS area "London"
+python $MAPS area "Manhattan, New York"
+python $MAPS area "London"
 ```
 
 Returns bounding box coordinates, width/height in km, and approximate area.
@@ -150,7 +150,7 @@ Useful as input for the bbox command.
 ### bbox — Search within a bounding box
 
 ```bash
-python3 $MAPS bbox 40.75 -74.00 40.77 -73.98 restaurant --limit 20
+python $MAPS bbox 40.75 -74.00 40.77 -73.98 restaurant --limit 20
 ```
 
 Finds POIs within a geographic rectangle. Use `area` first to get the
@@ -163,7 +163,7 @@ When a user sends a location pin, the message contains `latitude:` and
 
 ```bash
 # User sent a pin at 36.17, -115.14 and asked "find cafes nearby"
-python3 $MAPS nearby 36.17 -115.14 cafe --radius 1500
+python $MAPS nearby 36.17 -115.14 cafe --radius 1500
 ```
 
 Present results as a numbered list with names, distances, and the
@@ -202,9 +202,9 @@ current.
 ## Verification
 
 ```bash
-python3 ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
 
-python3 ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # Should return a list of restaurants within ~500m of Times Square
 ```

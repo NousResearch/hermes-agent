@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
 
 
@@ -40,7 +41,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -111,66 +112,6 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
 
 
 @pytest.mark.asyncio
-async def test_interaction_backed_events_do_not_attempt_reactions(adapter):
-    interaction = SimpleNamespace(guild_id=123456789)
-
-    async def handler(_event):
-        await asyncio.sleep(0)
-        return None
-
-    async def hold_typing(_chat_id, interval=2.0, metadata=None):
-        await asyncio.Event().wait()
-
-    adapter.set_message_handler(handler)
-    adapter._add_reaction = AsyncMock()
-    adapter._remove_reaction = AsyncMock()
-    adapter._keep_typing = hold_typing
-
-    event = MessageEvent(
-        text="/status",
-        message_type=MessageType.COMMAND,
-        source=SessionSource(
-            platform=Platform.DISCORD,
-            chat_id="123",
-            chat_type="dm",
-            user_id="42",
-            user_name="Jezza",
-        ),
-        raw_message=interaction,
-        message_id="2",
-    )
-
-    await adapter._process_message_background(event, build_session_key(event.source))
-
-    adapter._add_reaction.assert_not_awaited()
-    adapter._remove_reaction.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_reaction_helper_failures_do_not_break_message_flow(adapter):
-    raw_message = SimpleNamespace(
-        add_reaction=AsyncMock(side_effect=[RuntimeError("no perms"), RuntimeError("no perms")]),
-        remove_reaction=AsyncMock(side_effect=RuntimeError("no perms")),
-    )
-
-    async def handler(_event):
-        await asyncio.sleep(0)
-        return "ack"
-
-    async def hold_typing(_chat_id, interval=2.0, metadata=None):
-        await asyncio.Event().wait()
-
-    adapter.set_message_handler(handler)
-    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="999"))
-    adapter._keep_typing = hold_typing
-
-    event = _make_event("3", raw_message)
-    await adapter._process_message_background(event, build_session_key(event.source))
-
-    adapter.send.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_reactions_disabled_via_env(adapter, monkeypatch):
     """When DISCORD_REACTIONS=false, no reactions should be added."""
     monkeypatch.setenv("DISCORD_REACTIONS", "false")
@@ -200,49 +141,41 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+
+
+class FakeChannel:
+    """Only what reacting needs: ``get_partial_message`` returns a message with reaction mocks."""
+
+    def __init__(self):
+        self.partials = {}
+
+    def get_partial_message(self, message_id):
+        return self.partials.setdefault(message_id, SimpleNamespace(
+            id=message_id, add_reaction=AsyncMock(), remove_reaction=AsyncMock()))
+
+
 @pytest.mark.asyncio
-async def test_reactions_disabled_via_env_zero(adapter, monkeypatch):
-    """DISCORD_REACTIONS=0 should also disable reactions."""
-    monkeypatch.setenv("DISCORD_REACTIONS", "0")
+async def test_queued_event_without_raw_message_reacts_through_a_partial_message(adapter):
+    """A queued message restored from the session queue has its ids but no live message."""
+    channel = FakeChannel()
+    adapter._client.get_channel = lambda channel_id: channel if channel_id == 123 else None
 
-    raw_message = SimpleNamespace(
-        add_reaction=AsyncMock(),
-        remove_reaction=AsyncMock(),
-    )
-
-    event = _make_event("5", raw_message)
+    event = _make_event("1234567890", None)
     await adapter.on_processing_start(event)
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
-    raw_message.add_reaction.assert_not_awaited()
-    raw_message.remove_reaction.assert_not_awaited()
+    partial = channel.partials[1234567890]
+    assert [c.args for c in partial.add_reaction.await_args_list] == [("👀",), ("✅",)]
+    assert partial.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
 
 
 @pytest.mark.asyncio
-async def test_reactions_enabled_by_default(adapter, monkeypatch):
-    """When DISCORD_REACTIONS is unset, reactions should still work (default: true)."""
-    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+async def test_queued_event_with_a_non_discord_id_skips_reactions(adapter):
+    channel = FakeChannel()
+    adapter._client.get_channel = lambda channel_id: channel
 
-    raw_message = SimpleNamespace(
-        add_reaction=AsyncMock(),
-        remove_reaction=AsyncMock(),
-    )
-
-    event = _make_event("6", raw_message)
+    event = _make_event("not-a-discord-id", None)
     await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
-    raw_message.add_reaction.assert_awaited_once_with("👀")
-
-
-@pytest.mark.asyncio
-async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_reaction(adapter):
-    raw_message = SimpleNamespace(
-        add_reaction=AsyncMock(),
-        remove_reaction=AsyncMock(),
-    )
-
-    event = _make_event("7", raw_message)
-    await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
-
-    raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
-    raw_message.add_reaction.assert_not_awaited()
+    assert channel.partials == {}

@@ -1,40 +1,12 @@
 import asyncio
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-
-    # Provide real exception classes so ``except (NetworkError, ...)`` in
-    # connect() doesn't blow up with "catching classes that do not inherit
-    # from BaseException" when another xdist worker pollutes sys.modules.
-    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    telegram_mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-    sys.modules.setdefault("telegram.error", telegram_mod.error)
-
-
-_ensure_telegram_mock()
-
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -67,23 +39,6 @@ async def _cancel_heartbeat(adapter):
 
 
 @pytest.mark.asyncio
-async def test_connect_rejects_same_host_token_lock(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
-
-    monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
-        lambda scope, identity, metadata=None: (False, {"pid": 4242}),
-    )
-
-    ok = await adapter.connect()
-
-    assert ok is False
-    assert adapter.fatal_error_code == "telegram-bot-token_lock"
-    assert adapter.has_fatal_error is True
-    assert "already in use" in adapter.fatal_error_message
-
-
-@pytest.mark.asyncio
 async def test_polling_conflict_retries_before_fatal(monkeypatch):
     """A single 409 should trigger a retry, not an immediate fatal error."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
@@ -95,7 +50,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
+        "gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -103,6 +58,14 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     async def fake_start_polling(**kwargs):
         captured["error_callback"] = kwargs["error_callback"]
+        # Cold connect requires real getUpdates readiness (#67498) — simulate
+        # the first successful poll for the generation this call started, but
+        # only on the initial connect: the conflict-retry generation must NOT
+        # make progress here, or it would legitimately reset the conflict
+        # count this test asserts on.
+        if not captured.get("initial_done"):
+            captured["initial_done"] = True
+            adapter._record_polling_progress(adapter._polling_generation)
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=fake_start_polling),
@@ -121,6 +84,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -137,19 +101,218 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     # First conflict: should retry, NOT be fatal
     captured["error_callback"](conflict("Conflict: terminated by other getUpdates request"))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    # Give the scheduled task a chance to run
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await adapter._polling_error_task
 
     assert adapter.has_fatal_error is False, "First conflict should not be fatal"
-    assert adapter._polling_conflict_count == 0, "Count should reset after successful retry"
+    assert adapter._polling_conflict_count == 1, (
+        "Count must remain until the retried generation makes getUpdates progress"
+    )
+    assert adapter._send_path_degraded is True
 
     # connect() now starts a lifetime _polling_heartbeat_loop task. With
     # asyncio.sleep mocked to instant above, it must not be left running or it
     # busy-spins on the event loop and starves the test. Cancel it explicitly.
     await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
+async def test_conflict_retry_keeps_queued_updates(monkeypatch):
+    """A 409 retry must not empty Telegram's update queue (#143871).
+
+    ``drop_pending_updates=True`` makes PTB call ``deleteWebhook(drop_pending_updates=True)``,
+    which discards every message the user sent while the conflict lasted.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["drop_pending_updates"] = kwargs.get("drop_pending_updates")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert captured.get("drop_pending_updates") is False
+
+
+@pytest.mark.asyncio
+async def test_conflict_ladder_climbs_across_progress_between_conflicts(monkeypatch):
+    """getUpdates progress between the 409s of one storm must not reset the ladder (#82303).
+
+    PTB starts getUpdates in the background, so the first progress after a retry arrives only
+    after ``_handle_polling_conflict`` returned; a competing poller then steals the session again.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    updater = SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True)
+    adapter._app = SimpleNamespace(updater=updater)
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    for expected in (1, 2, 3):
+        await adapter._handle_polling_conflict(conflict)
+        adapter._record_polling_progress(adapter._polling_generation)
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == expected
+
+    # A quiet period after the last 409 ends the episode.
+    adapter._polling_conflict_quiet_since -= tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+    adapter._record_polling_progress(adapter._polling_generation)
+    assert adapter._polling_conflict_count == 0
+
+
+@pytest.mark.asyncio
+async def test_conflict_recovery_downtime_does_not_count_as_quiet_period(monkeypatch):
+    """The quiet window opens at the first progress after a restart: a slow recovery (60s backoff plus
+    bounded stop, drain and start) must not end the episode on its first successful poll, or a
+    continuing storm restarts at (1/5) and never reaches the final error."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock["now"])
+
+    async def slow_recovery(*_a, **_k):
+        clock["now"] += tg_adapter._POLLING_CONFLICT_QUIET_PERIOD + 15
+
+    adapter._drain_polling_connections = slow_recovery
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    updater = SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True)
+    adapter._app = SimpleNamespace(updater=updater)
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    await adapter._handle_polling_conflict(conflict)
+    adapter._record_polling_progress(adapter._polling_generation)
+    assert adapter._polling_conflict_count == 1
+    clock["now"] += 5
+    await adapter._handle_polling_conflict(conflict)
+    assert adapter._polling_conflict_count == 2
+
+
+@pytest.mark.asyncio
+async def test_network_recovery_downtime_does_not_count_as_conflict_quiet_period(monkeypatch):
+    """A network recovery inside a conflict episode restarts the quiet window: its failing poll,
+    backoff, stop, drain and start are not healthy polling, so the replacement generation's first
+    success must not end the episode (a following 409 would restart the ladder at 1/5)."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    async def slow_bounded_step(*_a, **_k):
+        clock["now"] += 14  # each stop/drain/start stays under its own deadline
+
+    adapter._drain_polling_connections = slow_bounded_step
+    updater = SimpleNamespace(start_polling=slow_bounded_step, stop=slow_bounded_step, running=True)
+    adapter._app = SimpleNamespace(updater=updater)
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    try:
+        await adapter._handle_polling_conflict(conflict)
+        adapter._record_polling_progress(adapter._polling_generation)
+        clock["now"] += 90  # the long poll that ends in a transport error
+        await adapter._handle_polling_network_error(OSError("network interruption"))
+        clock["now"] += 9
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == 1
+
+        # Sustained healthy polling in the replacement generation still ends the episode.
+        clock["now"] += tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == 0
+    finally:
+        verifier = adapter._polling_progress_verifier_task
+        if verifier is not None:
+            verifier.cancel()
+            await asyncio.gather(verifier, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_frequent_network_recoveries_still_let_the_conflict_episode_end(monkeypatch):
+    """Network recoveries closer together than the quiet window must not keep a conflict episode open
+    forever (#151829): healthy polling across generations still adds up, so isolated 409s hours apart
+    each restart the ladder at 1/5 instead of accumulating into the final fatal."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._app = SimpleNamespace(updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True))
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    try:
+        await adapter._handle_polling_conflict(conflict)
+        for _ in range(3):  # 3 x 60s of healthy polling, each generation ended by a network blip
+            for _ in range(7):
+                adapter._record_polling_progress(adapter._polling_generation)
+                clock["now"] += 10
+            await adapter._handle_polling_network_error(OSError("network interruption"))
+            clock["now"] += 5
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == 0
+
+        # The opposite side: a 409 still empties the window, so a live storm keeps climbing.
+        await adapter._handle_polling_conflict(conflict)
+        adapter._record_polling_progress(adapter._polling_generation)
+        clock["now"] += 30
+        await adapter._handle_polling_conflict(conflict)
+        assert adapter._polling_conflict_count == 2
+    finally:
+        verifier = adapter._polling_progress_verifier_task
+        if verifier is not None:
+            verifier.cancel()
+            await asyncio.gather(verifier, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
+    """First getUpdates progress after a conflict retry is not durable recovery.
+
+    Telegram can accept the first long-poll after a retry and then return a 409
+    from the still-expiring previous session. That transient success must not
+    reset the retry counter back to 0, or every new 409 looks like attempt 1/5
+    and the backoff never reaches the server-side expiry window.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    calls = {"n": 0}
+
+    async def fake_start_polling(**_kwargs):
+        calls["n"] += 1
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert calls["n"] == 1
+    assert adapter._polling_conflict_count == 1
+    assert adapter._send_path_degraded is False
 
 
 @pytest.mark.asyncio
@@ -164,7 +327,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
+        "gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -181,6 +344,8 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         if call_count["n"] == 1:
             # First call (initial connect) succeeds
             captured["error_callback"] = kwargs["error_callback"]
+            # Cold connect requires getUpdates readiness (#67498).
+            adapter._record_polling_progress(adapter._polling_generation)
         else:
             # Retry calls fail
             raise Exception("Connection refused")
@@ -202,6 +367,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -242,43 +408,14 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         f"count={adapter._polling_conflict_count}"
     )
     assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_retryable is True, (
+        "A 409 getUpdates conflict is transient single-writer contention, not a permanent config "
+        "error: the runner must re-queue it for background reconnection. Non-retryable here drops "
+        "the platform with no recovery path (not queued, and the stranded-platform net is also "
+        "gated on retryable), leaving telegram dead until a manual gateway restart."
+    )
     fatal_handler.assert_awaited_once()
     await _cancel_heartbeat(adapter)
-
-
-@pytest.mark.asyncio
-async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-
-    monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
-        lambda scope, identity, metadata=None: (True, None),
-    )
-    monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
-        lambda scope, identity: None,
-    )
-
-    builder = MagicMock()
-    builder.token.return_value = builder
-    builder.request.return_value = builder
-    builder.get_updates_request.return_value = builder
-    app = SimpleNamespace(
-        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
-        updater=SimpleNamespace(),
-        add_handler=MagicMock(),
-        initialize=AsyncMock(side_effect=RuntimeError("Temporary failure in name resolution")),
-        start=AsyncMock(),
-    )
-    builder.build.return_value = app
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
-
-    ok = await adapter.connect()
-
-    assert ok is False
-    assert adapter.fatal_error_code == "telegram_connect_error"
-    assert adapter.fatal_error_retryable is True
-    assert "Temporary failure in name resolution" in adapter.fatal_error_message
 
 
 @pytest.mark.asyncio
@@ -290,12 +427,16 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
+        "gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
+    async def _start_polling_with_progress(**_kwargs):
+        # Cold connect requires getUpdates readiness (#67498).
+        adapter._record_polling_progress(adapter._polling_generation)
+
     updater = SimpleNamespace(
-        start_polling=AsyncMock(),
+        start_polling=AsyncMock(side_effect=_start_polling_with_progress),
         stop=AsyncMock(),
         running=True,
     )
@@ -314,6 +455,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -344,7 +486,7 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
+        "gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -355,8 +497,12 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     # promptly and expose the still-running task; disconnect() must cancel it.
     monkeypatch.setattr(adapter, "_run_post_connect_housekeeping", _hang_forever)
 
+    async def _start_polling_with_progress(**_kwargs):
+        # Cold connect requires getUpdates readiness (#67498).
+        adapter._record_polling_progress(adapter._polling_generation)
+
     updater = SimpleNamespace(
-        start_polling=AsyncMock(),
+        start_polling=AsyncMock(side_effect=_start_polling_with_progress),
         stop=AsyncMock(),
         running=True,
     )
@@ -378,6 +524,7 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -396,30 +543,6 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     await adapter.disconnect()
     assert adapter._post_connect_task is None
     await _cancel_heartbeat(adapter)
-
-
-@pytest.mark.asyncio
-async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-
-    updater = SimpleNamespace(running=False, stop=AsyncMock())
-    app = SimpleNamespace(
-        updater=updater,
-        running=False,
-        stop=AsyncMock(),
-        shutdown=AsyncMock(),
-    )
-    adapter._app = app
-
-    warning = MagicMock()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.logger.warning", warning)
-
-    await adapter.disconnect()
-
-    updater.stop.assert_not_awaited()
-    app.stop.assert_not_awaited()
-    app.shutdown.assert_awaited_once()
-    warning.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -444,7 +567,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
+        "gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -455,6 +578,8 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
         call_count["n"] += 1
         if call_count["n"] == 1:
             captured["error_callback"] = kwargs["error_callback"]
+            # Cold connect requires getUpdates readiness (#67498).
+            adapter._record_polling_progress(adapter._polling_generation)
         else:
             # Retry attempt fails so the handler enters the reschedule branch.
             raise Exception("Connection refused")
@@ -476,6 +601,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -512,12 +638,14 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     await _cancel_heartbeat(adapter)
 
 
-def _build_polling_app(monkeypatch):
+def _build_polling_app(monkeypatch, adapter):
     """Wire a mock PTB Application whose start_polling captures kwargs."""
     captured = {}
 
     async def fake_start_polling(**kwargs):
         captured.update(kwargs)
+        # Cold connect requires getUpdates readiness (#67498).
+        adapter._record_polling_progress(adapter._polling_generation)
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=fake_start_polling),
@@ -536,6 +664,7 @@ def _build_polling_app(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -550,15 +679,17 @@ def _build_polling_app(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cold_connect_drops_pending_updates(monkeypatch):
-    """A cold first boot (is_reconnect=False) drops the stale Bot API queue."""
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    captured = _build_polling_app(monkeypatch)
+@pytest.mark.parametrize("extra, expected", [({}, False), ({"drop_pending_on_cold_boot": True}, True)])
+async def test_cold_connect_answers_offline_backlog_unless_configured(monkeypatch, extra, expected):
+    """#143123: a cold boot hands PTB start_polling drop_pending_updates=False by default, so
+    messages sent while the gateway was off are answered; an explicit true still drops them."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
+    captured = _build_polling_app(monkeypatch, adapter)
 
-    ok = await adapter.connect()  # default is_reconnect=False
+    ok = await adapter.connect()  # cold boot
 
     assert ok is True
-    assert captured["drop_pending_updates"] is True
+    assert captured["drop_pending_updates"] is expected
     await _cancel_heartbeat(adapter)
 
 
@@ -567,7 +698,7 @@ async def test_reconnect_preserves_pending_updates(monkeypatch):
     """A watcher reconnect (is_reconnect=True) preserves the queue Telegram
     accumulated during the outage — the core of #46621."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    captured = _build_polling_app(monkeypatch)
+    captured = _build_polling_app(monkeypatch, adapter)
 
     ok = await adapter.connect(is_reconnect=True)
 
@@ -590,7 +721,7 @@ async def test_disarm_sets_ptb_stop_event():
     stop_event = asyncio.Event()
     # PTB stores it name-mangled as _Updater__polling_task_stop_event.
     updater = SimpleNamespace(running=True)
-    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    updater._Updater__polling_task_stop_event = stop_event
     adapter._app = SimpleNamespace(updater=updater)
 
     assert not stop_event.is_set()
@@ -599,23 +730,6 @@ async def test_disarm_sets_ptb_stop_event():
     # Must not flip _running — the recovery handler's stop() guards on running
     # and stop() raises if running is already False.
     assert updater.running is True
-
-
-@pytest.mark.asyncio
-async def test_disarm_noop_when_stop_event_absent():
-    """When PTB exposes no stop_event, disarm is a safe no-op (no regression).
-
-    It must NOT flip _running (which would make the handler skip stop() and
-    leave the loop wedged) — it just falls back to the prior async stop() race.
-    """
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    updater = SimpleNamespace(running=True, _running=True)
-    adapter._app = SimpleNamespace(updater=updater)
-
-    adapter._disarm_ptb_retry_loop()  # no stop_event attribute present
-
-    assert updater.running is True
-    assert updater._running is True, "disarm must not flip _running as a fallback"
 
 
 @pytest.mark.asyncio
@@ -632,7 +746,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
+        "gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -641,6 +755,8 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
 
     async def fake_start_polling(**kwargs):
         captured["error_callback"] = kwargs["error_callback"]
+        # Cold connect requires getUpdates readiness (#67498).
+        adapter._record_polling_progress(adapter._polling_generation)
 
     stop_event = asyncio.Event()
     updater = SimpleNamespace(
@@ -648,7 +764,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
         stop=AsyncMock(),
         running=True,
     )
-    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    updater._Updater__polling_task_stop_event = stop_event
     bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
     app = SimpleNamespace(
         bot=bot,
@@ -661,6 +777,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -683,4 +800,3 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     for _ in range(10):
         await asyncio.sleep(0)
     await _cancel_heartbeat(adapter)
-

@@ -89,7 +89,7 @@ telegram:
   observe_unmentioned_group_messages: true
 ```
 
-启用此模式后，来自明确白名单聊天/话题的未提及群组消息会作为观察上下文追加到共享聊天/话题会话记录中，但不会触发 Agent。`allowed_chats` 控制机器人在哪里响应；`group_allowed_chats` 授权用于观察上下文的共享群组会话，因此在此模式下使用相同的聊天 ID。同一白名单聊天/话题中后续的 `@botname` 提及、对机器人的回复或配置的提及模式可以使用该观察上下文。触发消息还会标记 `[nickname|user_id]`，并获得每轮安全 prompt（提示词），使模型将之前观察到的内容视为上下文而非发给机器人的指令。
+启用此模式后，来自明确白名单聊天/话题的未提及群组消息会作为观察上下文追加到共享聊天/话题会话记录中，但不会触发 Agent。`allowed_chats` 控制机器人在哪里响应；`group_allowed_chats` 授权用于观察上下文的共享群组会话，因此在此模式下使用相同的聊天 ID。同一白名单聊天/话题中后续的 `@botname` 提及、对机器人的回复或配置的提及模式可以使用该观察上下文。触发消息还会标记 `[nickname|user_id]`，并获得每轮安全 prompt（提示词），使模型将之前观察到的内容视为上下文而非发给机器人的指令。在该聊天/话题中发送的斜杠命令（`/new`、`/model`、`/undo`、技能命令）作用于同一个共享会话，而仅限管理员的命令仍按发送者进行检查。
 
 等效环境变量：
 
@@ -633,7 +633,7 @@ platforms:
 
 带有 `skill` 字段的话题会在该话题中新会话开始时自动加载该技能。这与在对话开始时输入 `/skill-name` 完全相同——技能内容会注入到第一条消息中，后续消息在对话历史中可以看到它。
 
-例如，带有 `skill: arxiv` 的话题会在其会话重置时（由于空闲超时、每日重置或手动 `/reset`）预加载 arxiv 技能。
+例如，带有 `skill: arxiv` 的话题会在其会话重置时（手动 `/new` 或 `/reset`）预加载 arxiv 技能。
 
 :::tip
 在配置之外创建的话题（例如通过手动调用 Telegram API）会在 `forum_topic_created` 服务消息到达时自动被发现。你也可以在 gateway 运行时向配置中添加话题——它们会在下次缓存未命中时被拾取。
@@ -757,7 +757,7 @@ Hermes 会确认会话标题，并重放最后一条助手消息以提供上下�
 - 论坛启用私聊中的 General（置顶顶部）话题被视为根大厅，无论 Telegram 是以 `message_thread_id=1` 还是无 thread_id 投递其消息
 - 根大厅提醒每个聊天每 30 秒限速一条——忘记话题模式已开启并在根目录输入十条 prompt 的用户不会收到十条回复
 - BotFather 设置截图每个聊天每 5 分钟限速一次发送——在 Threads Settings 仍然禁用时重复尝试 `/topic` 不会重复上传同一张图片
-- 在话题内启动的 `/background <prompt>` 会将结果投递回同一话题；后台会话不会触发所属话题的自动重命名
+- 在话题内启动的 `/bg <prompt>` 会将结果投递回同一话题；后台会话不会触发所属话题的自动重命名
 - `/topic` 本身受机器人用户授权检查限制——未授权的私聊会收到拒绝而非激活
 
 ### 禁用多会话模式
@@ -894,9 +894,13 @@ gateway:
     telegram:
       extra:
         rich_messages: true
+        rich_drafts: false
+        allow_cjk_rich_messages: false
 ```
 
-这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。`rich_drafts` 控制私聊流式预览是否使用富渲染（`sendRichMessageDraft`），默认关闭，因为 Telegram Desktop/macOS 可能在聊天重绘前视觉叠加富草稿帧；关闭时，预览以纯文本流式显示，最终消息仍以原生富消息送达。
+
+CJK 文本（中文、日文、韩文以及罕见汉字扩展）默认仍走旧版 MarkdownV2 路径，因为受影响的 Telegram Desktop/macOS 客户端曾将 Bot API 富消息渲染成重叠的 CJK 字形。如果你使用不受影响的客户端，并希望 CJK 内容里的表格、任务列表、折叠详情和公式走原生富渲染，可以在 `rich_messages: true` 旁显式设置 `allow_cjk_rich_messages: true`，接受该客户端侧风险。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 
@@ -1196,7 +1200,7 @@ telegram:
 
 点击按钮回答，或点击 **Other** 输入自由形式的回复（你发送的下一条消息成为答案）。开放式 `clarify` 调用（无预设选项）跳过按钮，直接捕获你的下一条消息。
 
-通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `600` 秒）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
+通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `90` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
 
 ## 推送通知音量
 
@@ -1232,4 +1236,4 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 
 切勿公开分享你的机器人 token。如果泄露，请立即通过 BotFather 的 `/revoke` 命令撤销。
 
-更多详情，请参阅[安全文档](/user-guide/security)。你也可以使用 [DM 配对](/user-guide/messaging#dm-pairing-alternative-to-allowlists) 进行更动态的用户授权方式。
+更多详情，请参阅[安全文档](../security.md)。你也可以使用 [DM 配对](./index.md#dm-pairing-alternative-to-allowlists) 进行更动态的用户授权方式。

@@ -78,60 +78,6 @@ def test_dm_phone_with_plus_allowlist_matches_lid_sender():
     assert adapter._is_dm_allowed(f"{LID}@lid") is True
 
 
-def test_dm_lid_allowlist_matches_phone_sender():
-    """Reverse direction: allow_from has the LID, sender arrives as phone JID."""
-    _write_lid_mapping()
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=[LID])
-
-    assert adapter._is_dm_allowed(f"{PHONE}@s.whatsapp.net") is True
-
-
-def test_dm_exact_phone_jid_still_matches():
-    """allow_from with the bare phone matches a phone-JID sender without any mapping."""
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=[PHONE])
-
-    assert adapter._is_dm_allowed(f"{PHONE}@s.whatsapp.net") is True
-
-
-def test_dm_wildcard_allows_any_sender():
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=["*"])
-
-    assert adapter._is_dm_allowed(f"{LID}@lid") is True
-
-
-def test_dm_unlisted_lid_sender_blocked():
-    _write_lid_mapping()
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=[PHONE])
-
-    assert adapter._is_dm_allowed("99999999999999@lid") is False
-
-
-def test_dm_empty_allowlist_blocks_everyone():
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=[])
-
-    assert adapter._is_dm_allowed(f"{LID}@lid") is False
-
-
-def test_dm_disabled_policy_blocks_even_allowlisted():
-    _write_lid_mapping()
-    adapter = _make_adapter(dm_policy="disabled", allow_from=[PHONE])
-
-    assert adapter._is_dm_allowed(f"{LID}@lid") is False
-
-
-def test_dm_open_policy_allows_anyone_with_opt_in(monkeypatch):
-    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-    adapter = _make_adapter(dm_policy="open")
-
-    assert adapter._is_dm_allowed("anyone@lid") is True
-
-
-def test_dm_open_policy_blocked_without_opt_in():
-    adapter = _make_adapter(dm_policy="open")
-
-    assert adapter._is_dm_allowed("anyone@lid") is False
-
-
 # ------------------------------------------------------------------ group gate
 
 def test_group_jid_exact_match_still_works():

@@ -1,0 +1,38 @@
+name: docket
+repo: https://github.com/MKempler/docket
+sha: 3bba998b245d24851fe81cb0796145067057e03f
+title: "Docket"
+description: "Quotes for trades businesses (plumbers, electricians, HVAC): describe a job in words or a voice note and Docket prices every line from the owner's own price book with a deterministic engine (the model only picks item codes; it never writes a number). The owner approves with one tap on Telegram, Slack, Discord or Desktop, the customer accepts on a quote page, and the owner books the day and closes out with an invoice. Includes a plain-words price book editor with preview before save, PDF quotes and invoices, follow-ups, a run sheet and a Desktop Jobs board. Disclosure — Docket stores customers, quotes and invoices in a local SQLite file under plugin-data/docket and starts a local HTTP server for the customer accept page (127.0.0.1:8787 by default, in a background thread of the gateway, one server for all profiles the gateway serves); it reads a price list file only when the owner names one; job descriptions and unreadable price lists go to the model configured in Hermes; the pre_transcription hook adds price book item names to the speech-to-text prompt; sending a quote and saving price changes ask the owner first, and both, plus closing a job, are blocked in scheduled runs; with Obol installed, close-out returns a prepared draft that the agent creates through obol_create_invoice, so Obol's own approval applies (Docket never calls Obol itself). No outbound network calls of its own, no shell commands, no credentials, no telemetry, no email sending."
+maintainer: MKempler
+tier: community
+category: tools
+version: "0.1.1"
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/MKempler/docket#readme
+image: "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/banner.png"
+screenshots:
+- "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/phones.png"
+- "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/accept-page.png"
+- "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/desktop-board.png"
+- "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/desktop-pricebook.png"
+- "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/quote-pdf.png"
+- "https://raw.githubusercontent.com/MKempler/docket/3bba998b245d24851fe81cb0796145067057e03f/assets/eval-chart.png"
+platforms: []
+capabilities:
+  provides_tools:
+  - docket_price_preview
+  - docket_quote
+  - docket_send_quote
+  - docket_jobs
+  - docket_close_job
+  - docket_pricebook_edit
+  - docket_pricebook_save
+  - docket_followups
+  - docket_run_sheet
+  - docket_pipeline
+  provides_hooks:
+  - pre_tool_call
+  - pre_llm_call
+  - pre_transcription
+  provides_middleware: []
+  requires_env: []

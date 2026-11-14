@@ -10,6 +10,7 @@ import {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/dialog'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { Upload } from '@/lib/icons'
 
@@ -75,17 +76,18 @@ export function ShareControls({ imported = false, onImport, onResetMap, shareCod
         }}
         open={open}
       >
-        <DialogTrigger asChild>
-          <Button
-            aria-label={t.starmap.shareTitle}
-            className="text-muted-foreground hover:text-foreground"
-            size="icon"
-            title={t.starmap.shareTitle}
-            variant="ghost"
-          >
-            <Upload className="size-3.5" />
-          </Button>
-        </DialogTrigger>
+        <Tip label={t.starmap.shareTitle}>
+          <DialogTrigger asChild>
+            <Button
+              aria-label={t.starmap.shareTitle}
+              className="text-muted-foreground hover:text-foreground"
+              size="icon"
+              variant="ghost"
+            >
+              <Upload className="size-3.5" />
+            </Button>
+          </DialogTrigger>
+        </Tip>
 
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -99,7 +101,7 @@ export function ShareControls({ imported = false, onImport, onResetMap, shareCod
           <div className="group/code relative">
             <textarea
               aria-label={t.starmap.shareTitle}
-              className="h-24 w-full resize-none rounded-md bg-foreground/5 p-2.5 pr-9 font-mono text-xs leading-relaxed break-all text-muted-foreground/90 outline-none transition placeholder:text-muted-foreground/50 focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring/40"
+              className="h-24 w-full resize-none rounded-md bg-foreground/5 p-2.5 pr-9 font-mono text-xs leading-relaxed break-all text-muted-foreground/90 transition placeholder:text-muted-foreground/50 focus-visible:outline-hidden focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring/40"
               onChange={e => {
                 setValue(e.target.value)
                 setError(null)

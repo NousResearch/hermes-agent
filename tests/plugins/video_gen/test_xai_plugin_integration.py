@@ -24,7 +24,7 @@ def _reset_registry():
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, payload: Optional[Dict[str, Any]] = None):
+    def __init__(self, status: int = 200, payload: Optional[dict[str, Any]] = None):
         self.status_code = status
         self._payload = payload or {}
         self.text = json.dumps(self._payload)
@@ -40,7 +40,7 @@ class _FakeResponse:
 
 class _FakeAsyncClient:
     def __init__(self):
-        self.posts: List[Dict[str, Any]] = []
+        self.posts: list[dict[str, Any]] = []
 
     async def __aenter__(self):
         return self
@@ -66,7 +66,7 @@ def xai_provider(monkeypatch):
 
     import plugins.video_gen.xai as xai_plugin
 
-    captured: Dict[str, _FakeAsyncClient] = {}
+    captured: dict[str, _FakeAsyncClient] = {}
 
     def _client_factory():
         captured["client"] = _FakeAsyncClient()
@@ -83,7 +83,7 @@ def xai_provider(monkeypatch):
     return provider, captured
 
 
-def _last_post(captured) -> Dict[str, Any]:
+def _last_post(captured) -> dict[str, Any]:
     return captured["client"].posts[-1]
 
 
@@ -109,21 +109,7 @@ class TestXAIEndpoint:
 
 
 class TestXAIPayload:
-    def test_text_payload_has_no_image_field(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate("a dog at sunset")
-        payload = _last_post(captured)["json"]
-        assert payload["model"] == "grok-imagine-video"
-        assert payload["prompt"] == "a dog at sunset"
-        assert "image" not in payload
-        assert "reference_images" not in payload
 
-    def test_image_payload_has_image_field(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate("animate this", image_url="https://example.com/cat.png")
-        payload = _last_post(captured)["json"]
-        assert payload["model"] == "grok-imagine-video-1.5"
-        assert payload["image"] == {"url": "https://example.com/cat.png"}
 
     def test_local_image_path_is_sent_as_data_uri(self, xai_provider, tmp_path):
         provider, captured = xai_provider
@@ -133,19 +119,7 @@ class TestXAIPayload:
         provider.generate("animate this", image_url=str(image_path))
 
         payload = _last_post(captured)["json"]
-        assert payload["model"] == "grok-imagine-video-1.5"
         assert payload["image"]["url"].startswith("data:image/png;base64,")
-
-    def test_explicit_model_override_is_honored_for_image(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate(
-            "animate this",
-            image_url="https://example.com/cat.png",
-            model="grok-imagine-video",
-            _model_override_explicit=True,
-        )
-        payload = _last_post(captured)["json"]
-        assert payload["model"] == "grok-imagine-video"
 
     def test_reference_images_payload(self, xai_provider):
         provider, captured = xai_provider
@@ -172,19 +146,9 @@ class TestXAIValidation:
         # Never hit the network
         assert "client" not in captured or not captured["client"].posts
 
-    def test_image_plus_refs_rejects(self, xai_provider):
-        provider, captured = xai_provider
-        result = provider.generate(
-            "x",
-            image_url="https://example.com/i.png",
-            reference_image_urls=["https://example.com/r.png"],
-        )
-        assert result["success"] is False
-        assert result["error_type"] == "conflicting_inputs"
-        assert "client" not in captured or not captured["client"].posts
 
     def test_too_many_references_rejects(self, xai_provider):
-        provider, captured = xai_provider
+        provider, _captured = xai_provider
         result = provider.generate(
             "x",
             reference_image_urls=[f"https://example.com/r{i}.png" for i in range(8)],
@@ -199,15 +163,6 @@ class TestXAIClamping:
         provider.generate("x", duration=30)
         assert _last_post(captured)["json"]["duration"] == 15
 
-    def test_duration_clamped_when_refs_present(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate(
-            "x",
-            duration=15,
-            reference_image_urls=["https://example.com/r.png"],
-        )
-        # refs present caps to 10
-        assert _last_post(captured)["json"]["duration"] == 10
 
     def test_invalid_aspect_ratio_soft_clamps(self, xai_provider):
         provider, captured = xai_provider

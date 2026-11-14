@@ -16,7 +16,7 @@ A useful report includes:
 - A concise description and severity assessment.
 - The affected component, identified by file path and line range
   (e.g. `path/to/file.py:120-145`).
-- Environment details (`hermes version`, commit SHA, OS, Python
+- Environment details (`hermes --version`, commit SHA, OS, Python
   version).
 - A reproduction against `main` or the latest release.
 - A statement of which trust boundary in §2 is crossed.
@@ -177,9 +177,12 @@ authorization model, but the rules below apply uniformly.
 
 **Surfaces in Hermes Agent:**
 
-- **Gateway platform adapters.** Messaging integrations in
-  `gateway/platforms/` (Telegram, Discord, Slack, email, SMS, etc.)
-  and analogous adapters shipped as plugins.
+- **Gateway platform adapters.** Most messaging integrations ship as
+  bundled plugins under `plugins/platforms/<name>/` (Telegram, Discord,
+  Slack, email, SMS, etc.). Shared base types and a smaller set of
+  legacy/direct adapters live under `gateway/platforms/`
+  (`base.py`, Signal, API server, webhooks, …), with discovery and
+  deferred loading via `gateway/platform_registry.py`.
 - **Network-exposed HTTP surfaces.** The API server adapter, the
   dashboard plugin, the kanban plugin's HTTP endpoints, and any
   other plugin that binds a listening socket.
@@ -212,6 +215,15 @@ authorization model, but the rules below apply uniformly.
    Hermes Agent does not model per-caller capabilities inside a
    single adapter. Operators who need capability separation should
    run separate agent instances with separate allowlists.
+   **Profiles are not tenants.** Every profile under one OS user is
+   inside the same trust envelope: an authorized dashboard/`serve`
+   caller, and the agent itself, can reach any sibling profile's
+   files. `serve`/`dashboard --isolated` is a routing and operations
+   convenience (a dedicated server that lists only its launch
+   profile), not an authorization boundary. Isolating users from each
+   other requires separate OS users or containers (§2.2); reports that
+   an `--isolated` server reaches a sibling profile are out of scope
+   (§3.2).
 5. **Binding a local-only surface to a non-loopback interface is a
    break-glass operator decision (§3.2).** The dashboard and other
    plugin HTTP servers default to loopback; exposing them via
@@ -271,6 +283,11 @@ private-disclosure channel and don't receive advisories.
   isolation that only sandboxes shell; reports whose preconditions
   require pre-existing write access to operator-owned configuration
   or credential files (those are already inside the trust envelope).
+- **Sibling-profile reach from a dashboard/`serve` caller.** Profiles
+  under one OS user share one trust envelope (§2.6 rule 4); an
+  `--isolated` server or a `?profile=` selector reaching a sibling
+  profile's files is not a vulnerability. Separate users need separate
+  OS users or containers (§2.2).
 - **Documented break-glass settings.** Operator-selected trade-offs
   that explicitly disable protections: `--insecure` and equivalent
   flags on the dashboard or other components, disabled approvals,

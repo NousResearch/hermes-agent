@@ -19,10 +19,14 @@ hermes --tui
 # Resume the latest TUI session (falls back to the latest classic session)
 hermes --tui -c
 hermes --tui --continue
+hermes --tui --resume latest
 
 # Resume a specific session by ID or title
 hermes --tui -r 20260409_000000_aa11bb
 hermes --tui --resume "my t0p session"
+
+# Resume the latest session for a specific project directory
+hermes --tui --resume latest --in ./my-project
 
 # Run source directly — skips the prebuild step (for TUI contributors)
 hermes --tui --dev
@@ -79,6 +83,10 @@ Click anywhere on a section header (or its chevron) to toggle it. The Tools list
 
 On first launch Hermes installs the TUI's Node dependencies into `ui-tui/node_modules` (one-time, a few seconds). Subsequent launches are fast. If you pull a new Hermes version, the TUI bundle is rebuilt automatically when sources are newer than the dist.
 
+:::tip Working across git worktrees?
+Contributors who run `hermes --tui --dev` from many worktrees can share one `node_modules` instead of installing per checkout — see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md).
+:::
+
 ### External prebuild
 
 Distributions that ship a prebuilt bundle (Nix, system packages) can point Hermes at it:
@@ -94,11 +102,20 @@ The directory must contain `dist/entry.js`.
 
 Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavioral differences:
 
+On macOS, `F7` means the physical F7 function key. MacBook keyboards may use that row for system controls instead; hold **Fn** (the **globe** key on newer keyboards) while pressing **F7**, or enable **Use F1, F2, etc. keys as standard function keys** in **System Settings → Keyboard → Keyboard Shortcuts → Function Keys**. If the terminal still does not forward it, use the equivalent **Ctrl+R** binding below.
+
+- **`Ctrl+T`** expands the automatic live-work dock (subagents, plus a **Processes** block for `terminal(background=true)` spawns) into the full-height `/agents` roster. Select a worker and press **Enter** (or **`t`**) for its live transcript, **`d`** for rich details, **`e`** to steer, or **`x`** to stop it. The dock fits its row count to terminal height and preserves your composer draft. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents).
+- A standing **`/goal`** gets its own row above the live dock (`⊙ goal · 3/20 turns · 2 subgoals · …`, or `⏳ goal parked` / `⏸ goal paused` with the reason); it repaints as soon as anything changes the goal, a tool mid-turn included, and leaves once the goal is done or cleared. Queued follow-ups are listed above it.
+- **`Ctrl+R`** toggles the live dock between its default preview and one summary line. **`F7`** remains an optional alias where the terminal sends function keys through. This does not open the monitor or move composer focus; the choice lasts for this TUI process without changing config.
 - **Mouse drag** highlights text with a uniform selection background.
+- **`Ctrl+P`** expands a collapsed paste (`[[ … [60 lines] … ]]`) back into editable text so you can read or change it; press it again (or send) to fold it back into a chip, and the model receives the text as edited. A sent message keeps the chip with a **Pasted text #N** row under it: click the row to open it, or press `Ctrl+P` on an empty composer to open/close every sent paste.
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
-- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
+- **Typing while the agent is busy** (`display.busy_input_mode: queue`, the TUI default) submits the message to the gateway immediately. The gateway's durable session queue orders it behind the running turn, so it survives a gateway crash or restart and shows up as `[queued] …` in the `queued (N)` panel of every client attached to the session — the Desktop app sees the same list. Your message's transcript bubble appears when its turn actually starts. `steer` and `interrupt` still act on the live turn as before.
+- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead — for a gateway-queued row this cancels it on the gateway (`prompt.cancel`), so it disappears for every viewer; picking and re-sending an edited row cancels the original and submits the edit as a new input (if the original has already started by then, it is stopped and the edit runs after it). **`Esc`** cancels editing and unhighlights without deleting.
+- **`Esc`, `Esc`** on an idle, empty composer goes back to an earlier prompt (Codex-style backtrack, same as `/rewind`). The first `Esc` primes it and the hint row shows `esc again to edit previous message` (only when there is an earlier prompt; with none, the second `Esc` says `No previous message to edit.`). There is no time limit, but any other key, a click, a paste or a new turn cancels the prime and then acts as usual. The second `Esc` opens **transcript browsing** with your latest prompt selected and drawn in reverse video, and a hint row `Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back`. **←/h** picks the next older prompt and **→/l** the next newer one (it stops at the ends); **↑/↓/j/k** scroll the transcript a line and **PgUp/PgDn** a page, without changing the selection. **Enter** closes browsing and puts the selected prompt in the composer, not sent, with the hint `↺ Editing prompt N — Enter rewinds here and sends · Esc Esc cancels`: edit it and press **Enter**, and that prompt plus everything after it is removed from the session and your edit goes out as a new turn. Nothing is removed until you send. Sending an empty composer, a slash command, `Esc Esc`, `Ctrl+C` or switching session cancels the edit and removes nothing. **f** forks instead: a new session with everything *before* the selected prompt, with that prompt waiting in the composer (not sent); the original session is left untouched, and forking the very first prompt starts a fresh session with it prefilled. **Esc** goes back to where the transcript was scrolled before, **q** or `Ctrl+C` closes, and any other key closes browsing and is typed into the composer. In `--tui-native` mode, where the transcript lives in the terminal's own scrollback, browsing opens a transcript pager of the session's prompts and replies above the composer instead, with the same keys. With a draft in the composer `Esc Esc` still discards the draft, and mid-turn it still interrupts. Prompts that carried images keep their number but can't be selected.
+- **Approval prompts** offer **No, and tell Hermes what to do instead** after **Deny**. Pick it (or press its number), type the instruction, and press **Enter**: the instruction is steered into the running turn (as `/steer` would) and the command is denied, so Hermes sees both together and tries again your way. If the turn already ended, the instruction is queued as your next prompt. **Esc** on the typing row goes back to the choices; **Esc** on the choices still denies outright.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands
@@ -108,12 +125,14 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | Command | TUI behavior |
 |---------|--------------|
 | `/help` | Overlay with categorized commands, arrow-key navigable |
+| `/rewind` | Transcript browsing (no prime step): **←/→** pick an earlier prompt, **Enter** puts it in the composer to edit and resend (everything from it on is removed when you send), **f** forks a new session from just before it, **Esc** goes back. Also `Esc`, `Esc` on an empty composer |
 | `/sessions` (alias `/switch`) | Live session switcher — list open TUI sessions, switch between them, close them, or start another one |
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details (global or per-section) |
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
+| `/connectors` | Connector accounts list: rename, add, reconnect or remove accounts, and show retired ones. See [Slash Commands](../reference/slash-commands.md#tools--skills) for the keys |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
 | `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
@@ -130,9 +149,9 @@ Open it with any of these:
 - `/sessions new` to create a fresh live session immediately.
 - Click the `N live sessions` count in the status line.
 
-<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src="/img/docs/tui-session-orchestrator/session-orchestrator.png" />
+<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src="/docs/img/docs/tui-session-orchestrator/session-orchestrator.png" />
 
-<video controls muted loop playsInline src="/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4" title="Hermes TUI Session Orchestrator demo" />
+<video controls muted loop playsInline src="/docs/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4" title="Hermes TUI Session Orchestrator demo" style={{maxWidth: '100%'}}></video>
 
 Inside the switcher:
 
@@ -191,6 +210,8 @@ Unset the variable or pass `--resume <id>` explicitly to override on a per-launc
 
 The TUI's status line tracks agent state in real time:
 
+After a session is named, its title appears as an accent-colored badge at the far-right edge of the status line. The title takes the workspace label's place and truncates on narrow terminals.
+
 | Status | Meaning |
 |--------|---------|
 | `starting agent…` | Session ID is live; tools and skills still coming online. You can type — messages queue and send when ready. |
@@ -206,7 +227,7 @@ The status line also shows:
 - **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.
 - **Per-prompt elapsed time** — `⏱ 12s/3m 45s` while the turn is running (live), frozen to `⏲ 32s / 3m 45s` after the turn completes. First number is time since last user message; second is total session duration. Resets on every new prompt.
 - **`🗜️ N`** — number of times the running session has been auto-compressed. Appears once the first compression fires.
-- **`▶ N`** — number of `/background` tasks currently running in this session. Appears whenever at least one task is in flight.
+- **`▶ N`** — number of `/bg` tasks currently running in this session. Appears whenever at least one task is in flight.
 - **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
 ## Configuration
@@ -231,6 +252,7 @@ display:
                              #   buttons — adds 1002 for terminal-side drag selection
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
+  inline_images: auto        # auto | kitty | iterm | unicode | off — see the CLI guide's "Inline Images"
 ```
 
 Runtime toggles:
@@ -273,13 +295,18 @@ See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 
 ## How the TUI talks to its gateway
 
-By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained — there's nothing to configure.
+By default the TUI attaches to the profile's shared gateway, the same process that serves `hermes chat`, the Desktop app and your messaging platforms. When no gateway is running, the TUI starts one; a gateway started this way stops itself after it has been idle for a while. The TUI connects to it over a local WebSocket (`/api/ws`) that speaks the `hermes-gateway-v1` protocol, with a single-use ticket from the attach step. There is nothing to configure. Other local programs attach the same way with [`hermes gateway attach --json`](../reference/cli-commands.md#local-runtime-discovery-and-startup).
 
-You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
+You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). That endpoint lives in the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
-There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
+There is no general "point any TUI at any gateway port" mode: the gateway's own `/api/ws` admits only a loopback client holding a single-use ticket from the attach step. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
 
-If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
+### If the connection drops
+
+- **The WebSocket drops:** the TUI says *Connection to Hermes lost — reconnecting and reopening your chat…*, reconnects with growing backoff and reattaches to the same session — including a reply that is still streaming on the gateway. Nothing is resubmitted.
+- **The gateway is gone** (a crash, its idle exit, `hermes gateway stop`): the TUI starts it again, at most a few times per minute, and reopens the same saved session. A reply that was in flight when the gateway crashed is lost with it.
+
+The TUI, `hermes chat`, the Desktop app and your messaging platforms already share the profile's gateway and its sessions (see [Sessions](sessions.md)); a hand-set gateway URL adds nothing.
 
 ## Reverting to the classic CLI
 

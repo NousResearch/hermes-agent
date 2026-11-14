@@ -39,7 +39,7 @@ def test_allowlisted_name_function_heredoc_stays_visible(tmp_path):
 
 def test_unquoted_heredoc_body_path_still_walked(tmp_path):
     """An expansion-capable body is not provably inert: the walk still sees it and fails closed."""
-    big = _big_file(tmp_path)
+    big = _big_file(tmp_path).as_posix()
     assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is True
 
 
@@ -73,12 +73,13 @@ def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, m
 
     try:
         for data in (minified, notes, db):
-            command = f"cd {tmp_path} && python3 - <<'PY'\nt = open('{data}', encoding='utf-8').read()\nPY"
+            command = (f"cd {tmp_path.as_posix()} && python3 - <<'PY'\n"
+                       f"t = open('{data.as_posix()}', encoding='utf-8').read()\nPY")
             assert guard(command, cwd=str(tmp_path), read_remote_script=remote) is False, data.name
         assert remote_misses  # the notes table was walked and its misses were bounded, not fatal
-        unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {minified}")
+        unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {minified.as_posix()}")
         assert unsafe is True and "budget" in refusal
-        unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {db}")
+        unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {db.as_posix()}")
         assert unsafe is True and "SQLite" in refusal
     finally:
         conn.close()

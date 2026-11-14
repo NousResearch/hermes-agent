@@ -292,6 +292,7 @@ def test_agent_job_provider_classification_unchanged(error, expected):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("posix")
 def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
     """A no-agent job's script must run through the configured interpreter.
 

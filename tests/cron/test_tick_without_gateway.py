@@ -158,13 +158,16 @@ def test_headless_receipt_recovery_never_connects_or_spawns(cron_home, monkeypat
 
 def test_no_agent_jobs_still_fire_without_a_gateway(cron_home, monkeypatch):
     counter = cron_home / "fires.txt"
-    script = cron_home / "scripts" / "fire.sh"
-    script.write_text(f"#!/bin/sh\necho fired >> {counter}\necho fired\n", encoding="utf-8")
-    script.chmod(0o755)
+    (cron_home / "scripts" / "fire.py").write_text(
+        f"with open({str(counter)!r}, 'a', encoding='utf-8') as f:\n"
+        "    f.write('fired\\n')\n"
+        "print('fired')\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         scheduler_authority, "reconcile_pending",
         lambda *, allow_connect=True: None)
-    job = J.create_job(prompt=None, schedule="every 1h", name="script", script="fire.sh",
+    job = J.create_job(prompt=None, schedule="every 1h", name="script", script="fire.py",
                        no_agent=True, deliver="local")
     _make_due(job["id"])
 

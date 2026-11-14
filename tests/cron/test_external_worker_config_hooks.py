@@ -73,7 +73,9 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
     assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-1.ready") is True
     # Registered under the OWNING profile's home key, not the launch home's.
     profile_key = hermes_home_key(profile)
-    assert any(home == profile_key and event == "on_session_start" and command == HOOK_CMD
+    assert any(hermes_home_key(home) == profile_key and event == "on_session_start"
+               and command == HOOK_CMD
                for home, event, _matcher, command in shell_hooks._registered)
-    assert any(home == profile_key and event == "on_session_end" and url == OUTBOUND_URL
+    assert any(hermes_home_key(home) == profile_key and event == "on_session_end"
+               and url == OUTBOUND_URL
                for home, event, url in outbound_webhooks._registered)

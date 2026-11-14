@@ -1,6 +1,7 @@
 """Tests for the dashboard-auth cookie helpers."""
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
@@ -11,11 +12,15 @@ from hermes_cli.dashboard_auth.cookies import (
     SESSION_AT_COOKIE,
     SESSION_PROVIDER_COOKIE,
     SESSION_RT_COOKIE,
+    SSO_ATTEMPT_COOKIE,
+    WEBAPP_SIGNIN_COOKIE,
     clear_pkce_cookie,
     clear_session_cookies,
     read_pkce_cookie,
     read_session_cookies,
     read_session_provider,
+    read_sso_attempt_cookie,
+    read_webapp_signin_cookie,
     set_pkce_cookie,
     set_session_cookies,
 )
@@ -150,6 +155,49 @@ def test_https_reader_ignores_bare_cookie_names():
     assert read_session_cookies(req) == (None, None)
     assert read_session_provider(req) is None
     assert read_pkce_cookie(req) is None
+
+
+_ALL_READERS = (
+    (SESSION_AT_COOKIE, lambda r: read_session_cookies(r)[0]),
+    (SESSION_RT_COOKIE, lambda r: read_session_cookies(r)[1]),
+    (SESSION_PROVIDER_COOKIE, read_session_provider),
+    (PKCE_COOKIE, read_pkce_cookie),
+    (WEBAPP_SIGNIN_COOKIE, read_webapp_signin_cookie),
+    (SSO_ATTEMPT_COOKIE, read_sso_attempt_cookie),
+)
+
+
+def _request(scheme: str, cookie_prefix: str, *, proxy_prefix: str = "") -> Request:
+    jar = "; ".join(f"{cookie_prefix}{name}=v-{name}" for name, _ in _ALL_READERS)
+    headers = [(b"cookie", jar.encode())]
+    if proxy_prefix:
+        headers.append((b"x-forwarded-prefix", proxy_prefix.encode()))
+    return Request({"type": "http", "method": "GET", "path": "/", "scheme": scheme,
+                    "server": ("agent.example.test", 443 if scheme == "https" else 80),
+                    "headers": headers})
+
+
+@pytest.mark.parametrize("scheme,proxy_prefix,written,planted", [
+    # Direct HTTPS: the setter writes __Host-; a __Secure- cookie can be Domain=<parent>-planted.
+    ("https", "", "__Host-", ("__Secure-", "")),
+    # HTTPS behind a proxy prefix: the setter writes __Secure- (Path != /), never __Host-.
+    ("https", "/hermes", "__Secure-", ("__Host-", "")),
+])
+def test_https_readers_accept_only_the_name_the_setter_writes(scheme, proxy_prefix, written, planted):
+    for cookie_prefix in planted:
+        req = _request(scheme, cookie_prefix, proxy_prefix=proxy_prefix)
+        for name, reader in _ALL_READERS:
+            assert reader(req) is None, (cookie_prefix, name)
+    req = _request(scheme, written, proxy_prefix=proxy_prefix)
+    for name, reader in _ALL_READERS:
+        assert reader(req) == f"v-{name}", (written, name)
+
+
+@pytest.mark.parametrize("cookie_prefix", ["__Host-", "__Secure-", ""])
+def test_plain_http_readers_keep_every_variant(cookie_prefix):
+    req = _request("http", cookie_prefix)
+    for name, reader in _ALL_READERS:
+        assert reader(req) == f"v-{name}", (cookie_prefix, name)
 
 
 # ---------------------------------------------------------------------------

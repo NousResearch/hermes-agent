@@ -1,5 +1,6 @@
 import type { SessionInfo } from '@hermes/shared/gateway-types'
 
+import { storedClarifySettledRows } from '../app/clarifyTranscript.js'
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
@@ -23,6 +24,21 @@ export const userDisplay = (text: string) => {
 const storedRowId = (role: string, rowId: unknown): Pick<Msg, 'rowId'> =>
   role === 'user' && Number.isSafeInteger(rowId) && (rowId as number) > 0 ? { rowId: rowId as number } : {}
 
+/** A resumed tool row joins the next reply's trail; a settled clarify shows its answers as main's TUI wrote them
+ * live (the trail, then a `question → answer` bubble). Returns the trail lines still pending. */
+const pushToolRow = (out: Msg[], pending: string[], { content, context, name }: TranscriptRow): string[] => {
+  const settled = name === 'clarify' && content ? storedClarifySettledRows(content) : null
+
+  if (!settled) {
+    return [...pending, buildToolTrailLine(name ?? 'tool', context ?? '')]
+  }
+
+  out.push({ kind: 'trail', role: 'system', text: '', tools: [...pending, settled.trail] })
+  out.push({ role: 'user', text: settled.userText })
+
+  return []
+}
+
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
     return []
@@ -36,13 +52,13 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, display_kind, name, role, row_id, text, timestamp } = row as TranscriptRow
+    const { content, context, display_kind, name, role, row_id, text, timestamp } = row as TranscriptRow
 
     const createdAt =
       typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
 
     if (role === 'tool') {
-      pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
+      pending = pushToolRow(out, pending, { content, context, name })
 
       continue
     }
@@ -126,6 +142,7 @@ export const fmtDuration = (ms: number) => {
 }
 
 interface TranscriptRow {
+  content?: string
   context?: string
   display_kind?: string
   display_metadata?: { task_count?: number; [key: string]: unknown }

@@ -24,3 +24,34 @@ export function clarifySettledRows(questions: ClarifyTranscriptQuestion[], answe
       .join('\n')
   }
 }
+
+/** The clarify tool's stored result (`tools/clarify_tool.py::_result`), as much of it as the transcript reads. */
+interface StoredClarifyResult {
+  responses?: { question?: string; user_response?: null | string | string[] }[]
+}
+
+/** The same rows rebuilt from a stored clarify result on resume, or null when it has no responses. */
+export function storedClarifySettledRows(content: string) {
+  let result: StoredClarifyResult | null
+
+  try {
+    // SAFETY: `content` is the clarify tool's own JSON result; a row of another shape only loses its bubble.
+    result = JSON.parse(content) as StoredClarifyResult | null
+  } catch {
+    return null
+  }
+
+  const responses = result?.responses
+
+  if (!Array.isArray(responses) || !responses.length) {
+    return null
+  }
+
+  const rows = responses.map((row, index) => ({
+    answer: Array.isArray(row?.user_response) ? row.user_response.join(', ') : (row?.user_response ?? undefined),
+    qid: `q${index}`,
+    question: row?.question ?? ''
+  }))
+
+  return clarifySettledRows(rows, Object.fromEntries(rows.map(row => [row.qid, row.answer])))
+}

@@ -611,7 +611,14 @@ DANGEROUS_PATTERNS = [
     # consent. Global flags between docker/compose and the verb and the legacy `docker-compose`
     # binary are allowed so a flag can't slip past.
     (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
-    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:container\s+)?(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    # Removing a container or volume is strictly more destructive than stopping it, and the canonical
+    # `container` spelling and the prunes (every stopped container, unused volume/image data) are the same
+    # verbs (#132483). `docker image rm`/`rmi`/`network rm` stay ungated: a pull or a recreate restores them.
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:container\s+)?rm\b', "docker/podman rm (container destruction)"),
+    (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'rm\b', "docker compose rm (container destruction)"),
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'volume\s+(?:rm|prune)\b', "docker/podman volume rm/prune (volume data destruction)"),
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:container|system)\s+prune\b', "docker/podman container/system prune (removes every stopped container)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),

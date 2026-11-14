@@ -47,6 +47,20 @@ def _is_legacy_voice_key(key: str) -> bool:
     return not (_is_platform_name(parts[0]) or (len(parts) == 3 and _is_platform_name(parts[1])))
 
 
+def _owner_voice_config(owner_profile: Optional[str]) -> dict:
+    """The ``voice`` block of the adapter OWNER's config. Secondary startup and reconnect sync after
+    leaving ``_profile_runtime_scope``, so an ambient read would copy the launch profile's settings."""
+    from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
+
+    if not isinstance(owner_profile, str):  # primary adapter (None): the launch profile IS the owner
+        return load_config().get("voice") or {}
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.profiles import get_profile_dir
+
+    with _profile_runtime_scope(get_profile_dir(owner_profile), hydrate_secrets=False):
+        return load_config().get("voice") or {}
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -147,8 +161,7 @@ class GatewayVoiceMixin:
         if not chat_sets:
             return
         try:
-            from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
-            voice_cfg = load_config().get("voice") or {}
+            voice_cfg = _owner_voice_config(getattr(adapter, "_owner_profile", None))
             auto_tts_default = bool(voice_cfg.get("auto_tts", False))
             auto_tts_mode = str(voice_cfg.get("auto_tts_mode", "all")).strip().lower()
             if auto_tts_mode not in {"all", "voice_only"}:

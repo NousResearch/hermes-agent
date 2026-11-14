@@ -1034,7 +1034,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "only %s count as consent",
                 choice, pattern_key, session_key, "/".join(sorted(CONSENT_ANSWERS)))
             return _denied(_UNRECOGNIZED_ANSWER, pattern_key=pattern_key,
-                           description=description, outcome="unrecognized_answer")
+                           description=description, outcome="unrecognized_answer", noun=spec.noun)
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)

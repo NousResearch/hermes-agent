@@ -86,6 +86,27 @@ class TestGatewayAnswersMustBeConsentWords:
         assert result.get("user_consent") is False
         assert "not a recognized decision" in (result.get("message") or "")
 
+    @pytest.mark.parametrize("answer", ["ONCE", " once\n", "Approve"])
+    def test_spelling_variants_of_once_approve_this_call_only(self, monkeypatch, answer):
+        result = _drive_gateway(monkeypatch, answer)
+
+        assert result.get("approved") is True
+        assert not approval_module._session_approved
+
+    def test_unrecognized_answer_summary_names_the_gate_noun(self, monkeypatch):
+        """execute_code's refusal must say "code", like every other refusal on that gate."""
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setattr(approval_module, "_gateway_notify_cb", lambda _sk: (lambda *a, **k: True))
+        monkeypatch.setattr(
+            approval_module, "_await_gateway_decision",
+            lambda *a, **k: {"resolved": True, "choice": "yes", "reason": None},
+        )
+        result = approval_module.check_execute_code_guard("print('x')", "local")
+
+        assert result.get("outcome") == "unrecognized_answer"
+        assert result.get("user_summary") == approval_module._user_summary("unrecognized_answer", noun="code")
+        assert "code" in result["user_summary"] and "command" not in result["user_summary"]
+
 
 # --- The answer is canonical where it is stored, not only in ``grant`` ---------------------------
 # Real round-trip (register_gateway_notify -> resolve_gateway_approval), no mocked wait: the

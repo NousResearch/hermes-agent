@@ -14,6 +14,7 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools import approval_parser_budget as _parser_budget
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 
 logger = logging.getLogger("tools.approval")
@@ -374,7 +375,15 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 
 def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description); a scan over budget fails closed."""
+    try:
+        with _parser_budget.parser_budget(command):
+            return _detect_hardline_command(command)
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        return (True, _PARSER_LIMIT_DESCRIPTION)
+
+
+def _detect_hardline_command(command: str) -> tuple:
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -964,63 +973,12 @@ def _command_parser_limit_exceeded(command: str) -> bool:
         return True
     # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
     # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
-    # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed.
-    # Normalization can mint nesting the raw text hides (fullwidth `$（` folds to `$(` under NFKC).
-    if any(_max_substitution_depth(text) > _MAX_SUBSTITUTION_DEPTH
-           for text in (command, _normalize_command_for_detection(command))):
+    # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed. Measured
+    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`); nesting that only the
+    # escape strip mints (`\$\(`, `$''(`) is bounded by the scan budget instead.
+    if _parser_budget.substitution_depth(unicodedata.normalize("NFKC", command)) > _MAX_SUBSTITUTION_DEPTH:
         return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
-
-
-def _max_substitution_depth(command: str) -> int:
-    """Deepest open `$(` nesting: the max of a quote-blind count and a shell-quoted one, so hidden
-    nesting fails closed while sequential substitutions stay flat."""
-    return max(_quote_blind_substitution_depth(command), _quoted_substitution_depth(command))
-
-
-def _quote_blind_substitution_depth(command: str) -> int:
-    depth = deepest = 0
-    for index, char in enumerate(command):
-        if char == "(" and index and command[index - 1] == "$":
-            depth += 1
-            deepest = max(deepest, depth)
-        elif char == ")" and depth:
-            depth -= 1
-    return deepest
-
-
-def _quoted_substitution_depth(command: str) -> int:
-    # Quotes nest per `$(` level, as in the shell, so a quoted `)` closes nothing. A single-quoted region
-    # is literal here but is also measured as its own script (a `-c` payload runs it) on top of the
-    # current depth; its quote state never leaks out, so `$(tr -d '"' < f)` closes where the shell does.
-    frames = [[None, 0]]  # per open `$(`: [quote state, unquoted `(` count]
-    deepest, i, n = 0, 0, len(command)
-    while i < n:
-        char, frame = command[i], frames[-1]
-        if char == "'" and frame[0] is None:
-            end = command.find("'", i + 1)
-            end = n if end < 0 else end
-            deepest = max(deepest, len(frames) - 1 + _quoted_substitution_depth(command[i + 1:end]))
-            i = end
-        elif char == "\\":
-            i += 1
-        elif char == "$" and command.startswith("(", i + 1):
-            frames.append([None, 0])
-            deepest = max(deepest, len(frames) - 1)
-            i += 1
-        elif frame[0] == '"':
-            frame[0] = None if char == '"' else '"'
-        elif char == '"':
-            frame[0] = char
-        elif char == "(":
-            frame[1] += 1
-        elif char == ")":
-            if frame[1]:
-                frame[1] -= 1
-            elif len(frames) > 1:
-                frames.pop()
-        i += 1
-    return deepest
 
 
 def _backtick_end_from(segment: str, i: int) -> int | None:
@@ -1356,7 +1314,12 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
     n = len(text) if end is None else end
     quote: str | None = None
     i = start
+    budget = _parser_budget.active()
     while i < n:
+        if budget is not None:  # one unit per lexed char; inline, this loop is the hot path
+            budget.remaining -= 1
+            if budget.remaining < 0:
+                raise _parser_budget.ParserBudgetExceeded
         ch = text[i]
         kind, j = "char", i + 1
         if comments and quote is None and _is_shell_comment_start(text, i):
@@ -1389,6 +1352,10 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
 
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
     """Return the offset after a balanced ``$(...)`` command substitution."""
+    return _parser_budget.memo(_dollar_paren_end, command, start)
+
+
+def _dollar_paren_end(command: str, start: int) -> int | None:
     depth = 1
     for kind, i, _, quote in _scan_shell(command, start + 2):
         if kind == "char" and not quote:
@@ -1399,8 +1366,13 @@ def _scan_dollar_paren_end(command: str, start: int) -> int | None:
 
 
 def _scan_backtick_end(command: str, start: int) -> int | None:
+    return _parser_budget.memo(_backtick_end, command, start)
+
+
+def _backtick_end(command: str, start: int) -> int | None:
     # Backticks have no quote awareness: only a backslash escapes the next char.
     match = re.compile(r"(?:\\.|[^`\\])*`", re.DOTALL).match(command, start + 1)
+    _parser_budget.charge((match.end() if match else len(command)) - start)
     return match.end() if match else None
 
 
@@ -1416,6 +1388,7 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
 
 def _literal_command_substitution_output(script: str) -> str | None:
     """Resolve tiny literal command substitutions without executing a shell."""
+    _parser_budget.charge(len(script))
     try:
         tokens = shlex.split(script, posix=True)
     except ValueError:
@@ -1465,6 +1438,11 @@ def _strip_shell_word_syntax(word: str) -> str:
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
+    # Pure, and the word walkers ask for the same words once per command start: memoize per call.
+    return _parser_budget.memo(_deobfuscate_shell_word, word)
+
+
+def _deobfuscate_shell_word(word: str) -> str:
     for _ in range(2):
         previous = word
         word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))
@@ -2001,7 +1979,11 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
 
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description) for the first match."""
-    description = next(_iter_dangerous_descriptions(command), None)
+    try:
+        with _parser_budget.parser_budget(command):
+            description = next(_iter_dangerous_descriptions(command), None)
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        description = _PARSER_LIMIT_DESCRIPTION
     if description is None:
         return (False, None, None)
     return (True, description, description)
@@ -2011,4 +1993,8 @@ def detect_content_rule_keys(command: str) -> list[str]:
     """Pattern keys of every content-level rule (``_CONTENT_RULE_DESCRIPTIONS``) the command matches,
     wherever they fall in detection order. The approval gates require consent for these on top of
     the first match, so an approved pipe-to-shell cannot wave through a credential upload."""
-    return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
+    try:
+        with _parser_budget.parser_budget(command):
+            return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        return []  # detect_dangerous_command reports the parser limit; it is no content rule

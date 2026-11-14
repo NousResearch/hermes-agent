@@ -101,6 +101,46 @@ def test_sequential_substitutions_with_a_single_quoted_double_quote_are_not_hard
         assert detect_hardline_command("\n".join([line] * 40)) == (False, None), line
 
 
+def test_sequential_substitutions_with_an_escaped_double_quote_are_not_hardline():
+    # `\\"` inside double quotes is one literal `"` to the shell, but the escape strip leaves a bare `"`
+    # in the normalized text, so a per-`$(` quote count never closes the line's substitution there.
+    from tools.approval_detection import detect_hardline_command
+
+    for line in ('v=$(grep -o "[^\\"]*" f)', 'v=$(echo "$x" | sed "s/\\"//g")'):
+        assert detect_hardline_command("\n".join([line] * 40)) == (False, None), line
+
+
+def test_sequential_substitutions_with_a_quoted_literal_opener_are_not_nesting():
+    # A single-quoted `$(` is a grep operand, not an open substitution.
+    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+
+    command = "\n".join(["n=$(grep -Fc '$(' script.sh || :)"] * 40)
+    assert detect_hardline_command(command) == (False, None)
+    assert detect_dangerous_command(command) == (False, None, None)
+
+
+def test_nesting_minted_by_the_escape_strip_fails_closed_quickly():
+    # The raw text nests once or not at all, but normalization strips `\\$\\(`, `$\\<newline>(`
+    # and `\\")\\"` into deep `$(` nesting that every scanner pass rescans (> 40 s on main).
+    # A syntactic count cannot tell this from an ordinary `\\"` line; the scan budget stops it.
+    commands = [
+        "echo " + "\\$\\(" * 120 + "x" + ")" * 120,
+        "echo " + "$\\\n(" * 120 + "x" + ")" * 120,
+        "echo " + '$(printf \\")\\"; ' * 120 + "true" + ")" * 120,
+        "echo " + "`\") \\')$\uff08" * 40 + "x" + ")" * 40,
+    ]
+    _run_bounded(f'''
+import time
+from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION, detect_dangerous_command, detect_hardline_command
+for command in {commands!r}:
+    started = time.perf_counter()
+    # The hardline floor runs first and refuses what it could not finish reading.
+    assert detect_hardline_command(command) == (True, _PARSER_LIMIT_DESCRIPTION), command[:40]
+    detect_dangerous_command(command)
+    assert time.perf_counter() - started < 8.0, command[:40]
+''')
+
+
 def test_shallow_and_sequential_substitutions_are_still_scanned():
     from tools.approval_detection import detect_dangerous_command
 

@@ -123,3 +123,42 @@ def test_a_new_preflight_reclaims_staging_abandoned_by_a_killed_one(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert _staging(home) == [in_flight.name]
+
+
+@pytest.mark.platforms("posix")
+def test_a_sigterm_landing_inside_a_weakref_callback_still_stops_the_copy(tmp_path):
+    """CPython drops an exception raised in a weakref callback ("Exception ignored ..."), and the
+    handler runs wherever the main thread is, so a sys.exit() handler was lost and the locked copy
+    ran to its 10 s timeout (exit 1). Main CI 43005115385 / 43094400055."""
+    home = _home_with_db(tmp_path, 10, journal_mode="DELETE")
+    holder = sqlite3.connect(home / "state.db", isolation_level=None)
+    holder.execute("BEGIN EXCLUSIVE")
+    child = (
+        "import os, runpy, signal, sys, weakref\n"
+        f"sys.argv = ['backup_sqlite.py', {str(home)!r}]\n"
+        "class Obj: pass\n"
+        "def callback(_ref):\n"
+        "    os.kill(os.getpid(), signal.SIGTERM)\n"
+        "    for _ in range(100000): pass  # the handler runs here, inside the callback\n"
+        "def on_usr1(*_):\n"
+        "    obj = Obj(); ref = weakref.ref(obj, callback); del obj\n"
+        "signal.signal(signal.SIGUSR1, on_usr1)\n"  # windows-footgun: ok — posix-only test (platforms marker), runs in the child
+        f"runpy.run_path({str(SCRIPT)!r}, run_name='__main__')\n"
+    )
+    try:
+        proc = subprocess.Popen([sys.executable, "-I", "-S", "-c", child],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            wait_until(lambda: _staging(home) or proc.poll() is not None, timeout=30, what="the staging copy")
+            proc.send_signal(signal.SIGUSR1)  # windows-footgun: ok — posix-only test
+            _stdout, stderr = proc.communicate(timeout=60)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+    assert proc.returncode == 128 + signal.SIGTERM, stderr
+    assert _staging(home) == []

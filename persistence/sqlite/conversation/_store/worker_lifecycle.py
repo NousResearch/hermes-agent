@@ -29,6 +29,12 @@ def insert_session_row_in_transaction(
         raise AuthorityRefusal('not_found')
     if not (profile_name or "").strip():
         profile_name = _own_profile_name(holder)
+    # A newly inserted /new continuation must be visible immediately; schema-open repair
+    # only heals rows already on disk (#109073).
+    if (session_key and isinstance(model_config, dict)
+            and model_config.get("_reset_from") is not None
+            and model_config.get("_delegate_from") is not None):
+        model_config = {key: value for key, value in model_config.items() if key != "_delegate_from"}
     system_prompt_hash = holder._store_system_prompt(conn, system_prompt)
     conn.execute(
         """INSERT INTO sessions (
@@ -54,7 +60,9 @@ def insert_session_row_in_transaction(
                             sessions.model_config, '$._reset_from'
                         ) = '{}'
                    THEN json_set(
-                       excluded.model_config,
+                       -- a reset row is the chat itself: a delegate marker riding the incoming
+                       -- config would hide it from every list while it keeps the route (#109073)
+                       json_remove(excluded.model_config, '$._delegate_from'),
                        '$._reset_from',
                        json_extract(
                            sessions.model_config, '$._reset_from'

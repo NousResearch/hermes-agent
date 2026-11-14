@@ -487,6 +487,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._anchor_multipart_replies: bool = self._coerce_bool_extra("anchor_multipart_replies", True)  # #55059
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
         # Bot API 10.1 Rich Messages render what MarkdownV2 degrades (tables, task lists, <details>, block
         # math). Opt-in: current clients make rich messages hard to copy as plain text. rich_drafts is a
@@ -3419,13 +3420,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _send_chunks(
         self, chat_id: str, chunks: list[str], delivered: list[str], reply_to: Optional[str],
         metadata: Optional[dict[str, Any]], error_types: tuple) -> SendResult:
-        """Deliver formatted ``chunks`` in order, appending each landed message id to ``delivered``
-        (pre-seeded with the ids of an earlier partial send when resuming — the chunk index used for
-        reply routing continues from there). A mid-loop refusal returns the ``partial_overflow`` result."""
-        thread_id = self._metadata_thread_id(metadata)
+        """Deliver ``chunks`` in order, appending landed ids to ``delivered`` (pre-seeded on resume: the
+        routing chunk index continues). A mid-loop refusal returns the ``partial_overflow`` result."""
+        thread_id, used_thread_fallback, prior = self._metadata_thread_id(metadata), False, len(delivered)
         requested_thread_id = self._message_thread_id_for_send(thread_id)
-        used_thread_fallback = False
-        prior = len(delivered)
+        if not getattr(self, "_anchor_multipart_replies", True) and prior + len(chunks) > 1 and not self._is_private_dm_topic_send(chat_id, thread_id, metadata):
+            reply_to = None  # TDLib/Desktop can hide an anchored split reply's first chunk; DM topics route by it
         for chunk in chunks:
             outcome = await self._send_chunk_with_retries(
                 chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)

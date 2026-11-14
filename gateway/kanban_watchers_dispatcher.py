@@ -216,24 +216,35 @@ class _KanbanDispatcher:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
 
-    def ready_nonempty(self) -> bool:
+    def ready_nonempty(self, results: Optional[list] = None) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
 
         Control-plane lanes (e.g. ``orion-cc``) are pulled by terminals via
         ``claim_task`` and never spawnable — a queue full of those is
-        "correctly idle", not "stuck". The review column is probed only when
-        review dispatch is on (same gate as the dispatcher): a task waiting
-        for a human reviewer is idle, not stuck.
+        "correctly idle", not "stuck". So is work the just-finished tick
+        deliberately held back: ``results`` (the (slug, DispatchResult) pairs
+        from :meth:`tick_once`) contributes its held ids per board — a queue
+        parked at ``kanban.max_in_progress_per_profile`` is the cap doing its
+        job, and must not read as a broken profile. The review column is probed
+        only when review dispatch is on (same gate as the dispatcher): a task
+        waiting for a human reviewer is idle, not stuck.
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
+        by_slug = dict(results or [])
         from hermes_cli import kanban_db as _kb
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
+                res = by_slug.get(slug)
+                if kbd.whole_tick_hold(res):
+                    continue
+                held = kbd.held_ready_task_ids(res)
                 conn = None
                 try:
                     conn = _kbc().connect(board=slug)
-                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                    if kbd.has_spawnable_ready(conn, exclude_task_ids=held) or (
+                        _review_probe and kbd.has_spawnable_review(conn, exclude_task_ids=held)
+                    ):
                         return True
                 except Exception:
                     continue

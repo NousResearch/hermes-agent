@@ -275,7 +275,10 @@ class GatewayKanbanWatchersMixin:
 
         # Health telemetry (mirrors `_cmd_daemon`): warn when the ready queue
         # is non-empty but spawns are 0 for N consecutive ticks — usually a
-        # broken PATH, missing venv, or credential loss.
+        # broken PATH, missing venv, or credential loss. Work the tick itself
+        # held back (per-profile cap, respawn guard, rate limit, board lock,
+        # memory pressure) is correctly idle and never counts as stuck; see
+        # `_KanbanDispatcher.ready_nonempty`.
         bad_ticks = 0
         last_warn_at = 0
         results: Optional[list] = None
@@ -307,7 +310,9 @@ class GatewayKanbanWatchersMixin:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
-                    ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
+                    ready_pending = await _to_thread_process_service(
+                        dispatcher.ready_nonempty, results,
+                    )
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:

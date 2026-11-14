@@ -85,7 +85,8 @@ _LEDGER_PASSTHROUGH_KEYS = (
 # Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;
 # ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
-_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
+_FAILURE_DESCRIPTOR_KEYS = (
+    "free_tier", "failure_retryable", "failure_resets_at", "usage_window_message", "primary_auth_failure")
 
 
 def _finite_viewer_turn() -> bool:
@@ -1385,6 +1386,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # fallback was resolved before any agent exists (#74349); one-shot per turn.
             pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
             runner._pre_agent_fallback_notice = None
+            from agent.primary_auth_fallback import take_pending_primary_auth_failure
+            pending_primary_auth = take_pending_primary_auth_failure()
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model and not pending_fallback_notice:
@@ -1437,6 +1440,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
+        # Set every turn (None clears it): a cached agent must not keep a login failure that resolved, and
+        # a route replaced after resolution (`/model --once`, an API caller's provider) drops it.
+        from agent.primary_auth_fallback import attach_primary_auth_failure
+        attach_primary_auth_failure(agent, pending_primary_auth)
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None

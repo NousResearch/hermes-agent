@@ -2194,18 +2194,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
-        # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
-        # run_conversation() errors distinct.
+        # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps run_conversation() errors distinct.
         try:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
-        # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
-        # must not collide with the ``**runtime_kwargs`` spread).
+        # A fallback runtime's own ``model`` overrides config and must not collide with the spread.
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
         runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
-        request_reasoning_config = _request_reasoning_config(model_options)
-        request_service_tier = _request_service_tier(model_options)
+        from agent.primary_auth_fallback import RUNTIME_KEY, attach_primary_auth_failure
+        _primary_auth_failure = runtime_kwargs.pop(RUNTIME_KEY, None)
+        request_reasoning_config, request_service_tier = _request_reasoning_config(model_options), _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(
             runtime_kwargs, model,
             requested_model=requested_model, requested_provider=requested_provider, route=route,
@@ -2251,6 +2250,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        attach_primary_auth_failure(agent, _primary_auth_failure)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

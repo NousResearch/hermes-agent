@@ -463,9 +463,42 @@ def oauth_relogin_command(provider: Any) -> str:
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
     if _login_owned_by_external_cli(slug):
-        # `auth add` refuses a plugin with no auth_handler; the model flow runs the vendor CLI's login.
-        return f"hermes {profile_cli_selector()}model"
+        # `auth add` refuses a plugin with no auth_handler. The plugin's own CLI login comes first:
+        # `hermes model` runs it too, but then saves the provider as the default.
+        from hermes_cli.auth_plugin_providers import plugin_profile
+
+        return declared_login_command(plugin_profile(slug)) or f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def declared_login_command(profile: Any) -> str:
+    """The shell command for a plugin CLI's own sign-in: its resolved binary plus ``login_args``, or "".
+
+    Built from the profile's declaration and a PATH lookup only: hints are rendered on the gateway's
+    event loop, and a plugin's ``setup_status()`` can run its CLI (``claude auth status``) for seconds."""
+    login_args = tuple(getattr(profile, "login_args", ()) or ())
+    if profile is None or not login_args:
+        return ""
+    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
+
+    command = external_process_command(profile)
+    binary = resolve_external_process_command(command) or command
+    return render_login_command([binary, *(str(part) for part in login_args)]) if binary else ""
+
+
+def render_login_command(argv: list[str]) -> str:
+    """``argv`` as one line a user can paste into their shell, or "" when no single line would run."""
+    import sys
+
+    if sys.platform == "win32":
+        # No POSIX quotes on Windows, and a quoted path runs in cmd.exe but not PowerShell (it needs `&`): keep the fallback.
+        import subprocess
+
+        line = subprocess.list2cmdline(argv)
+        return "" if line.startswith('"') else line
+    import shlex
+
+    return shlex.join(argv)
 
 
 def _login_owned_by_external_cli(slug: str) -> bool:
@@ -507,8 +540,9 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
+    relogin = oauth_relogin_command(provider) if "{relogin}" in template else ""
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
-                           relogin=oauth_relogin_command(provider))
+                           relogin=relogin)
     return f"{body}\n\nProvider said: {summary}"
 
 

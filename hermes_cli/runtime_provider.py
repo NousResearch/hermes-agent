@@ -417,7 +417,8 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).")
+                            "other Claude models remain available (see `hermes auth list`).",
+                            provider="anthropic", code="model_rate_limited")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 
@@ -1295,5 +1296,11 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
             # mislabel it as an auth failure (#32790).
             logger.warning("Primary provider %s (%s). Falling back to %s/%s",
                            primary_failure_wording(primary_exc)[0], primary_exc, provider, model)
+            # Carry the primary's failed login forward: if the backup then fails, the turn's copy must
+            # lead with the re-login, not only the backup's error.
+            from agent.primary_auth_fallback import RUNTIME_KEY, primary_auth_failure_from_exc
+            if failure := primary_auth_failure_from_exc(primary_exc, resolve_requested_provider(requested),
+                                                        runtime["provider"], runtime.get("base_url")):
+                runtime[RUNTIME_KEY] = failure
             return runtime, entry
         raise primary_exc

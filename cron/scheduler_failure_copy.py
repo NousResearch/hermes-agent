@@ -99,10 +99,13 @@ def provider_failure_notice(
             f"`hermes cron run {job_id}` tries now."
         )
     else:
-        from agent.turn_failure_copy import relogin_command_hint
+        template = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION)
+        relogin = ""
+        if "{relogin}" in template:  # only the auth copy names a command; skip the lookup otherwise
+            from agent.turn_failure_copy import relogin_command_hint
 
-        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(
-            job_id=job_id, relogin=relogin_command_hint(provider))
+            relogin = relogin_command_hint(provider)
+        action = template.format(job_id=job_id, relogin=relogin)
     return (
         f"⚠️ Cron '{job_name}' failed: {cause}. {action} "
         f"Run log: `hermes cron runs {job_id}`."

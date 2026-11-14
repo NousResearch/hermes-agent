@@ -1,0 +1,220 @@
+"""A primary provider whose login failed at resolution time must not be masked by the backup's error.
+
+Field repro: Claude Code's OAuth refresh token expired, resolution fell back to an OpenAI-compatible
+backup, the backup answered "You have no credits remaining", and the user was only ever told about
+credits. The failed turn must lead with re-authenticating the primary (exact command) AND still say
+what is wrong with the backup.
+
+E2E through the real resolution chain (``resolve_runtime_with_fallback``) against a temp
+HERMES_HOME, and the real ``AIAgent.run_conversation`` against an in-process fake backup that
+returns a billing error.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import pytest
+
+_CREDITS_BODY = {"error": {"message": "You have no credits remaining. Add credits to continue.",
+                           "type": "insufficient_quota", "code": "insufficient_quota"}}
+
+
+class _OutOfCredits(BaseHTTPRequestHandler):
+    calls = 0
+
+    def do_POST(self):
+        type(self).calls += 1
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        body = json.dumps(_CREDITS_BODY).encode()
+        self.send_response(402)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_a, **_kw):
+        pass
+
+
+@pytest.fixture()
+def backup_url():
+    _OutOfCredits.calls = 0
+    srv = HTTPServer(("127.0.0.1", 0), _OutOfCredits)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}/v1"
+    finally:
+        srv.shutdown()
+
+
+@pytest.fixture()
+def home(tmp_path, monkeypatch):
+    for var in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY",
+                "OPENROUTER_API_KEY", "HERMES_INFERENCE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return tmp_path
+
+
+def _write_config(home, backup_url):
+    # adopt_external_logins: false keeps the host's own ~/.claude login out of the test: the
+    # primary must have no Anthropic credentials at all.
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  default: claude-opus-4-6\n"
+        "auth:\n  adopt_external_logins: false\n"
+        "fallback_providers:\n"
+        f"  - provider: custom\n    model: gpt-fake\n    base_url: {backup_url}\n    api_key: sk-backup-test\n")
+
+
+def _resolve_and_run(home, backup_url):
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_with_fallback
+
+    _write_config(home, backup_url)
+    runtime, entry = resolve_runtime_with_fallback(load_config())
+    assert entry is not None and entry["model"] == "gpt-fake"
+
+    from agent.primary_auth_fallback import RUNTIME_KEY, attach_primary_auth_failure
+    from run_agent import AIAgent
+
+    agent = AIAgent(api_key=runtime["api_key"], base_url=runtime["base_url"], provider=runtime["provider"],
+                    api_mode=runtime.get("api_mode"), model=entry["model"], max_iterations=2,
+                    enabled_toolsets=[], quiet_mode=True, skip_context_files=True, skip_memory=True,
+                    save_trajectories=False, platform="cli")
+    attach_primary_auth_failure(agent, runtime.get(RUNTIME_KEY))
+    return agent.run_conversation("hello", conversation_history=[], task_id="t")
+
+
+def test_backup_out_of_credits_leads_with_primary_relogin_and_names_backup_problem(home, backup_url):
+    result = _resolve_and_run(home, backup_url)
+
+    assert result["failed"] is True
+    assert _OutOfCredits.calls >= 1  # the backup really was asked, and refused for credits
+    text = result["final_response"]
+    lead = text.split("\n\n", 1)[0]
+    # Root cause first: the primary needs a re-login, with the exact command.
+    assert "Anthropic" in lead and "hermes auth add anthropic" in lead
+    # ...and the backup's own problem is still stated, not dropped.
+    assert "out of credits" in lead
+    assert "no credits remaining" in text.lower()
+    assert result["primary_auth_failure"]["relogin"] == "hermes auth add anthropic"
+    assert "sk-backup-test" not in text
+
+
+def test_primary_serving_again_reports_only_its_own_failure(home, backup_url):
+    """No resolution fallback happened: the copy is the provider's own, with no re-login lead."""
+    from run_agent import AIAgent
+
+    agent = AIAgent(api_key="sk-x", base_url=backup_url, provider="custom", model="gpt-fake",
+                    max_iterations=2, enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
+                    skip_memory=True, save_trajectories=False, platform="cli")
+    result = agent.run_conversation("hello", conversation_history=[], task_id="t")
+    assert result["failed"] is True
+    assert "hermes auth add anthropic" not in result["final_response"]
+    assert "primary_auth_failure" not in result
+
+
+
+def _anthropic_model_cooldown():
+    """The real raise site: the pool benched the key for one model, other models still have it."""
+    from unittest.mock import patch
+
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    with patch("agent.anthropic_credentials.resolve_anthropic_token",
+               side_effect=lambda *, model=None: None if model else "sk-ant-ok"):
+        try:
+            _anthropic_token_or_raise(model="claude-opus-4")
+        except AuthError as exc:
+            return exc
+    raise AssertionError("expected an AuthError")
+
+
+def _missing_external_cli():
+    from hermes_cli.auth import AuthError
+
+    return AuthError("Could not find the 'claude-cli' CLI command 'claude'. Install it.", provider="claude-cli",
+                     code="missing_external_process_cli")
+
+
+def _quota_exhausted():
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+
+    return AuthError("Codex usage limit reached; resets in 2h.", provider="openai-codex", code=CODEX_RATE_LIMITED_CODE)
+
+
+def _out_of_credits():
+    from hermes_cli.auth import AuthError
+
+    return AuthError("Your Nous Portal account has no usable credits.", provider="nous", code="no_usable_credits")
+
+
+def _config_error(code):
+    def make():
+        from hermes_cli.auth import AuthError
+
+        return AuthError(f"configuration problem ({code})", code=code)
+
+    make.__name__ = code
+    return make
+
+
+@pytest.mark.parametrize("make_exc", [_anthropic_model_cooldown, _missing_external_cli, _quota_exhausted, _out_of_credits,
+                                      _config_error("no_provider_configured"), _config_error("invalid_provider"),
+                                      _config_error("missing_base_url")])
+def test_primary_failures_a_relogin_cannot_fix_are_not_called_lapsed_logins(make_exc):
+    """A per-model cooldown, a quota wall and an empty balance leave the login working; a missing CLI needs
+    installing and a configuration error needs fixing: none is a lapsed login, so a backup's later failure
+    must not send the user to sign in."""
+    from agent.primary_auth_fallback import primary_auth_failure_from_exc
+
+    assert primary_auth_failure_from_exc(make_exc(), "anthropic", "custom") is None
+
+
+def test_the_exported_primary_failure_never_carries_a_secret_from_the_primarys_error():
+    """The turn result's ``primary_auth_failure`` descriptor leaves the agent with the turn, so the
+    primary's error text in it is redacted exactly as the lead's copy is."""
+    from agent.primary_auth_fallback import PrimaryAuthFailure, lead_failed_turn_with_primary_auth
+
+    secret = "sk-ant-api03-" + "Z" * 40
+    from types import SimpleNamespace
+
+    agent = SimpleNamespace(provider="custom", _primary_auth_failure=PrimaryAuthFailure(
+        provider="anthropic", error=f"401 from Anthropic for key {secret}", relogin="hermes auth add anthropic",
+        backup="custom"))
+    result: dict = {"failed": True, "final_response": "backup refused", "failure_reason": "auth"}
+    lead_failed_turn_with_primary_auth(agent, result)
+
+    exported: dict = result["primary_auth_failure"]
+    assert secret not in exported["error"] and secret not in result["final_response"]
+    assert exported["provider"] == "anthropic" and exported["relogin"] == "hermes auth add anthropic"
+
+
+def test_a_fallback_on_the_primarys_provider_but_another_endpoint_still_leads_with_the_primary():
+    """A fallback entry can use the primary's provider slug with other credentials and another endpoint:
+    that is a different route, so its failure still leads with the primary's re-login. Only a turn on the
+    primary's own route (same slug, no other endpoint recorded) is the primary serving again."""
+    from types import SimpleNamespace
+
+    from agent.primary_auth_fallback import PrimaryAuthFailure, lead_failed_turn_with_primary_auth
+
+    def failed_turn(agent):
+        result: dict = {"failed": True, "final_response": "backup refused", "failure_reason": "auth"}
+        lead_failed_turn_with_primary_auth(agent, result)
+        return result
+
+    failure = PrimaryAuthFailure(provider="anthropic", error="token expired", relogin="hermes auth add anthropic",
+                                 backup="anthropic", backup_base_url="https://second-account.test/v1")
+    backup_route = SimpleNamespace(provider="anthropic", base_url="https://second-account.test/v1",
+                                   _primary_auth_failure=failure)
+    assert "hermes auth add anthropic" in failed_turn(backup_route)["final_response"]
+
+    serving_again = PrimaryAuthFailure(provider="anthropic", error="token expired",
+                                       relogin="hermes auth add anthropic", backup="custom")
+    primary_route = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com",
+                                    _primary_auth_failure=serving_again)
+    assert "primary_auth_failure" not in failed_turn(primary_route)

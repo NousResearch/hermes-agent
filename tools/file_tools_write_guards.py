@@ -672,3 +672,15 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
 def _is_internal_file_tool_content(content: str) -> bool:
     """Return True when content is file-tool display text, not intended file bytes."""
     return _is_internal_file_status_text(content) or _looks_like_read_file_line_numbered_content(content)
+
+
+def _nul_text_error(*texts: str | None) -> str | None:
+    """Refusal for text edits carrying a NUL (U+0000), else None. read_file treats any NUL
+    as binary, so a stored one locks the agent out of its own file; it is almost always a
+    model emitting a JSON-escaped NUL where the code needed the escape sequence as text."""
+    if not any(isinstance(t, str) and "\x00" in t for t in texts):
+        return None
+    return ("Refusing to write a NUL character (U+0000): read_file would then treat the file "
+            "as binary and it could no longer be read or patched. If the code needs a NUL, "
+            "write its escape sequence as text (for example the two characters \\0 or "
+            "\\x00) instead of a literal NUL.")

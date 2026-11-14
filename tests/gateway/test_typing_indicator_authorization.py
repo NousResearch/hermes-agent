@@ -114,6 +114,39 @@ async def test_authorized_sender_still_gets_typing():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("follow_up", [False, True])
+async def test_unauthorized_sender_gets_no_typing_stop_either(follow_up):
+    """The turn's cleanup stops typing too (Signal: ``sendTyping`` with ``stop``): none for a dropped sender,
+    including the queued follow-up hand-off."""
+    adapter = _adapter(runner=_StubRunner(authorized=False))
+    adapter.stop_typing = AsyncMock()
+    event, queued = _event(), _event()
+    key = build_session_key(event.source)
+
+    async def _turn(current):
+        if follow_up and current is event:  # a second message from the same sender arrives mid-turn
+            adapter._pending_messages[key] = queued
+        await asyncio.sleep(0)
+
+    adapter._message_handler = AsyncMock(side_effect=_turn)
+    await _drive_turn(adapter, event)
+    await asyncio.gather(*adapter._background_tasks)  # the follow-up's drain turn, cleanup included
+
+    assert adapter._message_handler.await_count == (2 if follow_up else 1)
+    assert adapter.stop_typing.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_authorized_sender_still_gets_typing_stop():
+    adapter = _adapter(runner=_StubRunner(authorized=True))
+    adapter.stop_typing = AsyncMock()
+
+    await _drive_turn(adapter, _event(user_id=_OWNER))
+
+    assert adapter.stop_typing.await_count >= 1
+
+
+@pytest.mark.asyncio
 async def test_internal_event_skips_the_authorization_probe():
     """Background-process notices are admitted without an allowlist: no probe, indicator kept."""
     runner = _StubRunner(authorized=False)

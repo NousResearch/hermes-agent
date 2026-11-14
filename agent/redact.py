@@ -27,6 +27,7 @@ from agent.redact_headers import (
 )
 from agent.redact_pattern_shape import _pattern_structure
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
+from agent.redact_zhipu import _ZHIPU_API_KEY_RE
 
 logger = logging.getLogger(__name__)
 
@@ -955,16 +956,6 @@ def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
     if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
         return m.group(0)
     return mask(token)
-
-# Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
-# provider-shaped instead of applying a generic high-entropy dotted-token rule:
-# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
-# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
-# ``<md5>.sqlite3``) never match.
-_ZHIPU_API_KEY_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
-)
-
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
 # masked secret never emits multiline or invisible bytes into display output.

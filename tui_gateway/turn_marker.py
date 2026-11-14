@@ -156,6 +156,20 @@ def clear_turn_marker(home: Path | str, session_key: str) -> None:
         _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
 
 
+def rekey_turn_marker(home: Path | str, old_key: str, new_key: str) -> None:
+    """Move an active turn marker from ``old_key`` to ``new_key`` when mid-turn compression rotates ``session_id``."""
+    if not old_key or not new_key or old_key == new_key:
+        return
+    def _mutate(e: dict[str, dict]) -> dict[str, dict] | None:
+        if old_key not in e:
+            return None
+        moved = dict(e[old_key])
+        out = {k: v for k, v in e.items() if k != old_key}
+        out[new_key] = moved
+        return out
+    _update(home, new_key, _mutate, "rekey")
+
+
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
     """The marker left by a turn that never concluded, or None."""
     if not session_key:

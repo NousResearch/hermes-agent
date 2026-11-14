@@ -349,6 +349,13 @@ def _sync_session_key_after_compress(
     # Even if the approval module fails to import, anchor session_key on the continuation id.
     session["session_key"] = new_session_id
     with contextlib.suppress(Exception):
+        from pathlib import Path
+        from tui_gateway.turn_marker import rekey_turn_marker
+        with session["history_lock"]:
+            if session.get("_active_turn_marker_key") == old_key:
+                session["_active_turn_marker_key"] = new_session_id
+        rekey_turn_marker(Path(session.get("profile_home") or session.get("hermes_home") or (Path.home() / ".hermes")), old_key, new_session_id)
+    with contextlib.suppress(Exception):
         from tools import approval
         with contextlib.suppress(Exception):
             approval.unregister_gateway_notify(old_key)

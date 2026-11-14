@@ -464,6 +464,10 @@ def platform_hint(agent: Any) -> str:
     """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
     platform_key = (agent.platform or "").lower().strip()
+    if platform_key == "cli" and getattr(agent, "_bot_chat_timeless_prompt", False):
+        # A bot's Bot Chat is read in the desktop app even when its turns ride the CLI
+        # transport (message_agent, relay and cron deliveries run `chat -c "Bot Chat"`).
+        platform_key = "desktop"
     _effective_hint = _resolve_platform_hint(
         agent, platform_key, _default_platform_hint(platform_key, getattr(agent, "valid_tool_names", ())))
     if platform_key == "tui" and _effective_hint:

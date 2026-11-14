@@ -2301,6 +2301,11 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
         _replace_message_content(target, merged)
     for flag in _SYNTHETIC_USER_FLAGS:
         target.pop(flag, None)
+    # A typed anchor (e.g. a steer row) must stay typed after the fold, or the alternation repair
+    # merges the user's NEXT prompt into what is really a standalone steer delivery.
+    anchor_kind = anchor.get("display_kind")
+    if anchor_kind:
+        target["display_kind"] = anchor_kind
     # The anchor's text leads the composite, so the fold keeps the anchor's uid and records the
     # scaffolding turn's (merge witness).
     from agent.message_metadata import record_absorbed_message
@@ -2344,9 +2349,13 @@ def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurn
     return "merged"
 
 
-def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> CompressedUserTurnOutcome:
-    """Preserve human intent, not merely a synthetic user-role placeholder."""
+def _ensure_compressed_has_user_turn(original_messages: list, compressed: list, agent: Any = None) -> CompressedUserTurnOutcome:
+    """Preserve human intent, not merely a synthetic user-role placeholder. With ``agent``, every
+    branch that leaves the rebuilt context carrying a steer also retires the matching buffered part,
+    so the next drain cannot inject a second copy of text the context already carries."""
     if any(_is_real_user_message(message) for message in compressed) or _compressed_has_busy_steer(compressed):
+        from agent.conversation_compression_steer import retire_buffered_steer
+        retire_buffered_steer(agent, compressed)
         return "already_present"
     # Post-commit contract (#98450, mirrors _sync_micro_compact_to_db): archive_and_compact just durably
     # wrote every dict in `compressed` as the new active set, but compress() returned marker-swept COPIES
@@ -2367,12 +2376,27 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     # #100053.
     for message in reversed(original_messages):
         if _is_real_user_message(message):
-            return _insert_real_user_anchor(compressed, _fresh_compaction_message_copy(message))
+            outcome = _insert_real_user_anchor(compressed, _fresh_compaction_message_copy(message))
+            # The copied row may itself be a typed steer delivery (every live steer is one since
+            # 7dc796463d); the anchor carries its text, so retire any buffered copy of it.
+            if message.get("display_kind") == "steer":
+                from agent.conversation_compression_steer import retire_buffered_steer
+                retire_buffered_steer(agent, [message])
+            return outcome
         if not isinstance(message, dict) or message.get("role") != "tool":
             continue
         steer_text = _extract_steer_text_from_message(message)
         if steer_text:
-            return _insert_real_user_anchor(compressed, {"role": "user", "content": steer_text})
+            from agent.prompt_builder import format_steer_marker, steer_user_row
+            # Typed + marker-wrapped like a live delivery: a bare dict loses the self-describing
+            # provenance on replay and gets merged into the user's NEXT prompt by alternation
+            # repair; the marker keeps it under the steer merge guards. The anchor now carries
+            # the text, so retire any buffered copy of it (no second inject after the rebuild).
+            outcome = _insert_real_user_anchor(compressed, steer_user_row(steer_text))
+            # Same retire as the other branches (mismatch logging lives there).
+            from agent.conversation_compression_steer import retire_buffered_steer
+            retire_buffered_steer(agent, [{"role": "tool", "content": format_steer_marker(steer_text)}])
+            return outcome
     from agent.message_metadata import append_message
     append_message(compressed, {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT})
     return "placeholder_appended"
@@ -4154,7 +4178,7 @@ def compress_context(
                 "active set (session=%s).", agent.session_id or "none",
             )
         _fold_todo_snapshot(agent, compressed)
-        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
+        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed, agent=agent)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,

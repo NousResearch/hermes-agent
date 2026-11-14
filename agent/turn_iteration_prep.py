@@ -465,6 +465,12 @@ def begin_iteration(
             if _rt_job.lower().startswith(_tier0_extra_prefixes)
             else _rt_job
         )
+        _rt_parent_sid = str(
+            getattr(agent, "_root_session_id", None)
+            or getattr(agent, "parent_session_id", None)
+            or ""
+        )
+        _rt_parent_src = str(getattr(agent, "_parent_session_source", None) or "")
         _rt_verdict = evaluate_realtime_spend_breaker(
             session_id=str(getattr(agent, "session_id", "") or "unknown"),
             source=_rt_src,
@@ -473,6 +479,8 @@ def begin_iteration(
             job_name=_rt_eval_job,
             making_productive_progress=_productive,
             consecutive_calls_since_user=int(api_call_count or 0),
+            parent_session_id=_rt_parent_sid,
+            parent_source=_rt_parent_src,
         )
         if not _rt_verdict.get("allowed", True):
             _turn_exit_reason = f"realtime_spend_breaker:{_rt_verdict.get('reason', 'cap_exceeded')}"

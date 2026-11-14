@@ -660,9 +660,14 @@ def _build_result_entry(
             status = exit_reason = "timeout"
             interrupt_note = (f"Subagent stopped making progress — no activity for {stale_after:g}s "
                               "(heartbeat stale threshold); it was stopped.")
-    elif result.get("failed") or result.get("error"):
+    elif (
+        result.get("failed")
+        or result.get("error")
+        or str(result.get("turn_exit_reason") or "").startswith("realtime_spend_breaker:")
+        or (not usable_summary and bool(result.get("failure_reason")))
+    ):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
-        # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
+        # provider rejection or spend-breaker deferral as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
@@ -706,7 +711,14 @@ def _build_result_entry(
     if _route is not None:
         entry["route"] = _route
     if status == "failed":
-        entry["error"] = result.get("error", "Subagent did not produce a response.")
+        _te_reason = str(result.get("turn_exit_reason") or "")
+        entry["error"] = (
+            result.get("error")
+            or (_te_reason if _te_reason.startswith("realtime_spend_breaker:") else None)
+            or "Subagent did not produce a response."
+        )
+        if _te_reason:
+            entry["turn_exit_reason"] = _te_reason
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")

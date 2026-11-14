@@ -324,10 +324,16 @@ def record_response_usage(
             )
             else _agent_session_source(agent)
         )
+        _rt_parent_sid = str(
+            getattr(agent, "_root_session_id", None)
+            or getattr(agent, "parent_session_id", None)
+            or ""
+        )
         _rt_job = str(
             getattr(agent, "cron_job_name", None)
             or _os_rt.environ.get("HERMES_CRON_JOB_NAME", "")
             or getattr(agent, "_turn_route_task", "")
+            or (f"parent:{_rt_parent_sid}" if _rt_source == "subagent" and _rt_parent_sid else "")
             or ""
         )
         record_realtime_llm_call(

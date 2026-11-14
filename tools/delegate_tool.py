@@ -354,6 +354,16 @@ def _build_child_agent(
     # Plugins see one conversation per delegation tree.
     from agent.prompt_cache_scope import conversation_id, sibling_cache_scope
     child._inherited_conversation_id = conversation_id(parent_agent)
+    child._root_session_id = getattr(parent_agent, "_root_session_id", None) or parent_sid  # type: ignore[attr-defined]
+    _p_plat = str(getattr(parent_agent, "platform", "") or "").strip().lower()
+    child._parent_session_source = (  # type: ignore[attr-defined]
+        getattr(parent_agent, "_parent_session_source", None)
+        or (
+            "cron"
+            if getattr(parent_agent, "cron_job_name", None) or str(parent_sid or "").startswith("cron_")
+            else _p_plat
+        )
+    )
     child._delegate_context = context  # rides the first user turn, not the system prompt
     child._inherited_parent_skills = []  # type: ignore[attr-defined]
     with _quiet(None):

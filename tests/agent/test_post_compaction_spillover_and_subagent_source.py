@@ -190,3 +190,112 @@ def test_subagent_under_desktop_session_env_classifies_as_subagent_and_trips_bre
     )
     assert verdict["allowed"] is False
     assert "tier1_session_15m_cap" in verdict["reason"]
+
+
+def test_interactive_desktop_subagent_allowed_under_tier3_but_capped_by_tier1_family_lineage(
+    tmp_path, monkeypatch
+):
+    """Bounded subagents spawned by an interactive desktop parent must:
+    1) Be allowed under Tier 3 (€195/day estate cap) when family 15m spend < €4.00.
+    2) Trip Tier 1A (€4.00/15m) across sibling subagent session_ids sharing job_name='parent:<root_sid>'.
+    3) Report exit_reason='error' (truncated=False) with turn_exit_reason in entry['error'], never
+       masquerading as exit_reason='max_iterations' when stopped by realtime_spend_breaker."""
+    from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
+
+    db_file = tmp_path / "ai-spend-realtime.db"
+    status_file = tmp_path / "ai-cost-realtime-status.json"
+    monkeypatch.setenv("HERMES_AI_SPEND_DB_PATH", str(db_file))
+    monkeypatch.setenv("HERMES_AI_SPEND_STATUS_PATH", str(status_file))
+
+    # Seed estate spend above €195/day Tier 3 cap
+    rsb.record_realtime_llm_call(
+        session_id="earlier_bulk_session",
+        source="desktop",
+        provider="vertex",
+        model="google/gemini-4-argon",
+        prompt_tokens=120_000_000,
+        uncached_input_tokens=120_000_000,
+        cache_read_tokens=0,
+        output_tokens=100_000,
+        request_id="req_estate_over_195",
+    )
+
+    # 1) Unparented / cron subagent is still blocked by Tier 3
+    v_cron_sub = rsb.evaluate_realtime_spend_breaker(
+        session_id="sub_cron_1",
+        source="subagent",
+        parent_session_id="cron_parent_1",
+        parent_source="cron",
+    )
+    assert v_cron_sub["allowed"] is False
+    assert "tier3_daily_hard_cap" in v_cron_sub["reason"]
+
+    # 2) Interactive Desktop subagent with < €4.00 family spend is ALLOWED through Tier 3
+    v_desk_sub_ok = rsb.evaluate_realtime_spend_breaker(
+        session_id="sub_desk_child_1",
+        source="subagent",
+        parent_session_id="desk_root_1",
+        parent_source="desktop",
+        making_productive_progress=True,
+    )
+    assert v_desk_sub_ok["allowed"] is True
+    assert v_desk_sub_ok["reason"] == "interactive_subagent_allowed"
+
+    # 3) If parent spawns multiple fresh child session_ids that collectively burn >= €4.00 in 15m,
+    #    family lineage ('parent:desk_root_1') trips Tier 1A and quarantines the parent lineage!
+    for idx in range(3):
+        rsb.record_realtime_llm_call(
+            session_id=f"sub_desk_child_{idx}",
+            source="subagent",
+            job_name="parent:desk_root_1",
+            provider="vertex",
+            model="google/gemini-4-argon",
+            prompt_tokens=900_000,
+            uncached_input_tokens=900_000,  # ~€1.61 net each -> 3 * €1.61 = €4.85 >= €4.00
+            cache_read_tokens=0,
+            output_tokens=1_000,
+            request_id=f"req_fam_{idx}",
+        )
+
+    v_desk_sub_capped = rsb.evaluate_realtime_spend_breaker(
+        session_id="sub_desk_child_fresh_4",
+        source="subagent",
+        parent_session_id="desk_root_1",
+        parent_source="desktop",
+        making_productive_progress=True,
+    )
+    assert v_desk_sub_capped["allowed"] is False
+    assert "tier1_session_15m_cap" in v_desk_sub_capped["reason"]
+
+    # 4) Verify _build_result_entry never masquerades realtime_spend_breaker exit as max_iterations
+    child_stub = SimpleNamespace(
+        model="google/gemini-4-argon",
+        session_prompt_tokens=0,
+        session_completion_tokens=0,
+        session_estimated_cost_usd=0.0,
+        session_cost_status="complete",
+        _delegate_role="leaf",
+    )
+    breaker_reason = f"realtime_spend_breaker:{v_cron_sub['reason']}"
+    entry = _build_result_entry(
+        child_stub,
+        {
+            "final_response": None,
+            "completed": False,
+            "failed": False,
+            "interrupted": False,
+            "api_calls": 0,
+            "turn_exit_reason": breaker_reason,
+            "failure_reason": "spend_cap_deferred",
+            "messages": [],
+        },
+        0,
+        1.05,
+        _SchemaOutcome(None, None, [], 0),
+    )
+    assert entry["status"] == "failed"
+    assert entry["exit_reason"] == "error"
+    assert entry["truncated"] is False
+    assert entry["error"] == breaker_reason
+    assert entry["turn_exit_reason"] == breaker_reason
+

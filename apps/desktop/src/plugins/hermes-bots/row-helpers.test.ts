@@ -92,6 +92,27 @@ describe('the canonical session id everything core-keyed reads', () => {
 })
 
 describe('which bots are working right now', () => {
+  it('uses only the canonical tip for background mood and the active filter, never last_session', () => {
+    const working = row({
+      name: 'analyst',
+      connectionId: 'local',
+      canonical_session: { id: 'root', resolved_id: 'tip', last_active: 1 }
+    })
+
+    const idle = row({
+      name: 'analyst',
+      connectionId: 'remote',
+      remoteSource: true,
+      canonical_session: { id: 'other', last_active: 1 },
+      last_session: { id: 'tip', last_active: 1 }
+    })
+
+    expect(botWorkingMood(working, null, false, 'local', NOW, undefined, ['tip'])).toBe('think')
+    expect(botWorkingMood(idle, null, false, 'local', NOW, undefined, ['tip'])).toBe('idle')
+    expect(activeBots([working, idle], null, false, NOW, 'local', undefined, ['tip'])).toEqual([working])
+    expect(activeBots([working, idle], null, false, NOW, 'local', undefined, [])).toEqual([])
+  })
+
   const roster = [
     row({ last_session: { id: 'a', last_active: secondsAgo(10) }, name: 'researcher' }),
     row({ last_session: { id: 'b', last_active: secondsAgo(400) }, name: 'scribe' }),

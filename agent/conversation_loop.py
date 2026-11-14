@@ -1861,7 +1861,7 @@ def run_conversation(
         finally:
             end_voice_turn_route(agent)
     fence_result_reply(result)
-    # The primary's sign-in lead is part of the reply, so a held transform sees the whole text the user gets.
+    # Joined before settle_held_final so a held transform sees the lead, unless a collapsed partial already ran it.
     from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth
     lead_failed_turn_with_primary_auth(agent, result)
     settle_held_final(agent, result)

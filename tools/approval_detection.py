@@ -41,12 +41,21 @@ _HERMES_CONFIG_PATH = (
 # from backup, so destructive shell verbs on these targets prompt; reads and copies OUT stay clean.
 _HERMES_HOME_ROOT = r'(?:~/\.hermes|(?:\$home|\$\{home\})/\.hermes|(?:\$hermes_home|\$\{hermes_home\}))'
 _PATH_WORD_END = r'["\']?(?=[\s"\'`;|&<>()]|$)'
-# A store or anything inside / beside it (state.db-wal, sessions/x.jsonl).
+# A store, its SQLite sidecars (state.db-wal) or a path inside a directory store (sessions/x.jsonl).
+# Neighbours such as state.db.bak or sessions-old.tar are not stores (agent.file_safety agrees).
 _HERMES_STORE_FILE = (
-    _HERMES_HOME_ROOT + r'/(?:' + '|'.join(re.escape(sub) for sub in HERMES_PROTECTED_SUBPATHS) + r')'
-    r'(?:[-./][^\s"\'`;|&<>()]*)?' + _PATH_WORD_END
+    _HERMES_HOME_ROOT + r'/(?:' + '|'.join(
+        re.escape(sub) + (r'(?:-wal|-shm|-journal)?' if sub.endswith('.db') else r'(?:/[^\s"\'`;|&<>()]*)?')
+        for sub in HERMES_PROTECTED_SUBPATHS) + r')' + _PATH_WORD_END
 )
-_HERMES_STORE_PATH = rf'(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_ROOT}/?\*?{_PATH_WORD_END})'
+# The store itself, for the overwrite rules: a new file written into sessions/ (`> sessions/x`) stays clean.
+_HERMES_STORE_ROOT = (
+    _HERMES_HOME_ROOT + r'/(?:' + '|'.join(
+        re.escape(sub) + (r'(?:-wal|-shm|-journal)?' if sub.endswith('.db') else r'/?')
+        for sub in HERMES_PROTECTED_SUBPATHS) + r')' + _PATH_WORD_END
+)
+_HERMES_HOME_BARE = rf'{_HERMES_HOME_ROOT}/?\*?{_PATH_WORD_END}'
+_HERMES_STORE_PATH = rf'(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE})'
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
@@ -652,15 +661,19 @@ DANGEROUS_PATTERNS = [
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
     # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
     # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
-    (rf'\b(?:rm|unlink|shred|truncate|mv)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
-    (rf'\b(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_FILE}{_COMMAND_TAIL}', "overwrite Hermes session/credential store"),
-    (rf'\bdd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_FILE}', "overwrite Hermes session/credential store"),
-    (rf'\btee\b[^;|&\n]*\s["\']?{_HERMES_STORE_FILE}', "overwrite Hermes session/credential store"),
-    (rf'>[>|]?\s*["\']?{_HERMES_STORE_FILE}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'(?:rm|unlink|shred|truncate)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
+    # mv: a store at any operand (moved away or overwritten), the bare home only as a SOURCE, so
+    # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean.
+    (_CMDPOS + rf'mv\b[^;|&\n]*\s["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE}(?=\s+[^\s;|&<>]))',
+     "delete/move/wipe Hermes home or session store"),
+    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}{_COMMAND_TAIL}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'dd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'tee\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
-    # deletes the same rows). SELECT/.dump/.schema stay clean.
-    (rf'\bsqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|update\s+\S+\s+set|drop\s+\w+'
-     r'|insert\s+(?:or\s+\w+\s+)?into|replace\s+into|alter\s+table|vacuum)\b|\.restore\b))',
+    # deletes the same rows). SELECT/.dump/.schema and the `VACUUM INTO` backup stay clean.
+    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|update\s+\S+\s+set|drop\s+\w+'
+     r'|insert\s+(?:or\s+\w+\s+)?into|replace\s+into|alter\s+table|vacuum(?!\s+into))\b|\.restore\b))',
      "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.

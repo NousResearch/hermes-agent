@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 # ``mask_secret`` (``sk-p...7890``, ``_mask_token``'s ``sk-pro...WXYZ``: a short head, ``...``,
 # then exactly four tail chars) and hand-truncated previews of it (``sk-...``).
@@ -60,6 +60,11 @@ def is_redacted_credential_value(value: Any, *, shapes: bool = True) -> bool:
     candidate = _mask_candidate(value)
     if not candidate:
         return False
+    # ``*** sk-pro...WXYZ``: the redactor masks a multi-token header value token by token.
+    return all(_is_masked_token(token, shapes) for token in candidate.split())
+
+
+def _is_masked_token(candidate: str, shapes: bool) -> bool:
     if _is_bare_mask(candidate, shapes=shapes):
         return True
     prefix = _KEPT_PREFIX_RE.match(candidate)
@@ -180,6 +185,32 @@ def refuse_redacted_config_credentials(new: Any, read_old: Callable[[], Any]) ->
         raise ConfigValueError(
             f"Refusing to save redacted credential mask(s) at {shown}: a masked display value is "
             "not the credential. Enter the real secret or a ${ENV_VAR} reference.")
+
+
+def _holds_mask(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(_holds_mask(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_holds_mask(v) for v in value)
+    return is_redacted_credential_value(value)
+
+
+def refuse_redacted_config_sets(sets: Mapping[str, Any], read_old: Callable[[], Any]) -> None:
+    """:func:`refuse_redacted_config_credentials` for a keyed write (``write_config_keys``,
+    ``Changes.set``): the dotted ``sets`` are checked as the nested document they write."""
+    if not any(_holds_mask(value) for value in sets.values()):
+        return  # no hermes_cli.config import for ordinary keyed writes (PM runtime)
+    from hermes_cli.config import _split_key_path
+
+    doc: dict[str, Any] = {}
+    for dotted, value in sets.items():
+        *parents, leaf = _split_key_path(dotted) or [dotted]
+        node = doc
+        for part in parents:
+            child = node.setdefault(part, {})
+            node = child if isinstance(child, dict) else {}
+        node[leaf] = value
+    refuse_redacted_config_credentials(doc, read_old)
 
 
 def _check_non_ascii_credential(key: str, value: str) -> str:

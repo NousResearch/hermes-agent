@@ -214,3 +214,19 @@ def test_provider_keys_still_refuse_every_mask_shape(home):
         with pytest.raises(ValueError, match="redacted display mask"):
             save_env_value("OPENAI_API_KEY", mask)
 
+
+@pytest.mark.parametrize("key", ["model.api_key", "mcp_servers.s.headers.X-API-Key"])
+def test_keyed_writer_refuses_masks(home, key):
+    """``write_config_key(s)`` (per-key round-trip, not the document writer) runs the same check."""
+    from hermes_cli.config import get_config_path
+    from hermes_cli.config_backend import ConfigValueError, write_config_key, write_config_keys
+    before = (home / "config.yaml").read_text()
+    for mask in ("***", "*** ***", "sk-pro" + "...WXYZ"):
+        with pytest.raises(ConfigValueError, match=key.replace(".", r"\.")):
+            write_config_key(get_config_path(), key, mask)
+        with pytest.raises(ConfigValueError):
+            write_config_keys(get_config_path(), {"display.personality": "kawaii", key: mask})
+    assert (home / "config.yaml").read_text() == before
+    write_config_key(get_config_path(), key, REAL)
+    write_config_key(get_config_path(), "display.personality", "***")  # not a credential
+    assert yaml.safe_load((home / "config.yaml").read_text())["display"]["personality"] == "***"

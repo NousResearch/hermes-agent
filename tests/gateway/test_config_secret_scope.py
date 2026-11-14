@@ -481,3 +481,146 @@ def test_a_moved_route_never_sends_its_frozen_key_to_the_new_endpoint(tmp_path, 
         for server in servers:
             server.shutdown()
             server.server_close()
+
+
+def _pre_151775_identity_policy(policy, monkeypatch):
+    """Rewrite ``bound`` as a gateway from before #151775 would have stamped it: a bare built-in
+    name (``openrouter``) instead of ``custom:<name>`` for the same resolved URL."""
+    from gateway import session_route_identity
+    from gateway.session_policy_credentials import PREFIX, _binding
+    real = session_route_identity.resolved_route
+
+    def legacy(model_cfg, config):
+        identity, url = real(model_cfg, config)
+        if identity.startswith('custom:'):
+            identity = identity.split(':', 1)[1]
+        return identity, url
+
+    monkeypatch.setattr(session_route_identity, 'resolved_route', legacy)
+    source = json.loads(policy.config_secret_ref[len(PREFIX):])
+    config = json.loads(policy.config_json)
+    source['bound'] = [[path, _binding(config, tuple(path))] for path, _digest in source['bound']]
+    monkeypatch.setattr(session_route_identity, 'resolved_route', real)
+    return replace(policy, config_secret_ref=PREFIX + json.dumps(source, sort_keys=True))
+
+
+def test_a_pre_151775_builtin_identity_still_authenticates_the_same_endpoint(tmp_path, monkeypatch):
+    """#154342: after #151775, a bare built-in name that also keys a ``providers:`` entry resolves
+    to ``custom:<name>``. Sessions frozen before that change stored the bare identity in ``bound``.
+    The endpoint URL did not move, so the frozen key must still be accepted; a real URL move is
+    still refused by name."""
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_policy_credentials import PREFIX, _binding
+
+    url = 'https://openrouter.ai/api/v1'
+    cfg = {
+        'model': {'provider': 'openrouter', 'default': 'm', 'base_url': url},
+        'providers': {'openrouter': {'base_url': url, 'api_key_env': 'OPENROUTER_API_KEY'}},
+        'auxiliary': {'vision': {'provider': 'openrouter', 'model': 'qwen/qwen3.7-flash',
+                                 'base_url': url, 'api_key': 'sk-or-v1-test'}},
+    }
+    owner, policy = _bind(tmp_path, monkeypatch, cfg)
+    legacy = _pre_151775_identity_policy(policy, monkeypatch)
+    source = json.loads(legacy.config_secret_ref[len(PREFIX):])
+    current = _binding(json.loads(policy.config_json), ('auxiliary', 'vision', 'api_key'))
+    stored = dict((tuple(path), digest) for path, digest in source['bound'])[
+        ('auxiliary', 'vision', 'api_key')]
+    assert stored != current  # the spelling change really moved the digest
+
+    recovered = legacy.config(owner())
+    assert recovered['auxiliary']['vision']['api_key'] == 'sk-or-v1-test'
+
+    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+        _repointed(legacy, lambda c: c['auxiliary']['vision'].__setitem__(
+            'base_url', 'http://evil.invalid/v1')).config(owner())
+    assert refused.value.field == 'auxiliary.vision.api_key' and 'endpoint' in refused.value.detail
+
+
+def _stamped_before_151775(policy, monkeypatch):
+    """*policy*'s ``bound`` as a gateway from before #151775 stamped it: a bare built-in name never
+    meant a ``providers:`` entry (raw resolution deferred it to the built-in), whatever that entry
+    declared."""
+    from gateway import session_route_identity
+    from gateway.session_policy_credentials import PREFIX, _binding
+    from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
+    real = session_route_identity._named_entry
+    with monkeypatch.context() as patch:
+        patch.setattr(session_route_identity, '_named_entry',
+                      lambda name, config: None if _shadowed_by_builtin(name) else real(name, config))
+        source = json.loads(policy.config_secret_ref[len(PREFIX):])
+        config = json.loads(policy.config_json)
+        source['bound'] = [[path, _binding(config, tuple(path))] for path, _digest in source['bound']]
+    return replace(policy, config_secret_ref=PREFIX + json.dumps(source, sort_keys=True))
+
+
+_OR = 'https://openrouter.ai/api/v1'
+# Every built-in name a ``providers:`` entry can key, on every route shape: the route naming its own
+# base_url, naming none (the built-in's default host, now the entry's same URL), and an auxiliary task.
+_PRE_151775 = {
+    'model_no_base_url': ({'model': {'provider': 'openrouter', 'default': 'm', 'api_key': 'sk-or-v1-frozen'},
+                           'providers': {'openrouter': {'base_url': _OR, 'api_key_env': 'OPENROUTER_API_KEY'}}},
+                          ('model', 'api_key')),
+    'aux_mixed_case_key': ({'model': {'provider': 'custom', 'default': 'm', 'base_url': 'http://127.0.0.1:9/v1'},
+                            'providers': {'OpenRouter': {'base_url': _OR + '/'}},
+                            'auxiliary': {'vision': {'provider': 'openrouter', 'model': 'v', 'api_key': 'sk-or-v1-frozen'}}},
+                           ('auxiliary', 'vision', 'api_key')),
+    'anthropic_entry': ({'model': {'provider': 'custom', 'default': 'm', 'base_url': 'http://127.0.0.1:9/v1'},
+                         'providers': {'anthropic': {'base_url': 'https://api.anthropic.com'}},
+                         'auxiliary': {'vision': {'provider': 'anthropic', 'model': 'c', 'api_key': 'sk-frozen',
+                                                  'base_url': 'https://api.anthropic.com'}}},
+                        ('auxiliary', 'vision', 'api_key')),
+}
+
+
+@pytest.mark.parametrize('case', sorted(_PRE_151775))
+def test_a_binding_stamped_before_151775_keeps_its_unmoved_endpoint(tmp_path, monkeypatch, case):
+    """#154342 class: any built-in name keyed under ``providers:`` (not only ``openrouter``), on a route
+    that names its own base_url or none. The frozen key still authenticates the endpoint it was sent to;
+    a route key changed in config.yaml is still refused by name."""
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_policy_credentials import PREFIX, _binding
+    cfg, path = _PRE_151775[case]
+    owner, policy = _bind(tmp_path, monkeypatch, cfg)
+    legacy = _stamped_before_151775(policy, monkeypatch)
+    stored = dict((tuple(p), d) for p, d in json.loads(legacy.config_secret_ref[len(PREFIX):])['bound'])[path]
+    assert stored != _binding(json.loads(policy.config_json), path)  # the identity change moved the digest
+    recovered = legacy.config(owner())
+    value = recovered
+    for key in path:
+        value = value[key]
+    assert value == _defined_value(cfg, path)
+    rotated = json.loads(json.dumps(cfg))
+    _set(rotated, path, 'sk-really-rotated')
+    (tmp_path / 'profile' / 'config.yaml').write_text(json.dumps(rotated))
+    if path[0] == 'model':
+        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+            legacy.config(owner())
+        assert refused.value.field == '.'.join(path) and 'changed' in refused.value.detail
+    else:  # an auxiliary key is not the session's route key: the task loses it, never takes the new one
+        assert 'sk-really-rotated' not in json.dumps(legacy.config(owner()))
+
+
+def test_a_pre_151775_binding_whose_endpoint_151775_really_moved_is_refused(tmp_path, monkeypatch):
+    """The route named the built-in with no base_url, so the frozen key went to the built-in's host. The
+    user's same-keyed entry points elsewhere, so after #151775 the same route would send it there: that is
+    a moved endpoint, not a spelling change, and stays refused by name."""
+    from hermes_state_runtime import RuntimeStoreError
+    cfg = {'model': {'provider': 'openrouter', 'default': 'm', 'api_key': 'sk-or-v1-frozen'},
+           'providers': {'openrouter': {'base_url': 'http://proxy.invalid/v1'}}}
+    owner, policy = _bind(tmp_path, monkeypatch, cfg)
+    legacy = _stamped_before_151775(policy, monkeypatch)
+    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+        legacy.config(owner())
+    assert refused.value.field == 'model.api_key' and 'endpoint' in refused.value.detail
+
+
+def _defined_value(cfg, path):
+    for key in path:
+        cfg = cfg[key]
+    return cfg
+
+
+def _set(cfg, path, value):
+    for key in path[:-1]:
+        cfg = cfg[key]
+    cfg[path[-1]] = value

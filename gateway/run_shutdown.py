@@ -176,6 +176,16 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
+def _active_async_delegation_count() -> int:
+    """Process-local async delegations that a graceful restart must not amputate. A module
+    function, not a mixin method: every stop-path double gets it without a stub."""
+    try:
+        from tools.async_delegation import active_count
+        return active_count()
+    except Exception:  # health: allow BLE001 -- a count probe on the stop path must never raise
+        return 0
+
+
 class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -204,17 +214,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
-            + self._active_async_delegation_count()
+            + _active_async_delegation_count()
         )
-
-    @staticmethod
-    def _active_async_delegation_count() -> int:
-        """Process-local async delegations that a graceful restart must not amputate."""
-        try:
-            from tools.async_delegation import active_count
-            return active_count()
-        except Exception:  # health: allow BLE001 -- a count probe on the stop path must never raise
-            return 0
 
     @staticmethod
     def _running_cron_job_count() -> int:
@@ -822,7 +823,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         return (
             self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
-            self._active_async_delegation_count(),
+            _active_async_delegation_count(),
         )
 
     async def _drain_active_agents(
@@ -1553,7 +1554,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         )
         return (
             max(0, non_cron - self._wedged_chat_agent_count())
-            + self._active_async_delegation_count()
+            + _active_async_delegation_count()
             + self._restart_wait_cron_counts()["awaitable"]
         )
 
@@ -1767,7 +1768,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         _cron_at_start = self._active_cron_job_count()
         _api_at_start = self._active_api_run_count()
         _deferred_at_start = ctx.deferred_count()
-        _deleg_at_start = self._active_async_delegation_count()
+        _deleg_at_start = _active_async_delegation_count()
         # Cron floor clamped to the watchdog leash; getattr-guard for bare shutdown-path doubles.
         _cron_drain_cfg = getattr(self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)
         # Under launchd the real leash is launchd's own exit timeout, not our watchdog
@@ -1794,7 +1795,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             "deferred_at_start=%d, deferred_now=%d, deleg_at_start=%d, deleg_now=%d)", ctx.elapsed(),
             ctx.drain_elapsed, ctx.timed_out, len(ctx.active_agents), self._running_agent_count(),
             _cron_at_start, self._active_cron_job_count(), _api_at_start, self._active_api_run_count(),
-            _deferred_at_start, ctx.deferred_count(), _deleg_at_start, self._active_async_delegation_count(),
+            _deferred_at_start, ctx.deferred_count(), _deleg_at_start, _active_async_delegation_count(),
         )
         if ctx.timed_out:
             return

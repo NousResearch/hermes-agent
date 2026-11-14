@@ -72,10 +72,13 @@ def owner_request(home, verb, params, *, timeout=30):
         raise RuntimeStoreError('runtime_draining')
     response = json.loads(raw)
     if response.get('ok') is not True:
-        reason = str(response.get('error', '')).split(': ')[-1]
-        if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params', 'unknown_execution',
-                          'stale_generation', 'admission_conflict', 'response_too_large', 'request_too_large'}:
+        reason = ' '.join(str(response.get('error', '')).split(': ')[-1].split())[:200]
+        if not reason:
             reason = 'runtime_draining'
+        # Unknown NON-EMPTY reasons pass through: a deterministic producer-side error
+        # (e.g. a storage IntegrityError) must not masquerade as a retryable drain — the
+        # task fails with the real cause instead of spinning as runtime_draining. Only
+        # transport noise (empty reason) still folds. (#149682)
         raise RuntimeStoreError(reason)
     if response.get('protocol') != 1 or response.get('id') != 1:
         raise RuntimeStoreError('runtime_draining')
@@ -239,7 +242,8 @@ def install_hosted_transport(server, authority, loop, *, attest):
         # the RPC's own authorize hook has nothing left to decide. A new operation must
         # be added to _OPERATIONS (and therefore attested) before it can reach _call.
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
-                                    authorize=lambda *args: True)
+                                    authorize=lambda *args: True,
+                                    claim_source=binding['source_home'])
         key = _BINDING + rpc.ref.session_id
         encoded = json.dumps(binding, sort_keys=True)
         def persist(conn):

@@ -156,7 +156,7 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
-| `format C:`, `Format-Volume`, `Clear-Disk`, `rd /s /q C:\`, `Remove-Item -Recurse C:\` | Windows analogues: format/wipe a volume or recursively delete a drive root |
+| `format C:`, `Format-Volume`, `Clear-Disk`, `rd /s /q C:\`, `Remove-Item -Recurse C:\` (a literal `-Include *.tmp` filter stays approvable) | Windows analogues: format/wipe a volume or recursively delete a drive root |
 | `Restart-Computer` / `Stop-Computer` (a plain `-WhatIf` preview stays approvable) | Windows analogue of `shutdown`/`reboot` |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
 

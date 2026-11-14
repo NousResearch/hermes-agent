@@ -1,0 +1,260 @@
+"""TTS engine leases follow the profile that ACQUIRED them, not the one that releases.
+
+``tui:voice-tts`` and ``desktop:read-aloud`` are process-wide holder names, and ``voice.toggle`` /
+``/api/audio/tts-lease`` run in the caller's profile. So profile B can acquire and profile A (or the
+keep-warm timer thread) can drop the last hold. The keep-warm window, the user provider's release
+hook and the secrets that hook forwards must still come from B.
+"""
+
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+from hermes_constants import (
+    get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override)
+from tools import tts_command_provider, tts_tool, tts_tool_lifecycle
+
+
+@pytest.fixture(autouse=True)
+def _clean_lifecycle():
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    yield
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+
+
+@pytest.fixture
+def timers(monkeypatch):
+    made: list = []
+
+    class Timer:
+        def __init__(self, interval, function, args=None, kwargs=None):
+            self.interval, self.function, self.args = interval, function, tuple(args or ())
+            self.started = self.cancelled = False
+            made.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", Timer)
+
+    def fire():
+        pending = [t for t in made if t.started and not t.cancelled]
+        for t in pending:
+            t.function(*t.args)
+        return [t.interval for t in pending]
+    return fire
+
+
+def _join_hook_threads():
+    for t in list(threading.enumerate()):
+        if t is not threading.current_thread() and t.name.startswith("tts-"):
+            t.join(10)
+            assert not t.is_alive(), t.name
+
+
+def _srv_config(tag: str, keep_warm: float) -> dict:
+    return {"provider": "srv", "keep_warm_seconds": keep_warm, "providers": {"srv": {
+        "command": "true {input_path} {output_path}", "warm_command": f"warm-{tag}",
+        "release_command": f"release-{tag}", "env_passthrough": ["SRV_TOKEN"]}}}
+
+
+@pytest.fixture
+def hooks(monkeypatch):
+    """Record each command hook with the home and SRV_TOKEN it runs under (nothing executes)."""
+    from agent.secret_scope import get_secret
+    seen: list = []
+
+    def run(command, timeout, env_passthrough=None):
+        seen.append((command, get_hermes_home().name, get_secret("SRV_TOKEN")))
+    monkeypatch.setattr(tts_command_provider, "run_command_provider", run)
+    return seen
+
+
+def test_voice_toggle_release_by_another_profile_follows_the_acquirer(
+        tmp_path, monkeypatch, timers, hooks):
+    """Real ``voice.toggle``: ``tts`` on from a profile-B session, off from the launch profile A."""
+    from hermes_cli.config import atomic_config_write
+    from tui_gateway import server
+    launch, home_b = get_hermes_home(), tmp_path / "profiles" / "b"
+    home_b.mkdir(parents=True)
+    atomic_config_write(launch / "config.yaml", {"tts": _srv_config("A", 0)})
+    atomic_config_write(home_b / "config.yaml", {"tts": _srv_config("B", 30)})
+    (home_b / ".env").write_text("SRV_TOKEN=b-token\n")
+    monkeypatch.setenv("SRV_TOKEN", "launch-token")
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+    monkeypatch.setattr(server, "_profile_home", lambda name: home_b if name == "b" else None)
+
+    def toggle(params):
+        resp = server.handle_request({"id": "1", "method": "voice.toggle", "params": params})
+        for worker in [t for t in threading.enumerate() if t.name == "tts-lease-tui:voice-tts"]:
+            worker.join(10)
+        _join_hook_threads()
+        return resp["result"]["tts"]
+
+    assert toggle({"action": "tts", "profile": "b"}) is True
+    assert toggle({"action": "tts"}) is False
+    assert timers() == [30.0]  # B's window, not A's inline unload
+    _join_hook_threads()
+    assert hooks == [("warm-B", "b", "b-token"), ("release-B", "b", "b-token")]
+    assert tts_tool_lifecycle.tts_lease_holders() == []
+
+
+@pytest.fixture
+def profiles(tmp_path, monkeypatch):
+    """Homes a/b with their own command-provider config; ``as_profile(x)`` binds one."""
+    from contextlib import contextmanager
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    configs = {name: _srv_config(name.upper(), keep_warm) for name, keep_warm in (("a", 0), ("b", 30))}
+    for home in homes.values():
+        home.mkdir()
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: configs[get_hermes_home().name])
+    monkeypatch.setenv("SRV_TOKEN", "token")
+
+    @contextmanager
+    def as_profile(name):
+        token = set_hermes_home_override(str(homes[name]))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+    return as_profile
+
+
+def _release_hooks(hooks):
+    return sorted(c for c, _home, _tok in hooks if c.startswith("release-"))
+
+
+def test_every_acquiring_profile_is_released_in_its_own_profile(profiles, timers, hooks):
+    """Distinct holders from two profiles, each dropped by the OTHER profile: the window is the
+    longest an owner asked for (B's 30s, not releaser B's view of A's 0), then both are released."""
+    with profiles("b"):
+        tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    with profiles("a"):
+        tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
+        tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+    with profiles("b"):
+        tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
+    assert timers() == [30.0]
+    _join_hook_threads()
+    released = sorted((c, h) for c, h, _ in hooks if c.startswith("release-"))
+    assert released == [("release-A", "a"), ("release-B", "b")]
+
+
+def test_same_name_reacquired_by_another_profile_releases_both_owners(profiles, timers, hooks):
+    """Holder names stay process-wide (either profile's release ends the hold, as before); what
+    each profile warmed is still released under that profile, and nothing is retained after."""
+    with profiles("b"):
+        tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
+    with profiles("a"):
+        tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
+        assert tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")["leases"] == 0
+    timers()
+    _join_hook_threads()
+    assert _release_hooks(hooks) == ["release-A", "release-B"]
+    assert tts_tool_lifecycle._tts_owners == {}
+
+
+class _GatedPlugin:
+    """Plugin provider whose ``release()`` can block on a gate; records ordering."""
+
+    def __init__(self):
+        self.calls: list = []
+        self.in_release, self.gate = threading.Event(), threading.Event()
+        self.gate.set()
+        self.lock_free_in_release = None
+
+    def warm(self):
+        self.calls.append("warm")
+
+    def release(self):
+        self.calls.append("release-start")
+        got = tts_tool_lifecycle._tts_lease_lock.acquire(timeout=2)
+        if got:
+            tts_tool_lifecycle._tts_lease_lock.release()
+        self.lock_free_in_release = got
+        self.in_release.set()
+        assert self.gate.wait(5)
+        self.calls.append("release-end")
+
+
+@pytest.fixture
+def plugin(monkeypatch):
+    provider = _GatedPlugin()
+    monkeypatch.setattr(tts_tool_lifecycle, "_lookup_plugin_provider", lambda name: provider)
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "custom", "keep_warm_seconds": 10})
+    return provider
+
+
+def test_release_hook_runs_outside_the_lease_lock(plugin, timers):
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+    timers()
+    assert plugin.lock_free_in_release is True
+    assert plugin.calls == ["warm", "release-start", "release-end"]
+
+
+def test_reacquire_during_a_running_release_warms_after_it(plugin, timers):
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+    plugin.gate.clear()
+    teardown = threading.Thread(target=timers)
+    teardown.start()
+    reacquire = threading.Thread(target=tts_tool_lifecycle.acquire_tts_lease, args=("tui:voice-tts",))
+    try:
+        assert plugin.in_release.wait(5)
+        reacquire.start()
+        reacquire.join(0.3)  # bounded: it must be parked on the running release, not warming
+        assert plugin.calls == ["warm", "release-start"]
+    finally:
+        plugin.gate.set()
+        teardown.join(5)
+        reacquire.join(5)
+    assert not teardown.is_alive() and not reacquire.is_alive()
+    assert plugin.calls == ["warm", "release-start", "release-end", "warm"]
+    assert tts_tool_lifecycle.tts_lease_holders() == ["tui:voice-tts"]
+
+
+def test_release_during_warm_still_releases_after_the_warm(monkeypatch, timers):
+    """The last holder drops mid-warm and the unload runs then; the warm that finishes afterwards
+    left the resource up again, so its owner is restored and released once more."""
+    calls: list = []
+
+    class Provider:
+        def warm(self):
+            calls.append("warm-start")
+            tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+            calls.append("warm-end")
+
+        def release(self):
+            calls.append("release")
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_lookup_plugin_provider", lambda name: Provider())
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "custom", "keep_warm_seconds": 0})
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    assert calls[-2:] == ["warm-end", "release"]
+    assert tts_tool_lifecycle._tts_owners == {}
+
+
+def test_unload_never_enters_an_owner_context_another_thread_is_in(monkeypatch, timers):
+    """``Context.run`` refuses a context already entered elsewhere; the owner context must only
+    ever be run through a copy (keep-warm read and release hook alike)."""
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None: {"action": "noop"})
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge", "keep_warm_seconds": 0})
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    owner = tts_tool_lifecycle._tts_owners[hermes_home_key()]
+    inside, leave = threading.Event(), threading.Event()
+    holder = threading.Thread(target=owner.run, args=(lambda: (inside.set(), leave.wait(5)),))
+    holder.start()
+    try:
+        assert inside.wait(5)
+        assert tts_tool_lifecycle.release_tts_lease("tui:voice-tts") == {"leases": 0, "released": 0}
+    finally:
+        leave.set()
+        holder.join(5)
+    assert tts_tool_lifecycle._tts_owners == {}

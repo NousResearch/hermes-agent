@@ -83,7 +83,7 @@ def _publish_first(path: Path, body: bytes) -> None:
         with contextlib.suppress(FileExistsError):
             os.link(tmp, path)
         linked = True
-    except OSError:  # no hard links on this filesystem
+    except (OSError, AttributeError):  # no hard links on this filesystem (or no os.link at all)
         linked = False
     finally:
         with contextlib.suppress(OSError):

@@ -494,7 +494,7 @@ def _read_or_create_log_hash_salt(home: Path) -> bytes:
                 os.link(temporary, path)
             except FileExistsError:
                 data = path.read_bytes()
-            except OSError:  # no hard links (Android SELinux, exFAT): exclusive create, first wins
+            except (OSError, AttributeError):  # no hard links (Android SELinux/exFAT, Termux-Python without os.link): exclusive create, first wins
                 data = _create_log_hash_salt_exclusive(path, data)
         finally:
             temporary.unlink(missing_ok=True)

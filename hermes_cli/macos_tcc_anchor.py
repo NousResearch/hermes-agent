@@ -171,7 +171,7 @@ def _provision_libpython(venv_dir: Path, source_file: Path, *, refresh: bool = F
                     continue
             try:
                 os.link(src, dst)
-            except OSError:
+            except (OSError, AttributeError):
                 try:
                     shutil.copy2(src, dst)
                 except OSError:

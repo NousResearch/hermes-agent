@@ -48,35 +48,27 @@ from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
 from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
-# Bound on persisted error text length, matching cron/incidents.py's
-# MAX_ERROR_CHARS convention — a truncated-but-safe record is more useful
-# than an unbounded one that grows jobs.json without limit.
+# Same bound as cron/incidents.py MAX_ERROR_CHARS-style caps: enough to diagnose, never unbounded.
 _MAX_PERSISTED_ERROR_CHARS = 2000
 
 
 def _sanitize_persisted_error(error: Optional[str]) -> Optional[str]:
-    """Redact secrets and bound length before persisting an error to jobs.json.
+    """Scrub secrets from, and bound, error text bound for jobs.json / executions.db (#102700).
 
-    ``jobs.json`` survives gateway restarts, job edits, and profile backups
-    indefinitely — unlike a log line, a raw provider error string written
-    here (e.g. an OpenRouter 403 whose body embeds a
-    ``.../workspaces/.../keys/<KEY_ID>`` management link) sits on disk until
-    the field is next overwritten. Mirrors ``cron/incidents.py::_redact_error``
-    and ``cron/delivery_queue.py``'s ``_finish`` sanitization at the other
-    cron persistence chokepoints. Best-effort: a redaction failure must never
-    block recording that a job failed (see issue #102700).
+    Those stores outlive restarts and get backed up or synced, so raw provider / stderr text must
+    not land there verbatim — the same rule cron/incidents.py and cron/delivery_queue.py already
+    apply. A redactor failure stores a placeholder rather than the unscanned text, and never
+    raises: the caller is recording that a job failed.
     """
-    if error is None:
-        return None
-    text = str(error)
-    if not text:
-        return text
+    if not error:
+        return error
     try:
         from agent.redact import redact_sensitive_text
 
-        text = redact_sensitive_text(text, force=True, redact_url_credentials=True)
+        text = redact_sensitive_text(str(error), force=True, redact_url_credentials=True)
     except Exception:
-        logger.warning("Failed to redact sensitive text before persisting cron error", exc_info=True)
+        logger.warning("Failed to redact cron error before persisting it", exc_info=True)
+        return "[REDACTED - redaction failed]"
     return text[:_MAX_PERSISTED_ERROR_CHARS]
 
 
@@ -2452,7 +2444,8 @@ def _record_run_outcome(
         # a monitor sampling jobs.json then sees a permanently green job. last_failure
         # survives success (latest failure wins); the recency window is the consumer's
         # call. Delivery failures keep their own sticky last_delivery_error.
-        job["last_failure"] = {"at": now, "detail": error or (status or "run failed")}
+        job["last_failure"] = {
+            "at": now, "detail": _sanitize_persisted_error(error) or (status or "run failed")}
     job["last_delivery_error"] = _sanitize_persisted_error(delivery_error)
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None

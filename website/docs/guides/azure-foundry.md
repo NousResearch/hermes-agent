@@ -233,9 +233,9 @@ model:
 
 Important behaviour:
 
-- **GPT-5.x, codex, and o-series auto-route to the Responses API.** Microsoft Foundry deploys GPT-5 / codex / o1 / o3 / o4 models as Responses-API-only — calling `/chat/completions` against them returns `400 "The requested operation is unsupported."`. Hermes detects these model families by name and upgrades `api_mode` to `codex_responses` transparently, even when `config.yaml` still reads `api_mode: chat_completions`. GPT-4, GPT-4o, Llama, Mistral, and other deployments stay on `/chat/completions`.
+- **GPT-5.x, GPT-6.x, codex, and o-series auto-route to the Responses API.** Microsoft Foundry deploys GPT-5 / GPT-6 / codex / o1 / o3 / o4 models as Responses-API-only — calling `/chat/completions` against them returns `400 "The requested operation is unsupported."`. Hermes detects these model families by name and upgrades `api_mode` to `codex_responses` transparently, even when `config.yaml` still reads `api_mode: chat_completions`. GPT-4, GPT-4o, Llama, Mistral, and other deployments stay on `/chat/completions`.
 - **`api_mode: responses` is accepted as a spelling of `codex_responses`.** The alias works on `model.api_mode`, on `fallback_providers` entries and on per-task `auxiliary.<task>.api_mode` (e.g. an `auxiliary.vision` route to a GPT-5.x deployment), and selects the same Responses adapter.
-- **`max_completion_tokens` is used automatically.** Azure OpenAI (like direct OpenAI) requires `max_completion_tokens` for gpt-4o, o-series, and gpt-5.x models. Hermes sends the right parameter based on the endpoint.
+- **`max_completion_tokens` is used automatically.** Azure OpenAI (like direct OpenAI) requires `max_completion_tokens` for gpt-4o, o-series, gpt-5.x and gpt-6.x models. Hermes sends the right parameter based on the endpoint.
 - **Pre-v1 endpoints that require `api-version`.** If you have a legacy base URL like `https://<resource>.openai.azure.com/openai?api-version=2025-04-01-preview`, Hermes extracts the query string and forwards it via `default_query` on every request (the OpenAI SDK otherwise drops it when joining paths).
 
 ## Anthropic-style endpoints (Claude via Microsoft Foundry)

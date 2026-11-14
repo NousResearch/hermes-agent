@@ -162,7 +162,16 @@ deleted conversation is not moved; it replays as described above.
 
 ### POST /v1/chat/completions
 
-Standard OpenAI Chat Completions format. Stateless — the full conversation is included in each request via the `messages` array.
+Standard OpenAI Chat Completions format. The client sends the conversation in the `messages` array on each request.
+
+**Which Hermes session receives the turn:**
+
+| Request carries | Session used |
+|---|---|
+| `X-Hermes-Session-Id: <id>` (needs `API_SERVER_KEY`) | That session. History loads from `state.db`, not from `messages`; repeated requests append to it. |
+| No `X-Hermes-Session-Id` | An `api-…` session derived from the system prompt + first user message, so a client that resends the same opening maps onto the same session. |
+
+`X-Hermes-Session-Key` and a `session_id` field in the body do **not** select the session on this endpoint: the key only scopes long-term memory (see [Long-term memory scoping](#long-term-memory-scoping-x-hermes-session-key)), and the body field is ignored. To continue a known session, send `X-Hermes-Session-Id`. Every response (JSON and SSE) carries an `X-Hermes-Session-Id` header naming the session that actually received the turn, so a client can detect when it landed somewhere other than it intended.
 
 **Request:**
 ```json
@@ -770,9 +779,11 @@ X-Hermes-Session-Id: transcript-alpha
 X-Hermes-Session-Key: agent:main:webui:dm:user-42
 ```
 
+On `/v1/chat/completions` the key is memory scope only and never picks the transcript; send `X-Hermes-Session-Id` alongside it to continue a session. `/v1/runs` and `/v1/responses` additionally retain the conversation declared by the key (see [Conversation and terminal-result semantics](#conversation-and-terminal-result-semantics)).
+
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
-Automatic recall follows the **transcript**: the memory provider is initialised once per session and kept across requests, so a continued session (`X-Hermes-Session-Id`, `previous_response_id`, or a declared `X-Hermes-Session-Key` conversation) receives the recall the provider prepared after the previous turn, exactly like a Telegram or Discord chat does. A request without any continuation starts a fresh session and, like the first turn of any new CLI session, has nothing queued yet. Idle sessions release their provider after the same idle TTL as the gateway agent cache (`agent.agent_cache.idle_ttl_secs`, default one hour).
+Automatic recall follows the **transcript**: the memory provider is initialised once per session and kept across requests, so a continued session (`X-Hermes-Session-Id`, `previous_response_id`, or, on `/v1/runs` and `/v1/responses`, a declared `X-Hermes-Session-Key` conversation) receives the recall the provider prepared after the previous turn, exactly like a Telegram or Discord chat does. A request without any continuation starts a fresh session and, like the first turn of any new CLI session, has nothing queued yet. Idle sessions release their provider after the same idle TTL as the gateway agent cache (`agent.agent_cache.idle_ttl_secs`, default one hour).
 
 ## System Prompt Handling
 

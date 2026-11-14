@@ -146,6 +146,14 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
+def _writes_host_filesystem(task_id: str) -> bool:
+    """Whether this task's writes land on THIS host's disk: only then may a guard stat the target.
+    A hosted path names the tenant's sandbox and an SSH/container path the backend's filesystem;
+    probing the same string here would judge an unrelated host file."""
+    from tools.environments.sandbox_scope import hosted_scope
+    return hosted_scope() is None and _terminal_env_type_for_task(task_id) == "local"
+
+
 def _same_existing_file(path: str, other: str) -> bool:
     """Whether *path* names the existing file *other*: on a case-insensitive filesystem
     ``Config.YAML`` is ``config.yaml`` even though the strings differ."""
@@ -182,7 +190,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and (deny_key(hermes_config) in keys or _same_existing_file(candidates[0], hermes_config)):
+    if hermes_config and (deny_key(hermes_config) in keys or (
+            _writes_host_filesystem(task_id) and _same_existing_file(candidates[0], hermes_config))):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

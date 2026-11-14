@@ -137,6 +137,11 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # This turn is synthetic /goal state machinery (post-turn continuation, queued /goal resume),
+    # not user input. Declared rather than inferred from the text: ``goals.continuation_prompt``
+    # lets operators reword the continuation, so the old ``[Continuing toward your standing goal]``
+    # prefix can no longer identify one. Appended for positional compat.
+    goal_continuation: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

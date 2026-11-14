@@ -305,7 +305,13 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""
+        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items).
+
+        The declared ``goal_continuation`` flag is authoritative; the text prefix is the fallback for
+        events built by older code or queued before a restart, and for bare strings.
+        """
+        if getattr(event_or_text, "goal_continuation", False):
+            return True
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
 

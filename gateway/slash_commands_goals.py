@@ -107,6 +107,9 @@ class GatewayGoalCommandsMixin:
                     media_types=list(event.media_types) if media else [],
                     media_text_inlined=list(event.media_text_inlined) if media else [],
                     media_filenames=list(event.media_filenames) if media else [],
+                    # A queued /goal resume is loop machinery too: /goal pause or /goal clear must be
+                    # able to drop it, and the stale-goal check must still recognise it.
+                    goal_continuation=not kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

@@ -222,6 +222,40 @@ Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That me
 
 The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
 
+### Continuation prompt (configurable)
+
+Every turn the loop re-enters the session with a plain user-role message. Its wording is yours to
+set:
+
+```yaml
+goals:
+  # Appended to EVERY continuation prompt — and to the first-turn kick — whichever variant is in
+  # play. Put the durable part of your working charter here: how to resolve ambiguity, what to
+  # record, what to do when blocked. Blank = built-in wording only.
+  directives: >-
+    Work from the project root and read the project's spec, state and queue notes before touching
+    anything. Take the highest-leverage item you can finish this turn. Decide ambiguity with your
+    best judgement and record the decision where the next session will read it; when something
+    blocks you, write down what would unblock it, push it down the road and take the next item
+    rather than waiting. Never stop while anything at all remains, and end every turn with a short
+    summary of what was done and what is left.
+
+  # Full replacement for the continuation prompt itself. {goal} is required; a template that omits
+  # it (or does not render) is ignored and the built-in wording is used, so a bad key can never
+  # drop the goal from the loop. Blank = built-in.
+  continuation_prompt: "[Continuing toward your standing goal]\nGoal: {goal}\n\nTake the next concrete step."
+
+  # Variants used when the goal carries /subgoal criteria or a completion contract. Same rules,
+  # plus {subgoals_block} / {contract_block} respectively.
+  continuation_prompt_with_subgoals: ""
+  continuation_prompt_with_contract: ""
+```
+
+Prefer `directives` over the template keys unless you want to replace the framing entirely: it
+applies to both variants and cannot lose required placeholders. The first-turn kick is the goal
+text plus `directives` — a bare `/goal ship the release` therefore starts with the full charter
+already in force.
+
 ## Configuration
 
 Add to `~/.hermes/config.yaml`:

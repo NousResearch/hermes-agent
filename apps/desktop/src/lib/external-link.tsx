@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { hostHas } from '@/lib/host-capabilities'
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { $chatLinksRequireModifier, CHAT_LINK_ATTR, shouldOpenChatLink } from '@/store/chat-link-open'
 import { $alwaysExternalLinks } from '@/store/external-links'
 
 import { resolveBrandIcon } from './brand-icon'
@@ -297,6 +298,9 @@ interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'>
    *  signed into over there — a cloud console, an account page. */
   native?: boolean
   showExternalIcon?: boolean
+  /** A link in assistant prose: honours "Require ⌘/Ctrl-click to open chat
+   *  links". Off for every other surface, which stays single-click. */
+  chatLink?: boolean
 }
 
 export function ExternalLinkIcon({ className }: { className?: string }) {
@@ -320,6 +324,7 @@ export function LinkBrandIcon({ className, href }: { className?: string; href: s
 }
 
 export function ExternalLink({
+  chatLink = false,
   children,
   className,
   href,
@@ -357,11 +362,21 @@ export function ExternalLink({
         }
 
         event.preventDefault()
-        openLink(target, { native: native || wantsNativeBrowser(event.nativeEvent) })
+
+        // With the chat-link preference on, a plain click selects text and
+        // the modifier that opens the link is spent on opening it in-app.
+        const requireModifier = chatLink && $chatLinksRequireModifier.get()
+
+        if (requireModifier && !shouldOpenChatLink(event)) {
+          return
+        }
+
+        openLink(target, { native: native || (!requireModifier && wantsNativeBrowser(event.nativeEvent)) })
       }}
       rel="noopener noreferrer"
       target="_blank"
       {...rest}
+      {...(chatLink ? { [CHAT_LINK_ATTR]: '' } : {})}
     >
       {children ?? urlSlugTitleLabel(target)}
       {showExternalIcon && <ExternalLinkIcon />}
@@ -373,6 +388,7 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
   href: string
   label?: string
   fallbackLabel?: string
+  chatLink?: boolean
 }
 
 // Title resolution is a fallback, not an override. Both props carry authored

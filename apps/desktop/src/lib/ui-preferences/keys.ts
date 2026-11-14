@@ -58,6 +58,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   // Shell, panes and behaviour.
   'hermes.desktop.alwaysExternalLinks.v1',
   'hermes.desktop.capabilities.catalogCardView',
+  'hermes.desktop.chatLinksRequireModifier.v1',
   'hermes.desktop.composerPopout.enabled',
   'hermes.desktop.composerPopout.gesturesEnabled',
   'hermes.desktop.files.showIgnored',

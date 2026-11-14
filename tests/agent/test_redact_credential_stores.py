@@ -40,6 +40,7 @@ class TestCredentialStoreReads:
         ("~/.netrc", 'machine h login bob password "a b {pw}"\n'),
         ("~/_netrc", "machine h login bob password {pw}\n"),
         ("~/.pypirc", "[pypi]\npassword = correct horse {pw}\n"),
+        ("~/.pypirc", "[pypi]\npassword=correct horse {pw}\n"),
         ("~/.aws/config", "[profile x]\naws_session_token = {pw}\n"),
     ])
     def test_quoted_and_spaced_values_are_masked_whole(self, path, body):

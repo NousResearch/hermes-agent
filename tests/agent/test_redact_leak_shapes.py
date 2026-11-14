@@ -259,6 +259,7 @@ class TestGoogleOAuthCredentials:
         _assert_unchanged(text)
 
     @pytest.mark.parametrize("text", ["1//refresh", "1//rt-0", "page 1//0 of 3", "a1//0" + "A" * 24,
-                                      "https://example.com/v1//api/" + "a" * 24, "x = 1//2 // floor division"])
+                                      "https://example.com/v1//api/" + "a" * 24, "x = 1//2 // floor division",
+                                      "x = 1//batch_size_per_device_total", "1//0" + "x" * 19])
     def test_refresh_token_lookalikes_kept(self, text):
         _assert_unchanged(text)

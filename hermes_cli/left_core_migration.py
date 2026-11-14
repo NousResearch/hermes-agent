@@ -39,6 +39,7 @@ from hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,
     _note_failure, _unattended_consent,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
     from hermes_cli.platforms import PLATFORMS
     try:
-        bundled = {p.name for p in (Path(__file__).resolve().parents[1] / "plugins" / "platforms").iterdir()
+        bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
                    if (p / "plugin.yaml").is_file()}
     except OSError:
         bundled = set()

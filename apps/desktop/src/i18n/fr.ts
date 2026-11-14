@@ -2885,10 +2885,10 @@ export const frOverrides = {
       backupDesc: 'Archiver en zip la configuration, les mémoires, les skills et les sessions',
       debugShare: 'Partage de débogage',
       debugShareDesc:
-        'Téléverser un rapport expurgé + journaux, obtenir des liens partageables (auto-suppression après 6h)',
+        'Téléverser un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal), obtenir un lien partageable (auto-suppression après 6h)',
       debugShareConfirm: 'Téléverser le rapport de débogage vers un paste public ?',
       debugShareConfirmDesc:
-        'Téléverse les infos système + les journaux complets vers un service de paste public. Les secrets sont masqués, mais vos messages récents, la sortie des outils, les chemins et noms de fichiers restent dans les journaux et sont lisibles par toute personne disposant du lien. Les pastes sont supprimés automatiquement après 6 heures ; si paste.rs est injoignable, le service de secours dpaste.com les garde publics 1 jour et ils ne peuvent pas être supprimés plus tôt.',
+        'Téléverse un résumé vers un service de paste public : versions de Hermes, de Python et du système, noms des plateformes connectées et des toolsets, clés de configuration (sans valeurs) et compteurs d’avertissements/erreurs. Il ne contient aucune ligne de journal ni texte de message. Les pastes sont supprimés automatiquement après 6 heures ; si paste.rs est injoignable, le service de secours dpaste.com les garde publics 1 jour et ils ne peuvent pas être supprimés plus tôt.',
       debugShareRunning: 'Téléversement du rapport de débogage...',
       debugShareLinks: 'Liens de partage',
       debugShareFailed: 'Échec du partage de débogage',
@@ -3920,7 +3920,7 @@ export const frOverrides = {
       '/topup': 'Afficher votre solde Nous et gérer la facturation sur le portail',
       '/platform': 'Suspendre, reprendre ou lister une plateforme de gateway en échec',
       '/version': 'Afficher la version de Hermes Agent',
-      '/debug': 'Rapport de débogage (infos système + journaux) : affiche d\'abord l\'avis de confidentialité ; /debug upload partage les liens',
+      '/debug': 'Rapport de débogage (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) : affiche d\'abord l\'avis de confidentialité ; /debug upload partage les liens',
       '/model': 'Changer le modèle de cette session'
     },
     hotkeyDescs: {

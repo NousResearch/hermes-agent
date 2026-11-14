@@ -351,7 +351,7 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
 
     try:
         # Only the directories STATE_MODULES names, one small listing each (a recursive listing of a
-        # release is several MiB): the root today, src/hermes_agent/ and its hermes_state/ after the move.
+        # release is several MiB): the root today, hermes_agent/ and its hermes_state/ after the move.
         listed: dict[str, list] = {}
         for directory in dict.fromkeys(pattern.rpartition("/")[0] for pattern in STATE_MODULES):
             if not _list_directory(directory, listed, lambda: listing(sha), listing):

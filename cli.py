@@ -241,6 +241,7 @@ except Exception:
     pass
 import threading
 import queue
+from hermes_cli._startup_fast import project_root_str
 
 
 def _lazy_shim(module: str, name: str, alias: str | None = None):
@@ -337,7 +338,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
-_project_env = Path(__file__).parent / '.env'
+_project_env = Path(project_root_str()) / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 

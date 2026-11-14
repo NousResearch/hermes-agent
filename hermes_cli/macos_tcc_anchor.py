@@ -25,6 +25,7 @@ from pathlib import Path
 
 from pm.environments import venv_python
 from utils import atomic_write_text
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def _is_uv_macos_store(path: str) -> bool:
 
 
 def _venv_dir(project_root: Path | None = None) -> Path | None:
-    root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
+    root = Path(project_root) if project_root is not None else Path(project_root_str())
     return next((root / n for n in ("venv", ".venv") if _present(venv_python(root / n))), None)
 
 

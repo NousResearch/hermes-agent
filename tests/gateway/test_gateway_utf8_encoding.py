@@ -9,15 +9,17 @@ import ast
 import pathlib
 import pytest
 
+from hermes_agent.compat.paths import current_path
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-GATEWAY_DIR = REPO_ROOT / "gateway"
+GATEWAY_DIR = REPO_ROOT / current_path("gateway")
 UPDATE_RESPONSE_FILES = (
-    REPO_ROOT / "plugins/platforms/discord/adapter.py",
-    REPO_ROOT / "plugins/platforms/telegram/adapter.py",
-    REPO_ROOT / "plugins/platforms/feishu/adapter.py",
-    REPO_ROOT / "plugins/platforms/whatsapp/adapter.py",
-    REPO_ROOT / "plugins/platforms/google_chat/adapter.py",
-    REPO_ROOT / "plugins/platforms/google_chat/oauth.py",
+    REPO_ROOT / current_path("plugins/platforms/discord/adapter.py"),
+    REPO_ROOT / current_path("plugins/platforms/telegram/adapter.py"),
+    REPO_ROOT / current_path("plugins/platforms/feishu/adapter.py"),
+    REPO_ROOT / current_path("plugins/platforms/whatsapp/adapter.py"),
+    REPO_ROOT / current_path("plugins/platforms/google_chat/adapter.py"),
+    REPO_ROOT / current_path("plugins/platforms/google_chat/oauth.py"),
 )
 METHODS = {"read_text", "write_text"}
 SUPPRESSION = "# gateway-utf8: ok"

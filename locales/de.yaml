@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Debug-Bericht konnte nicht hochgeladen werden: {error}"
     header: "**Debug-Bericht hochgeladen:**"
     auto_delete: "⏱ Pastes werden in 6 Stunden automatisch gelöscht."
-    full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
+    full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share --nous` aus der CLI."
     share_hint: "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
     report_label: "Bericht"
     local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen."
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes-Agent-Version anzeigen"
   debug:
-    description: "Debug-Bericht (Systeminfo + Logs): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links"
+    description: "Debug-Bericht (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links"
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts schaltet den reinen TTS-Modus um — der Agent antwortet laut, aber Sie tippen Ihre Prompts weiterhin."
   t344: "/reload-skills durchsucht ~/.hermes/skills/ erneut, sodass Drop-in-Skills ohne Neustart der Sitzung erscheinen."
   t345: "/indicator kaomoji|emoji|unicode|ascii wählt den Stil der TUI-Beschäftigt-Anzeige, die während Agentenläufen erscheint."
-  t346: "/debug lädt ein Support-Bundle hoch (Systeminfos + Logs) und liefert teilbare Links — funktioniert auch im Chat."
+  t346: "/debug upload lädt eine Zusammenfassung hoch (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext) und liefert einen teilbaren Link — funktioniert auch im Chat."
   t347: "hermes -z \"<prompt>\" ist der reinste One-Shot: nur die finale Antwort auf stdout, sonst nichts — ideal für Pipes in Skripten."
   t348: "hermes chat --pass-session-id injiziert die Sitzungs-ID in den System-Prompt, damit der Agent sich selbst darauf beziehen kann."
   t349: "hermes chat --image path/to/pic.png hängt ein lokales Bild an eine einzelne -q-Anfrage an, ohne separaten Upload-Schritt."

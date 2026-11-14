@@ -674,18 +674,36 @@ async def recover_gateway_native_sessions(runner):
 def _native_recovery_bindings(runner, authority):
     """An authority's queued rows and the live routes that can carry them.
 
-    A store read per profile: the admission scan, the route list and one lineage walk per route
-    (``logical_owner``). It runs in a worker thread -- a large or slow profile store must not park
-    the loop past the startup watchdog, whose exit 75 restarts into the same pass (#148023).
+    A store read per profile: the admission scan, the route list, one lineage walk per route
+    (``logical_owner``) and the newest native admission that names the route's verified receiving
+    bot (``recovered_native_source``). It runs in a worker thread -- a large or slow profile store
+    must not park the loop past the startup watchdog, whose exit 75 restarts into the same pass
+    (#148023). Only reads happen here; the sources it restores are fresh copies, and the adapter
+    egress caches are primed on the loop (``_prime_recovered_egress``).
     """
     from gateway.session_authorities import owner_scope
+    from gateway.session_native_recovery_routes import recovered_native_source
     with owner_scope(authority):
         pending = {row['target_session_id'] for row in authority.db._read_all(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-        bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
+        bindings = [(owner, origin, runner._adapter_for_source(origin))
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
-                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending
+                    for origin in [recovered_native_source(runner, authority, entry, owner)]]
     return pending, bindings
+
+
+def _prime_recovered_egress(bindings):
+    """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
+    only on live inbound, so after a restart a recovered turn's reply would leave without the
+    scope/user discriminators the connector requires (or on the primary's platform) and be declined.
+    Adapter state: called on the owner loop, never from the binding worker."""
+    from gateway.platforms.event import MessageEvent
+    for _sid, origin, adapter in bindings:
+        prime = getattr(adapter, 'prime_routing_cache', None)
+        if callable(prime):
+            # Verified provenance restores the relay marker too, but no live inbound warmed this chat.
+            prime(MessageEvent(text='', source=origin))
 
 
 async def recover_profile_native_sessions(runner, authority):
@@ -693,9 +711,10 @@ async def recover_profile_native_sessions(runner, authority):
     from gateway.session_authorities import owner_scope
     pending, bindings = await asyncio.to_thread(_native_recovery_bindings, runner, authority)
     from gateway.session_detached import recover_detached_sessions
-    # Recovery still performs per-session validation reads; its live-session publication and
-    # task creation must stay on the owner loop, under the same scope as the binding scan.
+    # Recovery still performs per-session validation reads; egress priming, live-session
+    # publication and task creation stay on the owner loop, under the same scope as the scan.
     with owner_scope(authority):
+        _prime_recovered_egress(bindings)
         outcome = await authority.recover_native_sessions(bindings)
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():

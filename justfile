@@ -202,3 +202,38 @@ ruff +files:
 [positional-arguments]
 eslint +files:
     pnpm exec eslint "$@"
+
+# Rewrite imports and string targets for a move commit (libcst comes from a side environment)
+[group('move')]
+[positional-arguments]
+move-rewrite *args:
+    scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/rewrite_imports.py "$@"
+
+# Regenerate files built from docstrings a move rewrote (run after move-docs; the parity table only checks)
+[group('move')]
+move-generate:
+    scripts/gen_gateway_contracts.py
+    scripts/gen_serve_handler_ledger.py
+    scripts/gen_plugin_api_docs.py
+    scripts/hermes-python website/scripts/generate-skill-docs.py
+    scripts/gen_gateway_command_parity.py --check
+
+# Build commit A (git mv + MOVES) and commit B (generated) of one chunk: NN-name ROOT... [--log-dir D] [--only-a] [--from-a]
+[group('move')]
+[positional-arguments]
+move-chunk *args:
+    python3 scripts/move/build_chunk.py "$@"
+
+# Rewrite moved paths and module names in docs and comments (--from-commit A; --help lists the rest)
+[group('move')]
+[positional-arguments]
+move-docs *args:
+    scripts/hermes-python scripts/move/rewrite_docs.py "$@"
+
+# Carry the current branch across the module moves on origin/main (--continue, --abort, --onto REF, --push)
+[group('move')]
+[positional-arguments]
+migrate-branch *args:
+    if python="$(git rev-parse --git-path migrate-branch/python)" && [ -f "$python" ]; then \
+        PYTHONPATH="$PWD" "$(cat "$python")" scripts/move/migrate_branch.py "$@"; \
+    else scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/migrate_branch.py "$@"; fi

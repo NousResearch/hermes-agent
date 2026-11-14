@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Falha ao carregar relatório de depuração: {error}"
     header: "**Relatório de depuração carregado:**"
     auto_delete: "⏱ Os pastes serão eliminados automaticamente em 6 horas."
-    full_logs_hint: "Para enviar logs completos, usa `hermes debug share` a partir da CLI."
+    full_logs_hint: "Para enviar logs completos, usa `hermes debug share --nous` a partir da CLI."
     share_hint: "Partilha estes links com a equipa do Hermes para obter suporte."
     report_label: "Relatório"
     local_refused: "`/debug local` mantém o relatório na máquina que executa o Hermes, por isso não está disponível num chat. Envie `/debug upload` para enviar o relatório resumido."
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Mostrar a versão do Hermes Agent"
   debug:
-    description: "Relatório de depuração (informações do sistema + logs): mostra primeiro o aviso de privacidade; /debug upload partilha links"
+    description: "Relatório de depuração (versões, chaves de configuração, contagens de erros; sem texto de logs): mostra primeiro o aviso de privacidade; /debug upload partilha links"
   quit:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts alterna o modo somente TTS — o agente responde em voz alta, mas você continua digitando seus prompts."
   t344: "/reload-skills verifica novamente ~/.hermes/skills/ para que skills adicionadas apareçam sem reiniciar a sessão."
   t345: "/indicator kaomoji|emoji|unicode|ascii escolhe o estilo do indicador de ocupado da TUI mostrado durante as execuções do agente."
-  t346: "/debug envia um pacote de suporte (informações do sistema + logs) e retorna links compartilháveis — funciona no chat também."
+  t346: "/debug upload envia um resumo (versões, chaves de configuração, contagens de erros; sem texto de logs) e retorna um link compartilhável — funciona no chat também."
   t347: "hermes -z \"<prompt>\" é o modo one-shot mais puro: só a resposta final no stdout, nada mais — ideal para pipes em scripts."
   t348: "hermes chat --pass-session-id injeta o ID da sessão no prompt do sistema para que o agente possa referenciá-lo."
   t349: "hermes chat --image path/to/pic.png anexa uma imagem local a uma única consulta -q sem uma etapa separada de envio."

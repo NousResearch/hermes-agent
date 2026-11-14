@@ -53,8 +53,16 @@ def _read_text(path: str) -> str | None:
 
 
 def project_root_str() -> str:
-    """Repo root as a str — the single source for main.py's PROJECT_ROOT."""
-    return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    """Repo root as a str — the single source for main.py's PROJECT_ROOT.
+
+    The root is the folder that holds ``hermes_agent/``: this package's parent today, one level higher
+    once this package moves into ``hermes_agent/``. Stdlib only: it also runs from its file (-I -S).
+    """
+    parent = os.path.dirname(os.path.realpath(os.path.dirname(__file__)))
+    for folder in (parent, os.path.dirname(parent)):
+        if os.path.isdir(os.path.join(folder, "hermes_agent", "compat")):
+            return folder
+    return parent
 
 
 def normalize_hermes_home_env() -> None:

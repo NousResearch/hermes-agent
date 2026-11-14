@@ -15755,19 +15755,32 @@ async function dispatchRegistryApiRequest(
   // SSH tunnel / remote dashboard. A passive read never dials, so it stays
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile)
-      )
+  const openBackend = async () => {
+    const connection: any = request?.passive
+      ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+      : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+          ensureRegistryBackend(registryConnectionId, routeProfile)
+        )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET')
+    return { connection, requestPath: pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET') }
+  }
 
-  const response = await fetchJsonForBackend(connection, requestPath, {
-    method: request?.method,
-    body: request?.body,
-    upload: request?.upload,
-    timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+  // A gateway restart retires the instance this descriptor names; ticket minting then fails before the
+  // request is sent. Re-ensure once (never retry a request the server may have received): the same
+  // self-heal the v1 route and the WS dial already have. Without it every REST call answers
+  // "Gateway ticket bootstrap failed" until the app is restarted.
+  const { connection, requestPath, response } = await redialLocalGateway({
+    ensure: openBackend,
+    forget: () => forgetRegistryLocalGatewayDescriptor(registryConnectionId, routeProfile),
+    use: async opened => ({
+      ...opened,
+      response: await fetchJsonForBackend(opened.connection, opened.requestPath, {
+        method: request?.method,
+        body: request?.body,
+        upload: request?.upload,
+        timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+      })
+    })
   })
 
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)

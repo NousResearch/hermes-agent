@@ -18,7 +18,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.parser import BytesHeaderParser
-from email.utils import formatdate, parseaddr
+from email.utils import formatdate, getaddresses, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -297,7 +297,8 @@ def _extract_email_address(raw: str) -> str:
     ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed addr-spec,
     but only when the display part (``(comments)`` removed) cannot hold another mailbox or group: no quotes, ``;``,
     ``:`` or stray parens, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``). Values over
-    ``_MAX_FROM_LEN`` (or with more than 64 ``(``) and results without ``@`` return ``""`` so the caller drops the message."""
+    ``_MAX_FROM_LEN`` (or with more than 64 ``(``) and results that are not exactly one round-tripping ``local@domain``
+    mailbox return ``""`` so the caller drops the message."""
     value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
     if len(value) > _MAX_FROM_LEN or value.count("(") > 64:
         return ""  # hostile size/nesting: take the empty-sender drop (parseaddr recurses per nested comment)
@@ -308,7 +309,12 @@ def _extract_email_address(raw: str) -> str:
                 and ("@" not in display or display.lower() == bracketed.lower())):
             addr = bracketed
     addr = addr.strip().translate(_ASCII_LOWER)
-    return addr if "@" in addr else ""  # a bare word (``John``) is not a sender identity
+    # Both paths: the identity is the reply To:, so it must re-parse as exactly this one mailbox. An unterminated
+    # quote makes parseaddr return ``a@x, b@evil`` verbatim, and ``victim"@evil`` re-parses as RCPT TO ``victim``.
+    local, at, domain = addr.partition("@")
+    if not (local and at and domain and "@" not in domain and getaddresses([addr]) == [("", addr)]):
+        return ""  # also drops a bare word (``John``), which is not a sender identity
+    return addr
 
 
 def _strip_comments(text: str) -> str:
@@ -360,13 +366,13 @@ def _auth_props(text: str) -> list[tuple[str, str]]:
 
 def _domain_of(address: str) -> str:
     """Lowercased domain part of an email address, or ''."""
-    return address.rpartition("@")[2].strip().lower()
+    return address.rpartition("@")[2].strip().translate(_ASCII_LOWER)  # A-Z only, like the identity (U+212A stays)
 
 
 def _domains_aligned(a: str, b: str) -> bool:
     """Relaxed DMARC alignment: equal, or one is a dot-suffix of the other."""
-    a = (a or "").strip().lower().rstrip(".")
-    b = (b or "").strip().lower().rstrip(".")
+    a = (a or "").strip().translate(_ASCII_LOWER).rstrip(".")
+    b = (b or "").strip().translate(_ASCII_LOWER).rstrip(".")
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 

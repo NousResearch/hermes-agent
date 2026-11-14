@@ -1210,6 +1210,21 @@ that is dropped. A one-shot with `--catch-up on` instead fires once, late, when 
 back. `--catch-up on` also beats `--grace-minutes`: the grace sets when a run counts as missed,
 and the job still runs once for it.
 
+**Replaying a chain in order.** A catch-up starts every missed job at once, in no particular
+order. Jobs chained only by their schedule (collect at 07:00, triage at 07:30, ship at 08:00, with
+or without `context_from`) then run together and each reads the previous step's output from the
+day before. To replay such a chain in its scheduled order, set:
+
+```yaml
+cron:
+  catch_up_serial: true   # default: false
+```
+
+When two or more cron-expression jobs are overdue, they then run one at a time in slot order, and
+a cron job that falls due while the replay drains waits behind it. Interval and one-shot jobs
+keep running in parallel, and ordinary ticks are unaffected. The replay takes as long as its jobs
+together.
+
 **Missed runs are visible.** Every slot the scheduler passes over is booked as one `missed ×N`
 row in the execution ledger: `missed ×3 (skipped, catch-up off; next run …)` for a skip, and
 `missed ×2 (collapsed into one catch-up run)` beside the one run that caught up for three slots.

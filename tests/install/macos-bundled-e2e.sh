@@ -374,28 +374,11 @@ phase_update() {
   ok "no stale bundle processes"
 
   step "probing the relaunched app's backend health"
-  local backend_pid backend_port health
-  backend_pid="$(ps -axo pid=,ppid=,command= | awk -v p="$new_pid" '$2==p && /serve/ && /hermes/ {print $1; exit}')"
-  if [ -n "$backend_pid" ]; then
-    backend_port="$(lsof -nP -a -p "$backend_pid" -iTCP -sTCP:LISTEN | awk 'NR>1{sub(".*:","",$9); print $9; exit}')"
-  fi
-  if [ -z "${backend_port:-}" ]; then
-    # Fallback: the newest listening 127.0.0.1 port owned by any descendant
-    # of the relaunched app (helper wrappers can reparent the backend).
-    backend_port="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1/ {print $1, $2, $9}' \
-      | while read -r _ pid addr; do
-          if ps -o ppid= -p "$pid" 2>/dev/null | grep -qw "$new_pid" || [ "$pid" = "$new_pid" ]; then
-            printf '%s\n' "${addr##*:}"; break
-          fi
-        done)"
-  fi
-  [ -n "$backend_port" ] || fail "could not discover the relaunched backend's listening port"
-  for _ in $(seq 1 30); do
-    health="$(curl -fsS "http://127.0.0.1:$backend_port/api/health" 2>/dev/null)" && break
-    sleep 2
-  done
-  [ -n "${health:-}" ] || fail "backend /api/health never answered on 127.0.0.1:$backend_port"
-  printf '%s\n' "$health" | ts_prefix | tee "$LOG_DIR/backend-health.json"
+  local backend_port
+  backend_port="$(bash "$ASSETS/mac-backend-health.sh" --payload "$old_app/Contents/Resources/agent-payload" \
+    --newer-than "$new_pid" --timeout 180 --out "$LOG_DIR/backend-health.json")" \
+    || fail "the relaunched app's backend never answered /api/health (payload processes listed above)"
+  ts_prefix < "$LOG_DIR/backend-health.json"
   ok "backend healthy on 127.0.0.1:$backend_port"
 
   # ── user state survived ───────────────────────────────────────────────

@@ -59,6 +59,7 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     result = asyncio.run(run_task(connection, params))
     assert result['session_id'] == ref.session_id
+    assert result['subscription_id'] is None, 'a resume that hands nothing back must not break the answer'
     assert policies[0].source == 'kanban'
     assert observed == [(True, True, False)], 'card turns must be finite without granting unattended auto-approval'
     assert finite_turn_required() is None

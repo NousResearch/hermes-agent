@@ -8,6 +8,7 @@ except ModuleNotFoundError as exc:
         raise
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -51,6 +52,7 @@ class _Claim:
     answered: float  # monotonic time of the owner's last answer
     session_id: Optional[str] = None
     admission_id: Optional[str] = None
+    subscription_id: Optional[str] = None  # this socket's viewer handle, from the first kanban.run
 
     def silent_for(self):
         return time.monotonic() - self.answered
@@ -84,6 +86,11 @@ async def run(params, board_db):
                         receipt = await _await_receipt(client, params, board_db, claim)
                     finally:
                         drain.cancel()
+                    # A finite card turn is not a conversation to leave open: while this socket
+                    # still holds its subscription, hand it back with an end stamp so the owner
+                    # ends the local session instead of leaving it with no viewer forever.
+                    if receipt['status'] == 'terminal':
+                        await _end_card_session(client, claim)
         # A restart also surfaces as a refused or reset dial, a failed handshake, or an answer
         # that never came.
         except (GatewayClientError, WebSocketException, OSError, TimeoutError) as exc:
@@ -133,6 +140,7 @@ async def _await_receipt(client, params, board_db, claim):
         accepted = await client.rpc('kanban.run', _timeout=admission_answer_budget(), **dict(params, db=db))
         receipt = accepted['receipt']
         claim.session_id, claim.admission_id = accepted['session_id'], receipt['admission_id']
+        claim.subscription_id = accepted.get('subscription_id')
         print(f'Session: {claim.session_id}', file=sys.stderr)
     else:
         receipt = await _receipt(client, claim)
@@ -142,6 +150,17 @@ async def _await_receipt(client, params, board_db, claim):
         receipt = await _receipt(client, claim)
         claim.answered = time.monotonic()
     return receipt
+
+
+async def _end_card_session(client, claim):
+    """Best-effort closing detach for a settled card turn. A lost detach must never change the
+    worker's exit: the retry-safe answer is to leave the row as it is today, not to fail the run.
+    An 'unknown' receipt is deliberately NOT detached: the owner still holds that attempt."""
+    if not (claim.session_id and claim.subscription_id):
+        return
+    with suppress(Exception):
+        await client.rpc('session.detach', session_id=claim.session_id,
+                         subscription_id=claim.subscription_id, end_reason='kanban_worker_end')
 
 
 def _exit_code(receipt, params, board_db):

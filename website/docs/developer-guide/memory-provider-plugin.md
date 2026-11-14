@@ -181,7 +181,7 @@ workspace; absent or empty cwd remains unpinned.
 | `name` (property) | Always | **Yes** |
 | `is_available()` | Agent init, before activation | **Yes** — no network calls |
 | `initialize(session_id, **kwargs)` | Agent startup | **Yes** |
-| `get_tool_schemas()` | After init, for tool injection | **Yes** |
+| `get_tool_schemas()` | When the provider is added, before `initialize()`, to route tool calls. Again after init, each time tools are injected. Return the same names every time. | **Yes** |
 | `handle_tool_call(tool_name, args, **kwargs)` | When agent uses your tools | **Yes** (if you have tools) |
 
 ### Config

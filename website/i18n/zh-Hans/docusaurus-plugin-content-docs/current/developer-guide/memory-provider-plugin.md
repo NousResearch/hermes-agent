@@ -60,7 +60,7 @@ class MyMemoryProvider(MemoryProvider):
 | `name`（property） | 始终 | **是** |
 | `is_available()` | agent 初始化，激活前 | **是** — 禁止网络请求 |
 | `initialize(session_id, **kwargs)` | agent 启动 | **是** |
-| `get_tool_schemas()` | 初始化后，用于注入工具 | **是** |
+| `get_tool_schemas()` | 添加 provider 时（在 `initialize()` 之前）调用一次，用于路由工具调用。此后每次注入工具时（初始化之后）再次调用。每次须返回相同的名称。 | **是** |
 | `handle_tool_call(name, args)` | agent 调用你的工具时 | **是**（如果有工具） |
 
 ### 配置

@@ -1718,8 +1718,8 @@ DEFAULT_CONFIG = {
         # dials them instead of rejecting them as private. Empty = normal private-address verdict.
         "fake_ip_ranges": [],
         "redact_secrets": True,
-        # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
-        # on prompts. The startup guard still warns every run; cost guards are unaffected.
+        "redact_phone_numbers": True,  # false: E.164 numbers shown in replies/chat only, never other secrets
+        # Ack for unattended model overrides on a vendor-trains-on-prompts tier (startup still warns).
         "allow_data_training_tiers_noninteractive": False,
         # Human-approval presentation transport. "builtin" = CLI/TUI/gateway/ACP surfaces; a plugin
         # transport is used only when named explicitly. Transport timeout/error/invalid response

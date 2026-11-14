@@ -60,12 +60,13 @@ def test_non_list_skills_is_invalid_shape():
 
 
 def test_remote_newlines_cannot_add_output_lines():
-    data = _index(HEALTHY_COUNTS)
+    # 600 entries rank the hostile source first, so most_common(8) puts it in ``summary``.
+    data = _index({**HEALTHY_COUNTS, "lobehub\r\nstatus=forged": 600})
     data["generated_at"] += "\nstatus=forged"
-    data["skills"].append({"name": "x", "source": "lobehub\r\nstatus=forged"})
     lines = probe.evaluate(data, NOW)
     assert all("\n" not in line and "\r" not in line for line in lines)
     assert [line.split("=", 1)[0] for line in lines] == ["status", "detail", "summary"]
+    assert lines[2].startswith("summary=lobehub  status=forged=600, lobehub=500")
 
 
 def test_script_reports_parse_failure_and_exits_zero(tmp_path):

@@ -102,11 +102,13 @@ def load_newest_good_backup(config_path: Path) -> Optional[dict]:
 
 
 def _sweep_legacy_siblings(config_path: Path, root: Path) -> None:
+    from hermes_cli.config import _secure_file
     for pattern in _LEGACY_SIBLING_GLOBS:
         for old in config_path.parent.glob(pattern):
             if not old.is_file() or old.is_symlink():
                 continue
             try:
                 old.replace(root / old.name)
+                _secure_file(root / old.name)  # pre-backups-dir copies were often written 0644
             except OSError as exc:
                 logger.debug("Could not move legacy backup %s: %s", old, exc)

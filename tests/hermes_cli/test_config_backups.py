@@ -72,3 +72,18 @@ def test_backup_of_world_readable_config_is_owner_only(tmp_path: Path, monkeypat
 
     assert dest is not None
     assert dest.stat().st_mode & 0o777 == 0o600
+
+
+def test_swept_legacy_backup_becomes_owner_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.config._container_or_chmod_skipped", lambda: False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("api_key: secret\n")
+    legacy = tmp_path / "config.yaml.bak.20260101-000000"
+    legacy.write_text("api_key: old\n")
+    os.chmod(legacy, 0o644)
+
+    backup_config(cfg, "pre-setup")
+
+    moved = tmp_path / "backups" / "config" / legacy.name
+    assert moved.stat().st_mode & 0o777 == 0o600

@@ -36,6 +36,7 @@ import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { GROUP_CHAT_LOCALES } from './group-chat-locales'
 import { GROUP_SURFACE_AR } from './group-surface-ar'
+import { GROUP_SURFACE_CS } from './group-surface-cs'
 import { GROUP_SURFACE_DE } from './group-surface-de'
 import { GROUP_SURFACE_ES } from './group-surface-es'
 import { GROUP_SURFACE_FR } from './group-surface-fr'
@@ -1789,7 +1790,8 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ru: { canonical: CANONICAL_GROUP_LOCALES.ru, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru, ...GROUP_SURFACE_RU },
   fr: { canonical: CANONICAL_GROUP_LOCALES.fr, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.fr, ...GROUP_SURFACE_FR },
   de: { canonical: CANONICAL_GROUP_LOCALES.de, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.de, ...GROUP_SURFACE_DE },
-  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es, ...GROUP_SURFACE_ES }
+  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es, ...GROUP_SURFACE_ES },
+  cs: { canonical: CANONICAL_GROUP_LOCALES.cs, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.cs, ...GROUP_SURFACE_CS }
 }
 
 export type BotsText = Bound<BotsMessages>

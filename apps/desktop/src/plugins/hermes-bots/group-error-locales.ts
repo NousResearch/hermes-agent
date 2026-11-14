@@ -92,4 +92,14 @@ export const GROUP_CHAT_ERRORS = {
     attachmentFallback: "مرفق",
     pastedImage: "صورة ملصقة"
   },
+
+  cs: {
+    sendRouteRequired: 'Odeslání do tohoto skupinového chatu vyžaduje jeho připojení, profil a ID skupinového chatu',
+    savedMessagesUnreadable: 'Uložené zprávy skupinového chatu se nepodařilo načíst',
+    savedMessageUnreadable: 'Uloženou zprávu skupinového chatu se nepodařilo načíst',
+    sendNeedsUpdate: 'Odesílání do tohoto skupinového chatu vyžaduje novější Desktop; restartujte Hermes Desktop',
+    attachmentTooLarge: (name) => `${name}: příliš velké (max. 15 MB).`,
+    attachmentFallback: 'příloha',
+    pastedImage: 'vložený obrázek',
+  }
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, GroupChatErrorMessages>

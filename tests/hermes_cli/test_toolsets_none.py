@@ -10,6 +10,7 @@ there was no documented way to ask the CLI for a session without tools.
 
 import pytest
 
+import model_tools
 from hermes_cli.oneshot import _normalize_toolsets
 from model_tools import get_tool_definitions
 from toolsets import parse_toolset_selection
@@ -37,6 +38,21 @@ def test_oneshot_normalization_keeps_the_empty_selection():
 
 def test_the_empty_selection_registers_no_tools():
     assert get_tool_definitions(enabled_toolsets=[], quiet_mode=True) == []
+
+
+def test_an_empty_selection_never_gets_the_bridge_tools(monkeypatch):
+    """A profile with a deferrable catalog and tool search forced on still hands the model nothing.
+
+    Without the gate the bridge arrives as tool_search/describe/call, and tool_call re-opens the
+    catalog the caller just refused (the reason career-ops trusts no other CLI's zero-tool mode).
+    """
+    from tools import tool_search
+
+    monkeypatch.setattr(tool_search, "load_config", lambda: tool_search.ToolSearchConfig(
+        enabled="on", threshold_pct=60.0, search_default_limit=5, max_search_limit=25))
+    names = [td["function"]["name"]
+             for td in model_tools._compute_tool_definitions(enabled_toolsets=[], quiet_mode=True)]
+    assert names == []
 
 
 def test_an_absent_selection_still_registers_tools():

@@ -1483,3 +1483,22 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def test_kanban_create_inherits_board_default_when_no_parent_project(monkeypatch, tmp_path):
+    from pathlib import Path as _Path
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    d = tmp_path / "plain"
+    d.mkdir()
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.write_board_metadata(None, default_workdir=str(d))
+    out = json.loads(kt._handle_create({"title": "from tool", "assignee": "w"}))
+    assert out.get("ok") is True, out
+    assert out.get("workspace_kind") == "dir"

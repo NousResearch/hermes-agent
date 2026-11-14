@@ -79,6 +79,8 @@ hermes skills uninstall <skill-name>
 | [**ip-as-logo**](../user-guide/skills/optional/creative/creative-ip-as-logo.md) | Design minimal cute IP mascot marks readable at 32px. |
 | [**kanban-video-orchestrator**](../user-guide/skills/optional/creative/creative-kanban-video-orchestrator.md) | Plan and run multi-agent video production pipelines. |
 | [**meme-generation**](../user-guide/skills/optional/creative/creative-meme-generation.md) | Create meme PNGs from templates with Pillow text overlay. |
+| [**meshy-3d-generation**](../user-guide/skills/optional/creative/creative-meshy-3d-generation.md) | 3D models, textures, rigs and animation with Meshy. |
+| [**meshy-3d-printing**](../user-guide/skills/optional/creative/creative-meshy-3d-printing.md) | Print-ready models and Creative Lab products with Meshy. |
 | [**mono-color**](../user-guide/skills/optional/creative/creative-mono-color.md) | Generate one- or two-ink editorial print poster images. |
 | [**pixel-art**](../user-guide/skills/optional/creative/creative-pixel-art.md) | Pixel art w/ era palettes (NES, Game Boy, PICO-8). |
 | [**pretext**](../user-guide/skills/optional/creative/creative-pretext.md) | Build creative browser demos with DOM-free text layout. |

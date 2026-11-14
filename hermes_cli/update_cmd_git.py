@@ -613,22 +613,25 @@ def _git_is_trampoline(git_cmd: list) -> bool:
 
 
 def _portable_git_candidates() -> list:
-    """PortableGit candidates: shared root first (where the managed tree actually lives, not the
-    profile-scoped HERMES_HOME), then profile home as a fallback for custom layouts.
+    """PortableGit candidates: legacy ``<root>/git`` trees (shared root first, then profile home), then
+    the pm store entries ``<store>/git-<version>-<target>/`` newest first, each under every MSYS2 prefix.
 
-    The Hermes-managed PortableGit tree lives under the SHARED root (``<root>/git/...``), not the
-    profile-scoped HERMES_HOME (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look
-    there (monerostar review, #87876).
+    Pre-pm trees lived under the SHARED root (``<root>/git/...``), not the profile-scoped HERMES_HOME
+    (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look there (monerostar
+    review, #87876). install.ps1 (``Get-PinnedGit``) and pm stage the managed tree in the store.
     """
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    candidates = []
+    trees = []
     with suppress(Exception):
-        candidates += [
-            root / "git" / prefix / "libexec" / "git-core" / "git.exe"
-            for root in (get_default_hermes_root(), Path(get_hermes_home()))
-            for prefix in ("ucrt64", "mingw64")
-        ]
-    return candidates
+        trees += [root / "git" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
+    with suppress(Exception):  # install.ps1 and pm stage it at <store>/git-<version>-<target>/
+        from pm.paths import store_root
+        trees += sorted(store_root().glob("git-*-win32-*"), reverse=True)
+    return [
+        tree / prefix / "libexec" / "git-core" / "git.exe"
+        for tree in trees
+        for prefix in ("ucrt64", "clangarm64", "mingw64")
+    ]
 
 
 def _locate_real_git() -> Optional[Path]:

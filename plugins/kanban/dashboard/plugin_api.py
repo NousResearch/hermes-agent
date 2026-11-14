@@ -1270,7 +1270,19 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
     """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        # Use the gateway concurrency policy and default assignee.
+        caps = {}
+        try:
+            from hermes_cli.config import load_config
+            _kcfg = (load_config() or {}).get("kanban", {}) or {}
+            caps = dict(
+                max_in_progress=kbd.resolve_max_in_progress(kbd._positive_int(_kcfg.get("max_in_progress"), None)),
+                max_in_progress_per_profile=kbd._positive_int(_kcfg.get("max_in_progress_per_profile"), None),
+                default_assignee=(_kcfg.get("default_assignee") or "").strip() or None,
+            )
+        except Exception:
+            caps = {}
+        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board, **caps)
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

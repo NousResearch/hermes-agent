@@ -492,7 +492,13 @@ export const frOverrides = {
       liveError: 'Voix en direct',
       liveDelegationFailed: 'Impossible de transmettre la demande à Hermes',
       liveUnavailable: reason =>
-        `Le chat vocal GPT-Live n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`
+        `Le chat vocal GPT-Live n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`,
+      extensionUnavailable: (engine, reason) =>
+        `${engine} n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`,
+      extensionMissing: engine =>
+        `Le moteur vocal ${engine} n'est pas installé ou est désactivé. Utilisation de la reconnaissance vocale à la place.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} a besoin du plugin ${plugin}, qui n'est pas activé dans le profil actif (${profile}). La voix utilise toujours le profil actif, y compris dans un chat de Bot : activez le plugin pour ce profil, ou passez à un profil qui l'a. Utilisation de la reconnaissance vocale à la place.`
     },
     native: {
       approvalTitle: 'Approbation requise',
@@ -1158,6 +1164,7 @@ export const frOverrides = {
       }
     },
     fieldLabels: defineFieldCopy({
+      'voice.gptLive.language': 'Langue des réponses OpenAI',
       model: 'Modèle par défaut',
       modelContextLength: 'Fenêtre de contexte du modèle principal (forçage)',
       fallbackProviders: 'Modèles de secours',
@@ -1334,6 +1341,8 @@ export const frOverrides = {
       }
     }),
     fieldDescriptions: defineFieldCopy({
+      'voice.gptLive.language':
+        'Auto conserve le comportement multilingue existant. Une langue choisie guide les réponses orales par les instructions de session, sans changer les réglages de transcription.',
       model: 'Utilisé pour les nouvelles conversations sauf si vous choisissez un autre modèle dans le compositeur.',
       modelContextLength:
         'Remplace la fenêtre de contexte détectée du modèle de conversation PRINCIPAL uniquement (en jetons). Laissez 0 pour utiliser la valeur détectée du modèle sélectionné. N’affecte pas les modèles auxiliaires/MoA.',
@@ -3013,7 +3022,8 @@ export const frOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Aucun jeton de bot requis',
-      intro: (platform: string) => `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
+      intro: (platform: string) =>
+        `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
       link: (platform: string) => `Associer ${platform}`,
       linkAnother: (platform: string) => `Associer un autre compte ${platform}`,
       linkedAccounts: 'Comptes associés',
@@ -3031,10 +3041,12 @@ export const frOverrides = {
       refused: (platform: string) => `${platform} a refusé l’association. Demandez un nouveau code et réessayez.`,
       qrAlt: (platform: string) => `Code QR du bot ${platform} partagé`,
       managed: 'Géré par Team Gateway',
-      managedNote: (platform: string) => `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
+      managedNote: (platform: string) =>
+        `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
       managedIntro: 'Les comptes de cet agent se lient depuis Nous Portal.',
       openPortal: 'Lier des comptes dans Nous Portal',
-      noNewAccount: (platform: string) => `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
+      noNewAccount: (platform: string) =>
+        `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
     },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',
@@ -3779,6 +3791,8 @@ export const frOverrides = {
     markAllRead: 'Tout marquer comme lu'
   },
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: 'Auto',
     message: 'Message',
     wakingProfile: profile => `Réveil de ${profile}…`,
     placeholderStarting: 'Démarrage de Hermes…',
@@ -3830,6 +3844,21 @@ export const frOverrides = {
     voiceEngineChangeFailed: 'Impossible de changer le moteur de conversation vocale',
     voiceEngineChainedShort: 'reconnaissance vocale',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'Indisponible pour le moment',
+    voiceEngineSignIn: provider => `Se connecter avec ${provider}`,
+    voiceEngineMissing: engine => `${engine} (non installé ou désactivé)`,
+    voiceEngineNotEnabled: (plugin, profile) => `Le plugin ${plugin} n'est pas activé dans le profil ${profile}`,
+    voiceEngineAccount: provider => `Connexion ${provider}`,
+    voiceEngineSignedIn: provider => `Connecté avec ${provider} pour ce profil.`,
+    voiceEngineNotSignedIn: provider => `Non connecté avec ${provider}. Ce moteur vocal en a besoin.`,
+    voiceEngineSignInAction: 'Se connecter',
+    voiceEngineSignOutAction: 'Se déconnecter',
+    voiceEngineSignInCode: code => `Saisissez le code ${code} sur la page ouverte, puis revenez ici.`,
+    voiceEngineSignInFailed: message => `La connexion n'a pas abouti : ${message}`,
+    voiceEngineSignOutTitle: provider => `Se déconnecter de ${provider} ?`,
+    voiceEngineSignOutBody: provider =>
+      `Cela retire la connexion ${provider} de ce profil. Tout ce qui l'utilise, pas seulement ce moteur vocal, cesse de fonctionner jusqu'à une nouvelle connexion.`,
+    voiceEngineSignOutFailed: 'Impossible de se déconnecter',
     voiceDictation: 'Dictée vocale',
     speakReplies: 'Lire les réponses à haute voix',
     stopSpeakingReplies: 'Arrêter la lecture des réponses à haute voix',

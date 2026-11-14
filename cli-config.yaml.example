@@ -1829,6 +1829,15 @@ stt:
 #     model: ""
 #     voice: "default"
 
+# Desktop duplex conversation. OpenAI remains persisted as gpt-live; plugin engines
+# use <plugin>:<engine>. Settings shows Duplex separately from the engine.
+# voice:
+#   voice_chat_mode: chained
+#   gpt_live:
+#     voice: marin
+#     language: auto       # unchanged multilingual behavior, or a response language (fr, pt-BR, ...)
+#     instructions: ""     # optional extra persona; Hermes delegation remains in place
+
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
 # Full engine/provider options inherit from DEFAULT_CONFIG in
 # hermes_cli/config_defaults.py — only capture placement is documented here.

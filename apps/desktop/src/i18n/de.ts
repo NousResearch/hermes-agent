@@ -492,7 +492,13 @@ export const deOverrides = {
       liveError: 'Live-Sprache',
       liveDelegationFailed: 'Anfrage konnte nicht an Hermes übergeben werden',
       liveUnavailable: reason =>
-        `GPT-Live-Sprachchat ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`
+        `GPT-Live-Sprachchat ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`,
+      extensionUnavailable: (engine, reason) =>
+        `${engine} ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`,
+      extensionMissing: engine =>
+        `Die Sprach-Engine ${engine} ist nicht installiert oder ausgeschaltet. Stattdessen wird Sprache-zu-Text verwendet.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} benötigt das Plugin ${plugin}, das im aktiven Profil (${profile}) nicht aktiviert ist. Die Stimme läuft immer im aktiven Profil, auch in Bot-Chats: Aktiviere das Plugin für dieses Profil oder wechsle zu einem Profil, das es hat. Stattdessen wird Sprache-zu-Text verwendet.`
     },
     native: {
       approvalTitle: 'Genehmigung erforderlich',
@@ -1153,6 +1159,7 @@ export const deOverrides = {
       }
     },
     fieldLabels: defineFieldCopy({
+      'voice.gptLive.language': 'OpenAI-Antwortsprache',
       model: 'Standardmodell',
       modelContextLength: 'Kontextfenster',
       fallbackProviders: 'Fallback-Modelle',
@@ -1329,6 +1336,8 @@ export const deOverrides = {
       }
     }),
     fieldDescriptions: defineFieldCopy({
+      'voice.gptLive.language':
+        'Automatisch behält das bisherige mehrsprachige Verhalten bei. Eine gewählte Sprache steuert gesprochene Antworten über Sitzungsanweisungen, nicht die Transkription.',
       model: 'Wird für neue Chats verwendet, sofern Sie im Composer kein anderes Modell wählen.',
       modelContextLength: 'Auf 0 lassen, um das erkannte Kontextfenster des gewählten Modells zu verwenden.',
       fallbackProviders: 'Backup-Anbieter:Modell-Einträge, die versucht werden, wenn das Standardmodell fehlschlägt.',
@@ -3005,7 +3014,8 @@ export const deOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Kein Bot-Token nötig',
-      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      intro: (platform: string) =>
+        `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       link: (platform: string) => `${platform} verknüpfen`,
       linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
       linkedAccounts: 'Verknüpfte Konten',
@@ -3020,13 +3030,16 @@ export const deOverrides = {
       waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
       linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
-      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      refused: (platform: string) =>
+        `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
       qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
       managed: 'Von Team Gateway verwaltet',
-      managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
+      managedNote: (platform: string) =>
+        `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
       managedIntro: 'Die Konten dieses Agenten werden im Nous Portal verknüpft.',
       openPortal: 'Konten im Nous Portal verknüpfen',
-      noNewAccount: (platform: string) => `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
+      noNewAccount: (platform: string) =>
+        `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
     },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
@@ -3772,6 +3785,8 @@ export const deOverrides = {
     markAllRead: 'Alle als gelesen markieren'
   },
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: 'Automatisch',
     message: 'Nachricht',
     wakingProfile: profile => `Wecke ${profile}…`,
     placeholderStarting: 'Hermes wird gestartet…',
@@ -3823,6 +3838,21 @@ export const deOverrides = {
     voiceEngineChangeFailed: 'Sprachchat-Engine konnte nicht geändert werden',
     voiceEngineChainedShort: 'Sprache-zu-Text',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'Derzeit nicht verfügbar',
+    voiceEngineSignIn: provider => `Mit ${provider} anmelden`,
+    voiceEngineMissing: engine => `${engine} (nicht installiert oder ausgeschaltet)`,
+    voiceEngineNotEnabled: (plugin, profile) => `Das Plugin ${plugin} ist im Profil ${profile} nicht aktiviert`,
+    voiceEngineAccount: provider => `${provider}-Anmeldung`,
+    voiceEngineSignedIn: provider => `Für dieses Profil mit ${provider} angemeldet.`,
+    voiceEngineNotSignedIn: provider => `Nicht mit ${provider} angemeldet. Diese Sprach-Engine benötigt die Anmeldung.`,
+    voiceEngineSignInAction: 'Anmelden',
+    voiceEngineSignOutAction: 'Abmelden',
+    voiceEngineSignInCode: code => `Gib den Code ${code} auf der geöffneten Seite ein und kehre dann hierher zurück.`,
+    voiceEngineSignInFailed: message => `Anmeldung nicht abgeschlossen: ${message}`,
+    voiceEngineSignOutTitle: provider => `Von ${provider} abmelden?`,
+    voiceEngineSignOutBody: provider =>
+      `Dadurch wird die ${provider}-Anmeldung aus diesem Profil entfernt. Alles, was sie nutzt, nicht nur diese Sprach-Engine, funktioniert erst nach einer erneuten Anmeldung wieder.`,
+    voiceEngineSignOutFailed: 'Abmelden fehlgeschlagen',
     voiceDictation: 'Sprachdiktat',
     speakReplies: 'Antworten vorlesen',
     stopSpeakingReplies: 'Antworten nicht mehr vorlesen',

@@ -181,7 +181,6 @@ def _authorize_write(connection, ref, params):
 # Profile settings main's sidecar wrote for Desktop's toggles (``tui_gateway/server.py::_DISPLAY_TOGGLE_KEYS``)
 # and its voice-engine pick: config.yaml leaves with main's validation.
 _DISPLAY_TOGGLE_KEYS = frozenset({'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'})
-_VOICE_CHAT_MODES = frozenset({'chained', 'gpt-live'})
 
 
 async def config_set(connection, ref, params):
@@ -321,8 +320,9 @@ def _set_personality(connection, value):
 def _set_profile_leaf(cfg, key, value):
     section, leaf = key.split('.', 1)
     if key == 'voice.voice_chat_mode':
+        from tools.voice_live import is_voice_chat_mode
         new = _word(value)
-        if new not in _VOICE_CHAT_MODES:
+        if not is_voice_chat_mode(new):
             raise RuntimeStoreError('invalid_params')
     else:
         new = {**_BOOL_WORDS, '1': True, '0': False}.get(_word(value))

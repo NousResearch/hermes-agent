@@ -437,9 +437,19 @@ def _word_setters() -> dict:
         # _raw_word: 0/False/[] keep their text so the error names what was sent.
         "indicator": (_raw_word, INDICATOR_STYLES, "unknown indicator: {raw!r}; pick one of " + "|".join(INDICATOR_STYLES),
                       lambda w: _write_config_key("display.tui_status_indicator", w)),
-        # Which engine the desktop voice button mounts; applies to the NEXT conversation.
-        "voice.voice_chat_mode": (_word, {"chained", "gpt-live"}, "unknown voice chat mode: {value}; pick chained|gpt-live",
+        # Which engine the desktop voice button mounts; applies to the NEXT conversation. An extension
+        # engine is ``<plugin>:<engine>`` (Desktop VOICE_ENGINE_AREA); the renderer owns the plugin check.
+        "voice.voice_chat_mode": (_word, _VoiceChatModes(),
+                                  "unknown voice chat mode: {value}; pick chained|gpt-live|<plugin>:<engine>",
                                   lambda w: _write_config_key("voice.voice_chat_mode", w))}
+
+
+class _VoiceChatModes:
+    """The accepted-words set for ``voice.voice_chat_mode``: open-ended (extension engine ids)."""
+
+    def __contains__(self, word) -> bool:
+        from tools.voice_live import is_voice_chat_mode
+        return isinstance(word, str) and is_voice_chat_mode(word)
 
 
 def _set_word(rid, params, key, value, session):

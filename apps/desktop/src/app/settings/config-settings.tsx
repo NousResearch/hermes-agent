@@ -66,6 +66,10 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { liveLanguageLabels, VoiceConversationSettings } from './voice-conversation-settings'
+import { VoiceEngineSettings } from './voice-engine-settings'
+
+const VOICE_CHAT_MODE_KEY = 'voice.voice_chat_mode'
 
 export function ConfigSettings({
   activeSectionId,
@@ -111,7 +115,7 @@ function ConfigSettingsInner({
   importInputRef,
   scopeProfile
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
 
@@ -155,6 +159,7 @@ function ConfigSettingsInner({
   })
 
   const schema = schemaResponse?.fields ?? null
+  const languageLabels = useMemo(() => liveLanguageLabels(locale, t.composer.voiceLanguageAuto), [locale, t])
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
@@ -553,7 +558,12 @@ function ConfigSettingsInner({
         <div className="grid gap-1">
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
-              {key === 'delegation.model' ? (
+              {key === VOICE_CHAT_MODE_KEY ? (
+                <VoiceConversationSettings
+                  mode={getNested(config, key)}
+                  onChange={value => updateConfig(setConfigField(config, key, value))}
+                />
+              ) : key === 'delegation.model' ? (
                 <SubagentModelGate scope={writeScope ?? scopeProfile}>
                   <DelegationRouteRow
                     config={config}
@@ -574,12 +584,21 @@ function ConfigSettingsInner({
                       : enumOptionsFor(key, getNested(config, key), config)
                   }
                   onChange={value => updateConfig(setConfigField(config, key, value))}
-                  optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                  optionLabels={
+                    key === 'tts.elevenlabs.voice_id'
+                      ? elevenLabsVoiceLabels
+                      : key === 'voice.gpt_live.language'
+                        ? languageLabels
+                        : undefined
+                  }
                   schema={field}
                   schemaKey={key}
                   value={configFieldValue(config, key)}
                 />
               )}
+              {key === VOICE_CHAT_MODE_KEY ? (
+                <VoiceEngineSettings mode={getNested(config, key)} profile={scopeProfile} />
+              ) : null}
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel
                   key={String(getNested(config, key))}

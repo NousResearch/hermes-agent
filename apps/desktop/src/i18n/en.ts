@@ -476,7 +476,12 @@ export const en: Translations = {
       liveEndedClosed: 'The live voice session was closed by the service.',
       liveError: 'Live voice',
       liveDelegationFailed: 'Could not hand the request to Hermes',
-      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
+      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`,
+      extensionUnavailable: (engine, reason) => `${engine} is not available: ${reason}. Using speech-to-text instead.`,
+      extensionMissing: engine =>
+        `The voice engine ${engine} is not installed or is turned off. Using speech-to-text instead.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} needs the ${plugin} plugin, which is not enabled in the active profile (${profile}). The voice always runs on the active profile, Bot chats included: turn the plugin on for this profile, or switch to a profile that has it. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -2605,7 +2610,8 @@ export const en: Translations = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'No bot token needed',
-      intro: (platform: string) => `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
+      intro: (platform: string) =>
+        `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
       link: (platform: string) => `Link ${platform}`,
       linkAnother: (platform: string) => `Link another ${platform} account`,
       linkedAccounts: 'Linked accounts',
@@ -2623,10 +2629,12 @@ export const en: Translations = {
       refused: (platform: string) => `${platform} refused the link. Get a new code and try again.`,
       qrAlt: (platform: string) => `QR code for the shared ${platform} bot`,
       managed: 'Managed by Team Gateway',
-      managedNote: (platform: string) => `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
+      managedNote: (platform: string) =>
+        `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
       managedIntro: "This agent's accounts are linked from Nous Portal.",
       openPortal: 'Link accounts in Nous Portal',
-      noNewAccount: (platform: string) => `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
+      noNewAccount: (platform: string) =>
+        `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
     },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
@@ -3329,6 +3337,8 @@ export const en: Translations = {
   },
 
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: 'Auto',
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
@@ -3380,6 +3390,21 @@ export const en: Translations = {
     voiceEngineChangeFailed: 'Could not change the voice chat engine',
     voiceEngineChainedShort: 'speech-to-text',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'Not available right now',
+    voiceEngineSignIn: provider => `Sign in with ${provider}`,
+    voiceEngineMissing: engine => `${engine} (not installed or turned off)`,
+    voiceEngineNotEnabled: (plugin, profile) => `The ${plugin} plugin is not enabled in the profile ${profile}`,
+    voiceEngineAccount: provider => `${provider} sign-in`,
+    voiceEngineSignedIn: provider => `Signed in with ${provider} for this profile.`,
+    voiceEngineNotSignedIn: provider => `Not signed in with ${provider}. This voice engine needs it.`,
+    voiceEngineSignInAction: 'Sign in',
+    voiceEngineSignOutAction: 'Sign out',
+    voiceEngineSignInCode: code => `Enter the code ${code} on the page that opened, then come back here.`,
+    voiceEngineSignInFailed: message => `Sign-in did not finish: ${message}`,
+    voiceEngineSignOutTitle: provider => `Sign out of ${provider}?`,
+    voiceEngineSignOutBody: provider =>
+      `This removes the ${provider} sign-in from this profile. Everything that uses it, not only this voice engine, stops working until you sign in again.`,
+    voiceEngineSignOutFailed: 'Could not sign out',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -4305,12 +4330,9 @@ export const en: Translations = {
     terminalCloseAll: 'Close all',
     terminalNewOn: 'New terminal on…',
     terminalGatewayRemoved: 'Removed gateway',
-    terminalGatewayRemovedBody:
-      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
-    terminalGatewayNoShellBody:
-      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
-    terminalDisconnectedBody:
-      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
+    terminalGatewayRemovedBody: "The gateway this terminal ran on was removed, so it can't reopen. Close this tab.",
+    terminalGatewayNoShellBody: "This gateway has no shell access, so this terminal can't reopen. Close this tab.",
+    terminalDisconnectedBody: 'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,

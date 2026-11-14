@@ -270,7 +270,11 @@ export const zhOverrides = {
       liveEndedClosed: '实时语音会话已被服务端关闭。',
       liveError: '实时语音',
       liveDelegationFailed: '无法将请求交给 Hermes',
-      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`,
+      extensionUnavailable: (engine, reason) => `${engine} 不可用：${reason}。已改用语音转文字。`,
+      extensionMissing: engine => `语音引擎 ${engine} 未安装或已关闭。已改用语音转文字。`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} 需要 ${plugin} 插件，但当前配置文件（${profile}）未启用它。语音始终使用当前配置文件（包括 Bot 聊天）：请为此配置文件启用该插件，或切换到已启用它的配置文件。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -870,6 +874,7 @@ export const zhOverrides = {
       }
     },
     fieldLabels: defineFieldCopy({
+      'voice.gptLive.language': 'OpenAI 回复语言',
       model: '默认模型',
       modelContextLength:
         '仅覆盖主聊天模型检测到的上下文窗口（以 token 计）。保持为 0 则使用所选模型检测到的值。不影响辅助模型/MoA 模型。',
@@ -1049,6 +1054,7 @@ export const zhOverrides = {
       }
     }),
     fieldDescriptions: defineFieldCopy({
+      'voice.gptLive.language': '自动保留现有的多语言行为。所选语言通过会话指令引导语音回复，不更改语音转写设置。',
       model: '用于新对话，除非你在输入框中选择其他模型。',
       modelContextLength: '保持为 0 则使用所选模型检测到的上下文窗口。',
       fallbackProviders: '默认模型失败时尝试的备用 provider:model 条目。',
@@ -2531,7 +2537,8 @@ export const zhOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: '无需机器人令牌',
-      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      intro: (platform: string) =>
+        `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
       link: (platform: string) => `关联 ${platform}`,
       linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
       linkedAccounts: '已关联账号',
@@ -2549,10 +2556,12 @@ export const zhOverrides = {
       refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
       qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
       managed: '由 Team Gateway 管理',
-      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
+      managedNote: (platform: string) =>
+        `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
       managedIntro: '此代理的账号在 Nous Portal 中关联。',
       openPortal: '在 Nous Portal 中关联账号',
-      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+      noNewAccount: (platform: string) =>
+        `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
     },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
@@ -3228,6 +3237,8 @@ export const zhOverrides = {
   },
 
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: '自动',
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
@@ -3279,6 +3290,21 @@ export const zhOverrides = {
     voiceEngineChangeFailed: '无法更改语音聊天引擎',
     voiceEngineChainedShort: '语音转文字',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: '暂不可用',
+    voiceEngineSignIn: provider => `使用 ${provider} 登录`,
+    voiceEngineMissing: engine => `${engine}（未安装或已关闭）`,
+    voiceEngineNotEnabled: (plugin, profile) => `配置文件 ${profile} 未启用 ${plugin} 插件`,
+    voiceEngineAccount: provider => `${provider} 登录`,
+    voiceEngineSignedIn: provider => `此配置文件已使用 ${provider} 登录。`,
+    voiceEngineNotSignedIn: provider => `尚未使用 ${provider} 登录。此语音引擎需要登录。`,
+    voiceEngineSignInAction: '登录',
+    voiceEngineSignOutAction: '退出登录',
+    voiceEngineSignInCode: code => `请在打开的页面中输入代码 ${code}，然后返回这里。`,
+    voiceEngineSignInFailed: message => `登录未完成：${message}`,
+    voiceEngineSignOutTitle: provider => `退出 ${provider} 登录？`,
+    voiceEngineSignOutBody: provider =>
+      `这会从此配置文件中移除 ${provider} 登录。所有使用它的功能（不仅是此语音引擎）都会停止工作，直到你重新登录。`,
+    voiceEngineSignOutFailed: '无法退出登录',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -4154,12 +4180,9 @@ export const zhOverrides = {
     terminalCloseAll: '关闭全部',
     terminalNewOn: '新建终端于…',
     terminalGatewayRemoved: '已移除的网关',
-    terminalGatewayRemovedBody:
-      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
-    terminalGatewayNoShellBody:
-      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
-    terminalDisconnectedBody:
-      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
+    terminalGatewayRemovedBody: '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody: '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody: '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 

@@ -278,12 +278,20 @@ See `scripts/export-frames.js` for the full implementation. Basic pattern:
 
 ```javascript
 const puppeteer = require('puppeteer');
+const path = require('path');
+// Run from scripts/: the bundled script exports its host policy and sketch-folder request handler.
+const { chromeArgs, sketchRequestHandler, SKETCH_ORIGIN } = require('./export-frames.js');
 
 async function captureFrames(htmlPath, outputDir, options) {
-  // Keep Chrome's sandbox and web security on; the script adds --no-sandbox only on hosts that
-  // cannot run it (root, containers, AppArmor userns restriction) and serves local assets itself.
-  const browser = await puppeteer.launch({ headless: true });
+  // Chrome's sandbox and web security stay on; chromeArgs() adds --no-sandbox only on hosts that
+  // cannot run it (root, containers, AppArmor userns restriction).
+  const browser = await puppeteer.launch({ headless: true, args: chromeArgs() });
   const page = await browser.newPage();
+
+  // Serve the sketch's own folder from SKETCH_ORIGIN instead of file://; other origins keep
+  // the browser's rules, and anything outside the folder gets a 404.
+  await page.setRequestInterception(true);
+  page.on('request', sketchRequestHandler(path.dirname(path.resolve(htmlPath))));
 
   await page.setViewport({
     width: options.width || 1920,
@@ -291,16 +299,13 @@ async function captureFrames(htmlPath, outputDir, options) {
     deviceScaleFactor: 1
   });
 
-  // The real script serves the sketch from http://p5-sketch.localhost via request
-  // interception confined to the sketch folder; never load it over file://.
-  const sketchUrl = `http://p5-sketch.localhost/${path.basename(htmlPath)}`;
-  await page.goto(sketchUrl, {
+  await page.goto(`${SKETCH_ORIGIN}/${encodeURIComponent(path.basename(htmlPath))}`, {
     waitUntil: 'networkidle0'
   });
 
   // Wait for sketch to initialize
   await page.waitForSelector('canvas');
-  await page.waitForTimeout(1000);
+  await new Promise(r => setTimeout(r, 1000));
 
   for (let i = 0; i < options.frames; i++) {
     const canvas = await page.$('canvas');
@@ -310,7 +315,7 @@ async function captureFrames(htmlPath, outputDir, options) {
 
     // Advance one frame
     await page.evaluate(() => { redraw(); });
-    await page.waitForTimeout(1000 / options.fps);
+    await new Promise(r => setTimeout(r, 1000 / options.fps));
   }
 
   await browser.close();

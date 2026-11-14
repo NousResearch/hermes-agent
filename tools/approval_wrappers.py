@@ -14,6 +14,8 @@ projections put a verb that IS run back on that anchor:
 This is heuristic hardening of the in-process approval floor, not a security boundary.
 """
 
+import itertools
+import os
 import re
 
 # Adapted from Adolanium's wrapper-operand parser in #58643.
@@ -229,7 +231,8 @@ def _carried_payloads(command: str):
     """Literal command strings that env -S, su -c, runuser -c or a shell -c would run."""
     from tools.approval_detection import (
         _deobfuscate_shell_word_for_detection, _env_split_payload, _execution_flag_findings,
-        _iter_shell_command_word_spans, _iter_top_level_shell_segments, _shell_segment_tokens,
+        _iter_shell_command_word_spans, _iter_top_level_shell_segments, _shell_command_segment,
+        _shell_segment_tokens,
     )
 
     for _, payload in _execution_flag_findings(command):
@@ -240,7 +243,9 @@ def _carried_payloads(command: str):
             name = re.split(r"[\\/]", _deobfuscate_shell_word_for_detection(word))[-1].lower()
             if name not in ("env", "su", "runuser"):
                 continue
-            tokens = _shell_segment_tokens(segment, start)
+            # Bound the carrier at its own command's end: in `echo "$(su -c 'x')"` the `)"` closing
+            # the substitution is not su's argv and would leave the tokenizer an unmatched quote.
+            tokens = _shell_segment_tokens(_shell_command_segment(segment, start), 0)
             if not tokens:
                 continue
             payload = _env_split_payload(tokens) if name == "env" else _su_command_payload(tokens[1:])
@@ -270,3 +275,77 @@ def carried_command_variants(command: str):
                     seen.add(peeled)
                     nested.append(peeled)
         frontier = nested
+
+
+def hardline_detection_variants(command: str):
+    """The shared detection variants plus the hardline-only command-position projections:
+    exec wrappers (nice, timeout, command, doas ...) peeled using the original quote state so the
+    verb lands on the _CMDPOS anchor, and literal command strings carried by env -S / su -c /
+    runuser -c / sh -c scanned as commands of their own. Kept out of the dangerous layer, whose
+    unanchored rules (pipe-to-shell sinks) would read a peeled `|| sudo bash` as `| bash`."""
+    from tools.approval_detection import _command_detection_variants, _mask_quoted_newlines
+
+    seen = set()
+    masked = _mask_quoted_newlines(command)
+    stripped = strip_wrapper_prefixes(masked)
+    # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
+    # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
+    # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
+    peeled = itertools.chain(_command_detection_variants(stripped), carried_command_variants(stripped)) if stripped != masked else ()
+    for variant in itertools.chain(_command_detection_variants(command), peeled, carried_command_variants(command)):
+        for candidate in (variant, dequote_rm_operands(variant) if "rm" in variant.lower() else variant):
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+
+_MAX_RM_OPERANDS = 64
+
+
+def dequote_rm_operands(variant: str) -> str:
+    """*variant* with each quoted operand word of an ``rm`` command quote-removed, as the shell
+    passes it (``"/"./*`` -> ``/./*``), so the rm rules judge the whole word, not its quoted prefix.
+    A word that would contain whitespace is left alone: it is one operand, not several."""
+    from tools.approval_detection import (
+        _RE_FLAGS, _RM_FLAG_PREFIX, _read_shell_word, _splice, _strip_shell_word_syntax,
+    )
+
+    edits, cursor = [], 0
+    for match in re.finditer(_RM_FLAG_PREFIX, variant, _RE_FLAGS):
+        pos = match.end()
+        if pos < cursor:
+            continue
+        for _ in range(_MAX_RM_OPERANDS):
+            word_start, word_end, word = _read_shell_word(variant, pos)
+            if word_start == word_end:
+                break
+            if "'" in word or '"' in word:
+                plain = _strip_shell_word_syntax(word)
+                if plain and not any(char.isspace() for char in plain):
+                    edits.append((word_start, word_end, plain))
+            pos = word_end
+        cursor = pos
+    return _splice(variant, edits) if edits else variant
+
+
+# `cat <<'EOF'` / `tee f <<"EOF"`: a quoted delimiter makes the body literal, and these programs
+# only copy it. Any other consumer may run it (`bash`, `ssh host`, `cat <<'EOF' | sh`).
+_QUOTED_HEREDOC_RE = re.compile(r"""<<-?[ \t]*(['"])([A-Za-z0-9_.-]+)\1([^\n]*)\n""")
+_LITERAL_HEREDOC_READERS = frozenset({"cat", "tee"})
+
+
+def literal_heredoc_bodies(command: str) -> list[tuple[int, int]]:
+    """Spans of quoted-delimiter heredoc bodies that a literal reader only copies."""
+    spans, cursor = [], 0
+    for match in _QUOTED_HEREDOC_RE.finditer(command):
+        if match.start() < cursor:
+            continue  # inside an earlier body: text, not a redirection
+        line_start = command.rfind("\n", 0, match.start()) + 1
+        words = re.split(r"[;&|(]", command[line_start:match.start()])[-1].split()
+        if not words or os.path.basename(words[0]).lower() not in _LITERAL_HEREDOC_READERS or re.search(
+                r"[|;&]", match.group(3)):
+            continue
+        close = re.compile(r"^\t*" + re.escape(match.group(2)) + r"$", re.MULTILINE).search(command, match.end())
+        cursor = close.end() if close else len(command)
+        spans.append((match.end(), close.start() if close else cursor))
+    return spans

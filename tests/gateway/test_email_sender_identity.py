@@ -26,6 +26,10 @@ class TestSenderIdentityParsing(unittest.TestCase):
         # The fallback still serves the unquoted display names it exists for.
         self.assertEqual(_extract_email_address("Doe, John <John@Example.com>"), "john@example.com")
 
+    def test_identity_without_a_local_part_is_rejected(self):
+        # ``@example.com`` re-parses as itself, so only the empty-local-part check keeps it out of chat_id and RCPT TO.
+        self.assertEqual(_extract_email_address("@example.com"), "")
+
     @patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@example.com", "EMAIL_PASSWORD": "pw",
                              "EMAIL_IMAP_HOST": "imap.example.com", "EMAIL_SMTP_HOST": "smtp.example.com",
                              "EMAIL_ALLOWED_USERS": "kevin@example.com"}, clear=False)

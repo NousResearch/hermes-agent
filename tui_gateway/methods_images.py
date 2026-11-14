@@ -11,6 +11,7 @@ _registry = HandlerRegistry()
 _MAX_PREVIEW_COLS = 64
 _MAX_PREVIEW_ROWS = 16
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 
 def _image_to_data_url(ref: str, cap: int):
@@ -55,6 +56,7 @@ def _image_to_data_url(ref: str, cap: int):
 
 
 @method("image.generate")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Params: ``prompt`` (required unless ``probe``), ``aspect_ratio``
     (landscape|square|portrait), ``probe`` (availability only), ``max_bytes`` (cap

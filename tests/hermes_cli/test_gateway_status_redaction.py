@@ -18,7 +18,7 @@ _FAKE_SYSTEMCTL = """\
 import os, sys
 if "status" in sys.argv[1:]:
     print("● hermes-gateway.service - Hermes Agent Gateway")
-    print("     CGroup: /user.slice/hermes-gateway.service")
+    print("     CGroup: /user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service")
     print(os.environ["FAKE_TREE_LINE"])
     print(os.environ["FAKE_TREE_LINE"], file=sys.stderr)
 elif "is-active" in sys.argv[1:]:
@@ -55,3 +55,4 @@ def test_status_process_tree_masks_mcp_credential_argv(fake_systemctl, capfd):
     assert "└─4242 node /opt/mcp/server.js --api-key" in captured.out
     assert "--api-key" in captured.err
     assert "gateway service is running" in captured.out
+    assert "user@1000.service/app.slice" in captured.out  # a unit instance is not an email

@@ -2144,6 +2144,7 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 | `--no-backup` | Skip all pre-update backups for this run (both the quick state snapshot and the full zip), regardless of `updates.pre_update_backup`. |
 | `--backup` | Force a **full** pre-update backup for this run: the quick state snapshot plus a complete zip of `HERMES_HOME` (config, auth, sessions, skills, pairing data). The default mode is `quick` — a lightweight state snapshot only. Set the permanent mode via `updates.pre_update_backup: quick | full | off` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
+| `--force` | Linux/macOS: stop every gateway this update owns at once instead of waiting for in-flight work to drain (choose it when starting the update; it cannot interrupt an update already waiting): running turns, background subagents and tool/background processes are interrupted, a gateway still alive after ~12 s is killed, then the update runs and the gateways restart on the new code. On Windows it only lets the update proceed when another `hermes.exe` is detected; the Windows pause still drains (it does not bypass the venv-holder guard; see `--force-venv`). |
 
 Additional behavior:
 

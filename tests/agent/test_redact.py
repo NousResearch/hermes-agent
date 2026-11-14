@@ -675,6 +675,19 @@ class TestElevenLabsTavilyExaKeys:
 
 
 
+    def test_tavily_environment_scoped_keys_redacted(self):
+        # Current Tavily keys carry a tvly-dev-/tvly-prod- segment (#72925).
+        for env in ("dev", "prod"):
+            key = "tvly-" + env + "-Ab3dE5fG7hJ9kL1mN2pQ4rS6"
+            for text in (f"echo {key} done", f'{{"query": "{key}"}}'):
+                result = redact_sensitive_text(text)
+                assert "E5fG7hJ9kL1m" not in result, result
+
+    def test_hyphenated_tavily_names_are_not_keys(self):
+        # Package/file names starting with tvly- are not keys; only an env segment may carry a hyphen.
+        for text in ("pip install tvly-python-client", "tvly-config-file"):
+            assert redact_sensitive_text(text) == text
+
     def test_all_three_in_env_dump(self):
         env_dump = (
             "HOME=/home/user\n"

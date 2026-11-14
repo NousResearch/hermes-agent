@@ -328,6 +328,10 @@ def build_write_approval_paths(home: str) -> set[str]:
 # mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
 # browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
 # browser credential and its grants to native apps) hold credential material.
+# skills/ and memories/ are deliberately NOT here: they are user-editable
+# content, and write approval for them (memory/skills ``write_approval``) is
+# enforced by the memory/skill subsystem tools, not the generic write path
+# (#60440 tracks closing that gap for write_file/patch).
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
 _HERMES_PROTECTED_SUBPATHS = (

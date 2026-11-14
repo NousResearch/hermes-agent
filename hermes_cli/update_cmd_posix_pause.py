@@ -60,12 +60,17 @@ class PauseRefused(RuntimeError):
     """The pause could not be completed; everything it stopped was started again."""
 
 
+class StopUnsettled(PauseRefused):
+    """A ``--force`` stop is still running (a supervisor's stop job, a gateway that outlived
+    SIGKILL): nothing may be started behind it, so the update stops before the checkout moves."""
+
+
 def _empty_token() -> dict:
     return {"platform": "posix", "resume_needed": False, "profiles": {}, "unmapped_pids": [],
             "unmapped": [], "posix_units": []}
 
 
-def arm_pause(*, no_gateway_restart: bool) -> dict | None:
+def arm_pause(*, no_gateway_restart: bool, force: bool = False) -> dict | None:
     """Arm this run's pause (no stop yet) and adopt any set a killed update left paused.
 
     ``None`` on Windows (its own pause) and with ``--no-gateway-restart`` (the user manages
@@ -84,6 +89,8 @@ def arm_pause(*, no_gateway_restart: bool) -> dict | None:
             token["platform"] = "posix"
     except Exception as exc:  # health: allow BLE001 -- an unreadable record must not block the update; recovery retries it
         print(f"  ⚠ Could not adopt gateways an earlier update paused: {exc}")
+    if force:
+        token["force"] = True  # ``hermes update --force``: stop at once, no drain (update_cmd_force_stop)
     _RUN = token
     return token
 
@@ -350,6 +357,13 @@ def _stop_unit(unit: dict) -> None:
         raise PauseRefused(f"systemctl stop {unit['unit']} failed: {(result.stderr or '').strip()}")
 
 
+def unit_stop_pending(unit: dict) -> bool:
+    """A systemd unit whose stop has not settled (``deactivating``, or a job still queued): a start
+    now would queue behind it. Unreadable counts as pending; a launchd job is never held here."""
+    from hermes_cli.update_cmd_fleet_unit_budget import _settled, unit_job_state
+    return unit.get("kind") == "systemd" and not _settled(unit_job_state(_scope_cmd(unit), unit["unit"]))
+
+
 def _start_unit(unit: dict) -> int:
     """Start *unit* through systemd; the new MainPID (raises when it does not come up). The unit
     gets the definition repair the restart it replaces ran first (``_restart_one_systemd_gateway_unit``)."""
@@ -465,6 +479,9 @@ def _stop_gateways(token: dict, entries: list[dict]) -> None:
     survivor gets its supervisor's stop and a bare one SIGKILL, as the restart path escalates."""
     from hermes_cli import update_pause_record as pause_record
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    if token.get("force"):
+        from hermes_cli.update_cmd_force_stop import force_stop_gateways
+        return force_stop_gateways(token, entries)
     budget, waiting = _drain_budget(), []
     for entry in entries:
         pause_record.mark_stop_sent(token, entry["pid"])  # before the request: see _ask_to_drain
@@ -585,7 +602,8 @@ def pause_at_commit_point() -> str | None:
     Never refuses the update: the pause is protection, not a gate. When it cannot complete
     (discovery or the durable record fails, a stop fails), the gateways run through the swap and
     the post-commit restart refreshes them, which is how POSIX updated before the pause existed.
-    Always ``None``; the caller's refusal branch stays for the contract it shares with Windows."""
+    ``None``, except under ``--force`` when a stop has not settled (``StopUnsettled``): then the
+    refusal, sticky for the run, which the caller turns into an exit before git writes a file."""
     token = _RUN
     if token is None:
         return None
@@ -602,6 +620,10 @@ def pause_at_commit_point() -> str | None:
 
 def _pause(token: dict) -> str | None:
     from hermes_cli import update_pause_record as pause_record
+    # An adopted set an earlier ``--force`` left mid-stop: its unit reads MainPID 0, so discovery
+    # skips it, and the swap plus the resume would start it behind that unfinished stop job.
+    if held := [u for u in token.get("posix_units") or [] if u.get("stop_unsettled") and unit_stop_pending(u)]:
+        return _abort_unsettled(token, f"{_names(held)} is still stopping from an earlier `hermes update --force`")
     try:
         units, jobs = _discover_systemd(), _discover_launchd()
         units, jobs, notices = _left_running(units, jobs)
@@ -646,6 +668,8 @@ def _pause(token: dict) -> str | None:
     token["posix_stopped"] = True
     try:
         _stop_gateways(token, supervised + bare)
+    except StopUnsettled as exc:
+        return _abort_unsettled(token, str(exc))
     except Exception as exc:  # health: allow BLE001 -- roll back: restart the stopped set, update unpaused
         print(f"  ⚠ Could not pause every gateway ({exc}); restarting them, the update continues without the pause")
         try:
@@ -659,6 +683,23 @@ def _pause(token: dict) -> str | None:
     pause_record.sync(token)
     print(f"  ⏸ Paused for the update: {_describe(token)} (restarted once the dependencies are synced)")
     return None
+
+
+def _abort_unsettled(token: dict, why: str) -> str:
+    """The commit point's refusal for a ``--force`` stop still in flight. A rollback start would
+    queue behind that stop (or race the gateway still exiting) and the swap would follow, so neither
+    runs: this process restarts nothing; the durable record stays owed for the next launch's
+    recovery, which holds an entry until its process has exited and its unit's stop has settled."""
+    from hermes_cli import update_pause_record as pause_record
+    token["resume_needed"] = False  # no exit resume in this process (it would start behind the stop)
+    for unit in token.get("posix_units") or []:
+        if unit.get("kind") == "systemd":
+            unit["stop_unsettled"] = True  # durable: recovery and the next update hold it while it stops
+    token["resume_deferred"] = why  # ``sync`` keeps the record owed for the next launch
+    pause_record.sync(token)
+    return (f"--force could not finish stopping the gateways: {why}. The update stopped before "
+            "changing the checkout; the stopped gateways restart at the next `hermes` command once "
+            "their stop has completed, then run `hermes update --force` again")
 
 
 # --------------------------------------------------------------------------- resume

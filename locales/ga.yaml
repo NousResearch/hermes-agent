@@ -985,6 +985,16 @@ platform:
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
   shared:
+    vault_code:
+      title: "🔐 Cód fíoraithe do {site}"
+      body: "Tá cód aonúsáide (téacs nó ríomhphost) á iarraidh ag {site}. Brúigh an cnaipe agus clóscríobh é san fhoirm a osclaíonn: téann sé díreach isteach sa leathanach agus ní phostáiltear anseo é choíche."
+      button: "Cuir isteach cód"
+      modal_title: "Cód do {site}"
+      input_label: "Cód aonúsáide"
+      submitted: "Cód seolta; á chur isteach sa leathanach."
+      ended: "Tá an t-iarratas cóid seo thart; níor cuireadh aon rud isteach."
+      not_author: "Ní féidir ach leis an duine a thosaigh an t-iarratas seo an cód a chur isteach."
+      submitted_footer: "✓ Cód seolta"
     response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"

@@ -1512,3 +1512,5 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.
+
+A `curl` that sends an `Authorization` header built from a secret variable is blocked for every host, `api.github.com` included. For GitHub API calls from a scheduled job, have the prompt use `gh api ...` (the `gh` CLI uses its own stored login; with a container or profile `HOME`, log in under that home), or put the request in a [script](#no-agent-mode-script-only-jobs) under `~/.hermes/scripts/` and give it a token through [`terminal.env_passthrough`](#giving-a-script-a-credential) under a name of your own (e.g. `MY_GITHUB_PAT`). `GITHUB_TOKEN` and `GH_TOKEN` are Hermes-managed credentials and are never passed through. Skill bodies attached with `--skill` get the looser assembled-prompt scan, so the bundled GitHub skills' authenticated `curl` examples still load.

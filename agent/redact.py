@@ -203,7 +203,7 @@ _PREFIX_PATTERNS = [
     r"sk_live_[A-Za-z0-9]{10,}",        # Stripe secret key (live)
     r"sk_test_[A-Za-z0-9]{10,}",        # Stripe secret key (test)
     r"rk_live_[A-Za-z0-9]{10,}",        # Stripe restricted key
-    r"SG\.[A-Za-z0-9_-]{10,}",          # SendGrid API key
+    r"SG\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,})?",  # SendGrid API key (2- or 3-part)
     r"hf_[A-Za-z0-9]{10,}",             # HuggingFace token
     r"r8_[A-Za-z0-9]{10,}",             # Replicate API token
     r"npm_[A-Za-z0-9]{10,}",            # npm access token
@@ -215,7 +215,7 @@ _PREFIX_PATTERNS = [
     # prefix, so the charset stays broad and the length floor does the discriminating.
     r"am_(?:org_)?[A-Za-z0-9]{20,}",
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
-    r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
+    r"tvly-(?:(?:dev|prod)-)?[A-Za-z0-9]{10,}",  # Tavily search API key (incl. tvly-dev-/tvly-prod-, #72925)
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key
     r"syt_[A-Za-z0-9]{10,}",            # Matrix access token

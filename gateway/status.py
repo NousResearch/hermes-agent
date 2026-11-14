@@ -28,7 +28,7 @@ from gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_cli._subprocess_compat import parse_linux_proc_stat_start_time, pid_exists_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
@@ -489,8 +489,8 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 (ticks) after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
-        return int(stat_path.read_bytes().rsplit(b")", 1)[1].split()[19])
+        # Preserve arbitrary process-name bytes for the shared numeric-field reader.
+        return parse_linux_proc_stat_start_time(stat_path.read_bytes().decode("utf-8-sig", errors="surrogateescape"))
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 

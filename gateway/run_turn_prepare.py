@@ -326,6 +326,7 @@ class GatewayTurnPrepareMixin:
         }
         if tier is _TIER_FROM_RUNNER:
             tier = getattr(self, "_service_tier", None)
+        route["service_tier"] = tier  # the tier this turn's agent runs, carried with its overrides
         if tier not in STATIC_TIERS:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides

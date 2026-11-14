@@ -542,7 +542,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
-        agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent.reasoning_config, agent.service_tier = reasoning_config, turn_route.get("service_tier")
         _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
         agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         _surface = getattr(runner, "_daybreak_surface", None)  # read by Daybreak delegation routes
@@ -1416,7 +1416,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
-        runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
+        service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
             runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key))
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
@@ -1427,10 +1427,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 reasoning_config = requested_reasoning
             tier = _request_service_tier(api['settings'].get('model_options'))
             if tier is not _REQUEST_OPTION_MISSING:
-                runner._service_tier = tier
-        runner._reasoning_config = reasoning_config
+                service_tier = tier
+        # Display state only (`/fast` status): one runner serves concurrent turns of every profile, so
+        # this turn's agent reads its tier from turn_route, never back from the shared slot.
+        runner._reasoning_config, runner._service_tier = reasoning_config, service_tier
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs, tier=service_tier)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )

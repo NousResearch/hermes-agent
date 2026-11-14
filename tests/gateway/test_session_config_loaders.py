@@ -32,7 +32,7 @@ def test_in_process_turn_routes_with_the_sessions_own_provider_routing(tmp_path,
         _provider_routing={'only': ['DaemonStart']}, _peek_session_state=lambda key: None,
         session_authority=SimpleNamespace(profile_id=str(tmp_path)),
         _resolve_session_agent_runtime=lambda **kw: ('m', {'provider': 'custom'}),
-        _resolve_turn_agent_config=lambda message, model, runtime: {'model': model, 'runtime': runtime})
+        _resolve_turn_agent_config=lambda message, model, runtime, **kw: {'model': model, 'runtime': runtime})
     turn = TurnRunner.__new__(TurnRunner)
     turn._runner = runner
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k',
@@ -71,7 +71,7 @@ def test_a_local_turn_reloads_the_profiles_env_file_and_keeps_its_own_turn_budge
         _provider_routing={}, _peek_session_state=lambda key: None,
         session_authority=SimpleNamespace(profile_id=str(home)),
         _resolve_session_agent_runtime=lambda **kw: ('m', {'provider': 'custom'}),
-        _resolve_turn_agent_config=lambda message, model, runtime: {'model': model, 'runtime': runtime})
+        _resolve_turn_agent_config=lambda message, model, runtime, **kw: {'model': model, 'runtime': runtime})
     turn = TurnRunner.__new__(TurnRunner)
     turn._runner = runner
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k',

@@ -147,7 +147,7 @@ class TestCreatePathKeepsTheMarkerOffResetRows:
                        model_config={"_reset_from": self.OLD, "_delegate_from": self.OLD}, **ROUTE)
         append_message(db, self.LIVE, "user", "new chat")
         assert _config(db, self.LIVE) == {"_reset_from": self.OLD}
-        assert [s["id"] for s in list_sessions_rich(db, source="telegram", limit=50)][0] == self.LIVE
+        assert list_sessions_rich(db, source="telegram", limit=50)[0]["id"] == self.LIVE
 
     def test_a_new_keyed_row_with_only_a_delegate_marker_stays_hidden(self, db):
         create_session(db, self.OLD, "telegram", **ROUTE)

@@ -331,9 +331,8 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
-                    from gateway.restart_when_idle import force_restart
-                    accepted_box.append(force_restart(runner) if force
-                                        else runner.request_restart(detached=False, via_service=True))
+                    from gateway.restart_when_idle import force_restart, request_service_restart
+                    accepted_box.append(force_restart(runner) if force else request_service_restart(runner))
                     accepted_box.append(runner._describe_active_work())
                 finally:
                     _done.set()

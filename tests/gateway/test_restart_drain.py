@@ -821,3 +821,46 @@ def test_a_dequeued_completion_notice_still_holds_the_restart():
                                           "parent_session_id": "parent-s"}]
     assert {"kind": "notice", "id": "d9", "session": "parent-s"}.items() <= next(
         u for u in background_units(runner) if u["kind"] == "notice").items()
+
+
+@pytest.mark.platforms("posix")  # unix control socket
+@pytest.mark.asyncio
+async def test_an_update_pause_adopts_a_waiting_restart_instead_of_reporting_it_stopping(tmp_path, monkeypatch):
+    """A /restart is waiting on a live turn (detached helper captured). An ordinary pause-for-update
+    over the real control socket must ACK ``pausing`` (an ``already_stopping`` ACK makes the updater
+    stop the gateway at once, killing the turn) and take the plan over: exit for the service, no
+    detached helper mid-update."""
+    from gateway.control_socket import pause_gateway_for_update
+    from gateway.run_bootstrap import _start_gateway_start_control_socket
+    from gateway.runtime_bootstrap import TicketStore
+    home = tmp_path / "boot"
+    home.mkdir(mode=0o700)
+    home = home.resolve()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runner, _adapter = make_restart_runner()
+    runner.session_runtime_descriptor = {"runtime_protocol": 1, "state": "ready", "instance_id": "i-1",
+                                         "authority_epoch": 1, "served_profiles": []}
+    runner.session_ticket_store = TicketStore("i-1", frozenset({str(home)}))
+    runner.config.multiplex_profiles = False
+    seen = {}
+
+    async def _stop(**kwargs):
+        seen.update(kwargs)
+    runner.stop = _stop
+    runner._launch_detached_restart_command = AsyncMock()
+    runner._scale_to_zero_status = MagicMock()
+    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    assert runner.request_restart(detached=True, via_service=False) is True
+
+    server = await _start_gateway_start_control_socket(runner)
+    assert server is not None
+    try:
+        ack = await asyncio.to_thread(pause_gateway_for_update, home, timeout=5.0)
+    finally:
+        await server.stop()
+    assert ack and ack["pausing"] is True and ack["already_stopping"] is False, ack
+    assert not runner._restart_task.done(), "the live turn must keep the restart waiting"
+    runner._running_agents.clear()
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+    runner._launch_detached_restart_command.assert_not_awaited()
+    assert seen == {"restart": True, "detached_restart": False, "service_restart": True}

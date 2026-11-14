@@ -174,6 +174,20 @@ def force_stop_budgets(runner) -> None:
     runner._cron_drain_timeout = 0.0
 
 
+def request_service_restart(runner) -> bool:
+    """An ordinary update pause: restart when idle and exit for the service (exit 75). A restart
+    already waiting (a ``/restart`` that captured a detached helper) is adopted: its plan becomes
+    the pause's, so the waiting gateway does not launch that helper mid-update and the updater
+    hears ``pausing`` instead of stopping a gateway that is still doing work. False only once the
+    stop has begun (``_run_restart`` closes admission in the tick it reads the plan)."""
+    if request_restart(runner, detached=False, via_service=True):
+        return True
+    if getattr(runner, "_stop_task", None) is not None or getattr(runner, "_draining", False):
+        return False
+    runner._restart_detached, runner._restart_via_service = False, True
+    return True
+
+
 def force_restart(runner, *, detached: bool = False, via_service: bool = True) -> bool:
     """Start a restart (or escalate a waiting one) that stops live work now. True when this call
     started or escalated it; False when ``stop()`` had already begun."""

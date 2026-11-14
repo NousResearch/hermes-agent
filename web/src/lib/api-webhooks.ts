@@ -13,6 +13,8 @@ export interface WebhookRoute {
   secret_set: boolean;
   enabled: boolean;
   signature: WebhookSignature | null;
+  read_only?: boolean;
+  source?: "config" | "subscriptions";
 }
 
 export type WebhookSignature = "generic" | "github" | "gitlab" | "linear";

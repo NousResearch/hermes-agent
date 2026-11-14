@@ -197,6 +197,13 @@ def programmatic_file_read():
         _programmatic_read.reset(token)
 
 
+def programmatic_read_active() -> bool:
+    """True when the current call comes from code (the execute_code RPC dispatch or a session
+    kernel) rather than from the model. Readers use it to skip model-facing presentation:
+    dedup stubs for reads, the path-grouped ``matches_text`` rendering for searches."""
+    return _programmatic_read.get()
+
+
 def _dedup_lookup(task_id: str, dedup_key: tuple) -> tuple[dict, object, bool]:
     """``(task_data, cached_version, stub_eligible)`` for a read. Eligible means the model was
     already served this region since the last compaction boundary (the summary may have dropped

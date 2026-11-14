@@ -4,6 +4,7 @@ Jittered delays (vs. fixed exponential) prevent thundering-herd retry spikes
 when many sessions hit the same rate-limited provider concurrently.
 """
 
+import math
 import random
 import re
 import threading
@@ -29,18 +30,28 @@ _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     """Parse a ``Retry-After`` value (numeric / HTTP-date) or a headers mapping (both casings tried) into
-    seconds, clamped at 0.0; None when absent / unparseable."""
+    seconds, clamped at 0.0; None when absent / unparseable. A mapping's ``retry-after-ms`` wins over
+    ``Retry-After``, matching the OpenAI SDK whose own retries Hermes disables (Azure sends it)."""
     raw = value_or_headers
     if raw is not None and not isinstance(raw, (str, int, float)):
         getter = getattr(raw, "get", None)
         if not callable(getter):
             return None
         try:
+            millis = getter("retry-after-ms")
+            if millis is None:
+                millis = getter("Retry-After-Ms")
             raw = getter("Retry-After")
             if raw is None:
                 raw = getter("retry-after")
         except Exception:
             return None
+        try:
+            seconds = float(str(millis).strip()) / 1000.0 if millis is not None else math.nan
+        except ValueError:
+            seconds = math.nan  # malformed millis: fall back to Retry-After
+        if math.isfinite(seconds):
+            return max(0.0, seconds)
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):

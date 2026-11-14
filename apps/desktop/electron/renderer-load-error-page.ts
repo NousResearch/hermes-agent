@@ -42,6 +42,8 @@ export interface RendererLoadErrorDetails {
    * place (harmless: the caller's load-failure policy re-surfaces).
    */
   reloadUrl?: string
+  /** The app's name as a person reads it; defaults to Hermes. */
+  appName?: string
 }
 
 /**
@@ -104,7 +106,7 @@ export function buildRendererLoadErrorPage(details: RendererLoadErrorDetails = {
   const code =
     details.errorCode === undefined || details.errorCode === null ? '' : ` (${escapeHtml(details.errorCode)})`
 
-  const title = escapeHtml(details.title || 'Hermes couldn\u2019t start the desktop UI')
+  const title = escapeHtml(details.title || `${details.appName || 'Hermes'} couldn\u2019t start the desktop UI`)
   const description = escapeHtml(details.errorDescription || 'The desktop renderer failed to load.')
   const url = details.url ? `<p><code>${escapeHtml(details.url)}</code></p>` : ''
   const repair = details.repairHint ? `<p>Repair with: <code>hermes desktop --force-build</code></p>` : ''

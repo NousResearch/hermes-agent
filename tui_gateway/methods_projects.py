@@ -317,8 +317,16 @@ def _discover_repos_payload(
     return out
 
 
-# Not user conversations; subagent/compression children are dropped by include_children=False.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
+# Must equal apps/desktop/src/lib/messaging-session-sources.json (a test checks it): these rows show in
+# the desktop's Messaging section, so a source dropped here but missing there vanishes from the sidebar.
+_MESSAGING_SESSION_SOURCES = (
+    "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
+    "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
+    "yuanbao", "dingtalk", "feishu",
+)
+# cron, kanban and oneshot rows are not user conversations, and messaging rows have their own section;
+# subagent/compression children are dropped by include_children=False.
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", *_MESSAGING_SESSION_SOURCES]
 
 
 def _project_tree_row(r: dict) -> dict:

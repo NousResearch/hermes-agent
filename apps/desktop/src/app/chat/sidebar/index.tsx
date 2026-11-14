@@ -1980,8 +1980,8 @@ export function ChatSidebar({
               />
             )}
 
+            {/* Messaging threads belong to no project, so their sections show in every grouping. */}
             {!trimmedQuery &&
-              !worktreeGroupingActive &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)

@@ -1,5 +1,7 @@
 import { normalize } from '@/lib/text'
 
+import messagingSessionSources from './messaging-session-sources.json'
+
 const SOURCE_LABELS: Record<string, string> = {
   acp: 'ACP',
   api_server: 'API',
@@ -62,28 +64,8 @@ const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 // External messaging platforms that each get their own self-managed sidebar
 // section (fetched separately from local recents). Mirrors the gateway platform
 // adapters; keep in sync with PLATFORM_ICONS in app/messaging/platform-icon.tsx.
-export const MESSAGING_SESSION_SOURCE_IDS = [
-  'telegram',
-  'discord',
-  'slack',
-  'mattermost',
-  'matrix',
-  'signal',
-  'whatsapp',
-  'bluebubbles',
-  'photon',
-  'homeassistant',
-  'email',
-  'sms',
-  'webhook',
-  'api_server',
-  'weixin',
-  'wecom',
-  'qqbot',
-  'yuanbao',
-  'dingtalk',
-  'feishu'
-]
+// Kept as JSON so a backend test can check the project tree's exclusions against it.
+export const MESSAGING_SESSION_SOURCE_IDS: string[] = messagingSessionSources
 const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)
 
 /** True when a source id is an external messaging platform (gets its own

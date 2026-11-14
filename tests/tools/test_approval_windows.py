@@ -13,11 +13,16 @@ import time
 
 import pytest
 
-from tools.approval import detect_dangerous_command
+from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 def _is_dangerous(cmd: str) -> bool:
     res = detect_dangerous_command(cmd)
+    return bool(res[0]) if isinstance(res, tuple) else bool(res)
+
+
+def _is_hardline(cmd: str) -> bool:
+    res = detect_hardline_command(cmd)
     return bool(res[0]) if isinstance(res, tuple) else bool(res)
 
 
@@ -223,3 +228,93 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         start = time.perf_counter()
         assert not _is_dangerous(command)
         assert time.perf_counter() - start < 2, command[:30]
+
+
+class TestHardlineWindowsDestructiveTier:
+    """The Windows destructive tier above (#69472) added Restart-Computer /
+    Stop-Computer and Format-Volume / format.com to the bypassable
+    DANGEROUS_PATTERNS only. Both are the direct Windows analogues of two
+    POSIX HARDLINE_PATTERNS rules — shutdown/reboot/halt/poweroff (system
+    power state, no recovery path) and mkfs (filesystem format, no recovery
+    path) — that ARE unconditionally blocked, even under yolo. Before this
+    fix Restart-Computer/Stop-Computer had NO detection at all (not even a
+    bypassable prompt), and Format-Volume/format.com could be waved through
+    with --yolo despite being exactly the kind of no-recovery-path
+    operation the hardline floor exists to stop.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        "Restart-Computer",
+        "Restart-Computer -Force",
+        "restart-computer -force",
+        "Stop-Computer",
+        "Stop-Computer -Force",
+    ])
+    def test_power_state_commands_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        "Format-Volume -DriveLetter D",
+        "format d: /fs:ntfs",
+        "format D: /y",
+    ])
+    def test_format_commands_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        # Not the destructive cmdlets at all.
+        "restart the computer manually",
+        "Get-Service | Restart-Service -Name spooler",
+        # diskpart is interactive and has non-destructive subcommands
+        # (list disk); it stays in DANGEROUS_PATTERNS only, matching how
+        # fdisk/parted are not in the POSIX hardline list either.
+        "diskpart /s wipe.txt",
+        # Bare "format" with no drive letter is cmd.exe's own usage/help
+        # invocation, not a format-in-progress.
+        "format",
+        "format /?",
+    ])
+    def test_benign_or_non_hardline_commands_not_flagged(self, cmd):
+        assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"
+
+
+class TestHardlineWindowsWipesAndDriveRootDeletes:
+    """Windows filesystem wipes and drive-root recursive deletes are hardline (#87419), anchored
+    to command position (directly or behind a powershell/pwsh/cmd launcher) like the POSIX rules."""
+
+    @pytest.mark.parametrize("cmd", [
+        "format.com C: /q",
+        "cmd /c format d: /y",
+        "ls; format c:",
+        'powershell -NoProfile -ExecutionPolicy Bypass "Format-Volume -DriveLetter D"',
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c Stop-Computer",
+        "pwsh -c Clear-Disk -Number 0 -RemoveData",
+        r"del /F /S /Q C:\*",
+        r"erase /s /q c:\*.*",
+        "rd /s /q C:\\",
+        r"rmdir /s /q D:/",
+        r'cmd /c "rd /s /q C:\"',
+        "Remove-Item -Recurse -Force C:\\",
+        r"Remove-Item C:\* -Recurse -Force",
+        r"ri -r -fo C:\ ",
+        r"Get-Date; Remove-Item -Recurse C:\*.*",
+        r"rm -rf C:/",
+    ])
+    def test_windows_wipes_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        'git commit -m "docs: never run format c: here"',
+        'grep -r "format c:" docs',
+        "echo Restart-Computer",
+        # Deeper paths and non-recursive forms stay in the (approvable) DANGEROUS tier.
+        r"rd /s /q C:\build",
+        r"del /s /q C:\Users\me\build\*.tmp",
+        r"Remove-Item -Recurse -Force C:\temp\x",
+        r"Remove-Item C:\ ",
+        r"del C:\*",
+        r"rm -rf C:/work",
+        r"Get-ChildItem -Recurse C:\ ",
+    ])
+    def test_prose_and_non_root_targets_not_hardline(self, cmd):
+        assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"

@@ -5,7 +5,7 @@ may import a dependency or another PM module.
 """
 from __future__ import annotations
 
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import errno
 import hashlib
 import ntpath
@@ -107,7 +107,8 @@ def unlock_fd(fd: int) -> None:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False) -> int | None:
+def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False,
+              read_only: bool = False) -> int | None:
     """Open *path* (created if missing), wait up to ``timeout`` for its byte lock and return the
     held descriptor; None when the wait expired. The caller closes the descriptor to release.
 
@@ -116,14 +117,16 @@ def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False) ->
     reach while the next opener creates a fresh file: both would hold "the" lock. Once held,
     the descriptor must still be the file at *path*, else retry on the current one. Windows
     cannot unlink an open file, so the check is POSIX-only. ``create_dir`` re-creates the
-    parent the remover may have taken with it.
+    parent the remover may have taken with it. ``read_only`` locks an existing file this
+    process may not write.
     """
     deadline = None if timeout is None else time.monotonic() + timeout
+    flags = os.O_RDONLY if read_only else os.O_CREAT | os.O_RDWR
     while True:
         if create_dir:
             path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            fd = os.open(path, flags, 0o600)
         except FileNotFoundError:
             # Only a parent removed between mkdir and open is worth another try; anything else
             # (a dangling symlink at *path*) fails the same way every time.
@@ -152,6 +155,58 @@ def _same_file(fd: int, path: Path) -> bool:
         return os.path.samestat(os.fstat(fd), os.stat(path))
     except FileNotFoundError:
         return False
+
+
+#: Opening a lock for writing fails this way where this process may only read it: a read-only
+#: mount, or a sandbox that grants write access to the new lock directory alone.
+_READ_ONLY_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
+
+def _lock_old_path(path: Path, timeout: float | None) -> int | None:
+    """:func:`lock_path` on a lock's old location; -1 when this process cannot open it at all.
+
+    A file it may only read is still locked through a read-only descriptor: an older process
+    outside a sandbox that mounts the install read-only locks that same file. Only opening it
+    may fail quietly; an error while taking its lock reaches the caller.
+    """
+    try:
+        return lock_path(path, timeout=timeout, create_dir=True)
+    except OSError as exc:
+        if exc.errno not in _READ_ONLY_ERRNOS:
+            raise
+    try:
+        os.close(os.open(path, os.O_RDONLY))
+    except OSError:
+        return -1
+    try:
+        return lock_path(path, timeout=timeout, read_only=True)
+    except FileNotFoundError:  # an older collector removed it since: nothing left to hold
+        return -1
+
+
+@contextmanager
+def moved_lock(old: Path, new: Path, *, timeout: float | None):
+    """Hold the lock at *new*, and first the one at *old* it moved from; yields whether both are
+    held (False when the wait expired, and then neither is).
+
+    Processes started on a release from before the move lock only *old*. Taking it too keeps
+    them and this process on one mutex, and taking it first keeps the order fixed.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    held: list[int] = []
+    try:
+        fd = _lock_old_path(old, timeout)
+        if fd is not None:
+            if fd >= 0:
+                held.append(fd)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            fd = lock_path(new, timeout=remaining, create_dir=True)
+            if fd is not None:
+                held.append(fd)
+        yield fd is not None
+    finally:
+        for fd in reversed(held):
+            os.close(fd)
 
 
 def read_bytes_or_none(path: Path) -> bytes | None:

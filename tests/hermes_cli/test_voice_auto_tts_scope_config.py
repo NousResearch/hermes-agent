@@ -24,3 +24,15 @@ def test_invalid_scope_is_reported_with_remedy(mode):
 def test_registered_defaults_keep_auto_tts_off_and_legacy_scope():
     assert DEFAULT_CONFIG["voice"]["auto_tts"] is False
     assert DEFAULT_CONFIG["voice"]["auto_tts_mode"] == "all"
+
+
+def test_config_check_command_reports_an_invalid_scope(tmp_path, monkeypatch, capsys):
+    from hermes_cli.config import _cmd_config_check
+
+    (tmp_path / "config.yaml").write_text(
+        f"_config_version: {DEFAULT_CONFIG['_config_version']}\nvoice:\n  auto_tts_mode: sometimes\n",
+        encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _cmd_config_check(None)
+    out = capsys.readouterr().out
+    assert "voice.auto_tts_mode must be 'all' or 'voice_only', got 'sometimes'" in out

@@ -125,3 +125,19 @@ def test_profile_configs_and_receiving_bot_keep_independent_scopes(tmp_path, mon
         assert runner._should_send_voice_reply(event, "reply", []) is expected
     assert primary._auto_tts_enabled_chats == {"123"}
     assert secondary._auto_tts_disabled_chats == {"123"}
+
+
+@pytest.mark.parametrize("primary_mode, secondary_mode", [("voice_only", "all"), ("all", "voice_only")])
+def test_secondary_sync_outside_any_scope_reads_its_own_profile(tmp_path, monkeypatch, primary_mode, secondary_mode):
+    """Secondary startup and reconnect call the sync after leaving ``_profile_runtime_scope``; the
+    adapter's owner profile, not the ambient launch profile, must supply voice.auto_tts[_mode]."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    runner, primary = _configured_runner(tmp_path, monkeypatch, primary_mode)
+    secondary_home = tmp_path / "profiles" / "second"
+    secondary_home.mkdir(parents=True)
+    (secondary_home / "config.yaml").write_text(
+        f"voice:\n  auto_tts: true\n  auto_tts_mode: {secondary_mode}\n", encoding="utf-8")
+    secondary = _Adapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    secondary.set_owner_profile("second")
+    runner._sync_voice_mode_state_to_adapter(secondary)  # no scope bound, as at the real call sites
+    assert (primary._auto_tts_mode, secondary._auto_tts_mode) == (primary_mode, secondary_mode)

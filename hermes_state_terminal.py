@@ -262,11 +262,14 @@ def reclaim_admission_results(conn, *, older_than=None):
     result past the newest ``ADMISSION_RESULT_KEEP`` of its session. The newest results are
     untouched, so an in-flight retry still resolves byte-exact. A retired session keeps its
     compacted copy here until ``prune_retired_tombstones`` closes the horizon — that is the delete
-    path's exact-retry answer, not this cache.
+    path's exact-retry answer, not this cache. The orphan clause therefore ages a tombstone on
+    ``RETRY_HORIZON_S`` whatever ``older_than`` says: a shorter retention must not take the reply
+    away from a tombstone that still stands.
     """
     from hermes_state_mutation_retirement import RETRY_HORIZON_S
     prefix, cut = RESULT_PREFIX, len(RESULT_PREFIX) + 1
-    cutoff = time.time() - float(RETRY_HORIZON_S if older_than is None else older_than)
+    now = time.time()
+    cutoff = now - float(RETRY_HORIZON_S if older_than is None else older_than)
 
     conn.execute(
         "DELETE FROM state_meta WHERE key GLOB ? AND NOT EXISTS ("
@@ -274,7 +277,7 @@ def reclaim_admission_results(conn, *, older_than=None):
         " AND NOT EXISTS (SELECT 1 FROM state_meta t WHERE t.key=? || substr(state_meta.key,?)"
         "  AND CASE WHEN json_valid(t.value)"
         "           THEN COALESCE(json_extract(t.value,'$.retired_at') >= ?, 1) ELSE 1 END)",
-        (prefix + '*', cut, ADMISSION_PREFIX, cut, cutoff))
+        (prefix + '*', cut, ADMISSION_PREFIX, cut, now - float(RETRY_HORIZON_S)))
     from hermes_state_common import _sql_session_last_active_by_id
     # A compressed conversation keeps admitting on its root while its turns land on the tip the
     # claim recorded (``lineage_json``): either one's activity keeps the conversation's results.

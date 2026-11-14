@@ -148,8 +148,8 @@ replayed; its later inputs wait until it is resolved (`prompt.resolve_unknown`).
 
 The `runtime_epoch` row is the store's owner fence: the gateway captures it once at boot
 and every write is checked against it, so bumping it is a takeover. Only the profile's lock
-holder may take it over — `begin_runtime_epoch()` refuses a bump while the profile's
-`gateway.lock` names a live foreign holder, because a stray bump leaves the running gateway
+holder may take it over — `begin_runtime_epoch()` refuses a bump while another process
+holds the profile's `gateway.lock` flock, because a stray bump leaves the running gateway
 permanently behind the fence: every write on that store then fails with `stale_epoch` until
 it restarts, and `/reset` does not recover it (#142330).
 

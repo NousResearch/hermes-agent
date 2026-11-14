@@ -119,45 +119,44 @@ def _row(row):
 def _profile_home_of(db) -> Optional[Path]:
     """The profile home that owns *db*'s store (the state.db's directory), or None.
 
-    None for a store with no directory of its own (an in-memory database): there is no
+    None for a store with no directory of its own (an in-memory or URI database): there is no
     profile home, so there is no profile lock to be fenced out of."""
-    try:
-        db_path = Path(getattr(db, "db_path", "") or "")
-    except (TypeError, ValueError):
+    raw = str(getattr(db, "db_path", "") or "")
+    if not raw or raw == ':memory:' or raw.startswith('file:'):
         return None
-    return db_path.parent if db_path.name else None
+    return Path(raw).parent
 
 
 def _assert_profile_unowned(db) -> None:
-    """Refuse an epoch bump while a live owner holds the profile's ``gateway.lock``.
+    """Refuse an epoch bump while another process holds the profile's ``gateway.lock``.
 
     The bump is a takeover, and the epoch is the fence every write is checked against: the
     owner captures it ONCE at boot, so a bump by a process that does not own the profile
-    leaves the live owner permanently behind the fence - every write on that store then
-    fails with ``stale_epoch`` until it restarts, and ``/reset`` does not recover it
-    (#142330). So the ownership is checked here instead of being left to the caller's
-    discipline: the docstring's "the caller MUST hold the profile ownership lock" was
-    advisory, and an ordinary agent turn could reach it (a script that opens the store).
+    leaves the live owner permanently behind the fence (#142330).
 
-    A store no live owner holds is free to be taken over - that is what the bump means -
-    and the caller that HOLDS the lock is always allowed: the lock is exclusive, so no
-    foreign holder can exist while it is held."""
-    from gateway.runtime_ownership import canonical_home
+    A record naming this process (pid AND PID namespace) is our own reservation: the gateway,
+    a served secondary or a maintenance reservation here (a flock probe from this process would
+    contend with its own lock). Otherwise the flock decides, not the record: it answers across
+    PID namespaces and before the holder publishes its record (#123081).
+    No lock file means no owner, and the bump is the takeover."""
+    from gateway.runtime_ownership import canonical_home, runtime_lock_held_elsewhere
     from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+    from hermes_state_pidns import pid_namespace_id
 
     home = _profile_home_of(db)
     if home is None:
         return
-    record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
-    if not record:
-        return  # no owner: the bump is the takeover
-    holder = _live_pid_from_record(record)
-    if holder is None or holder == os.getpid():
-        return  # a dead holder, or us
+    home = canonical_home(home)
+    lock_path = home / 'gateway.lock'
+    record = _read_gateway_lock_record(lock_path)
+    holder = _live_pid_from_record(record) if record else None
+    ours = holder == os.getpid() and record.get('pidns') == pid_namespace_id()
+    if ours or not lock_path.exists() or not runtime_lock_held_elsewhere(home):
+        return
     raise RuntimeStoreError(
         'ownership_conflict',
         field='runtime_epoch',
-        detail=f'profile {home} is owned by pid {holder}',
+        detail=f'profile {home} is owned by {f"pid {holder}" if holder else "another process"}',
     )
 
 

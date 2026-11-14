@@ -208,6 +208,8 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             # The replacing gateway serves this home on: telling its home chats "shutting down" is
             # false, and two services fighting over one home would repeat it every few seconds.
             runner._planned_takeover_shutdown = True
+            # Expose the clean stop intent before stop() gets its first event-loop turn.
+            runner._draining = True
             logger.info("Received %s as a planned --replace takeover — exiting cleanly", sig_name or "SIGTERM")
         elif planned_stop:
             logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name or "SIGTERM/SIGINT")
@@ -290,6 +292,7 @@ async def _start_gateway_start_control_socket(runner):
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
         from gateway.run_active_work_verb import active_work_verb
+        from gateway.deferred_restart import deferred_restart_verb
         from gateway.relay.link import relay_link_verb
         from gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
@@ -357,6 +360,7 @@ async def _start_gateway_start_control_socket(runner):
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+                           "defer-restart": deferred_restart_verb(runner, _main_loop),
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),

@@ -53,12 +53,19 @@ class TestCredentialStoreReads:
         assert self.WEAK not in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
         assert self.WEAK not in redact_terminal_output(text, f"cat {path}", force=True)
 
-    @pytest.mark.parametrize("value", ["${NPM_TOKEN}", '"${NPM_TOKEN}"', "${NPM_TOKEN?}"])
+    @pytest.mark.parametrize("value", ["${NPM_TOKEN}", '"${NPM_TOKEN}"', "${NPM_TOKEN?}", "${NPM_TOKEN}\r"])
     def test_npmrc_env_reference_stays_readable(self, value):
         # npm expands ``${NAME}`` in .npmrc: the reference names a variable, not a stored token.
         text = f"//registry.npmjs.org/:_authToken={value}\n"
         assert value in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
         assert value in redact_terminal_output(text, "cat .npmrc", force=True)
+
+    @pytest.mark.parametrize("value", ["${NPM_TOKEN} {pw}", "${NPM_TOKEN}\t{pw}", "{pw} tail"])
+    def test_npmrc_literal_after_a_reference_is_masked(self, value):
+        # Only a value that is nothing but the reference is exempt; the rest of the line is the secret.
+        text = "//registry.npmjs.org/:_authToken=" + value.replace("{pw}", self.WEAK) + "\n"
+        assert self.WEAK not in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
+        assert self.WEAK not in redact_terminal_output(text, "cat .npmrc", force=True)
 
     def test_every_netrc_password_on_one_line_is_masked(self):
         # netrc is whitespace-separated tokens: several ``machine`` entries may share one line.

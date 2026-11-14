@@ -57,8 +57,9 @@ _NETRC_LINE_RE = re.compile(
 _NETRC_TOKEN_RE = re.compile(r'"[^"\r\n]*"?|\S+')
 _CREDENTIAL_STORE_RES = (
     re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{4}})(\S[^\r\n]*)", re.MULTILINE),
-    # npm expands ``${NAME}`` / ``${NAME?}`` here: that reference names a variable, it is not the secret.
-    re.compile(r'(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(?!"?\$\{\w+\??\}"?(?:\s|$))(\S+)'),
+    # npm expands ``${NAME}`` / ``${NAME?}`` here: a value that is only that reference names a variable,
+    # not the secret. Any other value runs to end of line (npm keeps internal spaces): ``${X} lit``.
+    re.compile(r'(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(?!"?\$\{\w+\??\}"?[ \t\r]*$)(\S(?:[^\r\n]*\S)?)', re.M),
 )
 # INI ``password = X`` (``.pypirc``, ``~/.aws/credentials``): the anchored config pass only accepts
 # ``key=value`` with no spaces around ``=``, and stops ``password=a b`` at the first space. The value

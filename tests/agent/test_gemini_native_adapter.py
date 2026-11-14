@@ -1084,3 +1084,16 @@ def test_stream_finish_maps_reason_when_a_call_is_present():
         tool_call_indices={},
     )
     assert chunks[-1].choices[0].finish_reason == "tool_calls"
+
+
+@pytest.mark.parametrize(("raw", "mapped"), [("MAX_TOKENS", "length"), ("SAFETY", "content_filter"), ("STOP", "tool_calls")])
+def test_stream_finish_in_a_later_event_than_the_call_still_maps_the_reason(raw, mapped):
+    """The functionCall streams in one event and finishReason arrives in a later, part-less event."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    first = translate_stream_event(_fc_event("search", {"q": "abc"}), model="gemini-2.5-flash", tool_call_indices=slots)
+    assert first and all(c.choices[0].finish_reason is None for c in first)
+    last = translate_stream_event({"candidates": [{"content": {"parts": []}, "finishReason": raw}]},
+                                  model="gemini-2.5-flash", tool_call_indices=slots)
+    assert last[-1].choices[0].finish_reason == mapped

@@ -112,34 +112,35 @@ _CMDPOS = (
     r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
 )
 
-# Top-level `hermes` flags that consume a SEPARATE word before the subcommand (`--profile work`).
-# The set is the value-taking subset of the real top-level parser (see
-# `hermes_cli._parser.top_level_value_flag_sets`): the approval rule needs to know which flag
-# swallows the next word, or `hermes --profile work config set ...` would read "work" as the
-# subcommand. A flag that is NOT in this set is a bare token (`--json`, `--flag=value`).
+# Top-level `hermes` flags that consume a SEPARATE word (`--profile work`): the value-taking subset
+# of `hermes_cli._parser.top_level_value_flag_sets`, so `hermes --profile work config set ...` does
+# not read "work" as the subcommand. Any other flag is a bare token (`--json`, `--flag=value`).
 _HERMES_TOP_LEVEL_VALUE_FLAGS = (
     r'(?:--profile|-p|--config|--model|-m|--provider|--reasoning|--toolsets|-t'
     r'|--resume|-r|--skills|-s|--oneshot|-z|--usage-file|--in|--cpu-profile)'
 )
 
+# `-p`/`--profile` is stripped from ANYWHERE before `--` (`_parser.scan_profile_flag`), so it can sit
+# between `config` and `set` or before the key too. A `VAR=value` word may be quoted (`NOTE='a b'`).
+_HERMES_PROFILE_OPTION = r'(?:(?:-p|--profile)[ \t]+[^\s]++|--profile=[^\s]++)'
+_SHELL_WORD = r'''(?:[^\s'"]++|'[^']*+'|"[^"]*+")*+'''
+
 # `hermes config set|unset <key>` — the invocations that rewrite the agent's own approval
-# policy. Anchored to the INVOCATION (program word at a command position, then the `config
-# set`/`config unset` subcommand chain, then the policy key), so a plain read of the same
-# text (`grep -r 'hermes config set' docs/approvals.md`) is a plain read again.
-# The optional global-option run sits in an ATOMIC group with possessive quantifiers: a plain
-# nested `(?:\s+...)*` backtracks exponentially on a long flag run (measured 0.34s per pattern
-# at 30 flags, doubling every 2 more) and this rule is scanned on every terminal command.
+# policy. Anchored to the INVOCATION (program word, `config set|unset`, policy key), so a read of
+# the text (`grep -r 'hermes config set' docs`) stays ungated. Option runs are ATOMIC/possessive:
+# nested `(?:\s+...)*` backtracked exponentially on long flag runs (0.34s at 30 flags).
 _HERMES_CONFIG_SET_APPROVAL_POLICY = (
     # The program: the `hermes` binary (or the macOS `ai.hermes`), or the module form
     # `python -m hermes_cli.main` that the updater and the cron lifecycle guard invoke.
     # Optional leading `VAR=value` assignments (`HERMES_HOME=... hermes config set ...`).
-    r'(?>(?:\w++=[^\s]*+[ \t]+)*)'
-    r'(?:(?:[^\s:]*?/)?(?:ai\.)?hermes(?:\.exe)?\b'
-    r'|(?:[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]+hermes_cli\.main\b)'
+    r'(?>(?:\w++=' + _SHELL_WORD + r'[ \t]+)*)'
+    r'(?:(?:(?:[a-z]:)?[^\s:]*?/)?(?:ai\.)?hermes(?:\.exe)?\b'
+    r'|(?:(?:[a-z]:)?[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]*hermes_cli\.main\b)'
     r'(?>(?:[ \t]+(?:' + _HERMES_TOP_LEVEL_VALUE_FLAGS + r'[ \t]+[^\s]++'
     r'|--?[\w-]++(?:=[^\s]++)?))*)'  # global options before the subcommand
-    r'[ \t]+config[ \t]+(?:set|unset)\b[ \t]*'  # the `config set` / `config unset` subcommand
-    r'(?>(?:--?[\w-]++[ \t]+)*)'  # `config set`'s own flags (`--force`)
+    r'[ \t]+config(?>(?:[ \t]+' + _HERMES_PROFILE_OPTION + r')*)'  # `-p` also parses after a subcommand
+    r'[ \t]+(?:set|unset)\b[ \t]*'  # the `config set` / `config unset` subcommand
+    r'(?>(?:(?:' + _HERMES_PROFILE_OPTION + r'|--?[\w-]++)[ \t]+)*)'  # `--force`, `-p work`
     r'["\']?(?:approvals(?:\.[\w.-]++)*|command_allowlist)\b'  # the approval-policy key, maybe quoted
 )
 

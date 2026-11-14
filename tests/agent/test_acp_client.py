@@ -186,3 +186,33 @@ def test_deprecated_alias_keeps_a_frozen_out_of_tree_subclass_working(tmp_path):
     assert result["is_acp_client"] and result["base_url"] == "acp://frozen"
     assert result["models"] == ["open-model", "policy-blocked"]  # the alias keeps its enablement filter
     assert result["reply"] == "HELLO"
+
+
+def test_cli_exiting_before_first_write_closes_stdin_without_unraisable_broken_pipe(tmp_path, monkeypatch):
+    """A CLI that exits before Hermes writes (VS Code's ``copilot`` shim without the real CLI)
+    breaks the first ``initialize`` flush. The unflushed request must not stay in stdin's buffer:
+    the GC finalizer retried it and printed "Exception ignored ... BrokenPipeError" at startup."""
+    import gc
+
+    client = ACPClient(command=sys.executable, args=["-c", "pass"], acp_cwd=str(tmp_path))
+    spawned = []
+    real_spawn = client._spawn
+
+    def _spawn_and_wait_for_exit():
+        proc = real_spawn()
+        proc.wait(timeout=30)  # deterministic: the child is gone before the first write
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(client, "_spawn", _spawn_and_wait_for_exit)
+    unraisable = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+
+    with pytest.raises((OSError, RuntimeError)):
+        with client._session(30, allow_file_requests=False):
+            pass
+
+    assert spawned and spawned[0].stdin.closed
+    spawned.clear()  # drop the last Popen reference so gc finalizes its stdin now
+    gc.collect()
+    assert not [u for u in unraisable if isinstance(u.exc_value, BrokenPipeError)]

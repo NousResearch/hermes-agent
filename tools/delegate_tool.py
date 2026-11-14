@@ -783,6 +783,8 @@ _DESCRIPTION_HEAD = (
     "RULES:\n"
     "- Children know nothing of this conversation: pass everything needed via 'context', including any required "
     "output language, tone, or style (e.g. \"respond in Chinese\").\n"
+    "- Brief only what the user asked: the deliverable, how to tell it is done, and the paths/symbols you already "
+    "found. No extra sweeps or audits; list suspected neighbours for the child to report, not fix.\n"
     "- Child summaries are SELF-REPORTS, not verified facts: a child claiming \"uploaded successfully\" or "
     "\"file written\" may be wrong. For external side effects (uploads, remote writes, publishing), require a "
     "verifiable handle (URL, ID, absolute path) and verify it yourself before telling the user the operation "

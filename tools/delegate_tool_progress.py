@@ -147,7 +147,10 @@ _CONTEXT_FILES_INTRO = (
     "your work in this workspace.\n\n"
 )
 _COMPLETION_INSTRUCTIONS = (
-    "\nComplete this task using the tools available to you. When finished, provide a clear, concise summary of:\n"
+    "\nComplete this task using the tools available to you. Stay inside its scope: start from the paths the context "
+    "names and read what the task needs, not the whole codebase. When the task is a code change, start changing and "
+    "testing early. Report problems outside the task in your summary instead of fixing them. If the task cannot be "
+    "done as stated, stop and say why rather than widening it.\n\nWhen finished, provide a clear, concise summary of:\n"
     "- What you did\n- What you found or accomplished\n- Any files you created or modified\n- Any issues encountered\n\n"
     "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path "
     "unless the task/context explicitly gives that path. If no exact local path is provided, discover it first before "

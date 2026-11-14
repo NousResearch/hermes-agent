@@ -746,7 +746,6 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     if existing is None:
         existing = {}
 
-
     # Merge onto the existing entry rather than replacing it: a providers.<name>
     # block can carry hand-written keys the dashboard has no field for
     # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
@@ -820,7 +819,9 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     from agent.credential_pool import _pool_keys_for_custom_entry, _normalize_custom_pool_name
     pool_keys = _pool_keys_for_custom_entry(_normalize_custom_pool_name(str(existing.get("name") or name)),
                                             {"provider_key": endpoint_id})
-    _drop_credentials_on_origin_move(entry, existing, base_url, body.api_key, tuple(pool_keys))
+    # An explicitly submitted command replaces the old credential after the origin guard strips it.
+    submitted_credential = "" if (body.key_cmd or "").strip() else body.api_key
+    _drop_credentials_on_origin_move(entry, existing, base_url, submitted_credential, tuple(pool_keys))
 
     entry = select_credentials(entry, body)
 

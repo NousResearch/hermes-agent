@@ -297,3 +297,29 @@ def test_saved_command_probe_preserves_runtime_headers_and_redacts_them(client, 
     assert "override-private" not in response.text
     assert "gateway-private" not in response.text
     assert "anthropic-private" not in response.text
+
+
+def test_saved_command_cannot_test_or_move_to_another_origin(client, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.web_routers import config_env
+
+    cfg = load_config()
+    cfg["providers"] = {"test-route": {
+        "name": "Test route", "base_url": "https://old.example/v1", "key_cmd": "helper",
+    }}
+    save_config(cfg)
+
+    async def unexpected_request(*args, **kwargs):
+        pytest.fail("The probe must stop before making a request to the new origin")
+
+    monkeypatch.setattr(config_env, "_probe_openai_compatible_models", unexpected_request)
+    route = "/api/providers/custom-endpoints"
+    payload = {"id": "test-route", "name": "Test route", "base_url": "https://new.example/v1",
+               "model": "deployment", "credential_source": "command"}
+
+    assert client.post(f"{route}/validate", json=payload).status_code == 400
+    assert client.post(route, json=payload).status_code == 400
+    assert client.post(route, json={**payload, "key_cmd": "new-helper"}).status_code == 200
+    entry = load_config()["providers"]["test-route"]
+    assert entry["base_url"] == payload["base_url"]
+    assert entry["key_cmd"] == "new-helper"

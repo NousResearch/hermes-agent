@@ -44,7 +44,9 @@ def probe_headers(body: CustomEndpointUpdate) -> dict[str, str]:
     retry anonymously; helper stdout, stderr and command text may all contain credentials.
     """
     from hermes_cli.config import load_config
-    from hermes_cli.web_routers.config_env import _pop_legacy_custom_provider, _resolve_custom_endpoint_entry
+    from hermes_cli.config_providers import ENDPOINT_ADDRESS_FIELDS
+    from utils import same_base_url_origin
+    from hermes_cli.web_routers.config_env import _drop_stale_addresses, _pop_legacy_custom_provider, _resolve_custom_endpoint_entry
     from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
 
     cfg = load_config()
@@ -53,8 +55,19 @@ def probe_headers(body: CustomEndpointUpdate) -> dict[str, str]:
     stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
     if existing is None:
         existing = _pop_legacy_custom_provider(cfg, body.id or body.name)
+    # A probe must not rebind saved credentials to an unsaved address.
+    if existing and any(
+        str(existing.get(field) or "").strip() and not same_base_url_origin(existing[field], body.base_url)
+        for field in ENDPOINT_ADDRESS_FIELDS
+    ):
+        if body.credential_source == "command" or body.key_cmd is not None:
+            raise HTTPException(400, "Save the new endpoint address with a fresh credential command before testing.")
+        key = (body.api_key or "").strip()
+        return {"Accept": "application/json", **({"Authorization": f"Bearer {key}"} if key else {})}
+
     endpoint_id = stored_key or body.id or body.name or "desktop-endpoint-probe"
     entry = select_credentials(existing or {}, body)
+    _drop_stale_addresses(entry)
     entry.update(name=body.name, base_url=body.base_url, model=body.model)
     if body.api_key is not None:
         entry["api_key"] = body.api_key.strip()

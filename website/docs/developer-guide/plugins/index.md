@@ -1622,6 +1622,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | A compaction committed (any path: auto, `/compress`, gateway, Codex, micro, prune) | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | ignored |
 | [`post_curator_run`](../../user-guide/features/hooks.md#post_curator_run) | A curator pass wrote its report directory | `run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool` | ignored |
 | [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions and message edits; Discord message edits and deletes, thread create and rename; see the [per-event contracts](../../user-guide/features/hooks.md#gateway_platform_event)) | `platform: str, event_type: str, payload: dict` | ignored |
+| [`gateway_message_delivered`](../../user-guide/features/hooks.md#gateway_message_delivered) | The gateway confirmed an outbound delivery (agent final reply or cron output) | `kind: str, platform: str, chat_id: str, thread_id: str \| None, message_ids: list[str], last_message_id: str \| None, text: str \| None, session_key, session_id: str \| None, job_id, streamed: bool, profile` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
@@ -1681,6 +1682,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
 | `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
 | `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
+| `gateway_message_delivered` | `gateway/delivery_hooks.py` `notify_message_delivered` / `notify_message_delivered_from_thread`, called from `gateway/platforms/base.py` `BasePlatformAdapter._notify_final_delivered`, `gateway/run_turn.py` `GatewayTurnMixin._notify_streamed_final_delivered` and `cron/scheduler_delivery.py` `_fire_cron_delivered` |
 | `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |

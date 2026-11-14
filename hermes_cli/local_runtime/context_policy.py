@@ -157,6 +157,16 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
                     kv_on_gpu=ctx_bytes(posture, target) + overhead <= budget.usable_vram_bytes,
                     reasons=[f"grown window restored ({target // 1024}K)"])
+            elif target < decision.window:
+                # A window_overrides entry BELOW the granted rung is the one supported per-model
+                # escape hatch when the estimate is wrong for this host (issue #133261: a Vulkan
+                # device whose host-visible placements the device query cannot price). A smaller
+                # window is always physically safer, so it needs no physics re-check.
+                need = footprint_bytes(posture, target, overhead_bytes=overhead)
+                decision = WindowDecision(
+                    window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
+                    kv_on_gpu=ctx_bytes(posture, target) + overhead <= budget.usable_vram_bytes,
+                    reasons=[*decision.reasons, f"window override applied ({target // 1024}K)"])
         return LaunchPlan(decision, stacked, overhead, posture)
 
     lean = candidate(False)

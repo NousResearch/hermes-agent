@@ -4267,3 +4267,136 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
   background: none;
   color: var(--err-ink);
 }
+
+/* ═══ حركة الألواح (Sheet) + راحة القراءة على الهاتف ═══════════════════════
+   الشيفرة تضع أصناف `animate-in` / `slide-in-from-*` / `fade-in-0` من
+   tailwindcss-animate، لكن هذا الملحق غير مُضمَّن في هذه الحزمة (لا
+   `tw-animate-css` ولا `tailwindcss-animate` في الاعتماديات) — فالأصناف خاملة
+   في CSS المبني وكل لوح يظهر فجأة بلا حركة. نُنفّذ الحركة هنا على سمات Radix
+   (data-slot + data-state + data-side) فتعمل في نسخة المتصفح وسطح المكتب. */
+@keyframes hf-fade-in   { from { opacity: 0 } to { opacity: 1 } }
+@keyframes hf-fade-out  { from { opacity: 1 } to { opacity: 0 } }
+@keyframes hf-in-right  { from { transform: translate3d(102%, 0, 0) } to { transform: none } }
+@keyframes hf-out-right { from { transform: none } to { transform: translate3d(102%, 0, 0) } }
+@keyframes hf-in-left   { from { transform: translate3d(-102%, 0, 0) } to { transform: none } }
+@keyframes hf-out-left  { from { transform: none } to { transform: translate3d(-102%, 0, 0) } }
+
+[data-slot='sheet-overlay'][data-state='open']   { animation: hf-fade-in 0.2s ease-out both; }
+[data-slot='sheet-overlay'][data-state='closed'] { animation: hf-fade-out 0.16s ease-in both; }
+
+[data-slot='sheet-content'][data-state='open'],
+[data-slot='sidebar'][data-state='open']   { animation: hf-in-right 0.3s cubic-bezier(0.22, 0.9, 0.3, 1) both; }
+
+[data-slot='sheet-content'][data-state='closed'],
+[data-slot='sidebar'][data-state='closed'] { animation: hf-out-right 0.2s cubic-bezier(0.6, 0, 0.75, 0.4) both; }
+
+[data-slot='sheet-content'][data-side='left'][data-state='open'],
+[data-slot='sidebar'][data-side='left'][data-state='open']   { animation-name: hf-in-left; }
+
+[data-slot='sheet-content'][data-side='left'][data-state='closed'],
+[data-slot='sidebar'][data-side='left'][data-state='closed'] { animation-name: hf-out-left; }
+
+/* خلفية اللوح: ضبابية ملء الشاشة مكلفة على أندرويد المتوسط وتُسقط إطارات
+   التمرير — خلفية معتمة 22% تكفي بصريًا وبلا كلفة. */
+[data-slot='sheet-overlay'] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='sheet-overlay'],
+  [data-slot='sheet-content'] { animation: none !important; }
+}
+
+/* نص المحادثة على الهاتف: 13px/18px صغير ومتعب للعربية على شاشة 390px،
+   والهوامش الجانبية 24px تأكل ~12% من العرض. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'] [data-slot='aui_thread-content'] {
+    --conversation-text-base-size: 0.9375rem;
+    --conversation-base-line-height: 1.375rem;
+    --conversation-tool-base-size: 0.75rem;
+    --conversation-caption-base-size: 0.8125rem;
+    --turn-block-gap: 0.625rem;
+    padding-inline: 1rem;
+  }
+}
+
+/* ═══ حركة القوائم والنوافذ (Radix) — كانت بلا أي حركة للأسباب نفسها أعلاه ═══ */
+@keyframes hf-pop-in  { from { opacity: 0; transform: scale(0.97) translateY(-0.125rem) } to { opacity: 1; transform: none } }
+@keyframes hf-pop-out { from { opacity: 1; transform: none } to { opacity: 0; transform: scale(0.98) } }
+
+[data-slot='dropdown-menu-content'][data-state='open'],
+[data-slot='select-content'][data-state='open'],
+[data-slot='dialog-content'][data-state='open'],
+[data-slot='popover-content'][data-state='open'],
+[data-slot='tooltip-content'][data-state='delayed-open'] {
+  animation: hf-pop-in 0.16s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+[data-slot='dropdown-menu-content'][data-state='closed'],
+[data-slot='select-content'][data-state='closed'],
+[data-slot='dialog-content'][data-state='closed'],
+[data-slot='popover-content'][data-state='closed'] {
+  animation: hf-pop-out 0.12s ease-in both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='dropdown-menu-content'],
+  [data-slot='select-content'],
+  [data-slot='dialog-content'],
+  [data-slot='popover-content'],
+  [data-slot='tooltip-content'] { animation: none !important; }
+}
+
+/* ═══ العربية: مكدّس خطوط عربي حقيقي (لا يمسّ أي لغة أخرى) ═══
+   الخط الافتراضي لاتيني (Collapse/Rules) ولا يملك محارف عربية، فيسقط النص إلى
+   خط النظام — وهو أسوأ ما يظهر على أندرويد. القواعد هنا مقيّدة بـ:lang(ar)
+   وبمحارف الدردشة فقط، فلا تتأثر zh/ja/ru إلخ. */
+:lang(ar) [data-slot='aui_thread-content'],
+:lang(ar) [data-slot='aui_assistant-message-content'],
+:lang(ar) [data-slot='composer-rich-input'],
+:lang(ar) [data-slot='aui_edit-composer-root'] [data-slot='composer-rich-input'] {
+  font-family:
+    'Noto Sans Arabic', 'Noto Naskh Arabic', 'IBM Plex Sans Arabic', 'Geeza Pro',
+    'Segoe UI', Tahoma, 'Dubai', var(--dt-font-sans);
+  /* العربية لا تُباعد بين حروفها: tracking-tight يقطع الاتصال البصري. */
+  letter-spacing: normal;
+  font-feature-settings: normal;
+}
+
+/* ═══ شريط الحالة السفلي على الهاتف: ينسحب بدل أن يخنق النصوص ═══
+   الشريط يقصّ الزائد (`overflow-x-clip`) ويقصّ كل عنوان (`truncate`)، فعلى
+   شاشة 390px يظهر اسم المجلد «root» مقصوصًا. على اللمس يصير الشريط سحّابًا
+   أفقيًا: العناصر لا تتقلّص ولا تُقصّ، ويُسحب بالإصبع. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'] [data-slot='statusbar'] {
+    height: auto;
+    min-height: 1.75rem;
+  }
+
+  html[data-hermes-desktop-host='browser'] [data-slot='statusbar'] > div {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+  }
+
+  html[data-hermes-desktop-host='browser'] [data-slot='statusbar'] > div::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* لا تقليص ولا قصّ: النص يبقى كاملًا والشريط هو الذي يتحرك. */
+  html[data-hermes-desktop-host='browser'] [data-slot='statusbar'] > div > * {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+
+  html[data-hermes-desktop-host='browser'] [data-slot='statusbar'] .truncate {
+    overflow: visible !important;
+    text-overflow: clip !important;
+    white-space: nowrap !important;
+  }
+}

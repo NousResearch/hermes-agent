@@ -65,6 +65,7 @@ export type DesktopActionId =
   | 'btw'
   | 'compress'
   | 'config'
+  | 'design-mode'
   | 'export'
   | 'handoff'
   | 'hatch'
@@ -233,6 +234,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'options'
   },
   { name: '/profile', description: 'Switch the active Hermes profile', surface: action('profile') },
+  { name: '/design-mode', description: 'Inspect the current Browser with DOM Layers', surface: action('design-mode') },
   {
     name: '/skin',
     description: 'Switch desktop theme or cycle to the next one',
@@ -859,6 +861,11 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
   const canonical = canonicalDesktopSlashCommand(command)
+
+  if (canonical === '/design-mode') {
+    return translateNow('preview.design.description')
+  }
+
   const key = `composer.commandDescs.${canonical}`
   const translated = translateNow(key)
   const description = translated !== key ? translated : SPEC_BY_NAME.get(canonical)?.description
@@ -948,6 +955,8 @@ export function rankSkillCommands<T extends { text: string }>(
 
 export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
   rememberDesktopCommandsCatalog(catalog)
+  // Desktop-only: the connected gateway may not know this command yet.
+  const designRow: [string, string] = ['/design-mode', desktopSlashDescription('/design-mode')]
 
   const categories = catalog.categories
     ?.map(section => ({
@@ -958,9 +967,18 @@ export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): Comm
     }))
     .filter(section => section.pairs.length > 0)
 
-  const pairs = catalog.pairs
-    ?.filter(([command]) => isDesktopSlashSuggestion(command))
-    .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string])
+  if (categories && !categories.some(section => section.pairs.some(([name]) => name === designRow[0]))) {
+    categories.push({ name: 'Browser', pairs: [designRow] })
+  }
+
+  const pairs =
+    catalog.pairs
+      ?.filter(([command]) => isDesktopSlashSuggestion(command))
+      .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string]) ?? []
+
+  if (!pairs.some(([name]) => name === designRow[0])) {
+    pairs.push(designRow)
+  }
 
   // Recount skill commands from the filtered output so /help's footer reflects
   // what the user actually sees. Backend's skill_count includes commands the

@@ -3145,6 +3145,22 @@ export const jaOverrides = {
   },
 
   preview: {
+    design: {
+      addSelection: '選択要素をプロンプトに追加',
+      description: '現在のブラウザーで DOM レイヤーを調べる',
+      dockedOnly: 'デザインモードを開始する前にブラウザータブをドッキングしてください。',
+      domOnly: 'DOM のみ・ソース未確認',
+      empty: 'ページの要素を選択すると DOM パスを確認できます。',
+      layerFailed: 'その DOM レイヤーを選択できませんでした。',
+      layers: 'DOM レイヤー',
+      pageNotReady: 'ブラウザーページはまだ選択できる状態ではありません。',
+      selectedPath: '選択した DOM パス',
+      start: 'デザインモード',
+      startFailed: 'デザインモードを開始できませんでした',
+      starting: 'デザインモードを開始中',
+      stop: 'デザインモードを終了',
+      wrongConversation: 'この会話に属するブラウザータブを開いてください。'
+    },
     tab: 'プレビュー',
     pin: 'ワークスペースにピン留め',
     unpin: 'ワークスペースからピン留めを外す',

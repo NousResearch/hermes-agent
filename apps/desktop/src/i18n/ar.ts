@@ -135,7 +135,25 @@ export const arOverrides = {
   modelVisibility: arSettings.modelVisibility,
   shell: arChrome.shell,
   rightSidebar: arChrome.rightSidebar,
-  preview: arArtifacts.preview,
+  preview: {
+    ...arArtifacts.preview,
+    design: {
+      addSelection: 'إضافة التحديد إلى الطلب',
+      description: 'فحص المتصفح الحالي باستخدام طبقات DOM',
+      dockedOnly: 'أعِد تثبيت علامة تبويب المتصفح قبل بدء وضع التصميم.',
+      domOnly: 'DOM فقط · لم يُتحقق من المصدر',
+      empty: 'حدد عنصرًا في الصفحة لفحص مساره في DOM.',
+      layerFailed: 'تعذّر تحديد طبقة DOM هذه.',
+      layers: 'طبقات DOM',
+      pageNotReady: 'صفحة المتصفح ليست جاهزة للتحديد بعد.',
+      selectedPath: 'مسار DOM المحدد',
+      start: 'وضع التصميم',
+      startFailed: 'تعذّر بدء وضع التصميم',
+      starting: 'جارٍ بدء وضع التصميم',
+      stop: 'الخروج من وضع التصميم',
+      wrongConversation: 'افتح علامة تبويب متصفح تابعة لهذه المحادثة لبدء وضع التصميم.'
+    }
+  },
   interfaceMode: arSettings.interfaceMode,
   zones: arChrome.zones,
   contextMenu: arChrome.contextMenu,

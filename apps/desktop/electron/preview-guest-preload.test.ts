@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { GUEST_EXTERNAL_CHANNEL, type GuestClickEvent, installGuestExternalHandoff } from './preview-guest-preload'
+import {
+  GUEST_EXTERNAL_CHANNEL,
+  type GuestClickEvent,
+  installGuestExternalHandoff
+} from './preview-guest-preload'
 
 // Preview-pane guest bridge (#112941): the preload forwards a user's click on a
 // `_blank` anchor to the host and nothing else.

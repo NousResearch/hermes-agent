@@ -31,6 +31,7 @@ import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
+import { openFocusedBrowserInDesignMode } from '@/store/preview-design'
 import {
   $activeGatewayProfile,
   $newChatProfile,
@@ -649,6 +650,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         new: async () => {
           prepareDefaultNewSession()
           startFreshSessionDraft()
+        },
+        'design-mode': async () => {
+          const result = openFocusedBrowserInDesignMode(getRoutedStoredSessionId())
+
+          if (result !== 'ok') {
+            notify({
+              kind: 'warning',
+              title: translateNow('preview.design.start'),
+              message: translateNow(`preview.design.${result === 'popped-out' ? 'dockedOnly' : 'wrongConversation'}`)
+            })
+          }
         },
         branch: async () => {
           await branchCurrentSession()

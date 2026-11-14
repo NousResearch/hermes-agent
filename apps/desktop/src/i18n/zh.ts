@@ -4150,6 +4150,22 @@ export const zhOverrides = {
   },
 
   preview: {
+    design: {
+      addSelection: '将所选元素添加到提示词',
+      description: '使用 DOM 图层检查当前浏览器',
+      dockedOnly: '启动设计模式前，请先将此浏览器标签停靠。',
+      domOnly: '仅 DOM · 源文件未验证',
+      empty: '选择页面中的元素以查看其 DOM 路径。',
+      layerFailed: '无法选择该 DOM 图层。',
+      layers: 'DOM 图层',
+      pageNotReady: '浏览器页面尚未准备好进行选择。',
+      selectedPath: '所选 DOM 路径',
+      start: '设计模式',
+      startFailed: '无法启动设计模式',
+      starting: '正在启动设计模式',
+      stop: '退出设计模式',
+      wrongConversation: '请打开属于当前对话的浏览器标签以启动设计模式。'
+    },
     tab: '预览',
     pin: '固定到工作区',
     unpin: '从工作区取消固定',

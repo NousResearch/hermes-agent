@@ -186,7 +186,25 @@ export const zhHantOverrides = {
   modelVisibility: zhHantSettings.modelVisibility,
   shell: zhHantChrome.shell,
   rightSidebar: zhHantChrome.rightSidebar,
-  preview: zhHantArtifacts.preview,
+  preview: {
+    ...zhHantArtifacts.preview,
+    design: {
+      addSelection: '將所選元素加入提示詞',
+      description: '使用 DOM 圖層檢視目前瀏覽器',
+      dockedOnly: '啟動設計模式前，請先將此瀏覽器分頁停靠。',
+      domOnly: '僅 DOM · 原始檔未驗證',
+      empty: '選取頁面上的元素以查看其 DOM 路徑。',
+      layerFailed: '無法選取該 DOM 圖層。',
+      layers: 'DOM 圖層',
+      pageNotReady: '瀏覽器頁面尚未準備好進行選取。',
+      selectedPath: '所選 DOM 路徑',
+      start: '設計模式',
+      startFailed: '無法啟動設計模式',
+      starting: '正在啟動設計模式',
+      stop: '退出設計模式',
+      wrongConversation: '請開啟屬於目前對話的瀏覽器分頁以啟動設計模式。'
+    }
+  },
   interfaceMode: {
     title: '介面模式',
     hint: '只改變顯示的內容，不改變 Hermes 的能力。',

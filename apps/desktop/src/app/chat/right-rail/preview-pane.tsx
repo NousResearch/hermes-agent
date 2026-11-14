@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
@@ -45,8 +46,10 @@ import {
   type PreviewTarget,
   setPreviewRenderMode
 } from '@/store/preview'
+import { $previewDesignRequest } from '@/store/preview-design'
 import { currentSessionId } from '@/store/preview-ownership'
 import { $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { previewPartitionForProfile } from '../../../../electron/preview-guest-throttle'
@@ -74,6 +77,9 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
+import { createPreviewDesignGuest, installDesignOverlay, type PreviewDesignSession } from './preview-design-host'
+import type { DesignSelection } from './preview-design-in-page'
+import { PreviewDesignLayers } from './preview-design-layers'
 import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
@@ -103,6 +109,7 @@ type PreviewWebview = HTMLElement &
     reloadIgnoringCache?: () => void
     replaceMisspelling?: (word: string) => void
     selectAll?: () => void
+    send?: (channel: string, payload: unknown) => void
     sendInputEvent?: (event: PreviewInputEvent) => void
     getZoomFactor?: () => number
   }
@@ -118,6 +125,21 @@ function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = '')
     }
   } catch {
     return { title: '', url: fallbackUrl }
+  }
+}
+
+/** Prompt context never carries credentials, query parameters, or fragments. */
+export function safeDesignPageUrl(raw: string): string {
+  try {
+    const url = new URL(raw)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+
+    return url.toString()
+  } catch {
+    return raw.split(/[?#]/, 1)[0] || ''
   }
 }
 
@@ -307,6 +329,7 @@ export function PreviewPane({
 }: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
+  const designCopy = t.preview.design
   // The console store belongs to the TAB, not this render: the toggles live on
   // the tab and must read the same logs this pane appends to.
   const consoleState = previewConsoleState(tabId ?? target.url)
@@ -323,6 +346,8 @@ export function PreviewPane({
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const designRequest = useStore($previewDesignRequest)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const liveUrlRef = useRef(currentUrl)
   liveUrlRef.current = currentUrl
@@ -331,7 +356,7 @@ export function PreviewPane({
   // the live address through this mirror instead of a stale closure.
   const targetUrlRef = useRef(target.url)
   targetUrlRef.current = target.url
-  const ownerSessionIdRef = useRef(sessionId)  // tab owner, read by the guest effect to resolve its partition
+  const ownerSessionIdRef = useRef(sessionId) // tab owner, read by the guest effect to resolve its partition
   ownerSessionIdRef.current = sessionId
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
@@ -342,6 +367,12 @@ export function PreviewPane({
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
   const annotateLoopRef = useRef<AbortController | null>(null)
+  const [designStatus, setDesignStatus] = useState<'off' | 'on' | 'starting' | 'stopping'>('off')
+  const [designSelection, setDesignSelection] = useState<DesignSelection | null>(null)
+  const designLoopRef = useRef<AbortController | null>(null)
+  const designSessionRef = useRef<PreviewDesignSession | null>(null)
+  const designMode = designStatus === 'on'
+  const designBusy = designStatus === 'starting' || designStatus === 'stopping'
   const annotateConversationRef = useRef(selectedStoredSessionId)
   annotateRef.current = annotate
 
@@ -492,6 +523,136 @@ export function PreviewPane({
 
   const annotateGuest = useCallback(() => createPreviewAnnotateGuest(webviewRef.current), [])
 
+  const stopDesign = useCallback(async () => {
+    const lifetime = designLoopRef.current
+    const session = designSessionRef.current
+    lifetime?.abort()
+
+    if (designLoopRef.current === lifetime) {
+      designLoopRef.current = null
+    }
+
+    if (designSessionRef.current === session) {
+      designSessionRef.current = null
+    }
+
+    setDesignSelection(null)
+    setDesignStatus(status => (status === 'off' ? 'off' : 'stopping'))
+    await session?.stop()
+
+    if (!designLoopRef.current && !designSessionRef.current) {
+      setDesignStatus('off')
+    }
+  }, [])
+
+  const startDesign = useCallback(async () => {
+    const guest = createPreviewDesignGuest(webviewRef.current)
+
+    if (!guest) {
+      notify({ kind: 'warning', title: designCopy.start, message: designCopy.pageNotReady })
+
+      return
+    }
+
+    annotateLoopRef.current?.abort()
+    setDraftNote('')
+    setAnnotate(endAnnotateMode)
+    const lifetime = new AbortController()
+    designLoopRef.current?.abort()
+    designLoopRef.current = lifetime
+    setDesignSelection(null)
+    setDesignStatus('starting')
+
+    try {
+      const session = await installDesignOverlay(guest, lifetime.signal)
+
+      if (lifetime.signal.aborted || designLoopRef.current !== lifetime) {
+        await session.stop()
+
+        return
+      }
+
+      designSessionRef.current = session
+      setDesignStatus('on')
+
+      while (!lifetime.signal.aborted) {
+        const event = await session.wait()
+
+        if (lifetime.signal.aborted) {
+          break
+        }
+
+        if (event.type === 'end') {
+          await stopDesign()
+
+          break
+        }
+
+        setDesignSelection(event.selection)
+      }
+    } catch (error) {
+      if (!lifetime.signal.aborted) {
+        await stopDesign()
+        notifyError(error, designCopy.startFailed)
+      }
+    }
+  }, [designCopy.pageNotReady, designCopy.start, designCopy.startFailed, stopDesign])
+
+  const toggleDesign = useCallback(() => {
+    if (designStatus === 'on') {
+      void stopDesign()
+    } else if (designStatus === 'off') {
+      void startDesign()
+    }
+  }, [designStatus, startDesign, stopDesign])
+
+  const selectLayer = useCallback((index: number) => {
+    if (!designSessionRef.current?.selectLayer(index)) {
+      notify({ kind: 'warning', title: designCopy.start, message: designCopy.layerFailed })
+
+      return
+    }
+  }, [designCopy.layerFailed, designCopy.start])
+
+  const insertDesignSelection = useCallback(() => {
+    if (!designMode || !designSelection || isBrowserWindow()) {
+      return
+    }
+
+    const ownedTile = sessionId
+      ? queryAllVisible<HTMLElement>('[data-composer-target]').find(
+          surface => surface.dataset.composerTarget === `tile:${sessionId}`
+        )
+      : null
+
+    // A selection belongs to this tab's owning conversation, not whichever
+    // unrelated chat became active while the Browser remained mounted.
+    if (
+      sessionId &&
+      selectedStoredSessionId &&
+      currentSessionId(sessionId) !== currentSessionId(selectedStoredSessionId) &&
+      !ownedTile
+    ) {
+      notify({
+        kind: 'warning',
+        title: designCopy.start,
+        message: designCopy.wrongConversation
+      })
+
+      return
+    }
+
+    const page = guestPage(webviewRef.current, liveUrlRef.current)
+    const safePageUrl = safeDesignPageUrl(page.url)
+    const composerTarget = ownedTile ? (`tile:${sessionId}` as const) : 'main'
+
+    requestComposerInsert(
+      `Selected DOM context (not a verified source location):\nPage: ${safePageUrl}\nElement: <${designSelection.tag}>\nDOM path: ${designSelection.selector}\nViewport rect: ${JSON.stringify(designSelection.rect)}\nComputed styles: ${JSON.stringify(designSelection.css)}`,
+      { mode: 'block', target: composerTarget }
+    )
+    requestComposerFocus(composerTarget)
+  }, [designCopy.start, designCopy.wrongConversation, designMode, designSelection, selectedStoredSessionId, sessionId])
+
   const stopAnnotate = useCallback(() => {
     annotateLoopRef.current?.abort()
     setDraftNote('')
@@ -501,18 +662,25 @@ export function PreviewPane({
   // Not an atom mirror: the ref records the last conversation the annotate
   // stack was reset for, so the reset runs once per switch. Extracted into a
   // callback so the effect body carries no `.current` writes (lint contract).
-  const resetAnnotateForConversation = useCallback((sessionId: typeof selectedStoredSessionId) => {
-    annotateConversationRef.current = sessionId
-    annotateLoopRef.current?.abort()
-    setDraftNote('')
-    setAnnotate(emptyAnnotateSession())
-  }, [])
+  const resetAnnotateForConversation = useCallback(
+    (sessionId: typeof selectedStoredSessionId) => {
+      annotateConversationRef.current = sessionId
+      annotateLoopRef.current?.abort()
+      setDraftNote('')
+      setAnnotate(emptyAnnotateSession())
+    },
+    []
+  )
 
   useEffect(() => {
     if (annotateConversationRef.current !== selectedStoredSessionId) {
       resetAnnotateForConversation(selectedStoredSessionId)
     }
   }, [resetAnnotateForConversation, selectedStoredSessionId])
+
+  useEffect(() => {
+    void stopDesign()
+  }, [focusedStoredSessionId, stopDesign])
 
   const saveAnnotateDraft = useCallback(async () => {
     const session = annotateRef.current
@@ -608,6 +776,7 @@ export function PreviewPane({
       return
     }
 
+    await stopDesign()
     annotateLoopRef.current?.abort()
     const lifetime = new AbortController()
     annotateLoopRef.current = lifetime
@@ -692,7 +861,7 @@ export function PreviewPane({
       setDraftNote('')
       setAnnotate(session => ({ ...session, draft }))
     }
-  }, [annotateGuest, copy.annotate, copy.annotateFailed, copy.annotateNeedPage, stopAnnotate])
+  }, [annotateGuest, copy.annotate, copy.annotateFailed, copy.annotateNeedPage, stopAnnotate, stopDesign])
 
   const toggleAnnotate = useCallback(() => {
     if (annotateRef.current.mode) {
@@ -821,6 +990,14 @@ export function PreviewPane({
       return
     }
 
+    if (designStatus !== 'off') {
+      event.preventDefault()
+      event.stopPropagation()
+      void stopDesign()
+
+      return
+    }
+
     const target = event.target as HTMLElement | null
 
     if (target?.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
@@ -835,7 +1012,7 @@ export function PreviewPane({
 
     event.preventDefault()
     webview.goBack?.()
-  }, [])
+  }, [designStatus, stopDesign])
 
   // Gestures that land on the app's chrome (⌘R from the address bar, a mouse
   // button over the frame). A gesture made INSIDE the page is answered by main
@@ -858,6 +1035,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -1202,6 +1380,10 @@ export function PreviewPane({
         setAnnotate(endAnnotateMode)
       }
 
+      if (event.type === 'did-navigate' || event.type === 'did-navigate-in-page') {
+        void stopDesign()
+      }
+
       if (detail.url) {
         setLoadError(null)
         setCurrentUrl(detail.url)
@@ -1366,6 +1548,7 @@ export function PreviewPane({
     webviewRef.current = webview
 
     return () => {
+      void stopDesign()
       annotateLoopRef.current?.abort()
 
       if (navigationRef.current === webview) {
@@ -1393,7 +1576,17 @@ export function PreviewPane({
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, noteGuestReady, tabId, target.kind])
+  }, [
+    appendConsoleEntry,
+    consoleState,
+    copy,
+    isRemoteHtml,
+    isWebPreview,
+    noteGuestReady,
+    stopDesign,
+    tabId,
+    target.kind
+  ])
 
   // Steers the LIVE guest when the session opens a new URL (#120265): loadURL
   // keeps the webview instance (JS state, cookies, form data, scroll, refs,
@@ -1401,7 +1594,6 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1423,6 +1615,7 @@ export function PreviewPane({
     setDraftNote('')
     setAnnotate(emptyAnnotateSession())
     setLoadError(null)
+    void stopDesign()
     consoleState.reset()
     setHistory({ back: false, forward: false })
     setLoading(true)
@@ -1434,7 +1627,29 @@ export function PreviewPane({
       })
       setLoading(false)
     })
-  }, [consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
+  }, [consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, stopDesign, target.url])
+
+  // Consume after guest creation: the local slash action addresses this tab,
+  // not whichever Browser happens to be visible in another conversation.
+  useEffect(() => {
+    if (
+      !designRequest ||
+      !usesWebview ||
+      !tabId ||
+      designRequest.tabId !== tabId ||
+      designRequest.sessionId !== focusedStoredSessionId ||
+      (sessionId && currentSessionId(sessionId) !== currentSessionId(designRequest.sessionId)) ||
+      designStatus === 'stopping'
+    ) {
+      return
+    }
+
+    $previewDesignRequest.set(null)
+
+    if (designStatus === 'off') {
+      void startDesign()
+    }
+  }, [designRequest, designStatus, focusedStoredSessionId, sessionId, startDesign, tabId, usesWebview])
 
   return (
     <aside
@@ -1500,12 +1715,16 @@ export function PreviewPane({
             canGoForward={history.forward}
             commentCount={annotate.stack.pins.length}
             consoleOpen={consoleOpen}
+            designBusy={designBusy}
+            designMode={designMode}
             devToolsOpen={devtoolsOpen}
+            hasDesignSelection={Boolean(designSelection)}
             loading={loading}
             onBack={goBack}
             onClose={onClose}
             onFlushComments={() => void flushComments()}
             onForward={goForward}
+            onInsertDesignSelection={isBrowserWindow() ? undefined : insertDesignSelection}
             onNavigate={navigateTo}
             onOpenExternal={externalOpenerFor(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
@@ -1517,6 +1736,7 @@ export function PreviewPane({
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
+            onToggleDesign={tabId && target.kind === 'url' ? toggleDesign : undefined}
             onToggleDevTools={toggleDevTools}
             tabId={tabId}
             url={currentUrl}
@@ -1589,7 +1809,7 @@ export function PreviewPane({
             />
           ) : null}
 
-          {usesWebview && consoleOpen && (
+          {usesWebview && consoleOpen && !designMode && (
             <PreviewConsolePanel
               consoleBodyRef={consoleBodyRef}
               consoleShouldStickRef={consoleShouldStickRef}
@@ -1598,6 +1818,7 @@ export function PreviewPane({
             />
           )}
         </div>
+        {usesWebview && designMode && <PreviewDesignLayers onSelectLayer={selectLayer} selection={designSelection} />}
       </div>
     </aside>
   )

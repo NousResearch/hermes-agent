@@ -3711,6 +3711,22 @@ export interface Translations extends NoticeTranslations {
   rightSidebar: RightSidebarTranslations
 
   preview: {
+    design: {
+      addSelection: string
+      description: string
+      dockedOnly: string
+      domOnly: string
+      empty: string
+      layerFailed: string
+      layers: string
+      pageNotReady: string
+      selectedPath: string
+      start: string
+      startFailed: string
+      starting: string
+      stop: string
+      wrongConversation: string
+    }
     tab: string
     pin: string
     unpin: string

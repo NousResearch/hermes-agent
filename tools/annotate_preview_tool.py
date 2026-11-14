@@ -1,10 +1,8 @@
-"""Persistent element annotations in the Hermes desktop GUI's in-app browser.
+"""Legacy cleanup for element annotations in the Hermes desktop GUI's Browser.
 
-Unlike ``drive_preview``'s self-retiring marks, an annotation outlines an element
-(or, with ``hold``, the whole visible field) until removed. Annotations bind to
-elements, not coordinates: they ride scrolls and vanish with their element, so
-navigation clears them. Same ``preview.act`` bridge as ``drive_preview`` (the
-renderer resolves refs and owns the overlay). ``desktop_ui`` toolset only.
+Agent-owned visible annotations are disabled: page marks are user-controlled
+through ``/design-mode``. ``remove`` and ``clear`` remain for cleaning marks left
+by older Desktop builds. Same ``preview.act`` bridge as ``drive_preview``.
 """
 
 import json
@@ -13,25 +11,30 @@ from typing import Callable, Optional
 from tools.registry import registry, tool_error
 
 ACTIONS = ("add", "hold", "remove", "clear")
+BLOCKED_ACTIONS = ("add", "hold")
 
 # Renderer verbs keyed by ours; `clear` is `unpin` with no target = "all of them".
-WIRE = {"add": "pin", "hold": "hold", "remove": "unpin", "clear": "unpin"}
+WIRE = {"remove": "unpin", "clear": "unpin"}
 
 
 def annotate_preview_tool(
-    action: str = "add", ref: Optional[str] = None, selector: Optional[str] = None,
+    action: str = "clear", ref: Optional[str] = None, selector: Optional[str] = None,
     label: Optional[str] = None, callback: Optional[Callable] = None,
 ) -> str:
-    """Put one annotation up, take one down, or clear them all."""
+    """Remove one legacy annotation or clear all of them."""
     if callback is None:
         return tool_error("annotate_preview is only available in the Hermes desktop app.")
-    verb = (action or "add").strip().lower()
+    verb = (action or "clear").strip().lower()
     if verb not in ACTIONS:
         return tool_error(f"action must be one of: {', '.join(ACTIONS)}.")
-    if verb in ("add", "remove") and not (ref or selector):
+    if verb in BLOCKED_ACTIONS:
+        return tool_error(
+            "Agent-owned visible page marks are disabled. Use /design-mode and select the element yourself."
+        )
+    if verb == "remove" and not (ref or selector):
         return tool_error(f"{verb} needs a ref from drive_preview action='elements' (e.g. 'btn-sign-in') or a CSS selector.")
 
-    targeted = verb not in ("clear", "hold")
+    targeted = verb != "clear"
     fields = (("action", WIRE[verb]), ("ref", ref if targeted else None), ("selector", selector if targeted else None), ("text", label))
     payload = {name: val for name, val in fields if val is not None}
     try:
@@ -52,13 +55,8 @@ def annotate_preview_tool(
 ANNOTATE_PREVIEW_SCHEMA = {
     "name": "annotate_preview",
     "description": (
-        "Highlight preview-pane elements with lasting marks (drive_preview's fade). "
-        "Point at findings, flag what you're about to change, keep your place. Use the refs "
-        "from drive_preview action='elements'. add: outline one element "
-        "(optional short label — a word or two, drawn on the page). hold: "
-        "freeze the whole visible field, every element outlined and named. "
-        "remove/clear: take one/all down. Marks follow their element on "
-        "scroll; navigation clears them."
+        "Remove legacy preview-page annotations. Visible agent-owned add/hold marks are disabled; "
+        "the user selects page elements through /design-mode. remove/clear take one/all old marks down."
     ),
     "parameters": {
         "type": "object",
@@ -66,7 +64,7 @@ ANNOTATE_PREVIEW_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": list(ACTIONS),
-                "description": "Defaults to 'add'.",
+                "description": "Defaults to 'clear'. add/hold are rejected; use /design-mode for user-owned selection.",
             },
             "ref": {
                 "type": "string",
@@ -91,7 +89,7 @@ registry.register(
     toolset="desktop_ui",
     schema=ANNOTATE_PREVIEW_SCHEMA,
     handler=lambda args, **kw: annotate_preview_tool(
-        action=args.get("action", "add"),
+        action=args.get("action", "clear"),
         ref=args.get("ref"),
         selector=args.get("selector"),
         label=args.get("label"),

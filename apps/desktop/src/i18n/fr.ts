@@ -4746,6 +4746,22 @@ export const frOverrides = {
     addToChat: 'Ajouter à la conversation'
   },
   preview: {
+    design: {
+      addSelection: 'Ajouter la sélection au message',
+      description: 'Inspecter le navigateur actuel avec les calques DOM',
+      dockedOnly: 'Rattachez cet onglet au navigateur avant de lancer le mode design.',
+      domOnly: 'DOM uniquement · source non vérifiée',
+      empty: 'Sélectionnez un élément de la page pour inspecter son chemin DOM.',
+      layerFailed: 'Impossible de sélectionner ce calque DOM.',
+      layers: 'Calques DOM',
+      pageNotReady: "La page du navigateur n'est pas encore prête pour la sélection.",
+      selectedPath: 'Chemin DOM sélectionné',
+      start: 'Mode design',
+      startFailed: 'Impossible de lancer le mode design',
+      starting: 'Lancement du mode design',
+      stop: 'Quitter le mode design',
+      wrongConversation: 'Ouvrez un onglet de navigateur associé à cette conversation pour lancer le mode design.'
+    },
     tab: 'Aperçu',
     pin: "Épingler à l'espace de travail",
     unpin: "Détacher de l'espace de travail",

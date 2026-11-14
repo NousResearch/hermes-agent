@@ -4307,6 +4307,22 @@ export const en: Translations = {
   },
 
   preview: {
+    design: {
+      addSelection: 'Add selection to prompt',
+      description: 'Inspect the current Browser with DOM Layers',
+      dockedOnly: 'Dock this Browser tab before starting Design Mode.',
+      domOnly: 'DOM only · source not verified',
+      empty: 'Select an element on the page to inspect its DOM path.',
+      layerFailed: 'Could not select that DOM layer.',
+      layers: 'DOM Layers',
+      pageNotReady: 'The Browser page is not ready for selection yet.',
+      selectedPath: 'Selected DOM path',
+      start: 'Design Mode',
+      startFailed: 'Could not start Design Mode',
+      starting: 'Starting Design Mode',
+      stop: 'Stop Design Mode',
+      wrongConversation: 'Open a Browser tab owned by this conversation to start Design Mode.'
+    },
     tab: 'Preview',
     pin: 'Pin to workspace',
     unpin: 'Unpin from workspace',

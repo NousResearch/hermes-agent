@@ -119,6 +119,7 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     try {
       const inventory = await actOnActivePreview({ kind: 'elements' })
       expect(inventory.success).toBe(true)
+      expect(document.querySelector('hermes-watch')).toBeNull()
       const save = inventory.elements!.find(element => element.label === 'Save')!
       expect(save).toBeDefined()
       expect(await actOnActivePreview({ kind: 'click', ref: save.ref })).toMatchObject({ success: true })
@@ -128,6 +129,41 @@ describe('actOnActivePreview (drive_preview tool)', () => {
       rect.mockRestore()
       document.body.replaceChildren()
       delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
+  })
+
+  it('refuses agent-owned persistent page marks outside user-controlled Design Mode', async () => {
+    document.body.innerHTML = '<button id="save">Save</button>'
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 40,
+      top: 0,
+      width: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
+
+    withRunner(async code => {
+      const raw = new Function('return ' + code)()
+
+      return types.isPromise(raw) ? await raw : raw
+    })
+
+    try {
+      const result = await actOnActivePreview({ kind: 'hold' })
+
+      expect(result).toMatchObject({ success: false })
+      expect(result.error).toContain('/design-mode')
+      expect(document.querySelector('hermes-watch')).toBeNull()
+    } finally {
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+      delete (window as unknown as { __hermesWatch?: unknown }).__hermesWatch
     }
   })
 

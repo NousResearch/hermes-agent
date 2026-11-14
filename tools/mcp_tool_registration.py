@@ -471,6 +471,7 @@ def _connection_identity(config: dict) -> tuple:
         return json.dumps(value or {}, sort_keys=True, default=str)
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
+            _frozen(config.get("headers_command")),
             _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")),
             config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")))
 
@@ -522,7 +523,8 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
         return True
     # Identities match, so both sides carry the same normalised auth type.
     recorded = getattr(server, "_resolved_identity", None)
-    return (_auth_type(config) != "oauth" and recorded is not None
+    # headers_command output, like OAuth tokens, is minted in the owner's scope and never hashed.
+    return (_auth_type(config) != "oauth" and not config.get("headers_command") and recorded is not None
             and resolved_identity is not None and recorded == resolved_identity)
 
 

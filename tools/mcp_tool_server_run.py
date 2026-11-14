@@ -287,7 +287,8 @@ class MCPServerRunMixin:
             from tools.mcp_liveness import liveness_for
             if (config.get("transport") != "sse" and not config.get("skip_preflight")
                     and liveness_for(self.name).kind != "server_json"
-                    and not self._ready.is_set() and self._auth_type != "oauth"):
+                    and not self._ready.is_set() and self._auth_type != "oauth"
+                    and not config.get("headers_command")):  # unauthenticated, it may see a login page
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
@@ -304,7 +305,7 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
-    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "headers_command", "transport")
 
     def _refresh_remote_config(self, config: dict) -> dict:
         """Before rebuilding a remote transport, re-read this server's definition from config.yaml and

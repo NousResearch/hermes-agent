@@ -284,7 +284,8 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
 
 
 def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = False,
-                                   configured_header_names: set[str] | frozenset[str] = frozenset()):
+                                   configured_header_names: set[str] | frozenset[str] = frozenset(),
+                                   credential_header_names: set[str] | frozenset[str] = frozenset()):
     """Client factory enforcing the redirect credential boundary: on a cross-origin redirect
     follow-up it strips ``Authorization``; with *strict* (Agent Plugins v1 ``strict_redirect_headers``)
     every configured header (lowercase names in *configured_header_names*) is stripped too — v1 forbids
@@ -297,7 +298,9 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
     is unset when response event hooks fire (httpx populates it later in the redirect loop), so a
     response hook can never mutate the follow-up; and a *request* hook would fire on non-redirect traffic
     too — the OAuth auth flow yields token/metadata/registration requests through the same client, often
-    to a different-origin authorization server whose own credentials must NOT be stripped."""
+    to a different-origin authorization server whose own credentials must NOT be stripped.
+    *credential_header_names* (lowercase; read at redirect time, so a live set fills in later) are
+    always stripped cross-origin: ``headers_command`` output is a credential whatever its name."""
     origin = (original_url.scheme, original_url.host, original_url.port)
 
     def _build_client(**kwargs):
@@ -311,7 +314,7 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
                 headers = next_request.headers
                 headers.pop("authorization", None)
                 headers.pop("Authorization", None)
-                for _name in configured_header_names if strict else ():
+                for _name in (*(configured_header_names if strict else ()), *credential_header_names):
                     while _name in headers:
                         del headers[_name]
             return next_request

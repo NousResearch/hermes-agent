@@ -269,6 +269,13 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
         if state is None or load_heartbeat(new_session_id) is not None:
             return False
         save_heartbeat(new_session_id, state)
+        # save_heartbeat swallows set_meta failures; archive the parent only once the child copy reads back (#149594).
+        if load_heartbeat(new_session_id) is None:
+            logger.warning(
+                "HeartbeatManager: child write for %s not confirmed — keeping the heartbeat on %s",
+                new_session_id, old_session_id,
+            )
+            return False
         state.status = "cleared"
         save_heartbeat(old_session_id, state)
         return True

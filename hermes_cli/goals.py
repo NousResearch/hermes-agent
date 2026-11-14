@@ -697,6 +697,15 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
         if load_goal(new_session_id) is not None:
             return False
         save_goal(new_session_id, state)
+        # save_goal swallows set_meta failures at debug level; archive the parent
+        # only once the child copy is confirmed, or a transient DB error at the
+        # compaction boundary clears the only surviving copy (#149594).
+        if load_goal(new_session_id) is None:
+            logger.warning(
+                "GoalManager: child write for %s not confirmed — keeping the goal active on %s (%s)",
+                new_session_id, old_session_id, reason or "rotation",
+            )
+            return False
         # Archive the parent's row so it isn't double-counted as active.
         clear_goal(old_session_id)
         logger.debug("GoalManager: migrated goal %s -> %s (%s)", old_session_id, new_session_id, reason or "rotation")

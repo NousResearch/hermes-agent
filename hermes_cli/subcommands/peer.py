@@ -12,6 +12,7 @@ config.yaml (``bot_peers``); the key lives in ``~/.hermes/.env`` as
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 import sys
@@ -84,8 +85,16 @@ def _request(
     # different origin must not carry the Authorization: Bearer key with it —
     # a compromised/MITM'd peer could otherwise harvest it. open_credentialed_url
     # strips non-safelisted headers across a cross-origin redirect.
-    with open_credentialed_url(req, timeout=timeout) as resp:
-        payload = resp.read().decode("utf-8", "replace")
+    try:
+        with open_credentialed_url(req, timeout=timeout) as resp:
+            payload = resp.read().decode("utf-8", "replace")
+    except http.client.HTTPException as exc:
+        # BadStatusLine / UnknownProtocol carry the peer's raw status line; uncaught, the
+        # traceback prints it to the terminal unsanitized. RemoteDisconnected is also an
+        # OSError: keep it on the callers' "could not reach" transport path.
+        if isinstance(exc, OSError):
+            raise
+        raise RuntimeError(f"Peer sent a malformed HTTP response: {sanitize_display_text(str(exc)[:200])}") from exc
     try:
         parsed = json.loads(payload)
     except ValueError as exc:

@@ -812,3 +812,57 @@ def test_peer_dm_timeout_message_sanitizes_session_id(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "\x1b" not in err
     assert "bc_evil" in err
+
+
+def test_status_malformed_status_line_is_sanitized_not_a_traceback(monkeypatch, capsys):
+    """A peer (or MITM) answering a non-HTTP status line must not crash with its raw bytes."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+
+    def _serve():
+        conn, _ = sock.accept()
+        conn.recv(65536)
+        conn.sendall(b"XTTP/1.1 \x1b]2;PWNED\x07\x1b[2J 200 OK\r\n\r\n")
+        conn.close()
+
+    threading.Thread(target=_serve, daemon=True).start()
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark", run_id="run_1", json=False))
+    sock.close()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\x07" not in err
+    assert "malformed HTTP response" in err and "XTTP/1.1" in err
+
+
+def test_status_peer_closing_without_response_stays_a_transport_failure(monkeypatch, capsys):
+    """RemoteDisconnected is an HTTPException AND an OSError: it is "could not reach", not malformed."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+
+    def _serve():
+        conn, _ = sock.accept()
+        conn.recv(65536)
+        conn.close()
+
+    threading.Thread(target=_serve, daemon=True).start()
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark", run_id="run_1", json=False))
+    sock.close()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Could not reach peer 'spark'" in err and "malformed" not in err

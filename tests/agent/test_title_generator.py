@@ -79,6 +79,14 @@ class TestGenerateTitle:
         # The background model-title path refuses the same opener.
         assert generate_title(msg) is None
 
+    def test_attachment_only_preview_makes_the_pasted_topic_titleable(self):
+        opener = "@file:/tmp/composer-pastes/pasted-text.txt"
+        preview = "Quarterly incident analysis for the database migration"
+
+        assert is_titleable_user_message(opener, preview) is True
+        assert derive_title(opener, preview).startswith("Quarterly incident analysis")
+        assert is_titleable_user_message(opener) is False
+
     def test_attachment_plus_instruction_titles_from_the_instruction(self):
         """Prose around a manual attachment keeps driving the title — an
         attachment WITH a typed request is a real question, not a file drop."""
@@ -656,6 +664,28 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "fix the flaky auth test in login"
         assert db.get_session_title_source("sess-1") == "derived"
 
+    def test_clipboard_attachment_preview_reaches_instant_and_model_title_paths(self, tmp_path):
+        from agent import title_generator as tg
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        opener = "@file:/tmp/composer-pastes/pasted-text.txt\n\n--- Attached Context ---\npreview"
+        preview = "Quarterly incident analysis for the database migration"
+        upgrade = object()
+
+        with patch.object(tg, "_auto_title_enabled", return_value=True), \
+             patch.object(tg, "_model_title_upgrade_enabled", return_value=True), \
+             patch.object(tg, "title_upgrade_must_wait_for_turn", return_value=False), \
+             patch("agent.memory_provider.spawn_context_thread", return_value=upgrade) as spawn, \
+             patch.object(tg, "start_title_upgrade") as start:
+            maybe_auto_title(db, "sess-1", opener, [], title_preview=preview)
+
+        title = db.get_session_title("sess-1")
+        assert title and title.startswith("Quarterly incident analysis")
+        assert db.get_session_title_source("sess-1") == "derived"
+        assert spawn.call_args.kwargs["kwargs"]["title_preview"] == preview
+        start.assert_called_once_with(upgrade)
+
     def test_model_upgrade_disabled_keeps_derived_title_and_spawns_no_thread(self, tmp_path):
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="cli")
@@ -715,6 +745,15 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", opener, [])
         assert db.get_session_title("sess-1") is None
         mock_auto.assert_not_called()
+
+    def test_pasted_attachment_preview_counts_as_a_real_user_turn(self):
+        from agent.title_generator import _is_real_user_turn
+
+        assert _is_real_user_turn({
+            "role": "user",
+            "content": "@file:/tmp/composer-pastes/pasted-text.txt",
+            "display_metadata": {"title_preview": "Quarterly incident analysis"},
+        })
 
     def test_a_multimodal_turn_counts_as_a_real_question(self, tmp_path):
         """"Here's a screenshot, fix the login" is a question, parts list or not.

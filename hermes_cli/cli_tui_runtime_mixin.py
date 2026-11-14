@@ -292,8 +292,12 @@ class CLITuiRuntimeMixin:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
         from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_owner_restart import SuccessorWaitStopped
         try:
             self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except SuccessorWaitStopped as exc:  # Ctrl+C while the gateway restarted: nothing was opened
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(130) from None
         except GatewayClientError as exc:
             # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
             print(f"Error: {exc}", file=sys.stderr)

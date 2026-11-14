@@ -1388,6 +1388,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             runner._pre_agent_fallback_notice = None
             from agent.primary_auth_fallback import take_pending_primary_auth_failure
             pending_primary_auth = take_pending_primary_auth_failure()
+            # The backup login hint belongs to its resolved account, not merely its endpoint:
+            # API route aliases and one-turn model switches may replace the key at the same URL.
+            backup_api_key = runtime_kwargs.get("api_key") if pending_primary_auth else None
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model and not pending_fallback_notice:
@@ -1398,6 +1401,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
             from gateway.session_cli_turn import one_turn_route
             model, runtime_kwargs = one_turn_route(self, policy, model, runtime_kwargs)
+            if pending_primary_auth and runtime_kwargs.get("api_key") != backup_api_key:
+                pending_primary_auth = None
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",

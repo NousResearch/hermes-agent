@@ -92,6 +92,27 @@ def test_outbox_filesystem_failure_is_sticky(tmp_path, monkeypatch):
         store._outbox_owner.close()
 
 
+def test_failure_with_an_unknown_outcome_stays_sticky(tmp_path):
+    """The line the re-probing of a refusal must not cross: once a request may have reached the
+    owner, a later write cannot overtake the pending entry, so the failure freezes the store
+    until retry/adoption or a successor replays the journal."""
+    attempts = []
+    def timing_out(method, **params):
+        attempts.append(params['operation'])
+        raise TimeoutError('worker_receipt_timeout')
+    store = RuntimeSessionStore(timing_out, {'session_id': 's'}, tmp_path / 'private')
+    try:
+        with pytest.raises(TimeoutError, match='worker_receipt_timeout'):
+            store.queue_token_counts('s', input_tokens=1)
+        assert store.failure == 'worker_receipt_timeout'
+        with pytest.raises(WorkerPersistenceError, match='worker_receipt_timeout'):
+            store.queue_token_counts('s', input_tokens=2)  # frozen, not re-probed
+        assert attempts == ['usage.main']
+        assert [entry['operation'] for entry in json.loads(store.path.read_text())['pending']] == ['usage.main']
+    finally:
+        store._outbox_owner.close()
+
+
 def test_outbox_journal_survives_a_cross_device_rename(tmp_path, monkeypatch):
     """The journal publishes through utils.atomic_replace: a bind-mounted outbox whose rename
     fails EXDEV falls back to copy+fsync instead of failing every worker write, and the

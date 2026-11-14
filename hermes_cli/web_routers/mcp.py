@@ -27,6 +27,18 @@ from hermes_cli.web_routers._common import (
 
 router = APIRouter()
 
+
+@contextmanager
+def _mcp_config_write_scope(profile: Optional[str]):
+    """Load profile plugins before locking, then retain the full config RMW span."""
+    from hermes_cli.plugins import discover_plugins
+
+    with _profile_scope(profile):
+        discover_plugins()
+    with config_write_scope(profile):
+        yield
+
+
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _require_token = late("_require_token")
 _run_dashboard_mcp_oauth = late("_run_dashboard_mcp_oauth", "hermes_cli.web_server_mcp")
@@ -121,7 +133,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         # _save_mcp_server does its own load→mutate→save; the duplicate-name
         # check sits under the same lock span so a concurrent add can't slip
         # between check and save.
-        with config_write_scope(body.profile or profile):
+        with _mcp_config_write_scope(body.profile or profile):
             config_servers = _get_mcp_servers()
             from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
@@ -165,7 +177,7 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
     from hermes_cli.mcp_config import _replace_mcp_servers
 
     def _run():
-        with config_write_scope(body.profile or profile):
+        with _mcp_config_write_scope(body.profile or profile):
             from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             _servers, plugins = server_configs_with_sources({})
@@ -185,7 +197,7 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _remove_mcp_server
 
     def _run():
-        with config_write_scope(profile):
+        with _mcp_config_write_scope(profile):
             config_servers = _get_mcp_servers()
             from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
@@ -374,7 +386,7 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     """Toggle ``enabled`` (takes effect on next session/gateway); disabled
     servers stay in config so they can be re-enabled without re-entry."""
     def _run():
-        with config_write_scope(body.profile or profile):
+        with _mcp_config_write_scope(body.profile or profile):
             cfg = load_config()
             from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 

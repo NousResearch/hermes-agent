@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from agent.managed_worker import accept_result, encode_frame, read_frame
+from agent.managed_worker import ACTIVITY_FRAME, accept_result, activity_interval, encode_frame, read_frame
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
@@ -80,6 +80,9 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id, live.source)
+    # This owner consumes the worker's ACTIVITY_FRAME, often enough for its wedge timeout.
+    from gateway.run import _float_env
+    request['activity_frames_v1'] = {'interval': activity_interval(_float_env("HERMES_AGENT_TIMEOUT", 1800))}
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
@@ -197,10 +200,7 @@ class ManagedWorker:
         """Reader thread body. It owns ``stdout``: no other thread closes it under a blocked read."""
         try:
             while self._demand.acquire() and not self.closed.is_set():
-                try:
-                    item = read_frame(self.process.stdout)
-                except (EOFError, ValueError, OSError, RecursionError) as exc:
-                    item = exc  # EOF / invalid or oversized frame / closed pipe: the owner raises it
+                item = self._read_turn_frame()
                 try:
                     loop.call_soon_threadsafe(self._deliver, item)
                 except RuntimeError:
@@ -209,6 +209,19 @@ class ManagedWorker:
                     return
         finally:
             self.process.stdout.close()
+
+    def _read_turn_frame(self):
+        """The next frame the turn loop handles. ``ACTIVITY_FRAME`` (the worker's agent is still
+        active) only moves ``last_frame_at`` and never reaches it, so it renders nowhere and never
+        counts as a Stop acknowledgment."""
+        while True:
+            try:
+                item = read_frame(self.process.stdout)
+            except (EOFError, ValueError, OSError, RecursionError) as exc:
+                return exc  # EOF / invalid or oversized frame / closed pipe: the owner raises it
+            if item != ACTIVITY_FRAME:
+                return item
+            self.last_frame_at = time.monotonic()
 
     def _deliver(self, item):
         self.last_frame_at = time.monotonic()

@@ -1878,10 +1878,10 @@ class GatewayStartupMixin:
                         handoff_profile = resolved
             except Exception:
                 logger.debug("Handoff: could not resolve profile namespace", exc_info=True)
-        from gateway.session_dm_threads import dm_thread_key_source
+        from gateway.session_dm_threads import dm_thread_key_source, session_db_for_source
         store = getattr(self.async_session_store, "_store", self.async_session_store)
         return build_session_key(
-            dm_thread_key_source(dest.source, extra, lambda: getattr(store, "_db", None)),
+            dm_thread_key_source(dest.source, extra, lambda: session_db_for_source(store, dest.source)),
             group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
         )

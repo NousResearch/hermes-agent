@@ -16,7 +16,6 @@ adapter's batch/busy key, the store's routing key and the handoff key agree.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from typing import Any, Mapping, Optional
 
@@ -76,7 +75,34 @@ def dm_thread_key_source(source: Any, extra: Optional[Mapping[str, Any]], db: An
         return source
     if _topic_mode_enabled(db, source):
         return source
-    return dataclasses.replace(source, thread_id=None)
+    from gateway.session_identity import replace_source
+    return replace_source(source, thread_id=None)
+
+
+def dm_thread_batch_suffix(source: Any, extra: Optional[Mapping[str, Any]]) -> str:
+    """Batch-key suffix naming the DM thread a shared-mode message came from. The session key drops
+    the thread, but a text batch keeps its first event's source, so two threads' messages merged into
+    one batch would get one answer in the first thread: batches stay per thread while the session
+    and its busy guard are shared."""
+    keyed = dm_thread_key_source(source, extra)  # no db: a /topic lane keeps the thread in its key anyway
+    return f":thread:{source.thread_id}" if keyed is not source and keyed.thread_id is None else ""
+
+
+def session_db_for_source(store: Any, source: Any) -> Any:
+    """The SessionDB holding *source*'s topic-mode rows: its pinned identity's runtime profile store
+    (a primary bot routing to another profile derives its adapter key BEFORE the runner enters that
+    profile's scope, so the active scope would read the launch profile's rows), else the store's
+    scope-resolved one. A pinned test store wins."""
+    from gateway.session_identity import identity_of
+    from gateway.session_persistence import _DB_UNPINNED
+    pinned = getattr(store, "_pinned_db", None)
+    if callable(pinned) and pinned() is not _DB_UNPINNED:
+        return pinned()
+    identity = identity_of(source)
+    opener = getattr(store, "_open_session_db_for_active_scope", None)
+    if identity is not None and identity.multiplexed and callable(opener):
+        return opener(identity.store_path)
+    return getattr(store, "_db", None)
 
 
 def telegram_extra_for(source: Any, config: Any) -> Mapping[str, Any]:
@@ -84,8 +110,14 @@ def telegram_extra_for(source: Any, config: Any) -> Mapping[str, Any]:
     secondary bot has its own config), else the gateway config's."""
     ref = getattr(source, "_transport_adapter_ref", None)
     adapter = ref() if callable(ref) else None
+    if adapter is None and getattr(source, "platform", None) == Platform.TELEGRAM and getattr(source, "thread_id", None):
+        # A source rebuilt from durable state (``/loop`` tick, restored route) has no live ref: the
+        # runner's delivery resolver names the bot that answers it, so its key matches live traffic.
+        from gateway.run import _gateway_runner_ref
+        resolve = getattr(_gateway_runner_ref(), "_delivery_adapter_for", None)
+        adapter = resolve(source) if callable(resolve) else None
     extra = getattr(getattr(adapter, "config", None), "extra", None)
-    if isinstance(extra, Mapping):
+    if getattr(adapter, "platform", None) == Platform.TELEGRAM and isinstance(extra, Mapping):
         return extra
     platforms = getattr(config, "platforms", None) or {}
     pconfig = platforms.get(Platform.TELEGRAM) if isinstance(platforms, Mapping) else None

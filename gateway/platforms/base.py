@@ -451,7 +451,7 @@ from hermes_cli.observability.shared_metrics_gateway import records_delivery, st
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
-from gateway.session_dm_threads import dm_thread_key_source
+from gateway.session_dm_threads import dm_thread_batch_suffix, dm_thread_key_source, session_db_for_source
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
@@ -2455,12 +2455,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra, store = self.config.extra, getattr(self, "_session_store", None)
         return build_session_key(
-            dm_thread_key_source(source, extra, lambda: getattr(store, "_db", None)), group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            dm_thread_key_source(source, extra, lambda: session_db_for_source(store, source)), group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=self._session_key_profile(source))
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text batching (subclasses may override)."""
-        return self._event_session_key(event)
+        return self._event_session_key(event) + dm_thread_batch_suffix(event.source, self.config.extra)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""

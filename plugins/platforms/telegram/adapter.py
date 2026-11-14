@@ -6261,11 +6261,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             from hermes_cli.config import load_config  # deep-copied: _setup_dm_topics writes thread_ids into it
             dm_topics = load_config().get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics", [])
-            if not dm_topics:
-                self._dm_topics_config = []
+            if not dm_topics:  # config.extra too: session keys read declared topics there (dm_threads)
+                self._dm_topics_config = self.config.extra["dm_topics"] = []
                 self._dm_topic_chat_ids = set()
                 return
-            self._dm_topics_config = dm_topics
+            self._dm_topics_config = self.config.extra["dm_topics"] = dm_topics
             self._dm_topic_chat_ids = {str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry}
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")

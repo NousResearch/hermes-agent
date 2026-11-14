@@ -1370,13 +1370,18 @@ def _prepend_moa_picker_provider(providers: list[dict], current_provider: str = 
 
 
 def _with_local_runtime_row(providers: list[dict], current_provider: str, current_base_url: str,
-                            current_model: str) -> list[dict]:
+                            current_model: str, *, max_models: int | None = None,
+                            excluded_providers: list | None = None) -> list[dict]:
     """The managed llama.cpp runtime's Local row, built by the same inventory helper the
-    desktop/CLI payload uses (#152473); the row only reads the current selection."""
+    desktop/CLI payload uses (#152473); the row reads the current selection, honours
+    ``excluded_providers`` and caps its models like every other row (``total_models`` stays full)."""
     from hermes_cli.inventory import ConfigContext, inject_local_runtime_row
     ctx = ConfigContext(current_provider=current_provider or "", current_model=current_model or "",
-                        current_base_url=current_base_url or "", user_providers={}, custom_providers=[])
-    rows = inject_local_runtime_row(providers, ctx)[0]
+                        current_base_url=current_base_url or "", user_providers={}, custom_providers=[],
+                        excluded_providers=list(excluded_providers or []))
+    rows, local_row = inject_local_runtime_row(providers, ctx)
+    if local_row is not None:
+        local_row["models"] = _cap_models(list(local_row["models"]), max_models, str(local_row.get("slug") or ""))
     rows.sort(key=lambda r: not r.get("is_current"))  # stable: a current Local row leads, like the rest
     return rows
 
@@ -1402,7 +1407,8 @@ def list_picker_providers(
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider)
-    providers = _with_local_runtime_row(providers, current_provider, current_base_url, current_model)
+    providers = _with_local_runtime_row(providers, current_provider, current_base_url, current_model,
+                                        max_models=max_models, excluded_providers=excluded_providers)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 

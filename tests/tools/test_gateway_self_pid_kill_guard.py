@@ -29,6 +29,15 @@ def run(tmp_path, monkeypatch):
     "taskkill /F /PID {pid}", "taskkill.exe /PID {pid} /T", "Stop-Process -Id {pid} -Force",
     "bash -c 'kill -9 {pid}'", "su -c 'kill {pid}'", "true && kill {pid}",
     "if true; then kill {pid}; fi", "for x in a; do kill {pid}; done", "time kill {pid}",
+    # `+N` is a PID; `-N` after a signal or `--` is the gateway's own process group.
+    "kill +{pid}", "kill -9 -{pid}", "kill -- -{pid}", "kill -s TERM -{pid}", "kill -SIGKILL -{pid}",
+    # PowerShell: positional Id, colon-bound Id, comma list split across spaces.
+    "Stop-Process {pid} -Force", "Stop-Process -Force {pid}", "Stop-Process -Id:{pid}",
+    "Stop-Process -Id 1, {pid}", "Stop-Process 1 , {pid}", "taskkill /PID:{pid}", "taskkill /F /pid:{pid}",
+    # String runners and command substitution.
+    "eval kill {pid}", "eval 'kill -9 {pid}'", "echo `kill {pid}`", "x=\"$(kill {pid})\"",
+    "powershell -c 'Stop-Process -Id {pid}'", "pwsh.exe -Command \"Stop-Process {pid}\"",
+    "cmd /c taskkill /PID {pid}", "cmd.exe /C \"taskkill /F /PID {pid}\"",
 ])
 def test_literal_gateway_pid_kill_is_blocked(run, command):
     assert run(command.format(pid=PID)) is not None
@@ -45,6 +54,12 @@ def test_referenced_script_killing_gateway_pid_is_blocked(run, tmp_path):
     "echo kill {pid}", "grep 'kill {pid}' input.txt",
     "kill -l {pid}", "kill -0 {pid}", "kill -s 0 {pid}", "kill -s {pid} {other}",
     "taskkill /S remotehost /PID {pid}",
+    # A leading `-N` with no signal before it is a signal number, not a target.
+    "kill -{pid} {other}", "kill +{other}", "kill -9 -{other}", "kill -- -{other}",
+    "Stop-Process {other} -Force", "Stop-Process -Id:{other}", "Stop-Process -Id 1, {other}",
+    "Stop-Process -Name {pid}", "Stop-Process -Name:{pid} -Force", "taskkill /PID:{other}",
+    "eval echo {pid}", "echo `date` {pid}", "powershell -c 'Get-Process -Id {pid}'",
+    "cmd /c echo {pid}", "sleep {pid}",
 ])
 def test_other_pids_probes_and_data_stay_allowed(run, command):
     assert run(command.format(pid=PID, other=OTHER)) is None

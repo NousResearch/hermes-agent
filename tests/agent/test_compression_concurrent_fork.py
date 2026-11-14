@@ -29,6 +29,7 @@ fixture deterministically produces 2 children; with the lock, exactly 1.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import sqlite3
@@ -1111,6 +1112,186 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert db.get_compression_lock_holder(parent_sid) is None
     assert len(refreshers) == 1
     assert not refreshers[0]._thread.is_alive()
+
+
+
+
+
+
+
+
+def _make_legacy_session_db_class() -> type:
+    """Model the class retained in ``sys.modules`` before the lock API existed.
+
+    During the real version-skew incident, a re-imported compression module
+    imports the same still-loaded ``hermes_state`` module, whose ``SessionDB``
+    class is old. The test replaces that module attribute with this lockless
+    class and forwards all persistence operations to a current real database.
+    """
+    source_path = inspect.getfile(SessionDB)
+    namespace = {"__name__": "hermes_state"}
+    source = '''
+class SessionDB:
+    def __init__(self, real_db):
+        self._real = real_db
+
+    def __getattribute__(self, name):
+        if name in {"_real", "__class__"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_real"), name)
+'''
+    exec(compile(source, source_path, "exec"), namespace)
+    return namespace["SessionDB"]
+
+
+def test_legacy_session_db_without_raw_cooldown_api_preserves_compression_compatibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale pre-cooldown SessionDB must not turn compression into a no-op."""
+    import hermes_state
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "LEGACY_COOLDOWN_COMPATIBILITY"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+
+    legacy_session_db_class = _make_legacy_session_db_class()
+    legacy_db = legacy_session_db_class(db)
+    monkeypatch.setattr(hermes_state, "SessionDB", legacy_session_db_class)
+    agent._session_db = legacy_db
+    agent.context_compressor._session_db = legacy_db
+    agent.context_compressor._session_id = session_id
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+
+    expected = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    compress_spy = MagicMock(return_value=copy.deepcopy(expected))
+    agent.context_compressor.compress = compress_spy
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _prompt = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+
+    assert [{"role": row["role"], "content": row["content"]} for row in compressed] == expected
+    assert all(row.get("_db_persisted") for row in compressed)
+    compress_spy.assert_called_once()
+    assert db.get_compression_lock_holder(session_id) is None
+    assert _count_children(db, session_id) == 0
+
+
+def _raise_raw_cooldown_error(_db, _session_id):
+    raise RuntimeError("simulated raw cooldown read failure")
+
+
+@pytest.mark.parametrize(
+    "raw_reader",
+    [None, _raise_raw_cooldown_error],
+    ids=["noncallable", "read-error"],
+)
+def test_malformed_raw_cooldown_api_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_reader,
+) -> None:
+    """A present but malformed cooldown API is not legacy version skew."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "NONCALLABLE_COOLDOWN_API"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+
+    monkeypatch.setattr(
+        SessionDB,
+        "get_compression_failure_cooldown_row",
+        raw_reader,
+    )
+    compress_spy = MagicMock(
+        return_value=[
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+    )
+    agent.context_compressor.compress = compress_spy
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _prompt = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+
+    assert compressed is messages
+    compress_spy.assert_not_called()
+    assert db.get_compression_lock_holder(session_id) is None
+    assert _count_children(db, session_id) == 0
+
+
+class _NominalSessionDBImpostor:
+    """A proxy that spoofs names but lacks the real SessionDB source contract."""
+
+    def __init__(self, real_db: SessionDB) -> None:
+        self._real = real_db
+
+    def create_session(self, *args, **kwargs):
+        return self._real.create_session(*args, **kwargs)
+
+    def __getattr__(self, name):
+        if name == "try_acquire_compression_lock":
+            raise AttributeError(name)
+        return getattr(self._real, name)
+
+
+_NominalSessionDBImpostor.__module__ = "hermes_state"
+_NominalSessionDBImpostor.__name__ = "SessionDB"
+
+
+class _BrokenLockLookupDB:
+    """A present lock API whose instance lookup fails unexpectedly."""
+
+    def __init__(self, real_db: SessionDB, error: Exception) -> None:
+        self._real = real_db
+        self._error = error
+
+    def try_acquire_compression_lock(self, *_args, **_kwargs):
+        raise AssertionError("the broken lookup must not resolve to a callable")
+
+    def __getattribute__(self, name):
+        if name == "try_acquire_compression_lock":
+            raise object.__getattribute__(self, "_error")
+        if name in {"_real", "_error", "__class__"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+class _NonCallableLockAPI:
+    """A present lock API descriptor that resolves to a non-callable value."""
+
+    def __init__(self, real_db: SessionDB) -> None:
+        self._real = real_db
+
+    try_acquire_compression_lock = None
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+
+
+
+
+
+
+
 
 @pytest.mark.parametrize(
     "error",

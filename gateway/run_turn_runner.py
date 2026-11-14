@@ -155,17 +155,24 @@ from gateway.session_execution import GatewaySessionAgentMixin
 
 
 def _settle_api_runtime_lock(agent, result, captured):
-    """A confirmed API model lock settles only on the runtime it named (main's
-    ``_finish_turn_result``): the served runtime rides the usage, a mismatch fails the turn."""
-    from gateway.session_api_turn import api_runtime_locked
-    api = api_runtime_locked()
+    """Main's ``_finish_turn_result`` for an API admission: a request that named a model or
+    route records the served runtime on the usage (the OpenAI-compatible doors report it as the
+    response ``model``, #118254), and a confirmed model lock settles only on the runtime it
+    named — a mismatch fails the turn."""
+    from gateway.session_api_turn import api_execution
+    api = api_execution.get()
     if api is None or not isinstance(result, dict):
         return
     settings = api['settings']
+    locked = bool(settings.get('confirmed_runtime_lock'))
+    route_source = settings.get('route_source') or ''
+    if not (locked or settings.get('route') or settings.get('requested_runtime')
+            or route_source not in ('', 'global')):
+        return
     try:
         captured['usage']['runtime'] = api['adapter']._turn_runtime_metadata(
             agent, route=settings.get('route'), requested_runtime=settings.get('requested_runtime'),
-            route_source=settings.get('route_source') or '', confirmed_runtime_lock=True)
+            route_source=route_source, confirmed_runtime_lock=locked)
     except RuntimeError as exc:
         result.update(final_response='', failed=True, completed=False, error=str(exc))
 

@@ -286,9 +286,10 @@ class _ResponsesStream:
     def __init__(self, adapter, response, *, response_id: str, model: str, created_at: int,
                  conversation_history: list[dict[str, str]], user_message: str,
                  instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-                 durable_key=None, terminal_replay=False):
+                 durable_key=None, terminal_replay=False, selection: Optional[str] = None):
         from gateway.platforms import api_server as api
         self._api = api
+        self.selection = selection  # the honored model selection; decides model_not_found errors
         self.adapter, self.response, self.response_id = adapter, response, response_id
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
@@ -367,7 +368,9 @@ class _ResponsesStream:
         env = self.envelope(status)
         env["output"] = output
         if error is not None:
-            env["error"] = ({"code": "agent_error", "message": error} if self.durable_key
+            not_found = self.adapter._requested_model_not_found(self.result, self.selection)
+            env["error"] = (not_found["error"] if not_found is not None
+                            else {"code": "agent_error", "message": error} if self.durable_key
                             else {"message": error, "type": "server_error"})
         env["usage"] = self._api._responses_usage_payload(self.usage)
         return env
@@ -780,6 +783,77 @@ def _parse_conversation_history(raw_history: Any) -> tuple:
 class OpenAICompatRoutesMixin:
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
+    def _effective_response_model(self, result: Any, usage: Any, planned: str) -> str:
+        """The ``model`` a finished OpenAI-compatible turn reports (#118254): the model that
+        actually served it (fallback included), from the runtime the turn recorded; ``planned``
+        (``_planned_response_model``) when none was recorded. A turn that only ran because the
+        client asked for the advertised agent name records no runtime, so keeps that name."""
+        model = self._result_runtime(result, usage).get("model")
+        return model if isinstance(model, str) and model else planned
+
+    def _requested_model_not_found(self, result: Any, selection: Optional[str]) -> Optional[dict[str, Any]]:
+        """OpenAI's ``404 model_not_found`` envelope when the provider rejected the model the
+        client selected (``_honored_selection``), else None. An ignored or virtual-model request
+        whose configured default 404s stays the generic agent failure."""
+        if not selection or not isinstance(result, dict) or result.get("failure_reason") != "model_not_found":
+            return None
+        from gateway.platforms.api_server import _openai_error
+        return _openai_error(
+            f"The model '{selection}' does not exist or is not available on this Hermes deployment.",
+            param="model", code="model_not_found")
+
+    def _honored_selection(
+        self, route: Optional[dict[str, Any]], selection: dict[str, Any], *,
+        session_id: Optional[str], gateway_session_key: Optional[str], accepted: bool = False,
+    ) -> Optional[str]:
+        """The model this request selected AND that the turn will run on: the route's model or the
+        honored request model, unless a session ``/model`` override wins (``_select_agent_runtime``).
+        ``selection`` is the request's overrides (``run_kwargs``) or, with ``accepted``, an admitted
+        turn's settings: those were fixed at acceptance, so a later ``/model`` never rewrites them."""
+        if not accepted and self._session_model_override_for(gateway_session_key or session_id):
+            return None
+        if isinstance(route, dict) and isinstance(route.get("model"), str) and route["model"]:
+            return route["model"]
+        honored = selection.get("requested_model")
+        return honored if isinstance(honored, str) and honored else None
+
+    def _planned_response_model(
+        self, requested: Any, route: Optional[dict[str, Any]], selection: dict[str, Any], *,
+        session_id: Optional[str], gateway_session_key: Optional[str], accepted: bool = False,
+    ) -> tuple[str, Optional[str]]:
+        """``(label, selection)`` before the turn runs. ``label`` is what early SSE frames report
+        and the fallback when no runtime was recorded: session ``/model`` > route > honored
+        request model, else the advertised agent name, never an unhonored value (#118254).
+        ``selection`` is ``_honored_selection``, which decides model_not_found errors."""
+        requested = requested if isinstance(requested, str) and requested else self._model_name
+        if requested == self._model_name:
+            return requested, None
+        chosen = self._honored_selection(
+            route, selection, session_id=session_id, gateway_session_key=gateway_session_key,
+            accepted=accepted)
+        if chosen:
+            return chosen, chosen
+        session_override = self._session_model_override_for(gateway_session_key or session_id)
+        if session_override:
+            from hermes_cli.model_switch import resolve_effective_model
+            return resolve_effective_model(session_override, None, self._model_name), None
+        return self._model_name, None
+
+    def _request_runtime_kwargs(self, body: Any, route, overrides: dict[str, Any]) -> dict[str, Any]:
+        """``requested_runtime`` / ``route_source`` for a turn whose request named a model, so the
+        finished turn records what served it (``_finish_turn_result``). An ignored bare model is
+        recorded as asked-for with ``route_source: global``, never as an applied selection."""
+        from gateway.platforms.api_server import _clean_request_string
+        raw = _clean_request_string(body.get("model")) if isinstance(body, dict) else None
+        if not (route or overrides.get("requested_model") or overrides.get("requested_provider")
+                or (raw and raw != self._model_name)):
+            return {}
+        source = ("model_routes" if route else "raw_request"
+                  if overrides.get("requested_model") or overrides.get("requested_provider") else "global")
+        return {"requested_runtime": {"provider": overrides.get("requested_provider", ""),
+                                      "model": overrides.get("requested_model") or raw or ""},
+                "route_source": source}
+
     def _select_request_route(
         self, body: dict[str, Any], *, session_id, gateway_session_key, model_alias) -> tuple:
         """Resolve the model_routes alias + per-request overrides ->
@@ -956,11 +1030,15 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        run_kwargs.update(self._request_runtime_kwargs(body, route, agent_overrides))
         run_kwargs.update(self._authority_chat_kwargs(request, provided_session_id))
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
             run_kwargs["notification_category"] = "diagnostic"
+        model_name, selection = self._planned_response_model(
+            model_name, route, agent_overrides,
+            session_id=session_id, gateway_session_key=gateway_session_key)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -1003,7 +1081,7 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key, selection=selection)
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -1029,21 +1107,14 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
-        # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
-        # clients raise instead of rendering the failure string as message.content.
-        if not final_response and (is_failed or is_partial):
-            err_body = _openai_error(
-                "" if presentation_muted else (err_msg or "Agent run did not produce a response."), err_type="server_error",
-                code="agent_incomplete")
-            err_body["error"]["hermes"] = {
-                "completed": completed, "partial": is_partial, "failed": is_failed}
-            response_headers["X-Hermes-Completed"] = "false"
-            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
-            return web.json_response(err_body, status=502, headers=response_headers)
+        failure = self._chat_failure_response(
+            result, selection, final_response, err_msg, response_headers, muted=presentation_muted)
+        if failure is not None:
+            return failure
         # Soft partial (some text, run incomplete): 200 + finish_reason="length"/Hermes extras.
         response_data = {
             "id": completion_id, "object": "chat.completion", "created": created,
-            "model": model_name,
+            "model": self._effective_response_model(result, usage, model_name),
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
@@ -1060,6 +1131,27 @@ class OpenAICompatRoutesMixin:
             if err_msg and not presentation_muted:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
         return web.json_response(response_data, headers=response_headers)
+
+    def _chat_failure_response(
+        self, result: Any, selection: Optional[str], final_response: str, err_msg, headers: dict[str, str], *,
+        muted: bool) -> Optional[web.Response]:
+        """The error response for a non-streaming chat turn that must not answer 200, else None:
+        a provider-rejected requested model is OpenAI's 404 ``model_not_found``; a hard fail (no
+        usable text AND a real failure) is a 502 envelope, so SDK clients raise instead of
+        rendering the failure string as message.content."""
+        from gateway.platforms.api_server import _openai_error
+        if (not_found := self._requested_model_not_found(result, selection)) is not None:
+            return web.json_response(not_found, status=404, headers=headers)
+        completed, is_partial, is_failed, _ = _result_flags(result)
+        if final_response or not (is_failed or is_partial):
+            return None
+        err_body = _openai_error(
+            "" if muted else (err_msg or "Agent run did not produce a response."), err_type="server_error",
+            code="agent_incomplete")
+        err_body["error"]["hermes"] = {"completed": completed, "partial": is_partial, "failed": is_failed}
+        headers["X-Hermes-Completed"] = "false"
+        headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+        return web.json_response(err_body, status=502, headers=headers)
 
     def _chat_request_id(self, request: web.Request) -> Optional[str]:
         """Durable admission identity of a Chat Completions Idempotency-Key. It carries the
@@ -1155,7 +1247,7 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: web.Request, completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str | None = None,
-        gateway_session_key: str | None = None) -> web.StreamResponse:
+        gateway_session_key: str | None = None, selection: str | None = None) -> web.StreamResponse:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
@@ -1206,7 +1298,9 @@ class OpenAICompatRoutesMixin:
             budget_exhausted = _budget_exhausted(result)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error,
                                            budget_exhausted=budget_exhausted)
+            effective_model = self._effective_response_model(result, usage, model)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
+            finish_chunk["model"] = effective_model
             presentation_muted = (
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
@@ -1225,7 +1319,9 @@ class OpenAICompatRoutesMixin:
                 if tail:
                     await response.write(_sse_frame(_chunk({"content": tail if appended else _transformed_notice() + tail})))
             if finish_reason != "stop":
-                if err_msg and not presentation_muted:
+                if (not_found := self._requested_model_not_found(result, selection)) is not None:
+                    finish_chunk["error"] = not_found["error"]
+                elif err_msg and not presentation_muted:
                     finish_chunk["error"] = {
                         "message": err_msg,
                         "type": type(agent_error).__name__ if agent_error else "agent_error"}
@@ -1250,7 +1346,8 @@ class OpenAICompatRoutesMixin:
         self, request: web.Request, response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: list[dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None, durable_key=None, terminal_replay=False) -> web.StreamResponse:
+        gateway_session_key: Optional[str] = None, durable_key=None, terminal_replay=False,
+        selection: Optional[str] = None) -> web.StreamResponse:
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
@@ -1267,7 +1364,7 @@ class OpenAICompatRoutesMixin:
             self, response, response_id=response_id, model=model, created_at=created_at,
             conversation_history=conversation_history, user_message=user_message,
             instructions=instructions, conversation=conversation, store=store, session_id=session_id,
-            durable_key=durable_key, terminal_replay=terminal_replay)
+            durable_key=durable_key, terminal_replay=terminal_replay, selection=selection)
         try:
             await st.emit_created()
             async for item in _iter_stream_items(stream_q, agent_task, response):
@@ -1278,6 +1375,7 @@ class OpenAICompatRoutesMixin:
                 await st.dispatch(item)
             await st.flush_batch()
             await st.collect_result(agent_task)
+            st.model = self._effective_response_model(st.result, st.usage, st.model)
             await st.close_message_item()
             if st.agent_error and not (durable_key and st.result):
                 await st.emit_failed()
@@ -1411,8 +1509,14 @@ class OpenAICompatRoutesMixin:
         run_kwargs, run_agent = context['run_kwargs'], context['run_agent']
         response_store = self._current_response_store()
         response_id, created_at = await _response_identity(response_store, durable_key)
-        response_model = body.get('model', self._model_name)
+        # An admitted (durable) turn's selection lives in its settings; run_kwargs is then empty.
+        admitted = context.get('selection')
+        chosen = admitted if admitted is not None else run_kwargs
+        response_model, selection = self._planned_response_model(
+            body.get('model', self._model_name), chosen.get("route"), chosen,
+            session_id=session_id, gateway_session_key=gateway_session_key, accepted=admitted is not None)
         if durable_key:
+            # The label pinned at acceptance (already planned) survives route changes and retries.
             response_model = await response_store.off_loop(response_store.request_model, durable_key[0], response_model)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
@@ -1446,7 +1550,8 @@ class OpenAICompatRoutesMixin:
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
                 session_id=session_id, gateway_session_key=gateway_session_key,
-                durable_key=durable_key, terminal_replay=context.get('terminal_replay', False))
+                durable_key=durable_key, terminal_replay=context.get('terminal_replay', False),
+                selection=selection)
 
         async def _compute_response():
             return await run_agent(**run_kwargs)
@@ -1462,6 +1567,8 @@ class OpenAICompatRoutesMixin:
             if _settled(replay):
                 return web.json_response(replay['response'], headers=replay.get('headers') or {})
         result, usage = outcome
+        if (not_found := self._requested_model_not_found(result, selection)) is not None:
+            return web.json_response(not_found, status=404)
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
@@ -1479,7 +1586,7 @@ class OpenAICompatRoutesMixin:
             conversation_history, user_message, result)
         response_data = {
             "id": response_id, "object": "response", "status": _response_status(result),
-            "created_at": created_at, "model": response_model,
+            "created_at": created_at, "model": self._effective_response_model(result, usage, response_model),
             "output": self._extract_output_items(result, start_index=output_start_index,
                 **({'response_id': response_id} if durable_key else {})),
             "usage": _responses_usage_payload(usage)}

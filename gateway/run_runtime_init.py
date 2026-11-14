@@ -33,6 +33,10 @@ class GatewayRuntimeInitMixin:
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        from gateway.run import _hermes_home
+        from hermes_constants import hermes_home_key
+        # Seed the launch snapshot before any worker can overwrite the compatibility slot.
+        self._fallback_model_by_home = {hermes_home_key(_hermes_home): self._fallback_model}
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""

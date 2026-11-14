@@ -1,0 +1,19 @@
+name: hermes-drawbridge
+title: Hermes Drawbridge
+repo: https://github.com/sohomsahaun/hermes-drawbridge
+sha: 84c5c7cf959c75037d1ea88ead599ba639368185
+version: "0.1.0"
+description: "Give your remote Hermes agent limited access to folders on your device. Disclosure — the Desktop component sends the contents and names of files in the folder you share (up to the configured read limit) to the Hermes backend serving that chat, so they reach chat history and the model provider; with Create/Update enabled the agent can propose whole-file writes that Desktop applies after you approve the diff in the chat, and \"Allow this session\" lets later edits in that share apply without a further prompt until the share ends; no deletes, no network calls beyond your own Hermes connection."
+maintainer: sohomsahaun
+tier: community
+category: desktop
+screenshots:
+  - https://raw.githubusercontent.com/sohomsahaun/hermes-drawbridge/84c5c7cf959c75037d1ea88ead599ba639368185/docs/folder-access.png
+  - https://raw.githubusercontent.com/sohomsahaun/hermes-drawbridge/84c5c7cf959c75037d1ea88ead599ba639368185/docs/verified-update.png
+capabilities:
+  provides_tools:
+    - drawbridge_folder
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+requires_hermes: ">=0.22.6"

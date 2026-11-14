@@ -23,9 +23,9 @@ from typing import Any, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, redact_phone, send_chunks, strip_markdown
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, secrets_match, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy
 
@@ -45,6 +45,7 @@ MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _TWILIO_WEBHOOK_MAX_BODY_BYTES = 65_536  # 64 KiB — Twilio payloads are small
+_MESSAGE_SID_TTL_SECONDS = 86_400  # Twilio's signature carries no nonce: replays are only caught by SID
 _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
@@ -105,6 +106,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._webhook_url: str = _get_scoped_secret("SMS_WEBHOOK_URL", "").strip()
         self._runner = None
         self._http_session: Optional[aiohttp.ClientSession] = None
+        self._seen_message_sids = MessageDeduplicator(ttl_seconds=_MESSAGE_SID_TTL_SECONDS)
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -211,9 +213,7 @@ class SmsAdapter(BasePlatformAdapter):
         data_to_sign = url + "".join(key + post_params[key] for key in sorted(post_params.keys()))
         mac = hmac.new(self._auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1)
         computed = base64.b64encode(mac.digest()).decode("utf-8")
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str,
-        # and the signature is a raw request header.
-        return hmac.compare_digest(computed.encode(), signature.encode())
+        return secrets_match(signature, computed)
 
     @staticmethod
     def _port_variant_url(url: str) -> str | None:
@@ -262,7 +262,10 @@ class SmsAdapter(BasePlatformAdapter):
         if from_number == self._from_number:  # echo prevention
             logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
             return _twiml_response()
-        logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
+        if self._seen_message_sids.is_duplicate(message_sid):  # replayed or retried signed POST
+            logger.info("[sms] ignoring repeat MessageSid %s", message_sid)
+            return _twiml_response()
+        logger.info("[sms] inbound from %s -> %s (%d chars)", redact_phone(from_number), redact_phone(to_number), len(text))
         source = self.build_source(
             chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
             message_id=message_sid)
@@ -310,21 +313,21 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
         return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
-    message = _strip_markdown_for_sms(message)
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url()
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         url, headers = _messages_endpoint(account_sid, auth_token)
         async with _new_session(**_sess_kw) as session:
-            form_data = _twilio_form(from_number, chat_id, message)
+            form_data = _twilio_form(from_number, chat_id, _strip_markdown_for_sms(message))
             async with session.post(url, data=form_data, headers=headers, **_req_kw) as resp:
                 body = await resp.json()
                 if resp.status >= 400:
                     error_msg = body.get("message", str(body))
                     return send_error(f"Twilio API error ({resp.status}): {error_msg}")
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": body.get("sid", "")}
-    except Exception as e:
-        return send_error(f"SMS send failed: {e}")
+    except Exception as e:  # the text may echo the proxy URL: it reaches the model
+        return send_error(f"SMS send failed: {describe_proxy_error(e, proxy) or e}")
 
 
 _is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")

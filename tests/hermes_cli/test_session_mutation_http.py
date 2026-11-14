@@ -122,7 +122,7 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
     for this caller (an unbound API-server row is mounted for its owner only). That is not an
     idempotent success — Desktop would drop the row and it reappears on reload. Only a genuinely
     absent id is ``already_absent``."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_cli.web_routers.sessions import manage_router
     from hermes_cli import web_server as web
     import hermes_cli.web_server_sessions as web_sessions
@@ -136,7 +136,7 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
         epoch = begin_runtime_epoch(db, instance_id='owner')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
                                      instance_id='owner', db=db, epoch=epoch)
-        login = Principal('basic:alice', str(tmp_path), frozenset({'session:read', 'session:control'}), 'http')
+        login = SessionActor('basic:alice', str(tmp_path), frozenset({'session:read', 'session:control'}), 'http')
         monkeypatch.setattr(web_sessions, '_session_mutation_context', lambda request, profile: (authority, login))
         query = {'request_id': 'delete', 'expected_revision': 0, 'expected_generation': 0}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost',

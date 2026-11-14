@@ -17,7 +17,6 @@ def _make_runner(proxy_url=None):
     runner.config = MagicMock()
     runner.config.streaming = StreamingConfig()
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner._session_model_overrides = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = None

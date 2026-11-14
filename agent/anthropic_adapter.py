@@ -27,6 +27,7 @@ from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
 )
 from agent.errors import EmptyStreamError
+from agent.tool_history_as_text import tool_history_for_request
 
 from hermes_cli.version_info import get_version_info
 
@@ -100,7 +101,7 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5", "claude-opus-5.5")
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-mythos", "claude-opus-5-5", "claude-opus-5.5")
 # Families whose documented "off" is ``thinking: {"type": "between_tools"}`` (no up-front thinking,
 # short notes between tool calls): ``disabled`` 400s there with a message pointing at it.
 _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS = ("claude-sonnet-5-5", "claude-sonnet-5.5")
@@ -661,6 +662,8 @@ def build_anthropic_kwargs(
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
+    # tool_use/tool_result blocks without ``tools`` are a hard 400: a tools-free request sends that history as text.
+    messages = tool_history_for_request(messages, tools, tool_choice)
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would

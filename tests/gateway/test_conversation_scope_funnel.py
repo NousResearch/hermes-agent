@@ -21,8 +21,8 @@ def _bare_runner() -> GatewayRunner:
         setattr(runner, attr, {KEY: object(), OTHER: object()})
     # Turn-scoped state that the funnel must NOT touch.
     runner._running_agents = {KEY: object()}
-    runner._running_agents_ts = {KEY: 1.0}
-    runner._session_run_generation = {KEY: 7}
+    runner._session_state(KEY).turn.started_ts = 1.0
+    runner._session_state(KEY).persistent.run_generation = 7
     return runner
 
 
@@ -31,20 +31,21 @@ def test_funnel_leaves_turn_scoped_and_generation_state_alone():
     runner._clear_conversation_scope(KEY, reason="test")
     # Turn-scoped: owned by _release_running_agent_state / dispatch finally.
     assert KEY in runner._running_agents
-    assert KEY in runner._running_agents_ts
+    assert runner._session_state(KEY).turn.started_ts
     # Generation counter is monotonic by design (#28686) — never reset.
-    assert runner._session_run_generation[KEY] == 7
+    assert runner._session_state(KEY).persistent.run_generation == 7
 
 
 
 
 def test_funnel_also_clears_boundary_security_state():
     runner = _bare_runner()
-    runner._pending_approvals = {KEY: {"cmd": "rm -rf"}, OTHER: {}}
-    runner._update_prompt_pending = {KEY: True}
+    runner._session_state(KEY).persistent.approvals = {"cmd": "rm -rf"}
+    runner._session_state(OTHER).persistent.approvals = {}
+    runner._session_state(KEY).persistent.update_prompt_pending = True
     runner._pending_skills_reload_notes = {KEY: "note"}
     runner._clear_conversation_scope(KEY, reason="test")
-    assert KEY not in runner._pending_approvals
-    assert OTHER in runner._pending_approvals
-    assert KEY not in runner._update_prompt_pending
+    assert runner._session_state(KEY).persistent.approvals is None
+    assert runner._session_state(OTHER).persistent.approvals is not None
+    assert not runner._session_state(KEY).persistent.update_prompt_pending
     assert KEY not in runner._pending_skills_reload_notes

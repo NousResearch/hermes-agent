@@ -87,6 +87,7 @@ def _stamp_event(obj: dict) -> None:
     size = len(payload)
     with _replay_lock:
         global _replay_total_bytes
+        _drain_released_locked()
         seq = _replay_next_seq.get(sid, 0) + 1
         _replay_next_seq[sid] = seq
         params["seq"] = seq
@@ -147,6 +148,44 @@ def forget_session(sid: str) -> None:
         _drop_ring_locked(sid)
 
 
+# Private keys whose owner is gone (release_key from a GC finalizer that could not take the lock),
+# purged by the next lock holder. list.append/pop are atomic, so a finalizer never needs the lock.
+_released_keys: list[str] = []
+
+
+def _purge_key_locked(key: str) -> None:
+    global _replay_total_bytes
+    if _replay_buffers.pop(key, None) is not None:
+        _replay_total_bytes -= _replay_buffer_bytes.pop(key, 0)
+    _replay_evicted_through.pop(key, None)
+    _replay_next_seq.pop(key, None)
+    _replay_forgotten.discard(key)
+
+
+def _drain_released_locked() -> None:
+    while _released_keys:
+        _purge_key_locked(_released_keys.pop())
+
+
+def release_key(key: str, *, blocking: bool = True) -> None:
+    """Drop everything recorded under a PRIVATE lookup key (ring AND counters) once its session ended.
+
+    Unlike :func:`forget_session` (a public sid that late frames and #100122's monotonic numbering
+    still name), a private key is only ever stamped and read through its owner
+    (``gateway.session_events.SessionEvents``): that owner re-reads :func:`latest_seq` before every
+    publish and starts a new epoch when it finds 0, exactly as after FIFO eviction, so nothing needs
+    the old counters. ``blocking=False`` is for GC finalizers, which can run on a thread that already
+    holds ``_replay_lock``: the key is queued and the next lock holder purges it."""
+    if not key:
+        return
+    _released_keys.append(key)
+    if _replay_lock.acquire(blocking=blocking):
+        try:
+            _drain_released_locked()
+        finally:
+            _replay_lock.release()
+
+
 def events_since(sid: str, last_seen: int) -> list[dict]:
     """Recorded EVENT OBJECTS (each frame's ``params`` dict) with seq > last_seen for *sid*.
 
@@ -182,12 +221,14 @@ def reset_replay_state() -> None:
         _replay_evicted_through.clear()
         _replay_next_seq.clear()
         _replay_forgotten.clear()
+        _released_keys.clear()
         _replay_total_bytes = 0
 
 
 def replay_stats() -> dict:
     """Telemetry: buffer occupancy for the ops/debug surface."""
     with _replay_lock:
+        _drain_released_locked()
         return {
             "sessions": len(_replay_buffers),
             "events": sum(len(buffer) for buffer in _replay_buffers.values()),

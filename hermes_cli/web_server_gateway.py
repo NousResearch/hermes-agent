@@ -392,7 +392,7 @@ def _profile_action_environment(
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
         from hermes_cli.web_server_profiles import _resolve_profile_dir
-        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root, is_launch_only_env_key
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
@@ -408,6 +408,9 @@ def _profile_action_environment(
             # Secret managers contribute locally named credentials that never appear in .env;
             # the dashboard already hydrated its own sources, so their key names are a boundary too.
             profile_keys.update(get_secret_source_values(source_home).keys())
+        # Launch-only keys are never loaded from .env or a source (#135200): the value here is the
+        # launch environment's, so a planted line naming one must not strip it from the child.
+        profile_keys = {key for key in profile_keys if not is_launch_only_env_key(key)}
         for key in profile_keys:
             action_env.pop(key, None)
         # Authorization gates that reached this process outside any dotenv (unit-file

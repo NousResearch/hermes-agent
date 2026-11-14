@@ -71,15 +71,19 @@ export function GatewayProfileGroups({
   const gatewayProfiles = new Map<string, SidebarSessionGroup[]>()
   const sections: SidebarSessionGroup[] = []
 
-  for (const group of groups) {
-    // Unknown legacy ownership stays unassigned; never guess a local gateway.
-    if (nested || embedded || !group.connectionId) {
+  // Bare rows are the registry primary's pool (the owner routing resolves them to): their groups keep
+  // their own unassigned id but sit in the primary's section, placed after the tagged groups so they
+  // never reorder sections. No registry names no gateway.
+  for (const group of [...groups.filter(group => group.connectionId), ...groups.filter(group => !group.connectionId)]) {
+    const owner = group.connectionId || registry?.primary || null
+
+    if (nested || embedded || !owner) {
       sections.push(group)
 
       continue
     }
 
-    const id = JSON.stringify(['gateway', group.connectionId])
+    const id = JSON.stringify(['gateway', owner])
     const profiles = gatewayProfiles.get(id)
 
     if (profiles) {
@@ -88,8 +92,8 @@ export function GatewayProfileGroups({
       gatewayProfiles.set(id, [group])
       sections.push({
         id,
-        connectionId: group.connectionId,
-        label: gatewayLabel(group.connectionId, registry, t.settings.gateway.webappHostTitle),
+        connectionId: owner,
+        label: gatewayLabel(owner, registry, t.settings.gateway.webappHostTitle),
         mode: 'profile',
         path: null,
         sessions: []
@@ -122,7 +126,10 @@ export function GatewayProfileGroups({
           {gatewayProfiles.has(group.id) && (
             <div className="ml-3 border-l border-border/50 pl-1">
               <GatewayProfileGroups
-                groups={gatewayProfiles.get(group.id)!.map(profile => ({ ...profile, label: profile.profile! }))}
+                groups={oneGroupPerProfile(gatewayProfiles.get(group.id)!).map(profile => ({
+                  ...profile,
+                  label: profile.profile!
+                }))}
                 nested
                 onNewSessionSplit={onNewSessionSplit}
                 renderRows={renderRows}
@@ -135,6 +142,32 @@ export function GatewayProfileGroups({
     </ReorderableList>
   )
 }
+
+/** The primary's profile can arrive twice: its bare pool ([null, p]) and rows naming the primary
+ *  ([primary, p], e.g. a new chat). Show it once, under the bare pool's id, holding both. */
+function oneGroupPerProfile(groups: SidebarSessionGroup[]): SidebarSessionGroup[] {
+  const byProfile = new Map<string, SidebarSessionGroup>()
+
+  for (const group of groups) {
+    const key = group.profile ?? group.id
+    const seen = byProfile.get(key)
+
+    if (!seen) {
+      byProfile.set(key, group)
+
+      continue
+    }
+
+    const [keep, other] = seen.connectionId ? [group, seen] : [seen, group]
+    const sessions = [...keep.sessions, ...other.sessions].sort((a, b) => recency(b) - recency(a))
+
+    byProfile.set(key, { ...keep, sessions })
+  }
+
+  return [...byProfile.values()]
+}
+
+const recency = (session: SidebarSessionGroup['sessions'][number]) => session.last_active || session.started_at || 0
 
 interface GatewayProfileGroupProps {
   group: SidebarSessionGroup

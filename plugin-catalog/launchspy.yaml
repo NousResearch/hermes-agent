@@ -1,0 +1,18 @@
+name: launchspy
+title: LaunchSpy
+repo: https://github.com/launchspyio/launchspy-agent
+sha: e0286f83b25466fb776bc23fe5ebbd0847e215b3
+version: "1.2.0"
+description: "Spy on the ads and funnels of the top coaches and course creators through LaunchSpy's hosted MCP server (Streamable HTTP at https://launchspy.io/api/mcp, OAuth sign-in, no keys in config): search creators by niche and country, see who is scaling and how they run ads, read their Meta ads with run dates and EU reach, pull the longest-running ads of a niche, find and take apart their funnels (steps, builder, pixels, payment stack, pricing), size a market by niche and country, and check what is known about any domain. Bundles six workflow skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to LaunchSpy's hosted server (launchspy.io) and acts on the user's LaunchSpy account; each tools/call uses one credit (a free account gets 50 trial credits, once; paid plans include monthly credits); the tool set is served by that server at runtime and is not covered by the pinned sha. All ten tools are annotated read-only and the server is marked untrusted. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth."
+maintainer: LaunchSpy
+tier: community
+category: tools
+docs_url: https://github.com/launchspyio/launchspy-agent#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -16,7 +16,17 @@ const SEGMENT_MAX = 255
 // trailing dot, which Windows drops: `foo.` would share `foo`'s folder).
 const PLUGIN_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$/
 // Windows device names open the device, not a file, with any extension.
-const WIN_RESERVED_RE = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$|clock\$)(?:\.|$)/i
+export const WIN_RESERVED_RE = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$|clock\$)(?:\.|$)/i
+// Python's str.strip() set (what the agent side's `_checked_name` trims). JS trim() differs: it also
+// strips U+FEFF and keeps U+001C-U+001F and U+0085, so the two sides would name different folders.
+const PY_STRIP_WS = '\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+// The trailing run must start after a non-space: a bare `[ws]+$` retries from every space of an
+// inner run, which is quadratic in a repository-controlled name and blocks the main process.
+const PY_STRIP_RE = new RegExp(`^[${PY_STRIP_WS}]+|(?<![${PY_STRIP_WS}])[${PY_STRIP_WS}]+$`, 'g')
+
+/** *text* without the leading and trailing whitespace Python's `str.strip()` removes, in linear time.
+ *  Desktop plugin folder names go through this on install and on remove, so both agree with the agent side. */
+export const stripLikePython = (text: string): string => text.replace(PY_STRIP_RE, '')
 // Kernel pseudo-filesystems: their files are "regular" with size 0 and can
 // hold the app's own environment (`/proc/self/environ`).
 const SYSTEM_ROOTS = ['/proc', '/sys', '/dev']

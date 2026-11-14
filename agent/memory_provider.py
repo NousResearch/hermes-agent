@@ -125,6 +125,12 @@ class MemoryProvider(ABC):
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+        Agent builds also pass ``resumed`` (bool: an earlier turn of this session id ran) and
+        ``message_count`` (int: messages already stored for it, which on TUI/Desktop can include the
+        prompt being submitted). A new session id (subagent, cron run, fresh chat) or no session
+        store gives ``False`` and a count of 0 or 1; a ``/branch`` child seeded with copied history
+        reports the copy. Read both with ``kwargs.get``: older Hermes omits them. A mid-process
+        ``/resume`` rebinds through :meth:`on_session_switch` instead.
         """
 
     def unavailable_reason(self) -> str:
@@ -171,8 +177,16 @@ class MemoryProvider(ABC):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count, author_id, author_name,
-        author_is_bot. The author trio names who wrote THIS turn (None, None, False without one): a shared session
-        carries several participants, so a provider keying durable state on identity must read it per turn."""
+        author_is_bot, previous_message. ``model`` is the turn's primary model id at turn start ("" when unset; a
+        preset name under mixture-of-agents). The author trio names who wrote THIS turn (None, None, False without
+        one): a shared session carries several participants, so a provider keying durable state on identity must read
+        it per turn. ``previous_message`` is the secret-scrubbed text of the person's last message before this turn
+        ("" on a first turn or an image-only one), from the transcript Hermes holds, so a resumed process can redo
+        what a live one queued at the end of that turn. Context Hermes appended to an image turn (recalled memory,
+        plugin and gateway notes) is not part of it. Best-effort: known runtime user-role rows and /steer messages
+        are skipped, but a notice a gateway replays after a restart (cron delivery, process heartbeat, watch-disabled
+        notice) can come through, and so can the notes on an image turn an older Hermes stored or that repair or
+        compaction later merged with another turn."""
 
     def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias
@@ -223,3 +237,31 @@ class MemoryProvider(ABC):
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""
         return []
+
+    # -- Profile lifecycle (uninitialized instance; that profile's home and secrets bound; errors are
+    # logged). Keep them fast: the dashboard and Desktop run them inside the create/rename request,
+    # so put network work (creating a remote peer) on a background thread. --
+
+    def on_profile_created(self, profile_name: str, hermes_home: str) -> None:
+        """A profile whose config selects this provider was just created by ``create_profile`` (CLI,
+        dashboard, Desktop/TUI; a clone carries ``memory.provider``). Not called for profile import.
+        Set up per-profile provider state here (a peer, a host entry)."""
+
+    def on_profile_renamed(self, old_name: str, new_name: str, hermes_home: str) -> None:
+        """A profile whose config selects this provider was renamed; ``hermes_home`` is its new
+        directory. Re-key anything the provider stores under the old profile name."""
+
+    # -- Dashboard config panel for a ``config_schema.py`` declaring ``storage=STORAGE_PROVIDER`` --
+
+    def read_config_fields(self, hermes_home: str) -> dict[str, Any]:
+        """``{"values": {field key: stored native value}, "placeholders": {field key: text}}``. A key
+        absent from ``values`` reads as unset; a placeholder shows what a blank field resolves to.
+        A stored secret may be included: it only marks the field as set and is never sent out."""
+        return {"values": {}, "placeholders": {}}
+
+    def write_config_fields(self, values: dict[str, Any], hermes_home: str) -> None:
+        """Persist the submitted fields (only those present): natives already coerced, ``None`` clears a
+        key, non-blank secrets included (core saves each to ``.env`` under its ``env_key`` once this
+        returns). Raise ``ValueError`` (a subclass such as ``json.JSONDecodeError`` counts, also under
+        ``plugins.isolation: host``) to refuse the save (the dashboard shows it as a 400)."""
+        raise NotImplementedError(f"memory provider {self.name} declares storage=provider but cannot write it")

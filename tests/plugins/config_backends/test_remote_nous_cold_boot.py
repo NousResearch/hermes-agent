@@ -180,3 +180,40 @@ def test_cold_auth_import_on_another_thread_never_waits_for_the_fetch(tmp_path):
                    PYTHONDONTWRITEBYTECODE="1")
         assert _value(_run([sys.executable, "-c", CONCURRENT_AUTH_IMPORT], env)) == "ares"
 
+
+
+MULTIPLEX_TOKEN_READS_NO_CONFIG = """
+import sys, threading
+from pathlib import Path
+import hermes_cli.config_backend as cb
+reads = []
+def refuse(*a, **k):
+    reads.append(1)
+    raise cb.ConfigBackendUnavailable("this test's backend refuses every read")
+cb._route = refuse
+from agent.secret_scope import set_multiplex_active
+set_multiplex_active(True)
+from plugins.config_backends.remote.credentials import plane_token
+out = {}
+t = threading.Thread(target=lambda: out.setdefault("token", plane_token(Path(sys.argv[2]))))
+t.start(); t.join(30)
+assert out.get("token") == sys.argv[1], out
+assert reads == [], reads
+print("RESULT=" + '"ok"')
+"""
+
+
+def test_multiplexed_token_resolution_binds_its_scope_without_reading_config(tmp_path):
+    """Under multiplexing the credential binds the profile's secret scope before resolving; that
+    binding runs inside the profile's first fetch, so it must not read config either (cold imports
+    included). The refresh goes to the Portal the profile's .env names."""
+    home = tmp_path / "home"
+    home.mkdir()
+    with StubPlane() as plane:
+        (home / "auth.json").write_text(json.dumps(_auth_json(plane, expired=True)))
+        (home / ".env").write_text(f"HERMES_PORTAL_BASE_URL={plane.url}\n")
+        env = {k: v for k, v in os.environ.items() if k in {"PATH", "LANG", "TZ", "TMPDIR", "PYTHONHASHSEED"}}
+        env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(REPO), PYTHONDONTWRITEBYTECODE="1",
+                   HERMES_SHARED_AUTH_DIR=str(tmp_path / "shared"))
+        assert _value(_run([sys.executable, "-c", MULTIPLEX_TOKEN_READS_NO_CONFIG, NOUS_TOKEN, str(home)], env)) == "ok"
+        assert plane.nous_refreshes == 1

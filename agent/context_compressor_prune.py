@@ -25,6 +25,15 @@ def _cc():
 class ProactivePruneMixin:
     """``ContextCompressor`` mixin: the deterministic, no-LLM tool-result prune and its commit."""
 
+    def would_proactively_prune(self, current_tokens: int | None = None) -> bool:
+        """Configured on AND above its trigger: the two state-free preconditions
+        ``prune_tool_results_only`` checks first, published so the host can tell a withheld prune
+        from a no-op. Not a prediction that a prune would commit (tail, runway and reclaim gate
+        need the scan)."""
+        return self.proactive_prune_tokens > 0 and (
+            current_tokens is None or current_tokens >= self.proactive_prune_tokens
+        )
+
     def prune_tool_results_only(
         self, messages: list[dict[str, Any]], current_tokens: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -47,9 +56,7 @@ class ProactivePruneMixin:
         recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
         dedup is lossless.
         """
-        if self.proactive_prune_tokens <= 0 or (
-            current_tokens is not None and current_tokens < self.proactive_prune_tokens
-        ):
+        if not self.would_proactively_prune(current_tokens):
             return messages, 0
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
             self._warn_reclamation_no_op("prune:tail_only", current_tokens)

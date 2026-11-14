@@ -254,3 +254,20 @@ async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete
     assert isinstance(usage, dict), complete
     assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0
     assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1
+
+
+def test_resume_snapshot_carries_the_resident_agents_own_readouts():
+    """A viewer switching to a session paints that session's cache-hit / t/s from the resume snapshot: the
+    live agent's once it has called the model, else the stored row's (no t/s: latency is not stored)."""
+    from gateway.session_usage import snapshot_usage
+    row = {'input_tokens': 150, 'output_tokens': 40, 'cache_read_tokens': 800, 'cache_write_tokens': 50,
+           'api_call_count': 3, 'model': 'm'}
+    authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)},
+                                db=SimpleNamespace(get_session=lambda sid: row if sid == 's' else None))
+    ref = SimpleNamespace(session_id='s')
+    usage = snapshot_usage(authority, ref, _agent())
+    assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0 and usage['calls'] == 2
+    for agent in (None, SimpleNamespace(model='m', session_api_calls=0)):  # restarted gateway / unused agent
+        stored = snapshot_usage(authority, ref, agent)
+        assert stored['cache_hit_pct'] == 80 and stored['calls'] == 3 and 'avg_tps' not in stored
+    assert snapshot_usage(authority, SimpleNamespace(session_id='gone'), None) is None

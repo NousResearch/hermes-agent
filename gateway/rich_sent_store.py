@@ -38,13 +38,13 @@ def _load(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):  # missing, unreadable (permissions, a directory) or corrupt
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _update(chat_id, message_id, fields: dict) -> None:
-    """Merge ``fields`` into the ``(chat_id, message_id)`` entry. No-op on any failure."""
+def _update(chat_id, message_id, fields: dict) -> bool:
+    """Merge ``fields`` into the ``(chat_id, message_id)`` entry; False (nothing raised) on any failure."""
     path = _store_path()
     with _LOCK:
         try:
@@ -59,14 +59,16 @@ def _update(chat_id, message_id, fields: dict) -> None:
                     data.pop(k, None)
             atomic_json_write(path, data, indent=None)  # see _LOCK
         except Exception:
-            return
+            return False
+    return True
 
 
-def record(chat_id, message_id, text: Optional[str]) -> None:
-    """Persist ``text`` for ``(chat_id, message_id)``. No-op on any failure."""
+def record(chat_id, message_id, text: Optional[str]) -> bool:
+    """Persist ``text`` for ``(chat_id, message_id)``. False when the write failed (never raises);
+    True when it landed or there was nothing to record."""
     if not text or message_id is None or chat_id is None:
-        return
-    _update(chat_id, message_id, {"t": text[:_MAX_TEXT_CHARS]})
+        return True
+    return _update(chat_id, message_id, {"t": text[:_MAX_TEXT_CHARS]})
 
 
 def record_media(chat_id, message_id, media: list[tuple[str, str]]) -> None:
@@ -76,10 +78,10 @@ def record_media(chat_id, message_id, media: list[tuple[str, str]]) -> None:
     _update(chat_id, message_id, {"m": [[str(p), str(mt or "")] for p, mt in media if p]})
 
 
-async def record_async(chat_id, message_id, text: Optional[str]) -> None:
+async def record_async(chat_id, message_id, text: Optional[str]) -> bool:
     """``record`` for coroutine callers: the read-modify-write + ``os.replace``
     runs on a worker thread so the event loop is not stalled by the filesystem."""
-    await asyncio.to_thread(record, chat_id, message_id, text)
+    return await asyncio.to_thread(record, chat_id, message_id, text)
 
 
 async def record_media_async(chat_id, message_id, media: list[tuple[str, str]]) -> None:
@@ -97,6 +99,18 @@ def _entry(chat_id, message_id) -> dict:
 def lookup(chat_id, message_id) -> Optional[str]:
     """Return stored text for ``(chat_id, message_id)`` or ``None``."""
     return _entry(chat_id, message_id).get("t") or None
+
+
+def record_marker(chat_id, message_ids, key: str, value: str) -> None:
+    """Tag each of ``message_ids`` (one logical send split into several messages) with ``key=value``."""
+    for message_id in dict.fromkeys(str(m) for m in message_ids if m is not None):
+        _update(chat_id, message_id, {key: value})
+
+
+def lookup_marker(chat_id, message_id, key: str) -> Optional[str]:
+    """The ``key`` tag :func:`record_marker` stored for ``(chat_id, message_id)``, or ``None``."""
+    value = _entry(chat_id, message_id).get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def lookup_media(chat_id, message_id) -> list[tuple[str, str]]:

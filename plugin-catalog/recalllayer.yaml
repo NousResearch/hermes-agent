@@ -1,0 +1,19 @@
+name: recalllayer
+title: RecallLayer
+repo: https://github.com/er-s-an/recalllayer
+sha: e89cc87ef7b2051f2b4dc6cb449b09df4cac36ce
+subdir: recalllayer
+version: "1.0.0"
+description: "Local-first layered agent memory (working / episodic / semantic) with FTS recall and retrieve-after-write tools. Disclosure — local-only memory provider with no network calls, credentials or telemetry; when selected as memory.provider it saves the first 500 characters of every user message and assistant reply, plus a copy of built-in memory writes, in plaintext SQLite at $HERMES_HOME/recalllayer/memories.db and injects matching memories into later turns; the store is shared across all sessions and users of the profile (no per-chat or per-user separation); settings in $HERMES_HOME/recalllayer.json; short background threads for capture and prefetch only."
+maintainer: Caesar
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/er-s-an/recalllayer/blob/e89cc87ef7b2051f2b4dc6cb449b09df4cac36ce/recalllayer/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

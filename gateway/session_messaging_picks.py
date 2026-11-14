@@ -36,13 +36,16 @@ def _apply_reasoning(runner, live, effort):
 async def _pick_model(authority, owner, live, payload, row):
     """The chat's ``/model <name> [--provider p]`` resolution, guarded like a LOCAL pick, then committed
     as its session override. Returns the receipt fields, or the guard's confirmation request."""
-    from gateway.session_mutation_model import _Route, _selection_guard_refusal
+    from gateway.session_mutation_model import _Route, _selection_guard_refusal, is_model_reset
     from gateway.slash_commands_model import _ModelSwitchContext
     from hermes_constants import get_hermes_home
     runner = authority.runner
     ctx = _ModelSwitchContext(session_key=live.route, source=live.source,
                               config_path=get_hermes_home() / 'config.yaml', persist_global=False)
     ctx.read_config()
+    if is_model_reset(payload):  # the chat's own `/model reset`: its override goes, its reply is the note
+        note = await runner._handle_model_reset(None, ctx)
+        return {'model': (await asyncio.to_thread(messaging_route_info, runner, live))['model'], 'note': note}
     # After a restart the chat's saved provider/base_url is only on disk: resolve against it, not
     # config.yaml's provider, or the record step overwrites it (as run_turn_prepare rehydrates).
     runner._rehydrate_session_model_override(live.route)

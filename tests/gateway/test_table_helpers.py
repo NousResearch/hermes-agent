@@ -56,4 +56,18 @@ class TestConvertTableToBullets:
         assert "• head1: a" not in out
         assert "• head2: b" in out
 
+    def test_code_span_pipes_keep_both_backticks_in_bullet(self):
+        text = "| Feature | Example |\n|---------|---------|\n| Table | `| table |` |"
+
+        out = convert_table_to_bullets(text)
+
+        assert "• Example: `| table |`" in out
+
+    def test_escaped_pipe_stays_in_bullet_cell(self):
+        text = "| Feature | Example |\n|---------|---------|\n| Route | left\\|right |"
+
+        out = convert_table_to_bullets(text)
+
+        assert "• Example: left\\|right" in out
+
 

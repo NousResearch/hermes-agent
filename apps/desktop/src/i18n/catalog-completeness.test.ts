@@ -4,13 +4,14 @@ import { TRANSLATIONS } from './catalog'
 import { deOverrides } from './de'
 import { esOverrides } from './es'
 import { frOverrides } from './fr'
+import { ruOverrides } from './ru'
 import type { BundledLocale } from './types'
 
 // Locales that shipped fully translated. They are `defineLocale` overlays like
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
-const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly BundledLocale[]
-const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides }
+const COMPLETE_LOCALES = ['fr', 'de', 'es', 'ru'] as const satisfies readonly BundledLocale[]
+const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides, ru: ruOverrides }
 
 type Leaf = { path: string; value: unknown }
 

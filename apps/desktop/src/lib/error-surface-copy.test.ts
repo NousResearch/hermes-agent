@@ -19,7 +19,7 @@ const codes = [
   'ssl_cert_verification'
 ] as const
 
-it.each(['zh', 'zh-hant', 'ja'] as const)(
+it.each(['zh', 'zh-hant', 'ja', 'ru'] as const)(
   'renders provider errors in %s without losing the failing provider identity',
   locale => {
     for (const layer of ['network', 'provider', 'endpoint', 'streaming'] as const) {

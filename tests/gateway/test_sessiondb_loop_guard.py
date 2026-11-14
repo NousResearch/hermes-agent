@@ -59,8 +59,9 @@ def _site(record):
 
 def test_guard_is_inert_until_installed(tmp_path):
     from hermes_state import SessionDB
+    from persistence.sqlite._holder import StoreHolder
     guard.uninstall()
-    assert not getattr(SessionDB, '_loop_guard_installed', False)
+    assert not getattr(StoreHolder, '_loop_guard_installed', False)
     db = SessionDB(tmp_path / 'state.db')
 
     async def on_loop():
@@ -92,6 +93,45 @@ def test_raise_mode_refuses_on_the_loop_thread_and_allows_workers(tmp_path):
         db.close()
 
 
+def test_a_backend_repository_call_on_the_loop_is_flagged_at_its_caller(tmp_path, recording):
+    from persistence import ProfileScope
+    from persistence.sqlite import SQLiteBackend
+    scope = ProfileScope(profile_dir=tmp_path, name='default')
+    backend = SQLiteBackend({scope.hermes_home_key: tmp_path / 'state.db'})
+    store = backend.open(scope)
+
+    async def repository_calls_on_loop():
+        assert store.sessions.get('missing') is None
+        store.runtime.begin_epoch(instance_id='owner')
+    try:
+        asyncio.run(repository_calls_on_loop())
+        records = recording.recorded()
+        assert asyncio.run(asyncio.to_thread(store.sessions.get, 'missing')) is None  # a worker is fine
+        assert len(recording.recorded()) == len(records)
+    finally:
+        backend.close()
+    assert {record['kind'] for record in records} == {'read', 'write'}
+    assert {_site(record) for record in records} == {
+        ('tests/gateway/test_sessiondb_loop_guard.py', 'repository_calls_on_loop')}
+
+
+def test_uninstall_leaves_the_session_db_members_forwarding_to_the_holder():
+    from hermes_state import SessionDB, _HolderMember
+    from persistence.sqlite._holder import StoreHolder
+    guard.uninstall()
+    before = StoreHolder.__dict__['_read_ctx'], StoreHolder.__dict__['_execute_write']
+    guard.install('record')
+    try:
+        assert StoreHolder.__dict__['_read_ctx'] is not before[0]
+        assert isinstance(SessionDB.__dict__['_read_ctx'], _HolderMember)
+        assert isinstance(SessionDB.__dict__['_execute_write'], _HolderMember)
+    finally:
+        guard.uninstall()
+    assert (StoreHolder.__dict__['_read_ctx'], StoreHolder.__dict__['_execute_write']) == before
+    assert isinstance(SessionDB.__dict__['_read_ctx'], _HolderMember)
+    assert isinstance(SessionDB.__dict__['_execute_write'], _HolderMember)
+
+
 def test_gateway_startup_installs_the_guard_from_config_yaml(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gateway import run
@@ -102,12 +142,12 @@ def test_gateway_startup_installs_the_guard_from_config_yaml(tmp_path, monkeypat
     loop = asyncio.new_event_loop()
     try:
         start_loop_liveness_guards(owner, loop)
-        from hermes_state import SessionDB
-        assert SessionDB._loop_guard_installed and guard._state['mode'] == 'warn'
+        from persistence.sqlite._holder import StoreHolder
+        assert StoreHolder._loop_guard_installed and guard._state['mode'] == 'warn'
         guard.uninstall()
         (tmp_path / 'config.yaml').write_text('gateway: {}\n', encoding='utf-8')
         start_loop_liveness_guards(owner, loop)
-        assert not getattr(SessionDB, '_loop_guard_installed', False)  # unset: nothing wrapped
+        assert not getattr(StoreHolder, '_loop_guard_installed', False)  # unset: nothing wrapped
     finally:
         guard.uninstall()
         loop.close()

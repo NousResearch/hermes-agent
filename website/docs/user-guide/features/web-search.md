@@ -70,6 +70,21 @@ If you specifically need the live DOM rather than extracted markdown — for exa
 
 ---
 
+## PDFs are read locally
+
+Some extract vendors bill PDFs per page. When a local extractor is installed, `web_extract` downloads PDFs and reads their text layer with pymupdf, or poppler's `pdftotext`, instead of sending them to a paid backend. A URL path ending in `.pdf` (case-insensitive, query ignored) is recognized directly; other URLs receive a HEAD probe for `Content-Type: application/pdf`.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `web.local_pdf` | `true` | Set `false` to restore backend dispatch for PDFs |
+| `web.pdf_max_bytes` | `52428800` (50 MB) | Larger downloads return a size-limit error |
+
+HEAD probes allow up to 3 redirects, with a 5-second per-operation timeout and a 10-second overall deadline. Downloads allow up to 5 redirects and have a 120-second overall deadline. Every hop is checked against SSRF protection and website policy; streamed bytes are capped even without a Content-Length header.
+
+Local results carry `metadata.served_by: local-pdf`, page count, byte size, and extractor name. Scanned PDFs with no text layer return `metadata.warning: "no text layer — run OCR"`; download/read failures do not silently fall back to a paid vendor. A `.pdf` URL serving HTML goes to the normal backend. If neither extractor is installed, normal backend dispatch is preserved and a one-time warning explains how to install `pymupdf` (`pip install pymupdf`) or poppler.
+
+---
+
 ## Result caching
 
 Repeat web calls within a short window are served from cache instead of the paid backend — this saves credits and latency in the two patterns where duplicates are common: subagent fan-outs (several delegated agents researching the same topic) and the agent re-checking a page it read minutes ago.

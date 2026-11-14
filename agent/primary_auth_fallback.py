@@ -25,6 +25,7 @@ class PrimaryAuthFailure:
     error: str
     relogin: str
     backup: str = ""
+    backup_base_url: str = ""  # the endpoint resolution fell back to; another endpoint is another route
 
 
 # AuthError codes whose fix is not a sign-in: an outage, a per-model cooldown, a CLI that is not installed,
@@ -33,7 +34,8 @@ _NOT_A_LOGIN_PROBLEM = frozenset({"temporarily_unavailable", "model_rate_limited
                                   "no_provider_configured", "invalid_provider", "missing_base_url"})
 
 
-def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "") -> Optional[PrimaryAuthFailure]:
+def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "",
+                                  backup_base_url: Any = "") -> Optional[PrimaryAuthFailure]:
     """The structured reason for a primary ``AuthError`` that a re-login fixes, else None.
 
     A quota/rate-limit cap, a retryable refusal and an entitlement (credits/subscription) code
@@ -49,22 +51,35 @@ def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "") -> 
     slug = str(exc.provider or provider or "").strip().lower()
     slug = "" if slug == "auto" else slug
     return PrimaryAuthFailure(provider=slug, error=short_detail(exc, 300),
-                              relogin=relogin_command_hint(slug), backup=str(backup or "").strip())
+                              relogin=relogin_command_hint(slug), backup=str(backup or "").strip(),
+                              backup_base_url=str(backup_base_url or "").strip())
 
 
 def attach_primary_auth_failure(agent: Any, failure: Optional[PrimaryAuthFailure]) -> None:
     """Bind (or clear, with None) the reason on an agent built from a fallback runtime.
 
     The failure belongs to the route that resolution fell back to: when a later step moved the turn
-    onto another provider (``/model --once``, an API caller's provider, a channel override), the
-    backup it names is not the one running, so it is dropped rather than blamed on that route."""
+    onto another provider or another endpoint of the same provider (``/model --once``, an API caller's
+    provider, a channel override), the backup it names is not the one running, so it is dropped rather
+    than blamed on that route."""
     if agent is None:
         return
-    if isinstance(failure, PrimaryAuthFailure) and failure.backup:
-        running = str(getattr(agent, "provider", "") or "").strip().lower()
-        if running and running != failure.backup.strip().lower():
-            failure = None
+    if isinstance(failure, PrimaryAuthFailure) and not _runs_the_backup(agent, failure):
+        failure = None
     agent._primary_auth_failure = failure if isinstance(failure, PrimaryAuthFailure) else None
+
+
+def _runs_the_backup(agent: Any, failure: PrimaryAuthFailure) -> bool:
+    """Whether ``agent`` runs the route the failure fell back to: same provider and, when both are
+    known, the same endpoint (normalized as route identity normalizes it)."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    running = str(getattr(agent, "provider", "") or "").strip().lower()
+    if failure.backup and running and running != failure.backup.strip().lower():
+        return False
+    running_url = normalize_route_base_url(getattr(agent, "base_url", "") or "")
+    backup_url = normalize_route_base_url(failure.backup_base_url)
+    return not (running_url and backup_url and running_url != backup_url)
 
 
 # The failure found while resolving this turn's route. A context variable, not a runner attribute: the

@@ -105,3 +105,32 @@ class _AgentWithProvider(_RecordingAgent):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.provider = kwargs.get("provider")
+
+
+class _AgentWithRoute(_RecordingAgent):
+    """The real AIAgent keeps the provider and endpoint it was built with."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.provider = kwargs.get("provider")
+        self.base_url = kwargs.get("base_url")
+
+
+def test_a_route_swapped_to_another_endpoint_of_the_same_provider_drops_the_primary_failure():
+    """``/model --once`` keeps the backup's provider slug (``anthropic``) but moves the turn to another
+    endpoint: that endpoint is not the backup the failure names, so its failure is its own."""
+    runner = _runner_with_real_runtime_resolution()
+
+    def once_to_another_endpoint(_turn, _policy, model, runtime_kwargs):
+        return model, {**runtime_kwargs, "base_url": "https://other-gateway.test/v1", "api_key": "k2"}
+
+    agent = _run(runner, _ctx(_AgentWithRoute),
+                 patch("gateway.session_cli_turn.one_turn_route", side_effect=once_to_another_endpoint))
+    assert (agent.provider, agent.base_url) == ("anthropic", "https://other-gateway.test/v1")
+    assert agent._primary_auth_failure is None
+
+
+def test_the_backup_endpoint_that_runs_keeps_the_primary_failure():
+    agent = _run(_runner_with_real_runtime_resolution(), _ctx(_AgentWithRoute))
+    assert (agent.provider, agent.base_url) == ("anthropic", "u")
+    assert agent._primary_auth_failure is not None

@@ -24,6 +24,7 @@ from agent.redact_headers import (
     redact_header_credentials,
 )
 from agent.redact_pattern_shape import _pattern_structure
+from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
 
 logger = logging.getLogger(__name__)
 
@@ -318,10 +319,8 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # line-start ``password=x``). Carve-outs vs prose/code/URLs: values stop at
 # whitespace AND ``&`` (form bodies go pair-by-pair via _redact_form_body);
 # _CFG_DOTTED_RE needs a NAMESPACED key; _CFG_ANCHORED_RE needs line start
-# (optionally after ``export``). The ``=`` separator tolerates horizontal whitespace
-# on both sides (``password = x``): the aligned layout INI/TOML files use, same
-# tolerance _YAML_ASSIGN_RE gives ``:``; ``(?!=)`` keeps ``password == x`` comparisons out.
-# The ``://`` URL guard lives at the call site.
+# (optionally after ``export``). The ``://`` URL guard lives at the call site.
+# The spaced ``key = value`` form is code-shaped too, so it has its own gate: agent/redact_spaced_cfg.py.
 # The uppercase _ENV_ASSIGN_RE above never matched these, so config-file passwords leaked verbatim (issue
 # #16413). These run only in a config-file context, NOT in prose, code, or URLs — three carve-outs preserved
 # from the original design (#4367 + the documented web-URL passthrough below): 1. The value is bounded by
@@ -352,7 +351,7 @@ _CFG_DOTTED_RE = re.compile(
     rf"(?<![A-Za-z0-9_.\-])"
     rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
     rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
-    rf"[ \t]*+=(?!=)[ \t]*+{_CFG_VALUE}",
+    rf"={_CFG_VALUE}",
     re.IGNORECASE,
 )
 # Line-anchored bare key: ``password=…`` / ``export api_key=…`` at start of line.
@@ -361,7 +360,7 @@ _CFG_DOTTED_RE = re.compile(
 # and ``cat -n`` emits ``     7\tADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those
 # matched, so the rendered read of a secret-bearing file leaked what the raw text masked.
 _CFG_ANCHORED_RE = re.compile(
-    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)[ \t]*+=(?!=)[ \t]*+{_CFG_VALUE}",
+    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -1344,6 +1343,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
             text = _CFG_DOTTED_RE.sub(_redact_env, text)
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)
+            text = redact_spaced_cfg_assignments(text, mask)
 
     if ":" in text and '"' in text:
         for pattern in (_SECRET_HEADER_JSON_RE, _COOKIE_HEADER_JSON_RE):

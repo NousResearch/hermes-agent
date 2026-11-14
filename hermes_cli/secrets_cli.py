@@ -447,7 +447,7 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[list[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    env = secret_cli_env()
+    env = secret_cli_env(*_load_bw().BWS_ENV_ALLOW)
     env["BWS_ACCESS_TOKEN"] = token
     if dropped := _load_bw().apply_server_url_to_env(env, server_url):
         console.print(f"  [yellow]{dropped}[/yellow]")

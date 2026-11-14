@@ -347,12 +347,13 @@ class StreamTransportMixin:
             self._message_created_ts = None
 
     @stops_reply_clock
-    async def _send_or_edit(
-        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
+    async def _send_or_edit(self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+                            redacted: bool = False) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
-        send; a transport returns None to fall through to the next."""
-        text = self._clean_for_display(text)
+        send; a transport returns None to fall through to the next.  ``redacted``: an interim
+        frame already redacted up to its settled boundary; a finalize is redacted whole regardless."""
+        text = self._display_text(text) if redacted and not finalize else self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.

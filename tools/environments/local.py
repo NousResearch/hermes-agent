@@ -18,18 +18,22 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _SHELL_ENV_NAME_RE
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, release_process_groups
+from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest, drop_bridge_markers
 from tools.environments.local_env_policy import (
-    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
-    _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
+    _home_adapter_secret_env, _home_declared_key_env, _matches_terminal_first_party_prefix,
+    _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+from hermes_cli._startup_fast import project_root_str
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -285,7 +289,7 @@ def _filter_secret_env(
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
-    registered = _registered_adapter_secret_env()
+    registered = _registered_adapter_secret_env() | _home_declared_key_env()
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
@@ -325,7 +329,8 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+        _filter_secret_env(drop_bridge_markers(dict(items)), out, unwrap_force=unwrap_force,
+                           plugin_strip=plugin_strip)
     # Declared names the bound profile scope holds but the process env never did (a routed
     # profile's own .env / sources) — the filter above can only see names already present.
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
@@ -379,7 +384,8 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
     home_secrets = _home_adapter_secret_env()  # one manifest stamp per scrub
     strip_folded = _ALWAYS_STRIP_FOLDED | {k.upper() for k in _plugin_terminal_env_strip_keys()} | home_secrets
-    registered = _registry_adapter_secret_env()  # home_secrets already strip above
+    registered = _registry_adapter_secret_env() | _home_declared_key_env()  # home_secrets already strip above
+    drop_bridge_markers(env)
     for key in list(env):
         if (key.upper() in strip_folded
                 or (not inherit_credentials and _is_provider_env_blocklisted(key, registered))
@@ -451,10 +457,11 @@ def served_profile_child_env(
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
+    routed = bool(target) and _is_routed_home(target)
     if target:
         env["HERMES_HOME"] = target
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
-        if _is_routed_home(target):
+        if routed:
             strip_launch_profile_env(env, target)
             _scrub_credentials(env, inherit_credentials=False)
     if inherit_credentials:
@@ -470,7 +477,23 @@ def served_profile_child_env(
         env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
         if not (_is_routed_home(target) if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
+    _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
     return env
+
+
+def _carry_bridge_markers(env: dict, source: Mapping[str, str], *, own_profile: bool) -> None:
+    """Keep a YAML-bridge ownership marker only on a child that serves the launch profile itself and
+    still holds the exact value the marker's digest names: that child (a daemon restart) re-bridges
+    the same ``config.yaml`` and must know which inherited values are the bridge's to refresh. A child
+    for any other profile, or one whose scrub dropped or replaced the value, never sees a marker."""
+    for key in [k for k in env if k.upper().startswith(BRIDGED_ENV_MARKER_PREFIX)]:
+        del env[key]
+    if not own_profile:
+        return
+    for key, digest in source.items():
+        name = key[len(BRIDGED_ENV_MARKER_PREFIX):]
+        if key.startswith(BRIDGED_ENV_MARKER_PREFIX) and name and bridged_env_digest(env.get(name)) == digest:
+            env[key] = digest
 
 
 def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) -> None:
@@ -549,6 +572,7 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
         | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
+    drop_bridge_markers(env)  # the LAUNCH profile's YAML values and their markers, never the target's
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
@@ -679,7 +703,7 @@ def _resolve_hermes_bin_dir() -> str | None:
 
     # A payload's venv also holds a `hermes`, but on Windows its redirector names the
     # build machine's interpreter, so PATH order must not decide which copy children get.
-    payload_dir = payload_command_dir(Path(__file__).resolve().parents[2])
+    payload_dir = payload_command_dir(Path(project_root_str()))
     if payload_dir is not None and payload_dir.is_dir():
         _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD = str(payload_dir), True
         return _HERMES_BIN_DIR
@@ -852,7 +876,7 @@ def _make_run_env(env: dict) -> dict:
 # tools``; other subprocesses must not inherit it. Aliases: launchers may emit other
 # spellings — the Windows gateway launcher renders Hermes-owned paths under the
 # configured HERMES_HOME spelling (possibly a junction to another drive).
-_hermes_repo_root: Path = Path(__file__).resolve().parents[2]
+_hermes_repo_root: Path = Path(project_root_str())
 _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
     _hermes_repo_root, Path(__file__).absolute().parents[2], get_process_hermes_home())
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
@@ -1103,9 +1127,11 @@ class LocalEnvironment(BaseEnvironment):
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
-        """Plus the plugins' session env names: each command gets its own session's values."""
+        """Plus the plugins' session env names: each command gets its own session's values. Plus the
+        config-declared key holders: a key the snapshot captured before its declaration stays out."""
         from hermes_cli.plugins_session_env import session_env_names
-        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names()}))
+        declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
@@ -1292,7 +1318,8 @@ class LocalEnvironment(BaseEnvironment):
         # See #38249.
         import glob
         try:
-            stale = glob.glob(f"{self._snapshot_path}.tmp.*")
+            # Delegated children's per-task snapshots (``_task_snapshot_path``) and their temps.
+            stale = glob.glob(f"{self._snapshot_path}.tmp.*") + glob.glob(f"{self._snapshot_path[:-3]}-*.sh*")
         except Exception:
             stale = []
         for f in (self._snapshot_path, self._cwd_file, *stale):

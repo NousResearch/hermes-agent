@@ -23,7 +23,8 @@ logger = logging.getLogger("tools.cronjob_tools")
 # survive normal English prose: classic prompt-injection directives ("ignore previous instructions",
 # "disregard your rules"), deception directives, and invisible unicode. `_scan_cron_skill_assembled()` runs
 # against the assembled prompt with this tighter pattern set. Both scanners share the invisible-unicode
-# check and the GitHub Authorization header exemption.
+# check. No host is exempt from the auth-header rule: a GitHub allowlist kept leaking via shell expansion
+# (#74667); cron prompts call GitHub through `gh api` or a `--script` instead.
 _CRON_THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
@@ -71,24 +72,6 @@ def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
     )
 
 
-def _strip_cron_safe_constructs(prompt: str) -> str:
-    """Scrub the bundled GitHub skill's `Authorization: token $GITHUB_TOKEN` + api.github.com
-    curl so it doesn't trip the auth-header exfil rule.
-
-    re.sub scrubs EVERY occurrence. The trailing ``[^\\s;&|$`]*`` consumes only the URL path —
-    never separators or subshell openers — so a payload smuggled onto the same line still gets
-    scanned. Host must be exactly api.github.com followed by ``/``, whitespace, quote, or end:
-    lookalike authorities (api.github.com.evil.com, api.github.com@evil.com) fall through.
-    """
-    return re.sub(
-        rf'curl\s+[^\n;&|$`]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?::\d+)?(?:/|\s|$|["\'])[^\s;&|$`]*',
-        'curl https://api.github.com/user',
-        prompt,
-        flags=re.IGNORECASE,
-    )
-
-
 def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     """Strip invisible-unicode chars, keeping ZWJ inside legitimate emoji.
 
@@ -107,13 +90,23 @@ def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     return ''.join(cleaned), sorted(removed)
 
 
+# Remedy appended to a refusal, by rule id: the refusal is all a user or the creating model sees
+# (create/update, API server, dashboard, blueprint import, and the BLOCKED delivery of a stored job).
+_CRON_PATTERN_REMEDIES = {
+    "exfil_curl_auth_header": (
+        " For an authenticated API call, use `gh api ...` for GitHub, or move the request into a"
+        " --script job that gets its token through terminal.env_passthrough (cron docs, Security)."
+    ),
+}
+
+
 def _first_pattern_error(text: str, *pattern_sets) -> str:
     for patterns in pattern_sets:
         for pattern, pid in patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 return (
                     f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not "
-                    "contain injection or exfiltration payloads."
+                    "contain injection or exfiltration payloads." + _CRON_PATTERN_REMEDIES.get(pid, "")
                 )
     return ""
 
@@ -122,12 +115,11 @@ def _scan_cron_prompt(prompt: str) -> str:
     """Strict scan of the USER-SUPPLIED prompt (create/update + runtime defense-in-depth).
     Returns an error string when blocked, else "". Invisible unicode is reported first, in
     ``_CRON_INVISIBLE_CHARS`` order (emoji ZWJ allowed)."""
-    prompt_to_scan = _strip_cron_safe_constructs(prompt)
-    removed = set(_strip_invisible_unicode(prompt_to_scan)[1])
+    removed = set(_strip_invisible_unicode(prompt)[1])
     for char in _CRON_INVISIBLE_CHARS:
         if f"U+{ord(char):04X}" in removed:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
-    return _first_pattern_error(prompt_to_scan, _CRON_THREAT_PATTERNS, _CRON_EXFIL_COMMAND_PATTERNS)
+    return _first_pattern_error(prompt, _CRON_THREAT_PATTERNS, _CRON_EXFIL_COMMAND_PATTERNS)
 
 
 def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
@@ -141,4 +133,4 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
             "char(s) (%s) from vetted skill content",
             len(removed), ", ".join(removed),
         )
-    return cleaned, _first_pattern_error(_strip_cron_safe_constructs(cleaned), _CRON_SKILL_ASSEMBLED_PATTERNS)
+    return cleaned, _first_pattern_error(cleaned, _CRON_SKILL_ASSEMBLED_PATTERNS)

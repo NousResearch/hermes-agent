@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import urllib.parse
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.providers import custom_provider_slug
@@ -92,6 +93,29 @@ def _pick_detected_model(detected_models: list) -> str:
     return line_input(manual).strip()
 
 
+def _key_for_endpoint(api_key: str, current_key: str, current_url: str, effective_url: str):
+    """The key to probe and save for *effective_url*; None when the user cancels.
+
+    The stored ``OPENAI_API_KEY`` belongs to ``OPENAI_BASE_URL`` (api.openai.com when unset).
+    A blank key prompt reuses it only for that same origin: a newly typed host gets asked
+    for its own key instead of receiving the old one."""
+    if api_key or not current_key:
+        return api_key
+    from utils import same_base_url_origin
+    key_url = current_url or "https://api.openai.com/v1"
+    if same_base_url_origin(key_url, effective_url):
+        return current_key
+    old, new = (urllib.parse.urlparse(u) for u in (key_url, effective_url))
+    new_origin = f"{new.scheme}://{new.netloc.rpartition('@')[2]}"
+    print(f"  The saved key is for {old.scheme}://{old.netloc.rpartition('@')[2]}; it is not sent to {new_origin}.")
+    from hermes_cli.secret_prompt import masked_secret_prompt
+    try:
+        return masked_secret_prompt(f"API key for {new_origin} [blank = no key]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return None
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name; also saved to ``custom_providers`` so
     it appears in the provider menu on subsequent runs."""
@@ -123,7 +147,9 @@ def _model_flow_custom(config):
     if not effective_url.startswith(_HTTP):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
-    effective_key = api_key or current_key
+    effective_key = _key_for_endpoint(api_key, current_key, current_url, effective_url)
+    if effective_key is None:
+        return
 
     # Most local servers (Ollama, vLLM, llama.cpp) need /v1 for OpenAI-compatible
     # chat completions — offer to append it when the URL looks local without it.
@@ -164,12 +190,15 @@ def _model_flow_custom(config):
     # (#69449, #77471). Configs written by older releases keep the ${VAR} they already reference.
     # An endpoint that already has a Hermes-written row keeps that row's variable, so a key
     # rotation reaches every block reading it instead of forking a second copy.
-    custom_key_env = ""
+    custom_key_env, shared_key_envs = "", []
     if effective_key:
         from hermes_cli.config import read_raw_config
-        from hermes_cli.config_secret_refs import endpoint_api_key_env, known_endpoint_key_env, store_secret
+        from hermes_cli.config_secret_refs import (
+            endpoint_api_key_env, known_endpoint_key_env, shared_endpoint_key_envs, store_secret,
+        )
         custom_key_env = (known_endpoint_key_env(read_raw_config(), effective_url)
                           or endpoint_api_key_env(effective_url))
+        shared_key_envs = shared_endpoint_key_envs(read_raw_config(), effective_url)
         try:
             store_secret(custom_key_env, effective_key, effective_url)
         except ValueError as exc:
@@ -178,6 +207,11 @@ def _model_flow_custom(config):
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:
+        from utils import same_base_url_origin
+        if not same_base_url_origin(str(model.get("base_url") or current_url), effective_url):
+            # An inline key (or its legacy ``api`` alias) was entered for the previous host.
+            model.pop("api_key", None)
+            model.pop("api", None)
         model["provider"] = "custom"
         model["base_url"] = effective_url
         # A previous endpoint's key_env pointer would outrank the credential written below.
@@ -213,6 +247,13 @@ def _model_flow_custom(config):
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length,
                           name=display_name, api_mode=api_mode, key_env=custom_key_env)
+    if shared_key_envs:  # e.g. a providers.<name> row for this endpoint, still on a variable it shares
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config_secret_refs import repoint_endpoint_key_env
+        cfg = load_config()
+        for shared_key_env in shared_key_envs:
+            repoint_endpoint_key_env(cfg, effective_url, shared_key_env, custom_key_env)
+        save_config(cfg)
     _prune_replaced_custom_model_config_credentials(effective_url, provider_name=display_name)
 
 
@@ -328,6 +369,7 @@ def _model_flow_named_custom(config, provider_info):
     from hermes_cli.main_provider_setup import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.route_identity import drop_credentials_of_other_route
     from hermes_cli.model_switch import _entry_models_discovered, _models_config_is_allowlist
     name = provider_info["name"]
     base_url = provider_info["base_url"]
@@ -392,6 +434,7 @@ def _model_flow_named_custom(config, provider_info):
     # Activate and save the model to the custom_providers entry
     _save_model_choice(model_name)
     cfg, model = _load_config_model_section()
+    prior = dict(model)
     # The endpoint being activated owns the credential: drop the previous endpoint's pointer
     # (key_env outranks the provider entry's own key at resolution time).
     model.pop("key_env", None)
@@ -405,6 +448,8 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = _custom_provider_base_url_config_value(provider_info, base_url)
         if config_api_key:
             model["api_key"] = config_api_key
+        else:
+            drop_credentials_of_other_route(model, prior)
     # Apply api_mode from custom_providers entry, or clear stale value
     if api_mode:
         model["api_mode"] = api_mode

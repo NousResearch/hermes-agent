@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
+from hermes_agent.compat.paths import original_path
+
 # Master switch, honoured everywhere the ratchet runs (CI, `scripts/check`, the git hooks). It is
 # read from main, never from the branch under test, so a PR cannot relax its own check: CI reads
 # the merge commit's first parent; local runs read `origin/main` (falling back to the merge-base).
@@ -180,6 +182,7 @@ ALLOW_SYNTAX = "# health: allow <RULE> -- <why>"
 
 
 def _matches(path: str, globs: tuple[str, ...]) -> bool:
+    path = original_path(path)
     return any(fnmatch(path, glob) for glob in globs)
 
 

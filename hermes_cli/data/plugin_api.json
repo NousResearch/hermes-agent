@@ -172,6 +172,17 @@
       "entries": [
         "hermes_cli.urllib_security:open_credentialed_url"
       ]
+    },
+    {
+      "source": "user-guide/features/plugins.md § A plugin with its own chat client",
+      "entries": [
+        "hermes_cli.chat_launch:hermes_command",
+        "hermes_cli.chat_launch:print_exit_summary",
+        "hermes_cli.gateway_chat:shell_client_env",
+        "hermes_cli.session_worktree:create",
+        "hermes_cli.session_worktree:restore",
+        "hermes_cli.session_worktree:finish"
+      ]
     }
   ]
 }

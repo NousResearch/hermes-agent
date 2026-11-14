@@ -140,12 +140,12 @@ def gpu_class() -> str:
     return value if value in contract.GPU_CLASSES else "unknown"
 
 
-def _is_local_endpoint(base_url: Any) -> bool:
+def _is_local_endpoint(base_url: Any, provider: str) -> bool:
     if not isinstance(base_url, str) or not base_url.strip():
         return False
-    from agent.model_metadata import is_local_endpoint
+    from agent.process_transport import is_local_server
 
-    return is_local_endpoint(base_url)
+    return is_local_server(base_url, provider)
 
 
 def _custom_base_url(provider: str) -> Any:
@@ -161,13 +161,13 @@ def _slot_is_local(slot: Any) -> bool:
     provider = _norm(_sub(slot, "provider"))
     if provider in _LOCAL_PROVIDER_ALIASES:
         return True
-    if _is_local_endpoint(_sub(slot, "base_url")):
+    if _is_local_endpoint(_sub(slot, "base_url"), provider):
         return True
     from .shared_metrics_catalog import CUSTOM, _safe as catalog_safe, user_named_model_providers
 
     if provider in catalog_safe(user_named_model_providers) - {CUSTOM}:
         return True
-    return provider not in _INHERITS_MAIN and _is_local_endpoint(_custom_base_url(provider))
+    return provider not in _INHERITS_MAIN and _is_local_endpoint(_custom_base_url(provider), provider)
 
 
 def _aux_slot_routes_itself(slot: dict[str, Any]) -> bool:

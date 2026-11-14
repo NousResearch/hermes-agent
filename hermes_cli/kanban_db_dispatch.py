@@ -27,6 +27,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -2121,8 +2122,8 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task  # reassigned since the gates: CAS loses (#147534)
+    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, expect_assignee=assignee)
     if claimed is None:
         return False
     try:
@@ -2173,37 +2174,6 @@ def _dispatch_lane_task(
         ):
             result.auto_blocked.append(claimed.id)
         return False
-
-
-def _apply_default_assignee(
-    conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
-) -> bool:
-    """Persist ``kanban.default_assignee`` on an unassigned ready row.
-
-    Mutating the row keeps board state honest: the task is legitimately owned
-    by the default, not "unassigned but secretly routed". ``dry_run`` reports
-    without writing. Returns False when the write failed.
-    """
-    if dry_run:
-        return True
-    try:
-        with _kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET assignee = ? WHERE id = ? "
-                "AND (assignee IS NULL OR assignee = '')",
-                (assignee, task_id),
-            )
-            _kb._append_event(
-                conn, task_id, "assigned",
-                {"assignee": assignee, "source": "kanban.default_assignee"},
-            )
-    except Exception:
-        _kb._log.debug(
-            "kanban dispatch: failed to apply default_assignee=%r to task %s",
-            assignee, task_id, exc_info=True,
-        )
-        return False
-    return True
 
 
 def _run_reclaim_phase(
@@ -2428,15 +2398,9 @@ def _dispatch_once_locked(
             break
         row_assignee = row["assignee"]
         if not row_assignee:
-            # Honour kanban.default_assignee so an unassigned task doesn't
-            # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
-            ):
-                result.skipped_unassigned.append(row["id"])
+            row_assignee = _kbda.fill_default_assignee(conn, row["id"], default_assignee, result, dry_run=dry_run)
+            if not row_assignee:
                 continue
-            row_assignee = default_assignee
-            result.auto_assigned_default.append(row["id"])
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
@@ -2686,9 +2650,8 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
-    from hermes_cli.kanban_worker_log import rotate_worker_log, worker_log_rotation_config
-    rotate_worker_log(log_path, *worker_log_rotation_config())
-    return open(log_path, "ab")
+    from hermes_cli.kanban_worker_log import open_worker_log
+    return open_worker_log(log_path)
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
@@ -2839,13 +2802,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
-    # The worker is `-m hermes_cli.kanban_worker_client`: Hermes itself, with no console-script
-    # bootstrap. The routed-profile scrub above strips Hermes-owned PYTHONPATH entries (user
-    # children must not see our tree), so a PYTHONPATH-launched dispatcher spawned a child that
-    # died on `No module named 'hermes_cli'` before it ever reached the owner. Same pin as cron's
-    # external worker (#112729): applied to the sanitized env, after every other decision stands.
+    # The worker is `-m hermes_cli.kanban_worker_client` with no console-script bootstrap, and the scrub
+    # above strips our PYTHONPATH entries, so a PYTHONPATH-launched dispatcher's child died on
+    # `No module named 'hermes_cli'` (#112729). Pinned last, after every other env decision.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    env = pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parent.parent)
+    env = pin_hermes_tree_on_pythonpath(env, Path(project_root_str()))
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
@@ -2940,4 +2901,5 @@ def run_daemon(
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli import kanban_db_default_assignee as _kbda
 from hermes_cli import kanban_db_workspace as _kbw

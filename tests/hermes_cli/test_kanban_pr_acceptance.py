@@ -219,6 +219,120 @@ def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_
     assert "GH_TOKEN" not in captured and "GITHUB_TOKEN" not in captured
 
 
+@pytest.mark.platforms("posix")
+def test_gh_env_carries_only_gh_credentials_not_the_whole_profile_scope(tmp_path, monkeypatch):
+    """#134669: gh needs only its own login, so the child env must not overlay the assignee
+    profile's entire secret scope — provider keys and adapter secrets stay out — while the
+    #122689 identity guarantees still hold (the assignee's own GH_TOKEN wins over ambient)."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text(
+        "GH_TOKEN=b-token\nWEIXIN_ADAPTER_SECRET=wx-secret-xyz\nPROVIDER_API_KEY=sk-zzz-999\n",
+        encoding="utf-8")
+    # Ambient residue that must not decide the login.
+    monkeypatch.setenv("GH_TOKEN", "launch-token")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env["GH_TOKEN"] == "b-token"  # assignee identity preserved over ambient
+    assert "WEIXIN_ADAPTER_SECRET" not in env  # non-gh profile secret stays out
+    assert "PROVIDER_API_KEY" not in env  # the assignee's provider key stays out too
+    # Ambient GH_CONFIG_DIR is dropped and no fail-closed pin fires (a GH_TOKEN exists),
+    # so gh's config dir is simply absent from the child env.
+    assert "GH_CONFIG_DIR" not in env
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("token_key", ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"])
+def test_enterprise_only_profile_still_gets_the_fail_closed_pin(tmp_path, monkeypatch, token_key):
+    """Every acceptance call targets github.com, where gh ignores the enterprise token vars and
+    GH_HOST. A profile holding only an enterprise login therefore has no github.com login: it
+    must get the pin, not fall through to the launcher's ~/.config/gh/hosts.yml (#134669)."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text(f"GH_HOST=ghe.corp\n{token_key}=ghe-token\n", encoding="utf-8")
+    monkeypatch.setenv("GH_TOKEN", "launch-token")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env.get("GH_TOKEN") != "launch-token"
+    assert token_key not in env and "GH_HOST" not in env
+    assert env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+
+
+@pytest.mark.platforms("posix")
+def test_gh_env_drops_ambient_enterprise_login_on_loginless_profile(tmp_path, monkeypatch):
+    """#134669 follow-up: the enterprise login keys are on no strip list, so an ambient
+    GHE token (the launcher's) surviving into a routed profile with no gh login of its
+    own would satisfy the fail-closed check and run gh as the launcher — the #122689
+    identity leak for GitHub Enterprise. The trio must be dropped, and the pin must fire."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("OPENAI_API_KEY=sk-aaa\n", encoding="utf-8")
+    # Ambient enterprise login the launcher happens to carry.
+    monkeypatch.setenv("GH_HOST", "ghe.corp")
+    monkeypatch.setenv("GH_ENTERPRISE_TOKEN", "launch-ghe")
+    monkeypatch.setenv("GITHUB_ENTERPRISE_TOKEN", "launch-ghe-2")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert "GH_HOST" not in env and "GH_ENTERPRISE_TOKEN" not in env
+    assert "GITHUB_ENTERPRISE_TOKEN" not in env
+    # No login of its own survived, so the fail-closed pin fires instead of a fall-through.
+    assert env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+
+
+@pytest.mark.platforms("posix")
+def test_gh_env_keeps_the_assignee_profiles_own_proxy(tmp_path, monkeypatch):
+    """A routed child loses the launcher's .env, so a proxy in the assignee's own .env must still
+    reach gh or it cannot reach github.com; a proxy is not a login, so the pin still fires."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("HTTPS_PROXY=http://corp-proxy:3128\nNO_PROXY=localhost\n",
+                                        encoding="utf-8")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env["HTTPS_PROXY"] == "http://corp-proxy:3128" and env["NO_PROXY"] == "localhost"
+    assert env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+
+
+@pytest.mark.platforms("posix")
+def test_gh_env_empty_transport_var_in_assignee_env_clears_the_inherited_one(tmp_path, monkeypatch):
+    """``NO_PROXY=`` in the assignee's .env clears a shell-wide ``NO_PROXY=*`` (else gh would bypass
+    the assignee's proxy); an empty login key still is no login, so the pin fires."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("NO_PROXY", "*")
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("GH_TOKEN=\nHTTPS_PROXY=http://corp-proxy:3128\nNO_PROXY=\n",
+                                        encoding="utf-8")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env["HTTPS_PROXY"] == "http://corp-proxy:3128" and env["NO_PROXY"] == ""
+    assert "GH_TOKEN" not in env and env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+
+
 def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):
     """A card assigned to a profile that no longer exists must not run gh as the completing
     process's ambient login: classification `auth` naming the profile, gh never invoked."""

@@ -99,13 +99,13 @@ def _defines_memory_provider(path: Path) -> bool:
 
 
 def _is_bundled(provider_dir: Path) -> bool:
-    return _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
+    return _loader.is_direct_child(provider_dir, _MEMORY_PLUGINS_DIR)
 
 
 def _module_name(provider_dir: Path, name: str) -> str:
     """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
     if _is_bundled(provider_dir):
-        return f"plugins.memory.{name}"
+        return f"{__package__}.{name}"
     # Separate package trees, including relative imports, across homes/sources.
     digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
     return f"{_USER_NAMESPACE}.{name}__source_{digest}"
@@ -150,13 +150,14 @@ def find_provider_dir(name: str) -> Optional[Path]:
     package dir. The entry-point case matters because ``config_schema.py`` and
     ``cli.py`` are read from disk, not imported; without a directory a pip-installed
     provider silently loses its dashboard panel and ``hermes <provider>`` commands."""
-    bundled = _MEMORY_PLUGINS_DIR / name
-    if bundled.is_dir() and (bundled / "__init__.py").exists():
-        return bundled
-    for source_dir in _external_source_dirs():
-        candidate = source_dir / name
-        if candidate.is_dir() and _is_memory_provider_dir(candidate):
-            return candidate
+    bundled = _loader.plugin_child_dir(_MEMORY_PLUGINS_DIR, name)
+    if bundled is not None:
+        if bundled.is_dir() and (bundled / "__init__.py").exists():
+            return bundled
+        for source_dir in _external_source_dirs():
+            candidate = source_dir / name
+            if candidate.is_dir() and _is_memory_provider_dir(candidate):
+                return candidate
     return _entry_point_package_dir(find_provider_entry_point(name))
 
 
@@ -285,7 +286,7 @@ def _load_package(provider_dir: Path, name: str):
     (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
     return _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
-        parents=("plugins", "plugins.memory"),
+        parents=(__package__.rpartition(".")[0], __package__),
         logger=logger,
         synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
     )
@@ -603,7 +604,7 @@ def parked_provider_notice(name: str) -> Optional[str]:
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
     """True when a NON-bundled provider is parked in ``plugins.disabled`` under any spelling the
     plugin commands write: the provider name, its directory name or its manifest ``name:``."""
-    if _MEMORY_PLUGINS_DIR in provider_dir.parents:
+    if _is_bundled(provider_dir):
         return False
     try:
         from hermes_cli.config import load_config

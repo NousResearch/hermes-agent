@@ -41,6 +41,17 @@ from gateway.platforms._shared import extra_or_secret as _extra_or_secret
 from gateway.platforms._shared import platform_gate_env as _auth_env
 
 
+def _space_has_thread_of_another_profile(routes, space: str, profile: str) -> bool:
+    """Whether a route pins a thread of Google Chat *space* to a profile other than *profile*. A
+    thread-less Google Chat send outside cron replies under the space's last inbound thread
+    (``GoogleChatAdapter._resolve_thread_id``), so the gate cannot tell which conversation it
+    reaches once any thread there belongs to another profile."""
+    return any(
+        r.platform == "google_chat" and r.thread_id and r.profile != profile
+        and (r.chat_id == space or str(r.thread_id).startswith(f"{space}/threads/"))
+        for r in routes)
+
+
 def _env_truthy(name: str) -> bool:
     return _auth_env(name).lower() in _TRUTHY
 
@@ -236,6 +247,68 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
+    def _shared_bot_target_allowed(self, platform: Platform, profile: Optional[str], chat_id,
+                                   thread_id=None) -> bool:
+        """Whether *profile* may send to a caller-chosen target through the adapter
+        ``_adapters_for_profile`` gave it. A shared-bot satellite's map borrows the primary's bots
+        unscoped (restored sources need that), so a target it picks itself — config- or
+        payload-rendered — must be one an enabled default-bot route maps to it: the cron rule
+        (``SharedRouteAdapters``). Its own adapter, the primary and every non-satellite pass. The
+        target only exists at send time, so this check cannot move into the adapter map."""
+        profile_name = (profile or "").strip()
+        if not profile_name or profile_name == "default" or not self._is_shared_bot_satellite(profile_name):
+            return True
+        if platform in (self._profile_adapters_map().get(profile_name) or {}):
+            return True
+        dispatch_routes = [r for r in getattr(self.config, "profile_routes", None) or []
+                           if r.enabled and r.bot_profile is None]
+        if (platform.value == "google_chat" and not thread_id
+                and _space_has_thread_of_another_profile(dispatch_routes, str(chat_id or ""), profile_name)):
+            return False
+        if self._is_routed_turn_origin(platform, profile_name, chat_id, thread_id):
+            return True
+        from cron.scheduler_preflight import SharedRouteAdapters
+        routes = [r for r in dispatch_routes if r.profile == profile_name]
+        sentinel = object()
+        target = {"chat_id": str(chat_id or ""), "thread_id": str(thread_id) if thread_id else None}
+        shared = SharedRouteAdapters({platform: sentinel}, routes, dispatch_routes=dispatch_routes)
+        return shared.get(platform, target) is sentinel
+
+    def _is_routed_turn_origin(self, platform: Platform, profile: str, chat_id, thread_id=None) -> bool:
+        """Whether the target is in the running turn's own chat and the inbound matcher
+        (``_default_bot_routes_to``) would dispatch it to *profile*. Guild-only routes, a channel
+        route's threads and non-Telegram ``user_id`` routes hand a satellite that conversation without
+        making it a ``SharedRouteAdapters`` target; its reply already goes there through the shared bot
+        (``_routed_primary_adapter``), so its tools may act there too. The target id carries no guild,
+        parent or sender, so it borrows the origin's, which is only sound for the origin chat. Cron
+        binds no origin and the webhook leg runs as ``webhook``, so both keep the stricter rule."""
+        from gateway.session_context import get_session_env
+        from cron.scheduler_preflight import _CHAT_SCOPED_THREAD_PLATFORMS
+        origin_chat = get_session_env("HERMES_SESSION_CHAT_ID")
+        if (not origin_chat or get_session_env("HERMES_SESSION_PLATFORM") != platform.value
+                or str(chat_id or "") != origin_chat):
+            return False
+        origin_thread = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        target_thread = str(thread_id) if thread_id else None
+        # Match the thread the send actually reaches. Where thread ids are global (not chat-scoped),
+        # a thread id carries none of the origin's guild or parent, so only the origin's own thread
+        # qualifies. A thread-less target is the origin thread only where the thread IS the chat
+        # (Discord: chat_id == thread_id); everywhere else (Feishu, Google Chat, Buzz, and the
+        # chat-scoped platforms) it is the chat's top level, which a thread-pinned route never
+        # dispatches to the profile.
+        if platform.value not in _CHAT_SCOPED_THREAD_PLATFORMS:
+            if target_thread is not None and target_thread != origin_thread:
+                return False
+        if target_thread is None and origin_thread == origin_chat:
+            target_thread = origin_thread
+        target = SessionSource(
+            platform=platform, chat_id=origin_chat, thread_id=target_thread,
+            scope_id=get_session_env("HERMES_SESSION_SCOPE_ID") or None,
+            parent_chat_id=get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None,
+            # A shared chat binds no route user; the turn's sender is the one dispatch matched.
+            user_id=get_session_env("HERMES_SESSION_USER_ID") or get_session_env("HERMES_SESSION_ACTOR_ID") or None)
+        return self._default_bot_routes_to(target, profile)
+
     def _routed_primary_adapter(self, source: Optional[SessionSource]):
         """The primary's transport for *source* when it is a routed destination of a shared-bot satellite.
 
@@ -361,8 +434,10 @@ class GatewayAuthorizationMixin:
         with a bot of its own). With no live provenance the unique owner of ``(platform,
         runtime_profile)`` delivers — ``_adapters_for_profile`` holds one adapter per platform per
         profile, a shared-bot satellite drains through the primary, and a disconnected secondary
-        fails closed to ``{}`` rather than borrowing the default bot. Restored sessions, cron,
-        kanban and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
+        fails closed to ``{}`` rather than borrowing the default bot. When that profile has no native
+        adapter for the platform, the Relay that fronts it delivers (:meth:`_fronting_relay`).
+        Restored sessions, cron, kanban and completion notices all rely on this row. Matrix:
+        gateway/AGENTS.md § Profile scope.
         """
         if source is None:
             return None
@@ -377,6 +452,8 @@ class GatewayAuthorizationMixin:
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter
+        # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
+        platform, profile = getattr(source, "platform", None), getattr(source, "profile", None)
         # A pinned identity NAMES the receiving bot (live or restored from ``transport_profile``).
         # If that bot has no adapter right now it is offline: fail closed rather than fall through to
         # the runtime profile's bot — that fallthrough is the "restored lane answers from the wrong
@@ -385,14 +462,26 @@ class GatewayAuthorizationMixin:
         from gateway.session_identity import identity_of
         identity = identity_of(source)
         if self._names_receiving_bot(source, identity):
+            return self._fronting_relay(platform, identity.transport_profile)
+        # Preserve the routed-primary native fallback before considering Relay.
+        adapter = self._authorization_adapter(platform, profile) or self._routed_primary_adapter(source)
+        return adapter if adapter is not None else self._fronting_relay(platform, profile)
+
+    def _fronting_relay(self, platform: Optional[Platform], profile: Optional[str]):
+        """The Relay in *profile*'s adapter map that fronts *platform*, else None.
+
+        A relayed source loses its wire-invisible relay marker when it is restored from durable state,
+        and the Relay is registered under ``Platform.RELAY``, not the logical platform it fronts, so the
+        native lookups miss it. Same rule as ``resolve_delivery_transport`` (native wins; Relay only
+        when its transport advertises the platform). Only the primary's map holds the Relay, so a
+        secondary that owns its bots still fails closed."""
+        adapters = self._adapters_for_profile(profile)
+        config = getattr(self, "config", None)
+        if platform is None or config is None or Platform.RELAY not in adapters:
             return None
-        # No identity, or one whose transport was only guessed (hand-built source, pre-column row, a
-        # primary guess an older release saved):
-        # the unique owner of ``(platform, runtime_profile)`` delivers.
-        # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        # A satellite with no bot on the platform borrows the primary only for its routed chats.
-        return (self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
-                or self._routed_primary_adapter(source))
+        from gateway.delivery import resolve_delivery_transport
+        transport = resolve_delivery_transport(platform, config, adapters)
+        return transport.adapter if transport is not None else None
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""
@@ -468,8 +557,14 @@ class GatewayAuthorizationMixin:
         source = getattr(entry, "origin", None)
         if source is None:
             return None
-        from gateway.session_identity import restore_identity
+        from gateway.session_identity import identity_of, restore_identity
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
+        if (getattr(getattr(self, 'config', None), 'multiplex_profiles', False)
+                and not self._names_receiving_bot(source, identity_of(source))
+                and self._fronting_relay(source.platform, None) is not None):
+            from gateway.session_native_recovery_routes import verified_restored_relay_source
+            if verified := verified_restored_relay_source(self, entry):
+                return verified
         return source
 
     def _adapter_flag(self, platform, name: str, profile) -> bool:

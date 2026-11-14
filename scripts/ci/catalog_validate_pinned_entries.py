@@ -25,6 +25,7 @@ Exit 0 = every entry passed, 1 = at least one failed (one ``::error file=<entry>
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -68,6 +69,11 @@ def _file_fetches_github(path: str) -> bool:
 _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync"
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")
+# Maintainer-reviewed exceptions to the self-updater gate: a file that downloads a THIRD-PARTY tool
+# pinned by checksum (not the plugin's own code) and unpacks it into its cache. Keyed by repo +
+# pinned sha + path + the file's sha256, so a re-pin or any edit to the file is gated again. It
+# lives under scripts/ci/, which an entry PR may not touch (catalog_changed_entries.py).
+_SELF_UPDATER_ALLOWLIST = Path(__file__).resolve().with_name("catalog_self_updater_allowlist.json")
 # 600s: listed repos reach >1 GB (hermes-jackal-verified 1.43 GB, hindsight 741 MB); 120s would
 # false-fail a re-pin on a slow runner.
 _CLONE_SECONDS = 600
@@ -199,7 +205,18 @@ def _check_payloads(plugin_dir: str) -> None:
         raise EntryRejected(f"unscannable executable payload (README rule 17): {found}")
 
 
-def _check_self_updater(plugin_dir: str) -> None:
+def _allowlisted(path: str, plugin_dir: str, repo: str, sha: str) -> bool:
+    rel = os.path.relpath(path, plugin_dir)
+    try:
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return any(row.get("repo") == repo and row.get("sha") == sha and row.get("path") == rel
+               and row.get("sha256") == digest
+               for row in json.loads(_SELF_UPDATER_ALLOWLIST.read_text(encoding="utf-8-sig")))
+
+
+def _check_self_updater(plugin_dir: str, repo: str = "", sha: str = "") -> None:
     # SELF-UPDATER GATE (README rule 3): the pin is the only update path. A desktop bundle that
     # both fetches from GitHub AND writes/renames plugin files is a self-updater; either half
     # alone is fine (a plugin may read the API, or manage its own data files). NUL-delimited
@@ -218,7 +235,9 @@ def _check_self_updater(plugin_dir: str) -> None:
     writers = subprocess.run(["xargs", "-r0", "grep", "-lZE", _SELF_UPDATE_WRITE],
                              input=real, stdout=subprocess.PIPE, check=False,
                              timeout=_VALIDATE_SECONDS).stdout
-    found = _substituted(writers).replace("\n", " ")
+    flagged = [p for p in writers.split(b"\0")
+               if p and not _allowlisted(os.fsdecode(p), plugin_dir, repo, sha)]
+    found = _substituted(b"\0".join(flagged)).replace("\n", " ")
     if found:
         raise EntryRejected("self-updating code in catalog build (fetches GitHub AND writes "
                             f"plugin files): {found}")
@@ -249,7 +268,7 @@ def validate_entry(entry: str, workroot: str) -> None:
     validate = ["hermes", "plugins", "validate", "--install-deps", plugin_dir]
     if _run(validate, timeout=_VALIDATE_SECONDS).returncode != 0:
         raise EntryRejected("hermes plugins validate failed")
-    _check_self_updater(plugin_dir)
+    _check_self_updater(plugin_dir, repo, sha)
     _check_attested(fields["ATTESTED"], plugin_dir, repo, sha)
     _check_payloads(plugin_dir)
 

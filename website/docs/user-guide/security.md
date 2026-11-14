@@ -239,6 +239,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 | `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker`/`podman` `rm`, `container rm/remove`, `volume rm/remove/prune`, `container/system prune`; `podman system reset`; `docker compose rm` / `docker-compose rm` | Container and volume destruction (`image rm`/`rmi`/`network rm` stay ungated: a pull or recreate restores them) |
 | `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
 | `docker context use` | Switches the default daemon for all future docker commands |
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
@@ -321,6 +322,8 @@ When both are set, a narrowed `approvers` takes precedence: it is the explicit a
 | `approvers` narrowed (with or without `allow_admin_from`) | the requester, the listed ids, the scope's admins |
 
 A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
+
+Discord interactions through the relay are checked more tightly. The relay forwards a Discord button press or application command (such as `/approve` or `/deny`) without checking who sent it. So under `approvers: ["*"]`, a member answers with one only once the relay has delivered one of their messages to this gateway (since it last started); anyone else must be the requester or one of the scope's admins, on top of the rules above. Other senders get the same note and the prompt stays pending. Any other Discord interaction (an application command such as `/status` or `/new`, a modal) from a sender the relay has not delivered a message from is dropped unless they are one of the scope's admins. When Hermes starts again, a member's application commands do nothing until they have sent a message. Ordinary messages, and button presses on the relay's other platforms, keep the rules above.
 
 Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
 
@@ -806,7 +809,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_exec`, and all URL-capable tools.
+When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced on `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it, so the page is withheld from the agent but the host still saw the request. `web_search` takes a query, not a URL, so it is not gated, and its result list is not filtered. Kanban URL attachments, cron URL monitors and gateway media downloads apply only the private-address SSRF check.
 
 See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 

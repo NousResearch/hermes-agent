@@ -140,6 +140,42 @@ def _status_model_route(
     return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}
 
 
+def _routes_for_default(default_route: tuple[str, str], persisted_route: dict, session_row: dict):
+    """``(persisted_route, session_row)`` with any recorded route that disagrees with the chat's
+    default ``(model, provider)`` replaced by that default (#130572). A recorded route agrees when
+    the model matches and so does the provider (when the default names one)."""
+    model, provider = default_route
+    if not model:
+        return persisted_route, session_row
+
+    def _agrees(row_model, row_provider) -> bool:
+        return _clean_str(row_model) == model and (not provider or _clean_str(row_provider) == provider)
+
+    if not _agrees(persisted_route.get("model"), persisted_route.get("billing_provider")):
+        persisted_route = {}
+    if not _agrees(session_row.get("model"), session_row.get("billing_provider")):
+        session_row = {**session_row, "model": model, "billing_provider": provider}
+    return persisted_route, session_row
+
+
+def _fallback_suffix(agent, shown_model: str) -> str:
+    """`` — fallback for `primary` `` when *agent* runs *shown_model* on a provider fallback (#133993).
+
+    ``/model`` reports the configured/session route, so without the label a turn-scoped fallback
+    makes /status and /usage name a model the user never picked. ``_provider_fallback_active``, not
+    ``_fallback_activated``: a planned route change (a voice-note turn) sets the latter too. A
+    same-model fallback on another provider names the primary's provider."""
+    if getattr(agent, "_provider_fallback_active", False) is not True:
+        return ""
+    if _clean_str(getattr(agent, "model", "")) != shown_model:
+        return ""
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    primary, primary_provider = _clean_str(rt.get("model")), _clean_str(rt.get("provider"))
+    if primary == shown_model and primary_provider:
+        primary = f"{primary} ({primary_provider})"
+    return t("gateway.shared.fallback_model_suffix", primary=primary) if primary else ""
+
+
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     """/context full view: auto-compression threshold/headroom, compression count + last savings,
     and cumulative throughput (labelled as throughput, NOT context size)."""
@@ -208,7 +244,7 @@ def _usage_agent_stats_lines(agent) -> list[str]:
         lines += [t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)), ""]
     lines += [
         t("gateway.usage.header_session"),
-        t("gateway.usage.label_model", model=agent.model),
+        t("gateway.usage.label_model", model=agent.model) + _fallback_suffix(agent, _clean_str(agent.model)),
         t("gateway.usage.label_input_tokens", count=_fmt(_n(agent, "session_input_tokens"))),
         t("gateway.usage.label_output_tokens", count=_fmt(_n(agent, "session_output_tokens"))),
         t("gateway.usage.label_total", count=_fmt(agent.session_total_tokens)),
@@ -262,6 +298,11 @@ class GatewayStatusCommandsMixin:
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
+        if (status_agent is None or status_agent is _AGENT_PENDING_SENTINEL) and not active_override.get("model"):
+            # Nothing resident and no /model pin: the next turn runs the channel/config default, so a
+            # SessionDB route recorded under an older default is history, not the current model.
+            default_route = await asyncio.to_thread(self._status_next_turn_route, source, session_key)
+            persisted_route, session_row = _routes_for_default(default_route, persisted_route, session_row)
         model_name, provider_name, context_used, context_total, route = _status_model_route(
             status_agent, active_override, persisted_route, session_row, session_entry
         )
@@ -284,10 +325,11 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.title", title=fields["title"]))
         lines += [t("gateway.status.created", timestamp=fields["created"]),
                   t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        fallback = _fallback_suffix(status_agent, fields["model"])
         if fields["model"] and fields["provider"]:
-            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]) + fallback)
         elif fields["model"]:
-            lines.append(t("gateway.status.model", model=fields["model"]))
+            lines.append(t("gateway.status.model", model=fields["model"]) + fallback)
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
@@ -319,6 +361,23 @@ class GatewayStatusCommandsMixin:
             ]
         lines += ["", t("gateway.status.platforms", platforms=', '.join(p.value for p in self.adapters))]
         return "\n".join(lines)
+
+    def _status_next_turn_route(self, source, session_key) -> tuple[str, str]:
+        """``(model, provider)`` the next turn resolves for this session, from the turn's own resolver
+        (``_resolve_session_agent_runtime``: a LOCAL session's frozen launch policy, channel_overrides
+        incl. provider-only ones, then the profile's config) inside the owning profile's scope, which
+        slash dispatch does not bind on a multiplexed runner. ``("", "")`` when it cannot resolve: the
+        recorded route is then left as is rather than replaced by a guess."""
+        try:
+            with self._profile_scope_for_source(source):
+                # record_notice=False: the runner's fallback notice is another turn's one-shot slot.
+                model, runtime = self._resolve_session_agent_runtime(
+                    source=source, session_key=session_key, fallback=False, record_notice=False)
+        except Exception:  # health: allow BLE001 -- /status is fail-open; the turn reports the error
+            logger.debug("/status could not resolve the next turn's route", exc_info=True)
+            return "", ""
+        # The agent records its runtime provider as the usage row's billing_provider.
+        return _clean_str(model), _clean_str(runtime.get("provider"))
 
     async def _status_session_db_facts(self, session_id: str):
         """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.

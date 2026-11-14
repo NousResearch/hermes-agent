@@ -135,6 +135,15 @@ class ForwardedApproval:
     notifier_profile: str
     notifier_home: str
 
+    def authorize(self, adapter, **context) -> bool:
+        return authorize_forwarded_callback(adapter, self, **context)
+
+    def log_refusal(self, reason: str, *, user_id, chat_id, thread_id) -> None:
+        log_forwarded_callback_refusal(self, reason, user_id=user_id, chat_id=chat_id, thread_id=thread_id)
+
+    async def respond(self, choice, *, user_id, chat_id, thread_id):
+        return await respond_forwarded(self, choice, user_id=user_id, chat_id=chat_id, thread_id=thread_id)
+
 
 def authorize_forwarded_callback(adapter, binding: ForwardedApproval, **context) -> bool:
     """Re-read the current allowlist under the immutable notifier scope, failing closed."""

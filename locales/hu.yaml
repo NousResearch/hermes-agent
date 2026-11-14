@@ -167,7 +167,7 @@ gateway:
     upload_failed: "✗ Nem sikerült feltölteni a hibakeresési jelentést: {error}"
     header: "**Hibakeresési jelentés feltöltve:**"
     auto_delete: "⏱ A beillesztések 6 óra múlva automatikusan törlődnek."
-    full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
+    full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share --nous` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
     local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
@@ -607,6 +607,7 @@ gateway:
     disabled: "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
     enabled: "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
   shared:
+    fallback_model_suffix: " — tartalék ehhez: `{primary}`"
     session_db_unavailable: "A munkamenet-adatbázis nem érhető el."
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found: "A munkamenet nem található az adatbázisban."
@@ -818,6 +819,7 @@ gateway:
     ack_generate: "AGENTS.md létrehozása a projekt átvizsgálása alapján…"
   moa:
     prepare_failed: "Nem sikerült előkészíteni a MoA kört."
+    managed_session: "A /moa nem érhető el ebben a munkamenetben: a csökkentett módú, konfiguráció nélküli, kanban és felügyelt workeres munkamenetek minden kört a saját modelljükön futtatnak. Küldd el a promptot /moa nélkül."
   quick_command:
     no_output: "A parancs nem adott kimenetet."
     timed_out: "A gyorsparancs időtúllépés miatt leállt (30 s)."
@@ -997,6 +999,16 @@ platform:
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
   shared:
+    vault_code:
+      title: "🔐 Ellenőrző kód: {site}"
+      body: "A(z) {site} egyszer használatos kódot kér (SMS vagy e-mail). Nyomd meg a gombot, és írd be a megnyíló űrlapba: a kód közvetlenül az oldalra kerül, és soha nem jelenik meg itt."
+      button: "Kód megadása"
+      modal_title: "Kód: {site}"
+      input_label: "Egyszer használatos kód"
+      submitted: "Kód elküldve; beírás az oldalra folyamatban."
+      ended: "Ez a kódkérés lezárult; semmi nem lett beírva."
+      not_author: "Csak az adhatja meg a kódot, aki ezt a kérést elindította."
+      submitted_footer: "✓ Kód elküldve"
     response_as_file: "📎 Hosszú válasz: a teljes szöveg csatolva."
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"
@@ -1212,6 +1224,9 @@ platform:
       upload_too_large: "⚠️ Nem sikerült csatolni: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét ebben a csatornában. Tömörítsd a fájlt, vagy ossz meg egy linket helyette."
       image_skipped_too_large: "⚠️ Kihagyva: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét."
   telegram:
+    vault_code:
+      body: "Válaszolj erre az üzenetre a kóddal. A Hermes azonnal törli a válaszodat, és beírja a kódot az oldalba; a modell soha nem látja."
+      delete_failed: "Nem sikerült törölni a válaszodat. Kérlek, töröld te."
     approval:
       action_once: "✅ Egyszer"
       action_session: "✅ Munkamenet"
@@ -1269,6 +1284,11 @@ platform:
       affirm: "✓ Igen"
       negate: "✗ Nem"
       other: "✏️ Egyéb (írd be a választ)"
+      multi_hint: "Válassz egyet vagy többet, majd koppints a Küldésre."
+      send: "✅ Küldés"
+      selected_count: "Kiválasztva: {count}"
+      select_one: "Előbb válassz legalább egy lehetőséget."
+      toggle_failed: "Nem sikerült frissíteni a kijelölést — koppints újra."
       expired_toast: "⚠️ Ez a kérdés lejárt — kérd újra: /retry."
       expired_body: "⚠️ Ez a kérdés lejárt vagy a munkamenet alaphelyzetbe állt — kérd újra: /retry."
       type_answer: "✏️ Írd be a választ a csevegésbe."
@@ -1726,7 +1746,7 @@ slash:
   version:
     description: "A Hermes Agent verziójának megjelenítése"
   debug:
-    description: "Hibakeresési jelentés (rendszerinfó + naplók): előbb az adatvédelmi tájékoztató; a /debug upload linkeket oszt meg"
+    description: "Hibakeresési jelentés (verziók, konfigurációs kulcsok, hibaszámok; naplószöveg nélkül): előbb az adatvédelmi tájékoztató; a /debug upload linkeket oszt meg"
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
@@ -3325,6 +3345,10 @@ cli:
     total: "📚 {count} skill érhető el"
     added_header: "➕ Hozzáadott skillek:"
     removed_header: "➖ Eltávolított skillek:"
+  gateway_restart:
+    waiting: "A Hermes újraindul egy frissítés vagy újraindítás befejezéséhez; várakozás a visszatérésére…"
+    timed_out: "A Hermes nem tért vissza időben az újraindulásból. Nézd meg: `hermes gateway status`, majd indítsd újra a `hermes` parancsot."
+    stopped: "A Hermes újraindulására való várakozás leállítva; semmi sem indult el."
   session_store:
     unavailable_rich: "[bold yellow]⚠ A munkamenet-tároló nem érhető el[/bold yellow] — ez a beszélgetés [bold]NEM lesz mentve[/bold], és később nem folytatható. A korábbi munkamenetek keresése is le van tiltva.\n  Ok: {reason}.\n  {action}\n  [dim]Részletek: {details}[/dim]"
     unavailable_plain: "FIGYELEM: A munkamenet-tároló nem érhető el — ez a beszélgetés NEM lesz mentve, és később nem folytatható. Ok: {reason}. {action}"
@@ -3840,7 +3864,7 @@ tips:
   t246: "A HERMES_HOME_MODE környezeti változó (oktális, pl. 0701) egyedi mappajogosultságot állít be a webszerver bejárásához."
   t247: "Konténer mód: helyezz egy .container-mode fájlt a HERMES_HOME-ba, és a gazda CLI automatikusan a konténerbe lép át."
   t248: "A Ctrl+C 5 prioritási szinttel bír: felvétel megszakítása → bekérések megszakítása → választó bezárása → ügynök megszakítása → kilépés."
-  t249: "Az ügynök futása közbeni minden megszakítás időbélyeggel a ~/.hermes/interrupt_debug.log fájlba kerül."
+  t249: "Az ügynök futása közbeni megszakítások az agent.log fájlba kerülnek (megtekintés: `hermes logs`); részletes nyomkövetéshez állítsd be: HERMES_DEBUG_INTERRUPT=1."
   t250: "A BROWSER_CDP_URL bármely futó Chromium-alapú böngészőhöz kapcsolja a böngészőeszközöket – elfogad WebSocket, HTTP vagy host:port címet."
   t251: "A BROWSERBASE_ADVANCED_STEALTH=true fejlett felismerés elleni védelmet kapcsol be egyedi Chromiummal (Scale csomag)."
   t252: "A CLI 80 oszlopnál keskenyebb terminálban automatikusan kompakt módra vált."
@@ -3937,7 +3961,7 @@ tips:
   t343: "A /voice tts a csak-TTS módot kapcsolja — az ügynök hangosan válaszol, de a promptjaidat továbbra is gépeled."
   t344: "A /reload-skills újraolvassa a ~/.hermes/skills/ mappát, így a bemásolt skillek a munkamenet újraindítása nélkül megjelennek."
   t345: "A /indicator kaomoji|emoji|unicode|ascii kiválasztja a TUI elfoglaltságjelzőjének stílusát, amely az ügynök futása alatt látszik."
-  t346: "A /debug feltölt egy támogatási csomagot (rendszerinfó + naplók), és megosztható linkeket ad vissza — chatben is működik."
+  t346: "A /debug upload feltölt egy összefoglalót (verziók, konfigurációs kulcsok, hibaszámok; naplószöveg nélkül), és megosztható linket ad vissza — chatben is működik."
   t347: "A hermes -z \"<prompt>\" a legtisztább egylövetű mód: csak a végső válasz a stdout-on, semmi más — ideális szkriptekben csövezéshez."
   t348: "A hermes chat --pass-session-id beszúrja a munkamenet-azonosítót a rendszerpromptba, hogy az ügynök hivatkozhasson rá."
   t349: "A hermes chat --image path/to/pic.png helyi képet csatol egyetlen -q lekérdezéshez külön feltöltési lépés nélkül."

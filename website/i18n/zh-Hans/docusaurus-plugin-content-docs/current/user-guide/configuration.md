@@ -74,6 +74,8 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 
 路径部分只在不是 `/v1` 时才加入变量名。不全是小写的插件任务键（如 `My_Task`）也会追加 `_<HASH>`，因此不会与 `my_task` 共用变量。`<HASH>` 是由完整端点 URL（或提供商名称）计算出的 8 位十六进制字符，因此名称相近的端点（如 `my-host.com` 与 `my.host.com`）不会共用同一个变量。若 `config.yaml` 中另一个端点已读取某个变量且其值不同，Hermes 会拒绝覆盖它。以引用形式输入的值（`hermes config set model.api_key '${MY_KEY}'`）按原样保存。这些变量总会从终端和子进程环境中移除，即使 `env_passthrough` 列出了它们或启用了 `inherit_credentials`。使用远程配置后端时（不同主机之间不共享 `.env`），值按原样保存。
 
+正在运行的网关会在每轮开始时重新读取 `.env`，因此下一条消息无需重启即可使用新保存的密钥。只在启动时读取 `.env`、且不由网关轮次驱动的进程，需要执行 `/reload` 或重启后才会读取新密钥；在此之前，刚保存密钥的辅助任务会把未展开的 `${VAR}` 文本当作密钥发送。
+
 `config.yaml` 中已有的内联凭据仍然有效，不会被迁移，但不推荐使用。可用 `hermes config set <字段> <值>` 手动迁移，它会把值改写为引用。
 
 ## 环境变量替换

@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header: "**Tuairisc dhífhabhtaithe uaslódáilte:**"
     auto_delete: "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
-    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
+    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share --nous` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
     local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug upload` chun an achoimre a uaslódáil."
@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
     enabled: "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
   shared:
+    fallback_model_suffix: " — cúltaca do `{primary}`"
     session_db_unavailable: "Níl bunachar sonraí na seisiún ar fáil."
     session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"
     session_not_found: "Seisiún gan a aimsiú sa bhunachar sonraí."
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "Ag giniúint AGENTS.md ó scanadh tionscadail…"
   moa:
     prepare_failed: "Theip ar sheal MoA a ullmhú."
+    managed_session: "Níl /moa ar fáil sa seisiún seo: ritheann seisiúin mhód sábháilte, gan chumraíocht, kanban agus oibrí bainistithe gach seal ar a samhail féin. Seol an leid gan /moa."
   quick_command:
     no_output: "Níor chuir an t-ordú aon aschur ar ais."
     timed_out: "Chuaigh an mear-ordú thar am (30s)."
@@ -983,6 +985,16 @@ platform:
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
   shared:
+    vault_code:
+      title: "🔐 Cód fíoraithe do {site}"
+      body: "Tá cód aonúsáide (téacs nó ríomhphost) á iarraidh ag {site}. Brúigh an cnaipe agus clóscríobh é san fhoirm a osclaíonn: téann sé díreach isteach sa leathanach agus ní phostáiltear anseo é choíche."
+      button: "Cuir isteach cód"
+      modal_title: "Cód do {site}"
+      input_label: "Cód aonúsáide"
+      submitted: "Cód seolta; á chur isteach sa leathanach."
+      ended: "Tá an t-iarratas cóid seo thart; níor cuireadh aon rud isteach."
+      not_author: "Ní féidir ach leis an duine a thosaigh an t-iarratas seo an cód a chur isteach."
+      submitted_footer: "✓ Cód seolta"
     response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
@@ -1195,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Níorbh fhéidir `{filename}` a cheangal — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord don chainéal seo. Dlúthaigh an comhad nó roinn nasc ina ionad."
       image_skipped_too_large: "⚠️ Léimeadh thar `{filename}` — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord."
   telegram:
+    vault_code:
+      body: "Freagair an teachtaireacht seo leis an gcód. Scriosann Hermes do fhreagra láithreach agus cuireann sé an cód isteach sa leathanach; ní fheiceann an tsamhail é riamh."
+      delete_failed: "Níorbh fhéidir do fhreagra a scriosadh anseo. Scrios féin é, le do thoil."
     approval:
       action_once: "✅ Uair amháin"
       action_session: "✅ Seisiún"
@@ -1252,6 +1267,11 @@ platform:
       affirm: "✓ Tá"
       negate: "✗ Níl"
       other: "✏️ Eile (clóscríobh freagra)"
+      multi_hint: "Roghnaigh ceann amháin nó níos mó, ansin tapáil Seol."
+      send: "✅ Seol"
+      selected_count: "Roghnaithe: {count}"
+      select_one: "Roghnaigh rogha amháin ar a laghad ar dtús."
+      toggle_failed: "Níorbh fhéidir an rogha a nuashonrú — tapáil arís."
       expired_toast: "⚠️ Tá an leid seo imithe in éag — rith /retry le do thoil."
       expired_body: "⚠️ Tá an cheist seo imithe in éag nó athshocraíodh an seisiún — rith /retry le do thoil."
       type_answer: "✏️ Clóscríobh do fhreagra sa chomhrá."
@@ -1709,7 +1729,7 @@ slash:
   version:
     description: "Taispeáin leagan Hermes Agent"
   debug:
-    description: "Tuarascáil dhífhabhtaithe (eolas córais + logaí): taispeántar an fógra príobháideachta ar dtús; roinneann /debug upload naisc"
+    description: "Tuarascáil dhífhabhtaithe (leaganacha, eochracha cumraíochta, comhaireamh earráidí; gan téacs loga): taispeántar an fógra príobháideachta ar dtús; roinneann /debug upload naisc"
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
@@ -3308,6 +3328,10 @@ cli:
     total: "📚 {count} scil(eanna) ar fáil"
     added_header: "➕ Scileanna Curtha leis:"
     removed_header: "➖ Scileanna Bainte:"
+  gateway_restart:
+    waiting: "Tá Hermes ag atosú chun nuashonrú nó atosú a chríochnú; ag fanacht go dtiocfaidh sé ar ais…"
+    timed_out: "Níor tháinig Hermes ar ais óna atosú in am. Seiceáil `hermes gateway status`, ansin tosaigh `hermes` arís."
+    stopped: "Stopadh ag fanacht le hatosú Hermes; níor tosaíodh aon rud."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Níl stór na seisiún ar fáil[/bold yellow] — [bold]NÍ shábhálfar[/bold] an comhrá seo agus ní féidir é a atosú níos déanaí. Tá cuardach seisiún roimhe seo díchumasaithe freisin.\n  Cúis: {reason}.\n  {action}\n  [dim]Sonraí: {details}[/dim]"
     unavailable_plain: "RABHADH: Níl stór na seisiún ar fáil — NÍ shábhálfar an comhrá seo agus ní féidir é a atosú níos déanaí. Cúis: {reason}. {action}"
@@ -3823,7 +3847,7 @@ tips:
   t246: "Socraíonn athróg timpeallachta HERMES_HOME_MODE (ochtnártha, m.sh. 0701) ceadanna eolaire saincheaptha le haghaidh trasnaithe freastalaí gréasáin."
   t247: "Mód coimeádáin: cuir .container-mode in HERMES_HOME agus déanann CLI an óstaigh uath-exec isteach sa choimeádán."
   t248: "Tá 5 shraith tosaíochta ag Ctrl+C: cealaigh taifeadadh → cealaigh leideanna → cealaigh roghnóir → cuir isteach ar an ngníomhaire → scoir."
-  t249: "Logáiltear gach idirbhriseadh le linn rith gníomhaire chuig ~/.hermes/interrupt_debug.log le stampaí ama."
+  t249: "Logáiltear idirbhristeacha le linn rith gníomhaire chuig agent.log (féach orthu le `hermes logs`); socraigh HERMES_DEBUG_INTERRUPT=1 le haghaidh rianú mionsonraithe."
   t250: "Ceanglaíonn BROWSER_CDP_URL uirlisí brabhsálaí le brabhsálaí ar bith de chlann Chromium atá ag rith — glacann sé le WebSocket, HTTP, nó host:port."
   t251: "Cumasaíonn BROWSERBASE_ADVANCED_STEALTH=true frith-bhrath ardleibhéil le Chromium saincheaptha (Scale Plan)."
   t252: "Athraíonn an CLI go mód dlúth go huathoibríoch i dteirminéil atá níos cúinge ná 80 colún."
@@ -3920,7 +3944,7 @@ tips:
   t343: "Scoránaíonn /voice tts mód TTS amháin — freagraíonn an gníomhaire os ard ach clóscríobhann tú do leideanna fós."
   t344: "Athscanann /reload-skills ~/.hermes/skills/ ionas go dtagann scileanna drop-in chun cinn gan an seisiún a atosú."
   t345: "Roghnaíonn /indicator kaomoji|emoji|unicode|ascii stíl an táscaire gnóthach TUI a thaispeántar le linn rití gníomhaire."
-  t346: "Uaslódálann /debug cuach tacaíochta (eolas córais + logaí) agus filleann naisc inroinnte — oibríonn sé sa chomhrá freisin."
+  t346: "Uaslódálann /debug upload achoimre (leaganacha, eochracha cumraíochta, comhaireamh earráidí; gan téacs loga) agus filleann nasc inroinnte — oibríonn sé sa chomhrá freisin."
   t347: "Is é hermes -z \"<prompt>\" an aon-uaire is glaine: an freagra deiridh ar stdout, gan aon rud eile — foirfe le haghaidh píopála i scripteanna."
   t348: "Instealann hermes chat --pass-session-id ID an tseisiúin i leid an chórais ionas gur féidir leis an ngníomhaire tagairt dó féin."
   t349: "Ceanglaíonn hermes chat --image path/to/pic.png íomhá áitiúil le hiarratas -q amháin gan céim uaslódála ar leith."

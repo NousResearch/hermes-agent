@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ デバッグレポートのアップロードに失敗しました: {error}"
     header: "**デバッグレポートをアップロードしました:**"
     auto_delete: "⏱ ペーストは 6 時間後に自動削除されます。"
-    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
+    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share --nous` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
     local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"
@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"
     enabled: "⚡ このセッションの YOLO モードは **ON** — すべてのコマンドが自動承認されます。注意して使用してください。"
   shared:
+    fallback_model_suffix: " — 代替モデル、本来は `{primary}`"
     session_db_unavailable: "セッションデータベースが利用できません。"
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found: "データベースにセッションが見つかりません。"
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "プロジェクトスキャンから AGENTS.md を生成しています…"
   moa:
     prepare_failed: "MoA ターンの準備に失敗しました。"
+    managed_session: "このセッションでは /moa を使用できません。セーフモード、設定なし、kanban、マネージドワーカーのセッションは、すべてのターンを独自のモデルで実行します。/moa を付けずにプロンプトを送信してください。"
   quick_command:
     no_output: "コマンドは出力を返しませんでした。"
     timed_out: "クイックコマンドがタイムアウトしました (30 秒)。"
@@ -983,6 +985,16 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    vault_code:
+      title: "🔐 {site} の確認コード"
+      body: "{site} がワンタイムコード（SMS またはメール）を求めています。ボタンを押して、開いたフォームに入力してください。コードはページに直接入力され、ここには投稿されません。"
+      button: "コードを入力"
+      modal_title: "{site} のコード"
+      input_label: "ワンタイムコード"
+      submitted: "コードを送信しました。ページに入力しています。"
+      ended: "このコードのリクエストは終了しました。何も入力されていません。"
+      not_author: "このリクエストを開始した人だけがコードを入力できます。"
+      submitted_footer: "✓ コードを送信しました"
     response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
@@ -1195,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` を添付できませんでした — {size_mb} MB はこのチャンネルの Discord アップロード上限 {limit_mb} MB を超えています。ファイルを圧縮するか、代わりにリンクを共有してください。"
       image_skipped_too_large: "⚠️ `{filename}` をスキップしました — {size_mb} MB は Discord のアップロード上限 {limit_mb} MB を超えています。"
   telegram:
+    vault_code:
+      body: "このメッセージにコードを返信してください。Hermes は返信をすぐに削除し、コードをページに入力します。モデルがコードを見ることはありません。"
+      delete_failed: "ここで返信を削除できませんでした。ご自身で削除してください。"
     approval:
       action_once: "✅ 一度だけ許可"
       action_session: "✅ セッション中"
@@ -1252,6 +1267,11 @@ platform:
       affirm: "✓ はい"
       negate: "✗ いいえ"
       other: "✏️ その他（回答を入力）"
+      multi_hint: "1つ以上選んでから「送信」をタップしてください。"
+      send: "✅ 送信"
+      selected_count: "選択中: {count}"
+      select_one: "まず1つ以上選んでください。"
+      toggle_failed: "選択を更新できませんでした。もう一度タップしてください。"
       expired_toast: "⚠️ このプロンプトの有効期限が切れました — /retry してください。"
       expired_body: "⚠️ この質問は有効期限が切れたか、セッションがリセットされました — /retry してください。"
       type_answer: "✏️ チャットに回答を入力してください。"
@@ -1709,7 +1729,7 @@ slash:
   version:
     description: "Hermes Agent のバージョンを表示"
   debug:
-    description: "デバッグレポート（システム情報 + ログ）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
+    description: "デバッグレポート（バージョン、設定キー名、エラー件数。ログ本文なし）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
@@ -3308,6 +3328,10 @@ cli:
     total: "📚 {count} 件のスキルが利用可能"
     added_header: "➕ 追加されたスキル:"
     removed_header: "➖ 削除されたスキル:"
+  gateway_restart:
+    waiting: "Hermes は更新または再起動を完了するため再起動しています。戻るのを待っています…"
+    timed_out: "Hermes が時間内に再起動から戻りませんでした。`hermes gateway status` を確認してから、もう一度 `hermes` を起動してください。"
+    stopped: "Hermes の再起動待ちを中止しました。何も開始されていません。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ セッションストアが利用できません[/bold yellow] — この会話は[bold]保存されず[/bold]、後から再開することもできません。過去のセッション検索も無効です。\n  理由: {reason}。\n  {action}\n  [dim]詳細: {details}[/dim]"
     unavailable_plain: "警告: セッションストアが利用できません — この会話は保存されず、後から再開することもできません。理由: {reason}。{action}"
@@ -3823,7 +3847,7 @@ tips:
   t246: "環境変数 HERMES_HOME_MODE（8 進数、例: 0701）で、Web サーバーがたどれるようにディレクトリのパーミッションを指定できます。"
   t247: "コンテナモード: HERMES_HOME に .container-mode を置くと、ホストの CLI が自動的にコンテナ内で実行されます。"
   t248: "Ctrl+C には 5 段階の優先順位があります。録音のキャンセル → プロンプトのキャンセル → ピッカーのキャンセル → エージェントの中断 → 終了。"
-  t249: "エージェント実行中のすべての中断は、タイムスタンプ付きで ~/.hermes/interrupt_debug.log に記録されます。"
+  t249: "エージェント実行中の中断は agent.log に記録されます（`hermes logs` で確認）。詳細なトレースには HERMES_DEBUG_INTERRUPT=1 を設定してください。"
   t250: "BROWSER_CDP_URL はブラウザツールを実行中の任意の Chromium 系ブラウザに接続します。WebSocket、HTTP、host:port を受け付けます。"
   t251: "BROWSERBASE_ADVANCED_STEALTH=true は、カスタム Chromium による高度な検出回避を有効にします（Scale プラン）。"
   t252: "CLI は幅が 80 桁未満のターミナルでは自動的にコンパクトモードに切り替わります。"
@@ -3920,7 +3944,7 @@ tips:
   t343: "/voice tts は TTS のみのモードを切り替えます。エージェントの応答は音声で読み上げられ、プロンプトはこれまで通りタイプします。"
   t344: "/reload-skills は ~/.hermes/skills/ を再スキャンするため、セッションを再起動せずに追加したスキルが現れます。"
   t345: "/indicator kaomoji|emoji|unicode|ascii で、エージェント実行中に表示される TUI のビジーインジケーターのスタイルを選べます。"
-  t346: "/debug はサポートバンドル（システム情報とログ）をアップロードして共有用リンクを返します。チャットでも使えます。"
+  t346: "/debug upload はサマリー（バージョン、設定キー名、エラー件数。ログ本文なし）をアップロードして共有用リンクを返します。チャットでも使えます。"
   t347: "hermes -z \"<prompt>\" は最も純粋なワンショット実行です。最終回答だけを stdout に出力するため、スクリプトでのパイプ処理に理想的です。"
   t348: "hermes chat --pass-session-id はセッション ID をシステムプロンプトに注入し、エージェントが自身のセッションを参照できるようにします。"
   t349: "hermes chat --image path/to/pic.png は、別途アップロードせずに 1 回の -q クエリにローカル画像を添付します。"

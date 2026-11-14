@@ -32,6 +32,7 @@ from hermes_constants import (
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
 from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -1466,14 +1467,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Option
         if not quiet:
             print(*lines, sep="\n")
 
-    project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
-            cwd=str(project_root),
+            cwd=project_root_str(),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
             check=False,
         )
@@ -2187,14 +2187,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        # Remove foreign runtime state before publishing, including file-shaped roots.
-        # A failed removal must abort import rather than install a stale PM selection.
-        for child in final_source.iterdir():
-            if child.name in PM_RUNTIME_ROOT_DIRS:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        from hermes_cli.profiles_initialization import prepare_imported_tree
+        prepare_imported_tree(final_source)
         shutil.move(str(final_source), str(profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir

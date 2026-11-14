@@ -562,7 +562,8 @@ class AuthorityConnection:
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
-                                 'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1'],
+                                 'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
+                                 'session-list-cursor-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -579,17 +580,20 @@ class AuthorityConnection:
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         limit, workspace, picker = params.get('limit', 200), params.get('workspace'), params.get('picker', False)
-        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'} or type(limit) is not int
-                or not 1 <= limit <= 200 or (workspace is not None and not (isinstance(workspace, str) and workspace))
+        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker', 'query', 'cursor'}
+                or type(limit) is not int or not 1 <= limit <= 200
+                or (workspace is not None and not (isinstance(workspace, str) and workspace))
                 or type(picker) is not bool):
             raise RuntimeStoreError('invalid_params')
         if (params.get('scope', 'live') not in {'live', 'stored'}
                 or ('title' in params and ('scope' in params or workspace is not None or picker))):
             raise RuntimeStoreError('invalid_params')
+        from gateway.session_listing import check_page_params, stored_picker_sessions
+        check_page_params(params)
         if params.get('scope') == 'stored':
-            from gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
-                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker)
+                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker,
+                query=params.get('query'), cursor=params.get('cursor'))
         if 'title' in params:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here

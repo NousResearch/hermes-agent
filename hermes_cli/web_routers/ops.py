@@ -402,6 +402,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
         load_pool,
     )
 
+    from hermes_cli.auth_commands import _provider_base_url
+
     provider = (body.provider or "").strip().lower()
     api_key = (body.api_key or "").strip()
     if not provider or not api_key:
@@ -426,6 +428,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
                 priority=0,
                 source=SOURCE_MANUAL,
                 access_token=api_key,
+                # The key is bound to the address it was entered for (#130410), as `hermes auth add` does.
+                base_url=_provider_base_url(provider) or None,
             ))
             # Re-adding is an explicit re-engagement signal: lift every suppression
             # for this provider so a source deleted earlier can seed again

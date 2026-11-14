@@ -98,8 +98,7 @@ async def test_messaging_debug_upload_uploads_the_summary():
     with patch('hermes_cli.debug.upload_to_pastebin', lambda report: uploaded.append(report) or 'https://paste.rs/x'), \
             patch('hermes_cli.debug._schedule_auto_delete', lambda urls: None), \
             patch('hermes_cli.debug._best_effort_sweep_expired_pastes', lambda: None), \
-            patch('hermes_cli.debug._capture_dump', lambda: 'dump'), \
-            patch('hermes_cli.debug.collect_debug_report', lambda **kw: 'SUMMARY'):
+            patch('hermes_cli.debug_summary.collect_public_summary', lambda **kw: 'SUMMARY'):
         out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug UPLOAD'))
     assert uploaded == ['SUMMARY']
     assert 'https://paste.rs/x' in out
@@ -113,7 +112,7 @@ async def test_messaging_debug_local_is_refused_without_uploading():
             patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
             patch('hermes_cli.debug._schedule_auto_delete', guard), \
             patch('hermes_cli.debug._best_effort_sweep_expired_pastes', guard), \
-            patch('hermes_cli.debug.collect_debug_report', guard), \
+            patch('hermes_cli.debug_summary.collect_public_summary', guard), \
             patch.object(socket.socket, 'connect', guard):
         out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug local'))
     assert guard.calls == []

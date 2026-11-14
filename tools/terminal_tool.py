@@ -394,6 +394,19 @@ def _resolve_container_alias(task_id: str) -> str:
     return key
 
 
+def _shell_state_chain(task_id: Optional[str]) -> tuple[str, ...]:
+    """*task_id* plus its aliased ancestors, root excluded: a delegated child reads and
+    writes its own shell snapshot, seeded from the nearest ancestor's (the root's is the
+    environment's own). Empty for a task with no alias (#84536)."""
+    chain: list[str] = []
+    key = task_id
+    with _container_alias_lock:
+        while key and key in _container_aliases and key not in chain:
+            chain.append(key)
+            key = _container_aliases[key]
+    return tuple(chain)
+
+
 def _is_isolation_override_key(key: str) -> bool:
     """An image (``docker_image``, a plugin backend's ``<backend>_image``) or ``env_type`` override."""
     return key == "env_type" or key.endswith("_image")
@@ -1582,7 +1595,8 @@ def terminal_tool(
             command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         # _lookup_active_env stamps whichever of the two keys holds the env.
-        with _call_in_flight(plan.effective_task_id, task_id):
+        from tools.environments.base import shell_state_scope
+        with _call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)):
             env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
             # Session key for cwd records: the contextvar doesn't cross tool-worker

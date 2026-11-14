@@ -83,6 +83,8 @@ When Hermes itself writes a credential for a config field, the value goes to the
 
 The path segment is only added when it is something other than `/v1`. A plugin task key that is not all lowercase (`My_Task`) also gets `_<HASH>`, so it never shares a variable with `my_task`. `<HASH>` is 8 hex characters derived from the exact endpoint URL (or provider name), so endpoints whose names look alike, such as `my-host.com` and `my.host.com`, never share a variable. Hermes refuses to overwrite a variable that another endpoint in `config.yaml` already reads with a different key. A value you type as a reference (`hermes config set model.api_key '${MY_KEY}'`) is stored as you typed it. These variables are always stripped from terminal and subprocess environments, even when `env_passthrough` lists them or `inherit_credentials` is on. With a remote config backend, which does not share `.env` between hosts, values are stored as given.
 
+A running gateway re-reads `.env` at the start of every turn, so its next message uses a newly saved key without a restart. A process that read `.env` only at startup and is not driven by gateway turns picks the key up after `/reload` or a restart; until then, an auxiliary task whose key was just saved sends the unexpanded `${VAR}` text as the key.
+
 Inline credentials already in `config.yaml` still work and are not migrated, but they are discouraged. Move one by hand with `hermes config set <field> <value>`, which rewrites it as a reference.
 
 :::tip Org deployments
@@ -138,10 +140,12 @@ database:
   # Use delete on filesystems where WAL is unsafe (network mounts). On
   # virtiofs/9p bind mounts (Docker Desktop, Podman on macOS, OrbStack)
   # Hermes detects the mount and creates fresh databases in delete mode
-  # automatically. Note: an existing on-disk WAL database is never
-  # live-downgraded — Hermes keeps WAL and logs an error telling you the
+  # automatically. On Linux NFS/CIFS/SMB/sshfs mounts, a fresh database
+  # also starts in delete mode unless this key is set (set `wal` to force
+  # WAL there). Note: an existing on-disk WAL database is never
+  # live-downgraded — Hermes keeps WAL and logs a warning telling you the
   # configured delete did not apply (or that the WAL database sits on a
-  # cross-VM mount). To convert an existing database, stop
+  # cross-VM or network mount). To convert an existing database, stop
   # every process using it and run
   # `hermes sessions set-journal-mode delete` (see Sessions).
   journal_mode: wal
@@ -915,16 +919,18 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+Writes from the background self-improvement review are always scanned, whatever this setting says: that fork has no `terminal()`, so `skill_manage` is its only way to write a skill. A scan that flags the content, or cannot finish, blocks the write. Approving a staged review write with `/skills approve` runs the same scan.
+
 ### Write approval for skill writes
 
-Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+Independent of the content scanner above, `skills.write_approval` gates every skill write made through the `skill_manage` tool (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
 
 ```yaml
 skills:
   write_approval: false   # false = write freely (default) | true = stage every write for review
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Neither gate covers direct edits by the generic file tools or the terminal. Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 
@@ -934,10 +940,10 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
-  write_approval: false     # true = require approval before any memory write
+  write_approval: false     # true = require approval for memory-tool writes
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+With `memory.write_approval: true`, writes made through the `memory` tool need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
 
 ## Context File Truncation
 
@@ -1233,6 +1239,23 @@ automatically requeue the message because doing so without durable ordering and
 idempotency could process it twice. Non-positive values use the 5-second
 default.
 
+## Gateway SessionDB Loop Guard
+
+A debugging aid for gateway stalls: a synchronous `state.db` read or write on the
+gateway's event loop blocks every platform for as long as the storage takes. With
+the guard on, the gateway flags such calls:
+
+```yaml
+gateway:
+  sessiondb_loop_guard: warn   # off (default) | warn | raise
+```
+
+`warn` logs each offending call site once with its stack; `raise` makes the call
+fail (useful in development and CI). Off costs nothing: no storage method is
+wrapped. Takes effect on the next gateway start. The guard is process-wide, so
+under multiplexing only the launching profile's `config.yaml` sets it; a
+secondary profile's value is ignored.
+
 ## Gateway Restart Drain
 
 When the gateway stops or restarts (SIGTERM, `hermes update`, `hermes gateway stop`, or the final
@@ -1243,7 +1266,7 @@ it lets in-flight chat turns keep running before it interrupts them:
 agent:
   restart_drain_timeout: 0          # default: interrupt in-flight chat turns at once
   cron_drain_timeout: 30            # floor for cron jobs and api_server (/v1) runs
-  restart_after_turn_timeout: 1800  # /restart and `gateway restart`: wait for turns BEFORE stopping
+  restart_after_turn_timeout: 1800  # /restart and `gateway restart` restart when idle; warn (never interrupt) every N s
 ```
 
 With the default `0`, a restart interrupts a running turn immediately. The turn settles as
@@ -1429,6 +1452,8 @@ goals:
 
 Hermes has separate timeout layers for streaming, plus a stale detector for non-streaming calls. The stale detectors auto-adjust for local providers only when you leave them at their implicit defaults.
 
+External-process providers (a model reached through a CLI child process, such as the Claude subscription DirectSDK plugin or an ACP agent) get the same "Local providers" column below, for every model, because the child sends nothing until the model's first token. One exception: a non-streaming call to an external process is bounded by the request timeout (1800s by default) instead of being left unbounded, so a child that stops reading its input cannot hang Hermes. They are not treated as a local server anywhere else: a context rejection compresses and retries, and Hermes does not probe them for Ollama or llama.cpp.
+
 | Timeout | Default | Local providers | Config / env |
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
@@ -1447,7 +1472,7 @@ The **Responses first-event watchdog** (Codex / `codex_responses` transport, inc
 
 The **stream max lifetime** is an opt-in cap on the total wall-clock time of one streaming response. The stale detector resets on every chunk, so a stream that keeps sending data but never finishes (a gateway trickling chunks, a runaway generation) is never cut. Set `agent.stream_max_lifetime` (seconds) to cut such a stream; the connection is killed the same way a stale kill is, and the retry or partial-response continuation takes over. It never fires before the effective stale-stream timeout, and a cut attempt does not count toward the stale-stream circuit breaker (`HERMES_STREAM_STALE_GIVEUP`), since the provider was responding. The cap covers Chat Completions and Anthropic Messages streams only; Codex/Responses streams (`codex_responses`, including custom providers declared with the Responses transport) and Bedrock streams are not capped. Leave it at `0` (the default) if you run long reasoning turns that legitimately stream for a long time.
 
-The **stale non-stream detection** kills non-streaming calls that produce no response for too long. By default Hermes disables this on local endpoints to avoid false positives during long prefills. If you explicitly set `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds`, or `HERMES_API_CALL_STALE_TIMEOUT`, that explicit value is honored even on local endpoints.
+The **stale non-stream detection** kills non-streaming calls that produce no response for too long. By default Hermes disables this on local endpoints to avoid false positives during long prefills. If you explicitly set `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds`, or `HERMES_API_CALL_STALE_TIMEOUT`, that explicit value is used as-is, even on local endpoints and above 50k tokens: the context-size raise (150s above 50k tokens, 240s above 100k) applies only to the implicit default.
 
 The **post-terminal stream drain** bounds how long a Codex/Responses stream keeps reading after its terminal `response.completed` frame (a courtesy so the relay finalizer can run). Some relays never close the SSE socket after the terminal frame; without a bound the turn wedged until the stale-stream watchdog fired and discarded the already-billed response, then retried. After `agent.stream_drain_timeout` seconds the stream is closed and the completed response is returned. Endpoints that close the connection normally finish the drain immediately and never wait this long; set `0` to skip the drain entirely.
 
@@ -2329,7 +2354,7 @@ display:
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
-  suppress_warning_notifications: false  # Opt-in: hide automatic warning/diagnostic notices (see messaging guide)
+  suppress_warning_notifications: false  # Opt-in: hide automatic warning/diagnostic notices, incl. the silence-marker notice (see messaging guide)
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: ""         # Legacy cosmetic field still surfaced in some summaries
@@ -2704,7 +2729,8 @@ The final prompt is sent to the configured STT provider alongside the audio file
 voice:
   record_key: "ctrl+b"         # Push-to-talk key inside the CLI
   max_recording_seconds: 120    # Hard stop for long recordings
-  auto_tts: false               # Enable spoken replies automatically when /voice on
+  auto_tts: false               # Enable automatic spoken replies in gateway chats
+  auto_tts_mode: "all"          # "all" (legacy default) | "voice_only"
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode
   beep_volume: 0.3              # Beep amplitude (0.0-1.0); raise it on quiet systems / headphones
   silence_threshold: 200        # RMS threshold for speech detection
@@ -2712,6 +2738,13 @@ voice:
 ```
 
 Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](./features/voice-mode.md) for end-to-end setup and platform-specific behavior.
+
+For gateway chats with no explicit per-chat `/voice` mode, `voice.auto_tts_mode`
+controls which replies receive audio when `voice.auto_tts` is enabled. The
+default, `all`, preserves the existing behavior: replies to both text and voice
+input include audio. Set it to `voice_only` to include audio only when the
+triggering message is voice input. Explicit `/voice off`, `/voice on`, and
+`/voice tts` choices still override the global default for that chat.
 
 ## Streaming
 
@@ -3077,6 +3110,7 @@ Secret redaction and the website blocklist:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  redact_phone_numbers: true     # Mask E.164 phone numbers in replies sent to chats (on by default)
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -3084,6 +3118,7 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- `redact_phone_numbers` — when `true` (default), phone numbers in E.164 form (`+15551234567`) are masked (`+155****4567`) in the agent's replies and in everything the gateway sends to a chat platform, even with `redact_secrets: false`. Set it to `false` on a trusted single-operator setup whose assistant must show exact phone numbers (a contact list, a call log). Only E.164 numbers are affected: API keys, bot tokens, bearer tokens, passwords and every other secret pattern stay masked in chat, and logs and tool output keep masking phone numbers. Any value other than `true` or `false` keeps them masked and logs a warning.
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 
@@ -3103,7 +3138,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, browser navigation, and any tool that accesses URLs.
+When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it: the page is withheld from the agent, but the blocked host still saw the request. `web_search` takes a query rather than a URL and does not filter its result list. Other URL fetches (kanban URL attachments, cron URL monitors, gateway media downloads) only apply the private-address SSRF check, not this blocklist.
 
 Domain rules support:
 - Exact domains: `admin.example.com`

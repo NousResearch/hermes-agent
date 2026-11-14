@@ -22,7 +22,7 @@ from typing import List, Tuple
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
 
-SCANNER_VERSION = "skills-guard-v13"
+SCANNER_VERSION = "skills-guard-v14"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -36,7 +36,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # "ask" = error to the agent (retry without the flagged content); only when skills.guard_agent_created is on.
+    # "ask" = error to the agent (retry without the flagged content); when guard_agent_created is on or for background review.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 
@@ -154,6 +154,19 @@ _CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|creden
 # `os.path.expanduser(...)` (Python only).
 _CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+# Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
+# System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
+# `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
+# case-sensitively as the WHOLE quoted value: this can only turn a hardcoded_secret flag into clean
+# for these exact ids; any other value, or one of these with a character changed, still matches.
+_PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    '11111111111111111111111111111111',
+    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+)) + r')'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -494,6 +507,7 @@ THREAT_PATTERNS = [
     # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
      r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'(?!' + _PUBLIC_SOLANA_PROGRAM_IDS + r'["\'])'
      r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',
@@ -887,11 +901,12 @@ def _community_note(f: Finding) -> Finding:
     return f
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str | None = None) -> ScanResult:
     """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
     files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
-    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level."""
-    name, trust = skill_path.name, _resolve_trust_level(source)
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level unless the caller
+    passes the serving adapter's own *trust_level*."""
+    name, trust = skill_path.name, trust_level or _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
         findings.extend(_check_structure(skill_path))
@@ -932,7 +947,7 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None, trust_level: str | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
@@ -940,7 +955,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url, "trust_level": _resolve_trust_level(source)}
+                "source_url": source_url, "trust_level": trust_level or _resolve_trust_level(source)}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
@@ -950,7 +965,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                             cached.get("summary", ""))
         provenance = {**cached, "fresh": False}
     else:
-        result = scan_skill(skill_path, source=source)
+        result = scan_skill(skill_path, source=source, trust_level=trust_level)
         findings = [asdict(item) for item in result.findings]
         provenance = {**expected, "verdict": result.verdict, "trust_level": result.trust_level, "findings": findings,
                       "rules": sorted({item["pattern_id"] for item in findings}), "scanned_at": result.scanned_at,

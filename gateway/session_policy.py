@@ -700,8 +700,16 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
-        from toolsets import resolve_toolset
+        from toolsets import TOOLSETS, resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
+        dropped = _unnamed_extension_toolsets(explicit, requested, config) & enabled
+        enabled -= dropped
+        # ``hermes-api-server`` expands into built-in names; keep one an MCP server or plugin shares (``web``) when
+        # the pick needs its built-in tools and asked for all of them, instead of refusing the pick. A wider name
+        # (a plugin key called ``coding``) would grant tools the pick never asked for.
+        missing = requested - {t for name in enabled for t in resolve_toolset(name)}
+        static = {n: set(resolve_toolset(n, include_registry=False)) for n in dropped & set(TOOLSETS)}
+        enabled |= {n for n, tools in static.items() if tools & missing and tools <= requested}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")
@@ -720,6 +728,23 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         from hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
     return enabled
+
+
+def _unnamed_extension_toolsets(explicit, requested, config):
+    """Plugin toolsets and MCP servers an explicit pick did not name. ``_get_platform_tools`` adds every plugin
+    toolset not in ``known_plugin_toolsets`` and every enabled MCP server, so without this ``-t session_search``
+    also got a plugin's terminal/file tools (#147832). ``all``/``*`` names everything."""
+    if {'all', '*'} & set(explicit):
+        return set()
+    from hermes_cli.tools_config import _get_plugin_toolset_keys, enabled_mcp_server_names
+    from toolsets import TOOLSETS, resolve_toolset
+    configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
+    named = set(explicit) | {n[4:] for n in explicit if n.startswith('mcp-') and n not in configured}
+    plugin_keys = _get_plugin_toolset_keys()
+    # A plugin key may share a built-in name (``coding``); a composite pick like ``hermes-cli`` covers it only
+    # when every tool it resolves to is already in the pick, otherwise the name alone would smuggle tools in.
+    covered = {k for k in plugin_keys & set(TOOLSETS) if set(resolve_toolset(k)) <= requested}
+    return (plugin_keys | enabled_mcp_server_names(config)) - named - covered
 
 
 def _in_coding_workspace(config, source, cwd):

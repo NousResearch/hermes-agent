@@ -2876,10 +2876,10 @@ export const deOverrides = {
       backupDesc: 'Konfiguration, Memories, Skills und Sessions als ZIP packen',
       debugShare: 'Debug-Freigabe',
       debugShareDesc:
-        'Einen geschwärzten Bericht + Logs hochladen, teilbare Links erhalten (wird nach 6h automatisch gelöscht)',
+        'Eine Zusammenfassung hochladen (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext), teilbaren Link erhalten (wird nach 6h automatisch gelöscht)',
       debugShareConfirm: 'Debug-Bericht in ein öffentliches Paste hochladen?',
       debugShareConfirmDesc:
-        'Lädt Systeminfos + vollständige Logs zu einem öffentlichen Paste-Dienst hoch. Geheimnisse werden geschwärzt, aber Ihre letzten Nachrichten, Tool-Ausgaben, Dateipfade und -namen bleiben in den Logs und sind für jeden mit dem Link lesbar. Pastes werden nach 6 Stunden automatisch gelöscht; ist paste.rs nicht erreichbar, bleiben sie beim Ausweichdienst dpaste.com 1 Tag öffentlich und lassen sich nicht vorzeitig löschen.',
+        'Lädt eine Zusammenfassung zu einem öffentlichen Paste-Dienst hoch: Hermes-, Python- und OS-Versionen, Namen verbundener Plattformen und Toolsets, Konfigurationsschlüssel (ohne Werte) und Warnungs-/Fehlerzähler. Sie enthält keine Logzeilen und keinen Nachrichtentext. Pastes werden nach 6 Stunden automatisch gelöscht; ist paste.rs nicht erreichbar, bleiben sie beim Ausweichdienst dpaste.com 1 Tag öffentlich und lassen sich nicht vorzeitig löschen.',
       debugShareRunning: 'Debug-Bericht wird hochgeladen...',
       debugShareLinks: 'Freigabelinks',
       debugShareFailed: 'Debug-Freigabe fehlgeschlagen',
@@ -3911,7 +3911,7 @@ export const deOverrides = {
       '/topup': 'Ihr Nous-Guthaben anzeigen und die Abrechnung im Portal verwalten',
       '/platform': 'Eine fehlerhafte Gateway-Plattform pausieren, fortsetzen oder auflisten',
       '/version': 'Hermes-Agent-Version anzeigen',
-      '/debug': 'Debug-Bericht (Systeminfo + Logs): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links',
+      '/debug': 'Debug-Bericht (Versionen, Konfigurationsschlüssel, Fehlerzähler; kein Logtext): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links',
       '/model': 'Modell für diese Session wechseln'
     },
     hotkeyDescs: {

@@ -496,17 +496,18 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     waits longer and installs a late-ack adopter so a slow compression still lands here."""
     route_name = f"slash.{name}"
     is_compress = name == "compress"
-
-    def _on_late_ack(late: dict, _sid=sid) -> None:
-        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
     try:
-        ack = _send_compute_host_control(
-            sid, route_name=route_name, command=command, wait=True,
-            **({"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack} if is_compress else {}))
+        if name == "personality":
+            ack = _send_compute_host_control(sid, route_name=route_name, command=command, wait=True)
+        else:  # the host's /model marker and /compress commit write this chat's transcript
+            ack = _send_claimed_compute_host_control(
+                sid, session, route_name=route_name, command=command, compress=is_compress)
     except queue.Empty:
         if is_compress:
             return "pending", "compression still running in the background; the transcript will refresh when it finishes"
         return "failed", f"compute-host {route_name} failed: timed out"
+    except SessionNotOwned:
+        raise  # refused before the host was contacted: every route answers 4090, not a host failure
     except Exception as exc:
         return "failed", f"compute-host {route_name} failed: {exc}"
     if ack.get("type") in {"control.error", "error"}:
@@ -537,6 +538,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return mirror(sid, session, agent, arg) or ""
     except CompressionBusy as e:  # a turn won the race after the unlocked running check above
         return str(e)
+    except SessionNotOwned:
+        raise  # another surface owns the chat: the RPC answers 4090, not a sync warning
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

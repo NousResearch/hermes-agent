@@ -36,7 +36,7 @@ def test_ambient_credential_profile_keeps_identity_when_catalog_fails():
 def test_ack_detector_transition_cue_names_only_acp_agents():
     """"Launching it on <X>" is a pending launch only for an ACP agent (an external_process profile: its
     name, alias or binary); "Launching it on Nous." names an inference provider and is a final answer."""
-    from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
+    from agent.agent_runtime_intent import looks_like_codex_intermediate_ack
 
     agent = SimpleNamespace(_strip_think_blocks=lambda s: s)
     acp = ProviderProfile(name="acme-acp", aliases=("acme",), auth_type="external_process", process_command="acmecli")

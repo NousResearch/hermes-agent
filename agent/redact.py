@@ -1614,6 +1614,7 @@ _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
 })
+_CONFIG_YAML_COPY_RE = re.compile(r"config\.yaml\.(?:good\.|corrupt\.|bak|backup|orig|old|pre|save)")
 # Filter readers take a PATTERN/program as their first positional; only the operands after
 # it are files, so ``grep .bashrc app.py`` must not gate on the pattern.
 _PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed"})
@@ -1702,9 +1703,8 @@ def _is_secret_file_arg(arg: str) -> bool:
         return False
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
         return True
-    # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
-    # writes under ``backups/config/`` — same contents, same secrets.
-    if parts[-1] != "config.yaml" and not parts[-1].startswith(("config.yaml.good.", "config.yaml.corrupt.")):
+    # ``config.yaml`` and its copies (Hermes' ``.good.``/``.corrupt.`` backups, hand ``.bak``/``.pre``/``.orig``): same secrets.
+    if parts[-1] != "config.yaml" and not _CONFIG_YAML_COPY_RE.match(parts[-1]):
         return False
     return hermes_home or ".hermes" in parts[:-1] or _is_under_hermes_home(path)
 

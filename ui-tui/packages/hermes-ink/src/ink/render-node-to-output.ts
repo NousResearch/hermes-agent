@@ -12,6 +12,7 @@ import type { Screen } from './screen.js'
 import { squashTextNodesToSegments, type StyledSegment } from './squash-text-nodes.js'
 import type { Color } from './styles.js'
 import { isXtermJs } from './terminal.js'
+import { sanitizeOsc8Url } from './termio/osc.js'
 import { widestLine } from './widest-line.js'
 import wrapText from './wrap-text.js'
 
@@ -242,8 +243,11 @@ function drainProportional(node: DOMElement, pending: number, innerHeight: numbe
 const OSC = '\u001B]'
 const BEL = '\u0007'
 
+// Only the URL is sanitized here: `text` already carries this run's SGR. Plain text
+// is NOT scrubbed by the renderer (an unknown ESC sequence tokenizes as a style code);
+// message text containing ESC is routed to the display sanitizer before it reaches <Md>.
 function wrapWithOsc8Link(text: string, url: string): string {
-  return `${OSC}8;;${url}${BEL}${text}${OSC}8;;${BEL}`
+  return `${OSC}8;;${sanitizeOsc8Url(url)}${BEL}${text}${OSC}8;;${BEL}`
 }
 
 /**

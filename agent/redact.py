@@ -1921,6 +1921,12 @@ class RedactingFormatter(logging.Formatter):
         safe_record.msg = _LOG_UNSAFE_CHARS.sub(" ", redact_sensitive_text(record.getMessage()))
         safe_record.args = None
         formatted = redact_sensitive_text(super().format(safe_record))
+        # aiohttp's access line carries the raw request target, and webhook platforms that cannot
+        # send headers authenticate in the query string (BlueBubbles ``?password=``). An adapter's
+        # own ``access_log=None`` does not reach the shared listener that serves multiplexed
+        # profiles (#143550), so credential params are masked on every Hermes log handler.
+        if record.name == "aiohttp.access":
+            formatted = _redact_strict_url_credentials(formatted)
         first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
         # Traceback lines carry exception text; break their stamps so `hermes logs` keeps them
         # as continuation lines of this record.

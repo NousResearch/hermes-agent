@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 
 from agent.file_safety import SHELL_RC_FILES
+from hermes_cli.home_data_layout import HERMES_PROTECTED_SUBPATHS
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
@@ -48,6 +49,17 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     _HERMES_HOME_DIR + r'config\.yaml\b'
 )
+# The Hermes home itself and the application-owned stores the file tools refuse to write
+# (HERMES_PROTECTED_SUBPATHS: state.db, sessions/, vault/, ...). Destroying them is recoverable only
+# from backup, so destructive shell verbs on these targets prompt; reads and copies OUT stay clean.
+_HERMES_HOME_ROOT = r'(?:~/\.hermes|(?:\$home|\$\{home\})/\.hermes|(?:\$hermes_home|\$\{hermes_home\}))'
+_PATH_WORD_END = r'["\']?(?=[\s"\'`;|&<>()]|$)'
+# A store or anything inside / beside it (state.db-wal, sessions/x.jsonl).
+_HERMES_STORE_FILE = (
+    _HERMES_HOME_ROOT + r'/(?:' + '|'.join(re.escape(sub) for sub in HERMES_PROTECTED_SUBPATHS) + r')'
+    r'(?:[-./][^\s"\'`;|&<>()]*)?' + _PATH_WORD_END
+)
+_HERMES_STORE_PATH = rf'(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_ROOT}/?\*?{_PATH_WORD_END})'
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
@@ -818,6 +830,18 @@ DANGEROUS_PATTERNS = [
     # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
     (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
     (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
+    # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
+    # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
+    (rf'\b(?:rm|unlink|shred|truncate|mv)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
+    (rf'\b(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_FILE}{_COMMAND_TAIL}', "overwrite Hermes session/credential store"),
+    (rf'\bdd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_FILE}', "overwrite Hermes session/credential store"),
+    (rf'\btee\b[^;|&\n]*\s["\']?{_HERMES_STORE_FILE}', "overwrite Hermes session/credential store"),
+    (rf'>[>|]?\s*["\']?{_HERMES_STORE_FILE}', "overwrite Hermes session/credential store"),
+    # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
+    # deletes the same rows). SELECT/.dump/.schema stay clean.
+    (rf'\bsqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|update\s+\S+\s+set|drop\s+\w+'
+     r'|insert\s+(?:or\s+\w+\s+)?into|replace\s+into|alter\s+table|vacuum)\b|\.restore\b))',
+     "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),

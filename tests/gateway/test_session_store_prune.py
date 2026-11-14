@@ -19,6 +19,8 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionStore
 
@@ -207,3 +209,82 @@ class TestGatewayConfigSerialization:
         cfg = GatewayConfig(session_store_max_age_days=30)
         restored = GatewayConfig.from_dict(cfg.to_dict())
         assert restored.session_store_max_age_days == 30
+
+
+class TestPruneKeepsReceiptOwnedSessions:
+    """A routing entry whose session holds an open local creation receipt must not be
+    swept by the idle prune: the receipt is that session's resume channel, so dropping
+    the entry turns every later resume into ``admission_conflict`` (#149784). A receipt
+    whose session row has ended still prunes."""
+
+    @staticmethod
+    def _store_with_db(tmp_path):
+        from hermes_state import SessionDB
+
+        store = _make_store(tmp_path)
+        db = SessionDB(tmp_path / "state.db")
+        store._db = db
+        return store, db
+
+    @pytest.mark.parametrize("secondary", [False, True], ids=["launch", "secondary"])
+    @pytest.mark.parametrize("compressed", [False, True], ids=["fresh", "compressed"])
+    def test_open_receipt_session_is_kept(self, tmp_path, monkeypatch, secondary, compressed):
+        """Real authority + unpinned store, as the hourly sweep runs: the receipt is keyed by the
+        creation id while a compressed route names the child, and a served profile's receipt lives
+        only in that profile's own state.db."""
+        import asyncio
+
+        from gateway.session_authority import initialize_session_authority
+        from gateway.session_contract import SessionActor
+        from gateway.session_local import create_local_session
+        from hermes_state_local import local_receipt
+        from hermes_state_local_lineage import advance_local_target
+        from tests.gateway.test_local_recovery_pre_profile_origin import _build_runtime, _served_authority
+
+        if secondary:
+            auth, db, home = asyncio.run(_served_authority(tmp_path, monkeypatch, "first"))
+            auth.runner.session_store.config.multiplex_profiles = True
+        else:
+            runner, registry, home, _ = _build_runtime(tmp_path, monkeypatch)
+            auth = asyncio.run(initialize_session_authority(runner, profile_id=str(home), instance_id="first"))
+            registry.add(home, auth, name="default")
+            db = auth.db
+        actor = SessionActor("owner", str(home), frozenset({"session:create", "session:read"}), "socket")
+        ref = create_local_session(auth, actor, {"request_id": "live", "source": "gui",
+                                                 "cwd": str(tmp_path), "model": "frozen", "toolsets": []})
+        route = auth.sessions[ref.session_id].route
+        store = auth.runner.session_store
+        if compressed:
+            tip = local_receipt(db, ref.session_id)["entry"]["session_id"]
+            db.create_session(tip + "-c1", source="gui", parent_session_id=tip, session_key=route,
+                              chat_id=ref.session_id, user_id="owner")
+            db.end_session(tip, "compression")
+            db._execute_write(lambda conn: advance_local_target(conn, tip, tip + "-c1"))
+        with store._lock:
+            store._entries[route].session_id = local_receipt(db, ref.session_id)["entry"]["session_id"]
+            store._entries[route].updated_at = datetime.now() - timedelta(days=120)
+            store._entries["plain"] = _entry("plain", age_days=1000, session_id="sid_plain")
+
+        assert store.prune_old_entries(max_age_days=90) == 1
+        assert route in store._entries and "plain" not in store._entries
+
+    def test_ended_receipt_session_still_prunes(self, tmp_path):
+        import time
+
+        from hermes_state_local import POLICY_PREFIX
+
+        store, db = self._store_with_db(tmp_path)
+        sid = "local-ended-1"
+        db._write_sql(
+            "INSERT INTO sessions (id, source, started_at, ended_at, end_reason) "
+            "VALUES (?, 'local', ?, ?, 'agent_close')",
+            (sid, time.time(), time.time()),
+        )
+        db.set_meta(POLICY_PREFIX + sid,
+                    json.dumps({"session_id": sid, "entry": {"session_id": sid}}))
+        store._entries["ended"] = _entry("ended", age_days=1000, session_id=sid)
+        try:
+            assert store.prune_old_entries(max_age_days=90) == 1
+            assert "ended" not in store._entries
+        finally:
+            db.close()

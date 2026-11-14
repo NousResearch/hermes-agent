@@ -173,13 +173,13 @@ def _drain_background_delegations(budget):
     guarantee still fires (those get recovered next boot as outcome unknown). Returns units still in flight."""
     try:
         from tools.async_delegation import active_count
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort on the owner-death exit path
         return 0
     deadline = time.monotonic() + budget
     while True:
         try:
             remaining = active_count()
-        except Exception:
+        except Exception:  # health: allow BLE001 -- best-effort on the owner-death exit path
             return 0
         if remaining <= 0:
             return 0

@@ -202,7 +202,7 @@ Sessions and messages created after the update are not in that snapshot.
 
 ### Why the gateway restart can take a while
 
-The restart is drain-first: the running gateway refuses new turns, then waits for in-flight work (chat turns, cron jobs, API runs) to finish before exiting, capped by `agent.restart_after_turn_timeout` (30 minutes by default) so a long-running job is never cut off mid-run. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:
+The restart happens when the gateway is idle: the running gateway keeps serving normally (new turns, background-process notices and background-subagent completions all still run) and exits at the first moment no work is in flight (chat turns, cron jobs, API runs, background subagents, notify-watched background processes). Live work is never interrupted on a timer: every `agent.restart_after_turn_timeout` seconds (30 minutes by default) the gateway logs a warning naming what it is still waiting on and keeps waiting; only a forced restart stops it. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:
 
 ```
   → hermes-gateway: draining (up to 1875s)...
@@ -212,7 +212,7 @@ The restart is drain-first: the running gateway refuses new turns, then waits fo
      finish or kill the work above to release the drain now; agent.restart_after_turn_timeout in config.yaml caps this wait
 ```
 
-Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, lower `agent.restart_after_turn_timeout` in `config.yaml` (`0` enters the forced drain immediately), or start the update with `hermes update --force` next time, which stops every gateway at once without waiting (see [Gateway downtime during an update](#gateway-downtime-during-an-update)). A second `hermes update --force` cannot cut short an update that is already waiting: that update holds the update lock, so the second one is refused until it finishes.
+Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or start the update with `hermes update --force`, which stops every gateway at once and interrupts that work (see [Gateway downtime during an update](#gateway-downtime-during-an-update)). A second `hermes update --force` cannot cut short an update that is already waiting: that update holds the update lock, so the second one is refused until it finishes.
 
 Wedged work does not hold the restart: a chat turn idle past `agent.gateway_timeout`, or a cron run older than the scheduler's in-flight allowance (`max(2 × the job's interval, cron.inflight_max_minutes)`, 30 minutes by default), is excluded from the wait and interrupted by the restart instead.
 

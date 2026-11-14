@@ -46,7 +46,7 @@ class TestDrainWaitsForBackgroundDelegations:
         monkeypatch.setattr(ad, "active_count", lambda: state["n"])
 
         async def finish_delegation():
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(0.12)  # health: allow HX013 -- the delegation must outlive the drain start
             state["n"] = 0
 
         task = asyncio.create_task(finish_delegation())

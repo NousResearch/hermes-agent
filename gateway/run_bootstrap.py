@@ -318,18 +318,23 @@ async def _start_gateway_start_control_socket(runner):
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
+        def _pause_for_update_handler(params: dict) -> dict:
+            # ``{"force": true}`` (hermes update --force): stop live work now instead of waiting for idle.
+            force = params.get("force") is True
             try:
                 from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                _drain = 0.0 if force else float(_get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
-            accepted_box: list[bool] = []
+            accepted_box: list = []
             _done = threading.Event()
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    from gateway.restart_when_idle import force_restart
+                    accepted_box.append(force_restart(runner) if force
+                                        else runner.request_restart(detached=False, via_service=True))
+                    accepted_box.append(runner._describe_active_work())
                 finally:
                     _done.set()
 
@@ -338,7 +343,8 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
-                "pid": os.getpid(), "drain_timeout": _drain}
+                "pid": os.getpid(), "drain_timeout": _drain, "force": force,
+                "waiting_on": accepted_box[1] if len(accepted_box) > 1 else []}
 
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now

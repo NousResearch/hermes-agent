@@ -12456,6 +12456,18 @@
             ],
             "default": null,
             "title": "Desktop Subcommands"
+          },
+          "review_button": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Review Button"
           }
         },
         "title": "CommandCatalogMeta",

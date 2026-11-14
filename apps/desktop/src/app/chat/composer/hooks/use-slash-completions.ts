@@ -1,6 +1,6 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -17,10 +17,13 @@ import {
   rankSkillCommands,
   slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
+import { rememberComposerCommandsCatalog } from '@/lib/review-prompt-buttons'
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { onboardingChatStore } from '@/store/onboarding-session'
 import { $sessions } from '@/store/session'
+
+import { useComposerScope } from '../scope'
 
 import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
@@ -79,6 +82,8 @@ export function useSlashCompletions(options: {
   activeSkin?: string
 }): SlashCompletions {
   const { gateway, sessionId, profile, skinThemes, activeSkin } = options
+  // This composer's focus-bus target: its catalog is recorded under it for panes acting on its chat.
+  const { target } = useComposerScope()
   const { locale } = useI18n()
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
@@ -105,17 +110,51 @@ export function useSlashCompletions(options: {
     }
 
     const { catalogKey, owner } = keysFor()
+    let current = true
 
     void cachedSlashCompletion(catalogKey, () =>
       requestCompletion<CommandsCatalogLike>(gateway, owner, 'commands.catalog', sessionParams)
     )
       .then(catalog => {
         filterDesktopCommandsCatalog(catalog)
+
+        // Only this composer's latest scope: an answer for a session it left never lands.
+        if (current) {
+          rememberComposerCommandsCatalog(target, catalog)
+        }
       })
       .catch(() => {
         // Next keystroke retries; don't block the composer on a warm-up miss.
       })
-  }, [gateway, epoch, keysFor, sessionParams])
+
+    return () => {
+      current = false
+    }
+  }, [gateway, epoch, keysFor, sessionParams, target])
+
+  // The composer's CURRENT scope, read live: a `/` request's callbacks close over
+  // the scope it started in, so only this ref can tell that the composer moved on.
+  const liveScope = useRef<{ keysFor: typeof keysFor; target: string } | null>(null)
+
+  // Prop mirror (session/profile/target), not an atom: there is no store to read live instead.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    liveScope.current = { keysFor, target }
+
+    return () => {
+      liveScope.current = null
+    }
+  }, [keysFor, target])
+
+  // A `/` fetch that succeeds after a failed warm-up also feeds this composer's
+  // Review pane buttons, unless the composer moved to another scope meanwhile.
+  const publishCatalog = useCallback((catalogKey: string, catalog: CommandsCatalogLike) => {
+    const live = liveScope.current
+
+    if (live && live.keysFor().catalogKey === catalogKey) {
+      rememberComposerCommandsCatalog(live.target, catalog)
+    }
+  }, [])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -193,6 +232,8 @@ export function useSlashCompletions(options: {
               requestCompletion<CommandsCatalogLike>(gateway, owner, 'commands.catalog', sessionParams)
             )
           )
+
+          publishCatalog(catalogKey, catalog)
 
           // Prefer the categorized layout so the popover renders section headers
           // (Session, Tools & Skills, ...). Fall back to the flat list when the
@@ -305,7 +346,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin, keysFor, sessionParams]
+    [gateway, skinThemes, activeSkin, keysFor, sessionParams, publishCatalog]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

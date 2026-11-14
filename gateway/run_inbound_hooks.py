@@ -243,6 +243,13 @@ class GatewayInboundHooksMixin:
             if _denied is not None:
                 return True, _denied, command
             qtype = qcmd.get("type")
+            if qtype == "prompt":
+                # Reached via an alias or a hook rewrite (a typed name expanded at ingress, see
+                # ``_hm_expand_typed_prompt_command``): the prompt becomes this turn's user message,
+                # which the idle dispatch still admits to the FIFO (``event._saved_prompt``).
+                if not self._hm_render_prompt_into_event(event, qcmd):
+                    return True, t("gateway.quick_command.no_prompt", command=command), command
+                return False, None, None
             if qtype == "exec":
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:
@@ -258,6 +265,50 @@ class GatewayInboundHooksMixin:
         if not command:
             return False, None, command
         return await self._hm_dispatch_plugin_command(event, source, command)
+
+    @staticmethod
+    def _hm_render_prompt_into_event(event: MessageEvent, qcmd: dict) -> bool:
+        """Turn *event* into the saved prompt of a ``type: prompt`` quick command: plain user text
+        from here on, never re-read as a command or a control reply (a prompt starting with ``/``
+        stays literal, as on the CLI). False when the command has no prompt."""
+        from gateway.platforms.event import MessageType
+        from hermes_cli.quick_commands import render_prompt_quick_command
+        msg = render_prompt_quick_command(qcmd, event.get_command_args())
+        if not msg:
+            return False
+        event.text = msg
+        if event.message_type == MessageType.COMMAND:
+            event.message_type = MessageType.TEXT
+        event.allow_gateway_control = False
+        event._saved_prompt = True
+        return True
+
+    def _hm_expand_typed_prompt_command(self, event: MessageEvent, source: SessionSource) -> Optional[str]:
+        """A typed ``/<name>`` naming a ``type: prompt`` quick command becomes its saved prompt BEFORE
+        admission and busy routing, so it follows ``busy_input_mode`` (steer, queue, interrupt) and the
+        FIFO exactly as typed text does. None when the event is not one (or was expanded); else the
+        reply refusing it (slash access policy, empty prompt). Built-ins keep their names."""
+        command = event.get_command() if not getattr(event, "internal", False) else None
+        if not command or getattr(self, "config", None) is None:  # fixtures built without __init__
+            return None
+        from hermes_cli.commands import resolve_command
+        quick, typed, original, seen = self._hm_quick_commands(), command, event.text, set()
+        qcmd = quick.get(command)
+        # An alias chain ending at a saved prompt (``/rn-alias`` -> ``/rn``) is that prompt too.
+        while (isinstance(qcmd, dict) and qcmd.get("type") == "alias" and command not in seen
+               and resolve_command(command or "") is None):
+            seen.add(command)
+            command = self._hm_expand_alias_quick_command(event, qcmd)
+            qcmd = quick.get(command) if command else None
+        if not (isinstance(qcmd, dict) and qcmd.get("type") == "prompt") or resolve_command(command or "") is not None:
+            event.text = original  # not a saved prompt: the normal dispatch resolves it as typed
+            return None
+        for name in dict.fromkeys((typed, command)):  # the typed alias and the prompt it names
+            if (denied := self._check_slash_access(source, name)) is not None:
+                return denied
+        if not self._hm_render_prompt_into_event(event, qcmd):
+            return t("gateway.quick_command.no_prompt", command=command)
+        return None
 
     async def _hm_dispatch_plugin_command(
         self, event: MessageEvent, source: SessionSource, command: str

@@ -161,6 +161,12 @@ class CLIModalMixin:
                     self._should_exit = True
                     if app is not None and app.is_running:
                         app.exit()
+                # A one-shot seed (a saved ``type: prompt`` command, /prompt) is the next turn, sent
+                # literally: this UI-thread dispatch never returns through the input loop's harvest.
+                seed, self._pending_agent_seed = getattr(self, "_pending_agent_seed", None), None
+                if seed:
+                    from cli import _SeededQueryMessage
+                    self._pending_input.put(_SeededQueryMessage(seed))
             except Exception as exc:
                 _cprint(f"  {_DIM}{t('cli.editor.command_failed', error=exc)}{_RST}")
             finally:

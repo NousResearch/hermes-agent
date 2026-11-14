@@ -983,6 +983,9 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
+        if (_refused := self._hm_expand_typed_prompt_command(event, event.source)) is not None:
+            await self._send_busy_reply(event, adapter, _refused)
+            return True  # a saved prompt otherwise continues below as the typed text it now is
         _skill, _skill_reply = await self._busy_skill_turn(event, event.source, session_key, adapter)
         if _skill:
             if _skill_reply:

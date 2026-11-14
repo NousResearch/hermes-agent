@@ -166,9 +166,9 @@ def _resolve_alias(name, arg):
             raise RuntimeStoreError('invalid_params')
         seen.add(name)
         entry = quick[name]
-        if not isinstance(entry, dict) or entry.get('type') not in {'alias', 'exec'}:
+        if not isinstance(entry, dict) or entry.get('type') not in {'alias', 'exec', 'prompt'}:
             raise RuntimeStoreError('unsupported_command')
-        if entry['type'] == 'exec':
+        if entry['type'] in {'exec', 'prompt'}:
             return name, arg
         target = entry.get('target')
         if not isinstance(target, str) or not target.strip():
@@ -177,6 +177,17 @@ def _resolve_alias(name, arg):
         name = parts[0]
         arg = ' '.join(p for p in (*parts[1:], arg) if p)
     return name, arg
+
+
+def _prompt_quick_command(name, arg):
+    """The turn text of a ``type: prompt`` quick command (``hermes_cli.quick_commands``), else None;
+    ``''`` when it has no prompt. Read in the owning profile's scope, like ``_runner_command``."""
+    from gateway.run import _load_gateway_config
+    from hermes_cli.quick_commands import render_prompt_quick_command
+    entry = (_load_gateway_config().get('quick_commands') or {}).get(name)
+    if not (isinstance(entry, dict) and entry.get('type') == 'prompt'):
+        return None
+    return render_prompt_quick_command(entry, arg)
 
 
 def _runner_command(name):
@@ -188,6 +199,8 @@ def _runner_command(name):
     entry = (_load_gateway_config().get('quick_commands') or {}).get(name)
     if isinstance(entry, dict) and entry.get('type') == 'exec':
         return 'exec', str(entry.get('command') or '')
+    if isinstance(entry, dict) and entry.get('type') == 'prompt':
+        return None  # a saved prompt beats a same-named plugin, as in the CLI and messaging
     return next((('plugin', registered) for registered in dict.fromkeys((name, name.replace('_', '-')))
                  if get_plugin_command_handler(registered)), None)
 
@@ -251,6 +264,26 @@ def _skill_directive(name, arg, route):
     return {'type': 'skill', 'name': ', '.join(stacked[1]) if stacked else skills[key]['name'], 'message': message,
             'display': describe_skill_invocation(message, separator=' '),
             **({'notice': t('cli.skills.skipped_missing', names=', '.join(missing))} if missing else {})}
+
+
+def _prompt_directive(runner, source, name, arg, message):
+    """``send`` for a ``type: prompt`` quick command: the saved prompt becomes the user's turn, which
+    the client submits with its own durable input id (as for a skill). Same slash access policy as
+    messaging's ``run_inbound_hooks`` dispatch."""
+    from agent.i18n import t
+    if refused := runner._check_slash_access(source, name):
+        return {'type': 'exec', 'output': _text(refused)}
+    if not message:
+        return {'type': 'exec', 'output': t('gateway.quick_command.no_prompt', command=name)}
+    return {'type': 'send', 'message': message, 'display': '/' + name + (' ' + arg if arg else '')}
+
+
+def _unregistered_directive(runner, source, name, arg, route):
+    """A ``type: prompt`` quick command's ``send``, else the session's ``/skill`` directive."""
+    message = _prompt_quick_command(name, arg)
+    if message is not None:
+        return _prompt_directive(runner, source, name, arg, message)
+    return _skill_directive(name, arg, route)
 
 
 async def _tui_read(authority, actor, ref, name, arg, before):
@@ -479,7 +512,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if definition is None:
         def build():  # in the session's folder: its trusted project skills, as its catalog lists them
             with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
-                return _skill_directive(name, arg, live.route)
+                return _unregistered_directive(authority.runner, live.source, name, arg, live.route)
         return await asyncio.to_thread(build)
 
     if canonical in _INFO_READS:

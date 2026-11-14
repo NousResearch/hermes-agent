@@ -1220,6 +1220,10 @@ class GatewayInboundMixin(
         Only events that may control the gateway (``allow_gateway_control``) can answer them, never
         an admitted turn: it was offered here before its commit, or a slash command queued it."""
         from gateway.session_ingress import executing_admission
+        # A typed saved prompt becomes plain text first (before authority admission and busy
+        # routing, which run after this), so it follows busy_input_mode like typed text.
+        if (_refused := self._hm_expand_typed_prompt_command(event, source)) is not None:
+            return _refused
         if not event.allow_gateway_control or getattr(event, "_fifo_only", False) or executing_admission.get():
             return None
         _reply = self._hm_update_prompt_reply(event, _quick_key)
@@ -1249,7 +1253,7 @@ class GatewayInboundMixin(
             _result = await self._run_in_executor_with_context(
                 self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
-        if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
+        if not _handled and (command or getattr(event, "_saved_prompt", False)):  # the FIFO, like text
             _handled, _result = await self._admit_command_turn(event, source, _quick_key, stop_epoch)
         return _handled, _result
 

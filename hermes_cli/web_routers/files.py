@@ -1417,7 +1417,9 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
         target, size = backend.inspect_file(path)
     except SshWorkspaceFsError as exc:
         _raise_fs_backend_error(exc)
-    if _is_sensitive_path(Path(target)):
+    # SSH inspect_file realpaths symlinks; guard the requested name too, so
+    # ~/.ssh -> ~/keys cannot make a requested ~/.ssh/id_ed25519 readable.
+    if _is_sensitive_path(PurePosixPath(path)) or _is_sensitive_path(PurePosixPath(target)):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, size
 

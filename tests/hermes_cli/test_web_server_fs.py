@@ -253,6 +253,34 @@ def test_fs_download_rejects_sensitive_resolved_ssh_path_before_streaming(client
     assert response.status_code == 403
 
 
+def test_ssh_requested_credential_store_stays_denied_after_remote_realpath(client, monkeypatch):
+    """SSH ~/.ssh -> ~/keys: inspect_file returns the harmless-looking canonical name.
+    The requested credential-store name must still be denied before any bytes are read.
+    """
+    requested = "~/.ssh/id_ed25519"
+    resolved = "/home/dev/keys/id_ed25519"
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            assert path == requested
+            return resolved, 6
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            assert path == resolved
+            return b"secret", 6, path
+
+        def stream_file(self, path):
+            assert path == resolved
+            yield b"secret"
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    for endpoint in ("/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"):
+        response = client.get(endpoint, params={"path": requested, "profile": "remote-dev"})
+        assert response.status_code == 403, (endpoint, response.status_code)
+        assert response.json()["detail"] == "Access to sensitive files is not allowed"
+
+
 @pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
 @pytest.mark.parametrize("resolved", ["/srv/repos/.env", "/home/dev/.hermes/auth.json",
                                       "/home/dev/.hermes/mcp-tokens/github.json"])

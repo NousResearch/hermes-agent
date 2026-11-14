@@ -3152,16 +3152,14 @@ class TestSummaryPromptBounding:
         with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
             assert compressor._generate_summary(messages) is not None
         assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
         assert "chars elided" in prompt
 
-        transcript = prompt[prompt.index("[USER]: record-"):]
-        sections = [sec for sec in self._ELISION_MARKER.split(transcript) if "record-" in sec]
-        assert sections
-        for section in sections:
-            assert section.startswith("[USER]: record-"), section[:60]
-        whole = re.findall(r"\[USER\]: record-\d{4} " + re.escape(body) + r"(?=\n\n|\n*$)", transcript)
-        assert len(whole) == transcript.count("[USER]: record-") > 8
+        # Each retained record is a whole user turn in its own role (#146750), never a fragment.
+        transcript = "\n\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"][1:-1] if m["role"] == "user")
+        transcript = transcript[transcript.index("record-"):]
+        whole = ["[USER]: " + r for r in re.findall(r"record-\d{4} " + re.escape(body) + r"(?=\n\nrecord-|\n\n\[|$)", transcript)]
+        assert len(whole) == transcript.count("record-") > 8
         # Newest record anchors the tail and both ends of the history are represented.
         assert whole[-1].startswith("[USER]: record-1199 ")
         assert whole[0].startswith("[USER]: record-0000 ")
@@ -3237,7 +3235,7 @@ class TestSummaryPromptBounding:
         with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
             summary = c._generate_summary(messages)
 
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
         assert summary.startswith(SUMMARY_PREFIX)
         # previous summary block + new-turns block each capped, plus the
         # fixed template: well under 3x the cap (unbounded would be ~800K).

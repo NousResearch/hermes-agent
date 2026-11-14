@@ -6,7 +6,6 @@ prompting live here.
 
 import bisect
 import fnmatch
-import functools
 import logging
 import os
 import re
@@ -15,6 +14,7 @@ import tempfile
 import unicodedata
 
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 
 logger = logging.getLogger("tools.approval")
 
@@ -28,7 +28,7 @@ _HERMES_HOME_DIR = (
     r'(?:profiles/[^/\s"\'`]+/)?'
 )
 _HERMES_ENV_PATH = (
-    _HERMES_HOME_DIR + r'\.env\b'
+    _HERMES_HOME_DIR + r'(?:\.op)?\.env\b'
 )
 # ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
 # so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
@@ -110,6 +110,38 @@ _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+)
+
+# Top-level `hermes` flags that consume a SEPARATE word (`--profile work`): the value-taking subset
+# of `hermes_cli._parser.top_level_value_flag_sets`, so `hermes --profile work config set ...` does
+# not read "work" as the subcommand. Any other flag is a bare token (`--json`, `--flag=value`).
+_HERMES_TOP_LEVEL_VALUE_FLAGS = (
+    r'(?:--profile|-p|--config|--model|-m|--provider|--reasoning|--toolsets|-t'
+    r'|--resume|-r|--skills|-s|--oneshot|-z|--usage-file|--in|--cpu-profile)'
+)
+
+# `-p`/`--profile` is stripped from ANYWHERE before `--` (`_parser.scan_profile_flag`), so it can sit
+# between `config` and `set` or before the key too. A `VAR=value` word may be quoted (`NOTE='a b'`).
+_HERMES_PROFILE_OPTION = r'(?:(?:-p|--profile)[ \t]+[^\s]++|--profile=[^\s]++)'
+_SHELL_WORD = r'''(?:[^\s'"]++|'[^']*+'|"[^"]*+")*+'''
+
+# `hermes config set|unset <key>` — the invocations that rewrite the agent's own approval
+# policy. Anchored to the INVOCATION (program word, `config set|unset`, policy key), so a read of
+# the text (`grep -r 'hermes config set' docs`) stays ungated. Option runs are ATOMIC/possessive:
+# nested `(?:\s+...)*` backtracked exponentially on long flag runs (0.34s at 30 flags).
+_HERMES_CONFIG_SET_APPROVAL_POLICY = (
+    # The program: the `hermes` binary (or the macOS `ai.hermes`), or the module form
+    # `python -m hermes_cli.main` that the updater and the cron lifecycle guard invoke.
+    # Optional leading `VAR=value` assignments (`HERMES_HOME=... hermes config set ...`).
+    r'(?>(?:\w++=' + _SHELL_WORD + r'[ \t]+)*)'
+    r'(?:(?:(?:[a-z]:)?[^\s:]*?/)?(?:ai\.)?hermes(?:\.exe)?\b'
+    r'|(?:(?:[a-z]:)?[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]*hermes_cli\.main\b)'
+    r'(?>(?:[ \t]+(?:' + _HERMES_TOP_LEVEL_VALUE_FLAGS + r'[ \t]+[^\s]++'
+    r'|--?[\w-]++(?:=[^\s]++)?))*)'  # global options before the subcommand
+    r'[ \t]+config(?>(?:[ \t]+' + _HERMES_PROFILE_OPTION + r')*)'  # `-p` also parses after a subcommand
+    r'[ \t]+(?:set|unset)\b[ \t]*'  # the `config set` / `config unset` subcommand
+    r'(?>(?:(?:' + _HERMES_PROFILE_OPTION + r'|--?[\w-]++)[ \t]+)*)'  # `--force`, `-p work`
+    r'["\']?(?:approvals(?:\.[\w.-]++)*|command_allowlist)\b'  # the approval-policy key, maybe quoted
 )
 
 
@@ -334,6 +366,26 @@ class _PipeRemoteToShellMatcher:
         return None
 
 
+_DEV_SOCKET_RE = re.compile(r"/dev/(?:tcp|udp)/", re.IGNORECASE)
+# Redirect operators bash opens a /dev/tcp target for (`<<` is a heredoc delimiter, `>&N` a dup).
+# No leading fd digits: search() only reads op.end(), and a `[0-9]*` prefix rescans a digit run from every offset.
+_DEV_SOCKET_REDIRECT_OP_RE = re.compile(r"&>>?|<>|>>|>&|<&|>\||(?<!<)<(?!<)|>")
+
+
+class _DevSocketRedirectMatcher:
+    """`... > /dev/tcp/h/p` reverse shells. The operator is found on the quote-masked text, so prose that
+    quotes a redirect stays quiet; the operand is then read and dequoted from the real text, so a quoted
+    target (`> "/dev/tcp/h/1"`, `3<>'/dev/udp/h/53'`, `> /dev/"tcp"/h/1`) still counts."""
+
+    def search(self, text: str):
+        # No literal "/dev/" prefilter: the operand is dequoted below, so `> /"dev"/tcp/h/1` must reach it.
+        for op in _DEV_SOCKET_REDIRECT_OP_RE.finditer(_mask_quoted_prose(text)):
+            _, _, word = _read_shell_word(text, op.end())
+            if _DEV_SOCKET_RE.match(_deobfuscate_shell_word_for_detection(word)):
+                return op
+        return None
+
+
 def _contains_shell_carrier(command: str) -> bool:
     """Return whether any command-position word is a shell-carrying command."""
     return any(
@@ -445,6 +497,7 @@ _GIT_PUSH_ARGS = (r'''(?:(?>'[^']*'|"(?:[^"\\]|\\[\s\S])*")|'(?![^']*')|"(?![^"]
                   r'''|\\[\s\S]|(?!''' + _GIT_PUSH + r''')[^;&|\n'"\\]|(?<=[<>])&|(?<![<>])&(?=>)|(?<=>)\|)*''')
 # An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
 _GIT_PUSH_ARG_START = r'''\s["']?'''
+_DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -536,9 +589,15 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
-    # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
-    # silently allow DELETE without WHERE.
-    (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
+    # Only a WHERE in the DELETE's own statement text clears it: the lookahead stops at a newline
+    # (under DOTALL a WHERE on the *next* line would otherwise count), a statement or shell
+    # separator (; & |), a redirection (< >), a comment start (-- /* #), and any quote or dollar-quote
+    # opener, so a WHERE inside a comment, literal, identifier, later statement, redirect target or
+    # later shell command cannot.
+    # Bare $VAR / ${VAR} stay transparent so templated table names still clear. Tag chars mirror
+    # PostgreSQL's scan.l dolq_cont ([A-Za-z\200-\377_0-9]): any non-ASCII char, so $é$ opens a quote.
+    (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#<>\'"`$]|\$(?![A-Za-z_0-9\x80-\U0010ffff]*\$)))*\bWHERE\b)',
+     "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
@@ -559,6 +618,15 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Reverse shells (parity with Skills Guard's network rows). Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in
+    # _DevSocketRedirectMatcher, which dequotes the redirect operand; nc/socat are command-position anchored; a glued `<`/`>` redirect still ends the command word.
+    (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
+    # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
+    # the span stops there and `nc -z h 80 # -e note` stays quiet. The flag is case-sensitive (`-C` is CRLF).
+    # An `&` stays in the span only inside a redirect (`2>&1`, `<&0`, `&>x`); a background `&` ends it.
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
+     "reverse shell via netcat -e/-c"),
+    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
@@ -713,6 +781,15 @@ DANGEROUS_PATTERNS = [
     # whole blank run sits between the option and its value (`-o  +foo`).
     (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}(?<!\s)(?<!\s-o)(?<!\s--push-option)\s+["\']?\+[^\s;&|\n]+',
      "git force push (rewrites remote history)"),
+    # `hermes config set` can rewrite the agent's own approval policy (approvals.mode, approvals.deny,
+    # command_allowlist) — gate it like the file-tool path so a default empty deny list is not an open door.
+    # Anchored to a real INVOCATION: the command must BE `hermes config set <policy key>`. The
+    # `\bhermes\b.*\bconfig\b.*\bset\b` form matched that TEXT anywhere in the command, so a plain
+    # read of it (`grep -r 'hermes config set' docs/approvals.md`) demanded an approval it has no
+    # business demanding. The global-option run uses possessive quantifiers inside an atomic group,
+    # so it cannot backtrack exponentially the way a plain nested `*` does.
+    (_CMDPOS + _HERMES_CONFIG_SET_APPROVAL_POLICY,
+     "hermes config set approval settings"),
     (rf'{_GIT}clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
@@ -753,6 +830,7 @@ _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+    _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
 }
 DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
@@ -842,58 +920,6 @@ def _lower_preserving_flags(command: str) -> str:
     pattern explicitly scopes a case-sensitive group. Non-flag tokens (command words, quoted
     prose, paths) are lowercased exactly as before; separators and whitespace are untouched."""
     return ''.join(t if t.startswith('-') else t.lower() for t in re.split(r'(\s+)', command))
-
-
-# Shell metacharacters, quotes, and whitespace that terminate a path token.
-_PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
-_PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
-
-
-@functools.lru_cache(maxsize=64)
-def _home_prefix_fold_regex(path: str):
-    """Compile a regex matching *path* as an absolute directory prefix.
-    Components match with either separator so native Windows, forward-slash, and mixed forms all
-    fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
-    components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
-    if len(components) < 2:
-        return None
-    # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
-
-
-def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
-    """Fold each resolved home prefix in *command* to *replacement* (no trailing separator; the tail
-    supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it."""
-    for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
-        pattern = _home_prefix_fold_regex(path)
-        if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)
-    return command
-
-
-def _rewrite_resolved_user_home(command: str) -> str:
-    """User home (expanduser / realpath / $HOME) -> ``~/``; no-op when unset, degenerate, or unresolvable."""
-    try:
-        # expanduser, realpath, and an explicit HOME — Windows expanduser uses USERPROFILE, not HOME.
-        home = os.path.expanduser("~")
-        paths = [home, os.path.realpath(home), os.environ.get("HOME", "")]
-    except Exception:
-        return command
-    return _fold_home_prefixes(command, paths, "~")
-
-
-def _rewrite_resolved_hermes_home(command: str) -> str:
-    """Resolved HERMES_HOME (and its realpath) -> ``~/.hermes/`` so the _HERMES_CONFIG_PATH /
-    _HERMES_ENV_PATH rules match Docker/gateway deployments that spell the absolute path."""
-    try:
-        from hermes_constants import get_hermes_home
-        home = get_hermes_home().expanduser()
-        paths = [str(home), str(home.resolve(strict=False))]
-    except Exception:
-        return command
-    return _fold_home_prefixes(command, paths, "~/.hermes")
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")

@@ -15,7 +15,8 @@ import time
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _BOUNDARY_END_REASONS
+from agent.redact import redact_derived_text
+from hermes_state_common import _BOUNDARY_END_REASONS, _PREVIEW_MAX_CHARS
 from hermes_time import safe_strftime
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
@@ -93,7 +94,7 @@ def _get_session_meta(db, session_id: str) -> dict:
 
 def _session_meta_block(meta: dict[str, Any]) -> dict[str, Any]:
     return {"when": _format_timestamp(meta.get("started_at")), "source": meta.get("source"),
-            "model": meta.get("model"), "title": meta.get("title")}
+            "model": meta.get("model"), "title": redact_derived_text(meta.get("title"))}
 
 
 def _ok(**payload) -> str:
@@ -234,15 +235,60 @@ def _is_compacted_message(db, message_id) -> bool:
     return _is_compacted_state(_get_message_storage_state(db, message_id))
 
 
+def _redact_tool_calls(tool_calls: Any) -> Any:
+    """Strictly redact each call's ``function.arguments`` (field-wise, so the JSON shape survives)."""
+    if not isinstance(tool_calls, list):
+        return _redact_derived_value(tool_calls)
+    out = []
+    for call in tool_calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        if isinstance(fn, dict) and fn.get("arguments") is not None:
+            call = {**call, "function": {**fn, "arguments": _redact_derived_value(fn["arguments"])}}
+        out.append(call)
+    return out
+
+
+_DATA_URL_PLACEHOLDER = "[inline data omitted]"
+_DATA_URL_RE = re.compile(r"data:[^\s,]*;base64,")
+
+
+def _redact_derived_value(value: Any) -> Any:
+    """Strictly redact every string leaf of stored message structure (str content, multimodal
+    part lists, tool_calls), keeping the shape. Inline ``data:`` URLs (base64 images) are
+    replaced outright: they are opaque to the redactor and never useful in recall output."""
+    if isinstance(value, str):
+        return _DATA_URL_PLACEHOLDER if _DATA_URL_RE.match(value) else redact_derived_text(value)
+    if isinstance(value, list):
+        return [_redact_derived_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _redact_derived_value(v) for k, v in value.items()}
+    return value
+
+
+def _content_text(content: Any) -> str:
+    """Searchable text of a message body: str as-is, a multimodal part list's text parts joined."""
+    if isinstance(content, list):
+        return " ".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return "" if content is None else str(content)
+
+
 def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
-                   max_content_len: Optional[int] = None) -> dict[str, Any]:
-    """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
+                   max_content_len: Optional[int] = None, derived: bool = False) -> dict[str, Any]:
+    """Slim a message row; keeps ``content`` even when empty (tool-call-only turns).
+
+    ``derived`` marks rows surfaced by a discovery query rather than an explicit
+    ``session_id`` read: those resurface across sessions, so they get the same
+    strict redaction as compaction summaries (#113165)."""
     content = m.get("content")
     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
         from tools.ansi_strip import strip_ansi
         content = strip_ansi(content)
+    if derived:
+        content = _redact_derived_value(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
     entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
+    if derived and entry.get("tool_calls"):
+        entry["tool_calls"] = _redact_tool_calls(entry["tool_calls"])
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
@@ -295,10 +341,10 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     view = {} if anchor_id is None else _quiet(
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
         "get_anchored_view failed for title match %s/%s", session_id, anchor_id)
-    title = session_meta.get("title") or title_query
+    title = redact_derived_text(session_meta.get("title") or title_query)
     # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
     def shape(key, fallback, anchor=None, max_content_len=1200):
-        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
+        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len, derived=True)
                 for m in (view.get(key) or fallback)]
     return {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
@@ -324,8 +370,46 @@ def _discover_payload(db, query: str, detail: str, results: list, **extra) -> st
 
 
 def _bookend(view: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    return [_shape_message(m, max_content_len=1200) for m in (view.get(key) or [])
+    return [_shape_message(m, max_content_len=1200, derived=True) for m in (view.get(key) or [])
             if not _is_compaction_summary(m.get("content", ""))]
+
+
+_SNIPPET_MARK_RE = re.compile(r">>>(.*?)<<<", re.DOTALL)
+_SNIPPET_BEFORE, _SNIPPET_AFTER = 100, 200
+
+
+def _derived_snippet(fts_snippet: Any, anchor: Optional[dict[str, Any]]) -> str:
+    """Rebuild the hit snippet from the strictly-redacted anchor message.
+
+    FTS ``snippet()`` output can't be redacted after the fact: a highlight marker inside a
+    token (``>>>ghp<<<_...``) or the window crop (``...<token body>``) breaks the vendor-prefix
+    patterns. So the FTS row only contributes its highlighted terms; the text comes from the
+    redacted anchor body (or tool-call arguments), windowed and re-highlighted here (#113165).
+    """
+    if not anchor:
+        return ""
+    terms = [t for t in dict.fromkeys(_SNIPPET_MARK_RE.findall(str(fts_snippet or ""))) if t.strip()]
+    sources = [_content_text(_redact_derived_value(anchor.get("content")))]
+    calls = anchor.get("tool_calls")
+    if calls:
+        calls = _redact_tool_calls(calls)
+        sources.append(calls if isinstance(calls, str) else json.dumps(calls, ensure_ascii=False))
+    # LIKE-fallback snippets carry no markers: locate by their leading text instead.
+    probes = terms or [str(fts_snippet or "").strip(". ")[:20]]
+    text, pos = sources[0], -1
+    for candidate in sources:
+        lowered = candidate.lower()
+        pos = min((i for i in (lowered.find(t.lower()) for t in probes if t) if i >= 0), default=-1)
+        if pos >= 0:
+            text = candidate
+            break
+    start = max(0, pos - _SNIPPET_BEFORE) if pos >= 0 else 0
+    end = min(len(text), max(pos, 0) + _SNIPPET_AFTER)
+    window = text[start:end]
+    if terms:
+        window = re.sub("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)),
+                        lambda m: f">>>{m.group(0)}<<<", window, flags=re.IGNORECASE)
+    return ("..." if start else "") + window + ("..." if end < len(text) else "")
 
 
 def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detail: str) -> Optional[dict[str, Any]]:
@@ -340,15 +424,17 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
     # lineage's root can be months older than the matched conversation (#103184).
     session_meta, full = (_get_session_meta(db, hit_sid) or _get_session_meta(db, lineage_root),
                           result_detail == "full")
+    anchor = next((m for m in (view.get("window") or []) if m.get("id") == msg_id), None)
     return _discovery_entry(
         lineage_root, session_id=hit_sid,
         when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
         source=session_meta.get("source") or match_info.get("source", "unknown"),
         model=session_meta.get("model") or match_info.get("model") or "unknown",
-        title=session_meta.get("title") or None, matched_role=match_info.get("role"),
-        match_message_id=msg_id, snippet=match_info.get("snippet") or "",
+        title=redact_derived_text(session_meta.get("title")) or None,
+        matched_role=match_info.get("role"), match_message_id=msg_id,
+        snippet=_derived_snippet(match_info.get("snippet"), anchor),
         bookend_start=_bookend(view, "bookend_start") if full else [],
-        messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000)
+        messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000, derived=True)
                   for m in (view.get("window") or []) if full or m.get("id") == msg_id],
         bookend_end=_bookend(view, "bookend_end") if full else [],
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
@@ -532,6 +618,15 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
 
+def _derived_preview(preview: Any) -> str:
+    """Strictly redacted browse preview. ``_shape_preview`` cut it at ``_PREVIEW_MAX_CHARS``, which can
+    leave a fixed-length key (``AKIA…``, ``AIza…``) too short for its pattern: drop the cut word first."""
+    text = "" if preview is None else str(preview)
+    if len(text) == _PREVIEW_MAX_CHARS + 3 and text.endswith("..."):
+        text = re.sub(r"\S*$", "", text[:-3]) + "..."
+    return redact_derived_text(text)
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str | None = None, link_profile: str | None = None) -> str:
     """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
     def _browse():
@@ -554,8 +649,10 @@ def _list_recent_sessions(db, limit: int, current_session_id: str | None = None,
         hidden = {current_session_id, current_root if has_compression_hop and current_root else None}
         results = [{
             "session_id": s.get("id", ""), "link": _session_link(s.get("id", ""), link_profile),
-            "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
-            "message_count": s.get("message_count", 0), "preview": s.get("preview", "")}
+            "title": redact_derived_text(s.get("title")) or None,
+            **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
+            "message_count": s.get("message_count", 0),
+            "preview": _derived_preview(s.get("preview"))}
             for s in [x for x in sessions if x.get("id", "") not in hidden][:limit]]
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "

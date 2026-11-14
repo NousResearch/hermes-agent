@@ -17,7 +17,8 @@
 #      on 'update' for the button the app owns; NEVER an internal apply call.
 #   3. when the OS App Installer confirmation window appears, click its
 #      Update/Install button (UpdateSettings OnLaunch ShowPrompt=false means
-#      it usually does NOT appear; tolerate both).
+#      it usually does NOT appear; tolerate both), then Yes on the metered-
+#      connection warning App Installer shows on a metered network.
 #   4. wait for the app processes to exit (the hand-off quits the app) —
 #      exit 0 = the trigger was clicked by THIS driver and the app exited.
 #
@@ -35,6 +36,9 @@ param(
     # How long to wait for the App Installer confirmation dialog, if the OS
     # shows one at all.
     [int]$ConfirmTimeoutSec = 120,
+    # How long after that click to watch for App Installer's metered-connection warning, which
+    # it shows only on a metered network.
+    [int]$MeteredWarningTimeoutSec = 20,
     # How long to wait for the app processes to exit after the click.
     [int]$ExitTimeoutSec = 600
 )
@@ -145,22 +149,17 @@ Write-Host "  [uia] in-app update trigger clicked: $($clicked.Name)"
 # 2. the OS App Installer confirmation, if the OS shows one -------------------
 
 Write-Host "[uia] watching for an App Installer confirmation (up to ${ConfirmTimeoutSec}s) ..."
-$cDeadline = (Get-Date).AddSeconds($ConfirmTimeoutSec)
-$confirmed = $false
-while ((Get-Date) -lt $cDeadline -and -not $confirmed) {
-    $installers = @(Get-Process -Name "AppInstaller" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-    if ($installers.Count) {
-        $hit = Find-WindowButton -Root ([System.Windows.Automation.AutomationElement]::RootElement) `
-            -ProcessIds $installers -Patterns @('^Update$', '^Install$', '^(Reinstall|Update) .*')
-        if ($hit) {
-            Save-Shot "02-appinstaller-confirm"
-            Write-Host "  [uia] App Installer dialog: clicking '$($hit.Name)'"
-            if (Invoke-Button $hit.Element) { $confirmed = $true }
-        }
-    }
-    # The app quits before App Installer opens; keep watching its confirmation.
-    Start-Sleep -Seconds 3
-}
+# The app quits before App Installer opens; keep watching its confirmation.
+$pressed = @(Confirm-AppInstallerPrompt -Root ([System.Windows.Automation.AutomationElement]::RootElement) `
+    -GetProcessIds { Get-Process -Name "AppInstaller" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id } } `
+    -PromptTimeoutSec $ConfirmTimeoutSec -WarningTimeoutSec $MeteredWarningTimeoutSec -Press {
+        param($hit)
+        Save-Shot $(if ($hit.Name -eq 'Yes') { "02-appinstaller-metered-warning" } else { "02-appinstaller-confirm" })
+        Write-Host "  [uia] App Installer dialog: clicking '$($hit.Name)'"
+        Invoke-Button $hit.Element
+    })
+$confirmed = $pressed.Count -gt 0
+if ($pressed -contains 'Yes') { Write-Host "  [uia] App Installer metered-connection warning accepted" }
 if ($confirmed) { Write-Host "  [uia] App Installer confirmation clicked" }
 else { Write-Host "  [uia] no App Installer dialog appeared (OnLaunch ShowPrompt=false + real source registration): ok" }
 Save-Shot "03-after-trigger"
@@ -173,13 +172,13 @@ while ((Get-Date) -lt $eDeadline) {
     if ((Get-AppPids).Count -eq 0) {
         Save-Shot "04-app-exited"
         Write-Host "  [uia] OLD app exited for the package swap"
-        @{ ok = $true; clicked = $clicked.Name; appInstallerConfirmed = [bool]$confirmed; exited = $true } |
+        @{ ok = $true; clicked = $clicked.Name; appInstallerConfirmed = [bool]$confirmed; appInstallerPressed = $pressed; exited = $true } |
             ConvertTo-Json | Set-Content -LiteralPath $ResultPath -Encoding UTF8
         exit 0
     }
     Start-Sleep -Seconds 5
 }
 Save-Shot "zz-app-never-exited"
-@{ ok = $false; clicked = $clicked.Name; appInstallerConfirmed = [bool]$confirmed; exited = $false } |
+@{ ok = $false; clicked = $clicked.Name; appInstallerConfirmed = [bool]$confirmed; appInstallerPressed = $pressed; exited = $false } |
     ConvertTo-Json | Set-Content -LiteralPath $ResultPath -Encoding UTF8
 throw "the $ProcessName process never exited after the update trigger ($ExitTimeoutSec s) - a surviving process would hold package files during the swap"

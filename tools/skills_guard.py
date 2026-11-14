@@ -22,7 +22,7 @@ from typing import List, Tuple
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
 
-SCANNER_VERSION = "skills-guard-v14"
+SCANNER_VERSION = "skills-guard-v15"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -468,7 +468,6 @@ THREAT_PATTERNS = [
      "setuid_setgid", "medium", "privilege_escalation", "mentions setuid/setgid (informational)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),
-    (r'chmod\s+[u+]?s', "suid_bit", "critical", "privilege_escalation", "sets SUID/SGID bit on a file"),
     # ── Agent config persistence ──
     # Bare mentions of config files are not threats (authoring guides, setup docs) — flagging them blocked
     # popular community skills. Tiers: mechanical shell writes = critical; prose modification intent =
@@ -901,16 +900,18 @@ def _community_note(f: Finding) -> Finding:
     return f
 
 
-def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str | None = None) -> ScanResult:
+def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str | None = None,
+               files: list[Path] | None = None) -> ScanResult:
     """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
     files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
     so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level unless the caller
-    passes the serving adapter's own *trust_level*."""
+    passes the serving adapter's own *trust_level*. *files* (paths inside the skill dir) limits the per-file
+    pattern scan to them; the structural checks still cover the dir."""
     name, trust = skill_path.name, trust_level or _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
         findings.extend(_check_structure(skill_path))
-        for f in skill_path.rglob("*"):
+        for f in skill_path.rglob("*") if files is None else files:
             if f.is_file():
                 findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():

@@ -684,6 +684,17 @@ def pid_exists_stdlib(pid: int) -> bool:
     return True
 
 
+def process_start_time_stdlib(pid: int) -> int | None:
+    """``/proc/<pid>/stat`` field 22 (start time in clock ticks since boot), stdlib only; None
+    without /proc (macOS, Windows) or when the process is gone. ``gateway.status``'s start-time
+    fingerprint reads the same field first, so the two agree on Linux."""
+    try:
+        # Field 22 counted after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(Path(f"/proc/{int(pid)}/stat").read_bytes().rsplit(b")", 1)[1].split()[19])
+    except (IndexError, ValueError, OSError):
+        return None
+
+
 def _process_start_time(pid: int) -> int | None:
     """The repository's stable process-start fingerprint, if available."""
     try:

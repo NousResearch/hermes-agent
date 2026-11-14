@@ -418,9 +418,12 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Heredoc bodies that are provably inert data (quoted delimiter, data-sink consumer like `cat > file
     # <<'EOF'`) are masked before scanning (#88336): a runbook line "a human can run: hermes gateway
     # restart" inside such a body is documentation, not a command this shell will execute.
+    # ``mask_code_consumers=False`` keeps python/osascript bodies visible: their payload reaches a
+    # shell at runtime (``os.system``, ``do shell script``), so masking it here would let an inline
+    # lifecycle command hide in the blanked body (#127698).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    text = strip_inert_heredoc_bodies(text)
+    text = strip_inert_heredoc_bodies(text, mask_code_consumers=False)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True
@@ -457,6 +460,27 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     return _contains_launchctl_gateway_lifecycle(normalized) or contains_host_interpreter_kill(normalized)
 
 
+def first_gateway_lifecycle_match(text: str) -> Optional[str]:
+    """The command-shaped span ``contains_gateway_lifecycle_command`` keys on, for rejection text.
+
+    Covers the raw and shell-tokenized regex passes; None when only the profile-flag, split-label
+    launchctl or interpreter-kill pass fired (callers then fall back to a generic message).
+    """
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", strip_inert_heredoc_bodies(text or ""))
+    match = _GATEWAY_LIFECYCLE_PATTERN.search(normalized)
+    if match:
+        return match.group(0)
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        for candidate in (joined, _ARGV_LIST_PUNCTUATION.sub(" ", joined)):
+            match = _GATEWAY_LIFECYCLE_PATTERN.search(candidate)
+            if match:
+                return match.group(0)
+    return None
+
+
 # Whole-walk work limits. The per-file cap and depth bound above limit one read, not the walk: a
 # command can reference arbitrarily many scripts, and the pure-Python shlex pass (quadratic on a
 # giant token) once held the GIL for minutes. These caps bound one whole walk and are charged
@@ -483,6 +507,7 @@ class _LifecycleScanBudget:
         "paths_remaining",
         "refusal",
         "remote_reads_remaining",
+        "scanned_bodies",
     )
 
     def __init__(self) -> None:
@@ -492,9 +517,15 @@ class _LifecycleScanBudget:
         self.paths_remaining = _MAX_LIFECYCLE_SCAN_PATHS
         self.remote_reads_remaining = _MAX_LIFECYCLE_SCAN_REMOTE_READS
         self.refusal: Optional[str] = None
+        self.scanned_bodies: set[str] = set()
 
-    def charge_text(self, text: str) -> bool:
-        """Charge *text* before tokenization; False when it does not fit."""
+    def charge_text(self, text: str, *, written_body: bool = False) -> bool:
+        """Charge *text* before tokenization; False when it does not fit. A *written_body* is a
+        substring of text already charged, so only its first scan is free: one ``tee`` body
+        written to many paths is charged again for every further path."""
+        if written_body and text not in self.scanned_bodies:
+            self.scanned_bodies.add(text)
+            return True
         # UTF-8 is >= one byte per code point, so the char count is a free lower bound.
         if len(text) > self.bytes_remaining:
             return False
@@ -609,9 +640,9 @@ def _split_logical_lines(text: str) -> list[str]:
     return lines
 
 
-def _shlex_tokens(line: str) -> list[str]:
+def _shlex_tokens(line: str, punctuation_chars: str = ";&|()") -> list[str]:
     """POSIX-tokenize one shell line, honoring quotes and `#` comments; raises ValueError."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=punctuation_chars)
     lexer.whitespace_split = True
     lexer.commenters = "#"
     return list(lexer)
@@ -952,6 +983,59 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+def _heredoc_write_targets(unit: str) -> Iterator[str]:
+    """Paths a ``cat``/``tee`` heredoc command line writes its body to (``cat > P <<'EOF'``,
+    ``cat <<'EOF' | tee -a P``). Redirect operators tokenize apart from words, so attached
+    spellings (``cat >P<<'EOF'``, ``cat <<'EOF'>P``) yield P too."""
+    try:
+        tokens = _shlex_tokens(unit, ";&|()<>")
+    except ValueError:
+        return
+    for segment in _split_segments(tokens):
+        index = _executed_command_index(segment)
+        if index is None or _executable_name(segment[index]) not in {"cat", "tee"}:
+            continue
+        operator = None
+        for token in segment[index + 1:]:
+            if operator is not None:
+                if operator in {">", ">>", ">|", "&>", "&>>"}:
+                    yield token
+                operator = None
+            elif set(token) <= set("<>|&"):
+                operator = token
+            elif _executable_name(segment[index]) == "tee" and not token.startswith("-"):
+                yield token
+
+
+def _collect_heredoc_written_scripts(
+    command: str, cwd: Optional[str], written: Optional[dict[Path, list[str]]],
+) -> dict[Path, list[str]]:
+    """Add every body a heredoc in *command* writes to a path to *written*. The file does not exist
+    yet when the guard runs, so a later ``bash P`` / ``systemd-run P`` can only be scanned through
+    the body text (#148561). EVERY body is kept, not the last: the script may run between two
+    writes (``>`` then run then overwrite) or hold several appended bodies (``>>``)."""
+    from tools.shell_heredoc import iter_heredoc_bodies
+
+    written = {} if written is None else written
+    for unit, body in iter_heredoc_bodies(command):
+        for target in _heredoc_write_targets(unit):
+            for path in _resolved_or_nothing(target, cwd):
+                bodies = written.setdefault(_resolve_lenient(path), [])
+                if body not in bodies:
+                    bodies.append(body)
+    return written
+
+
+def _walk_candidates(command: str, walk_command: str, cwd: Optional[str], executed: bool) -> list[tuple[Path, bool]]:
+    """Referenced-script candidates: executed-view paths first, then paths only mentioned in masked
+    bodies. A heredoc body written to a candidate path is that script's text (see the walk); a body
+    that is only written stays documentation (#88336)."""
+    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    if walk_command != command:
+        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+    return candidates
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -1090,30 +1174,58 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _scan_written_bodies(
+    bodies: list[str], recurse: Callable[..., bool], cwd: Optional[str], executed: bool,
+) -> bool:
+    """Scan the heredoc bodies written to one run path. Each body is one possible file version (an
+    overwrite replaces the last); their concatenation is the file ``>>`` appends build. Joined
+    overwrites can form a masked ``cat <<'DOC'`` around a command the file really runs, so the join
+    is never scanned alone. A body is a substring of charged text (charge_text frees its first
+    scan only); the join is new text, so it is charged like any other. A script built from large
+    ``>>`` appends therefore costs about twice its size: one near half the walk budget fails
+    closed on the budget refusal."""
+    bodies = list(dict.fromkeys(filter(None, bodies)))
+    if any(recurse(body, cwd, executed, charge=False) for body in bodies):
+        return True
+    return len(bodies) > 1 and recurse("".join(bodies), cwd, executed)
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    written: Optional[dict[Path, list[str]]] = None, charge: bool = True,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
-    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944)."""
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
+
+    *written* maps paths to the heredoc bodies written to them anywhere in the walk so far. It is
+    shared by every depth so a nested ``sh -c 'bash P'`` / ``systemd-run bash -c P`` payload still
+    resolves P to the body its parent wrote. ``charge=False`` is only for such a body: it is a
+    substring of text already charged, so its first scan is free and any repeat is charged."""
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
-    if not budget.charge_text(command):
+    if not budget.charge_text(command, written_body=not charge):
         return _budget_exhausted(budget, "text", depth) if executed else False
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
+    written = _collect_heredoc_written_scripts(command, cwd, written)
 
-    def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
+    def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, written=written,
+            charge=charge,
         )
 
-    # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
-    # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an
-    # oversized data file mentioned there otherwise fails closed as a "script".
+    # The walks below keep the lenient masked view — NOT the stricter one `_direct_lifecycle_scan`
+    # now uses (#127698): the mask boundary is what separates "executed" from "mentioned" path
+    # candidates below. A path or `sh -c` payload inside a provably-inert heredoc body is never
+    # shell-executed, and an oversized data file mentioned there otherwise fails closed as a
+    # "script" (#110422). Code-bearing bodies do not need walk visibility: an inline payload in
+    # them is already caught by the direct scan, and a path they merely mention must stay a
+    # mention (#113944).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
     walk_command = strip_inert_heredoc_bodies(command)
@@ -1126,11 +1238,9 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
-    if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
-
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed in _walk_candidates(command, walk_command, cwd, executed):
+        if _scan_written_bodies(written.pop(_resolve_lenient(script_path), []), recurse, cwd, candidate_executed):
+            return True
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:

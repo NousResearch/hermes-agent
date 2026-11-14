@@ -31,8 +31,10 @@ _LOOKBACK = 1024        # most settled text re-redacted with each newly settled 
 # ``bot:token``, ``user@host``).
 _PROBE = "Q7mZ2xW9rT4kL8vB3nH6pD1sF5gJ0cYa8Kd2LmP4"
 _CONTINUATIONS = (_PROBE, "." + _PROBE, ":" + _PROBE, "-" + _PROBE, "_" + _PROBE, "@example.com/")
-# Literal starts of secrets the prefix list does not carry (JWT, base64 PEM, age).
-_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1") if lit)
+# Literal starts of secrets the prefix list does not carry (JWT, base64 PEM, age, Discord mfa).
+# Hold mfa. from its first byte: its 84-char secret body can otherwise be streamed
+# almost in full before the complete-token redactor recognizes it.
+_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1", "mfa.") if lit)
 _LITERAL_MAX = max(map(len, _LITERALS))
 _NON_KEY_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
 # A Zhipu key's 32-hex id still arriving: no probe completes it until its ``.secret`` part does.

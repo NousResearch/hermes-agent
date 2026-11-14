@@ -1,8 +1,8 @@
 name: mindgraph
 repo: https://github.com/shuruheel/mindgraph
-sha: bd6b40e352f12cb40e74a6f922222aa384d272f8
-version: "1.1.0"
-description: "MindGraph typed knowledge-graph memory: bounded per-message recall, durable session transcript capture, and the mindgraph-mcp general tool surface (capture, reason, commit, plan, retrieve, remember, ingest, synthesize, ontology). Disclosure — every tool call, recall and capture goes to the MindGraph API (api.mindgraph.cloud, or MINDGRAPH_BASE_URL) under MINDGRAPH_API_KEY; with automatic capture on (default; MINDGRAPH_AUTO_CAPTURE=off disables it) the user and assistant text of completed turns is sent for extraction, tool calls and outputs are not; until the API accepts it that text rests in the profile directory (mindgraph/capture.db, mode 0600) and is deleted on delivery, with a receipt (job id, document uid, digests) kept 30 days; delivery runs on a thread inside the Hermes process and one short-lived thread per start delivers what an earlier process left; recall (MINDGRAPH_RECALL=off disables it) sends the content words of the current message, and of the previous one for a follow-up, as the search query; every add or replace made with Hermes's built-in memory tool is mirrored to MindGraph (and the replaced entry is forgotten there); each tool call first sends its name, action and target node uids to the server's governance check (MINDGRAPH_GOVERNANCE=off skips it); automatic writes run only in the primary agent, never in subagents or cron, except that with compression.checkpoint_required set the text about to be compressed is captured in any agent context; no telemetry, no separate processes, no credentials stored outside Hermes."
+sha: 2abbfd03b73c6e369ab645bcb747cc6804555507
+version: "1.2.0"
+description: "MindGraph typed knowledge-graph memory: bounded per-message recall, durable transcript/delegation capture and built-in memory mirroring, and the mindgraph-mcp general tool surface. Disclosure — tool calls, recall, capture and mirrored memory go to the MindGraph API (api.mindgraph.cloud, or MINDGRAPH_BASE_URL) under MINDGRAPH_API_KEY; automatic capture (default on; MINDGRAPH_AUTO_CAPTURE=off disables it) sends completed-turn user/assistant text and available participant ID/name/bot metadata, plus parent delegation task/result/child session ID, for extraction; other tool calls and outputs are not captured. Undelivered text and native memory operations rest in the profile directory (mindgraph/capture.db, mode 0600), are deleted on delivery, and transcript receipts are kept 30 days; background threads retry delivery. Native memory add/replace/remove changes are mirrored even with transcript capture off; replacements save new before forgetting old. Recall (MINDGRAPH_RECALL=off disables it) sends current-message content words and previous-message terms for subjectless follow-ups. Tool calls first send name, action and target node UIDs to the server governance check (MINDGRAPH_GOVERNANCE=off skips it). Automatic writes run only in the primary agent, except required compression checkpoints capture snapshots in any context. Ordinary turn/delegation capture requires plugins.isolation: in_process; isolated host mode reports that capture limitation while keeping recall, tools, native mirroring and required checkpoint snapshots. Queue overflow rejects new capture without evicting accepted evidence; v1 upgrades may replay previously delivered rows at the first required checkpoint. No telemetry, plugin-spawned separate processes or credentials stored outside Hermes."
 maintainer: shuruheel
 tier: community
 category: memory
@@ -28,6 +28,7 @@ capabilities:
     - on_session_switch
     - on_pre_compress
     - on_memory_write
+    - on_delegation
   provides_middleware: []
   requires_env:
     - MINDGRAPH_API_KEY

@@ -1198,6 +1198,9 @@ class GoalManager:
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None
+        if (self._state.paused_reason or "").startswith("command approval blocked work"):
+            # Explicit resume is a new observation boundary, not a replay of old failures.
+            self._state.last_turn_at = time.time()
         self._state.status = "active"
         self._state.paused_reason = None
         self._state.clear_wait()   # resuming starts fresh
@@ -1485,6 +1488,7 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[list[dict[str, Any]]] = None,
         active_delegations: int = 0,
+        approval_blockers: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1492,6 +1496,17 @@ class GoalManager:
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
+
+        if approval_blockers:
+            handles = ", ".join(str(b.get("delegation_id") or b.get("request_id") or "command")
+                                for b in approval_blockers[:10])
+            reason = f"command approval blocked work ({handles}); the action did not execute"
+            state.last_verdict, state.last_reason = "blocked", reason
+            state.last_turn_at = time.time()
+            return self._pause_decision(reason, "blocked", reason,
+                f"⏸ Goal paused — {reason}. Answer the active approval request if present; "
+                "a denied, withdrawn or undelivered request is not authorization. "
+                "No automatic retry. Use /goal resume only when ready to continue.")
 
         # Parked on a live process or an unexpired deadline: quiesce without burning a turn.
         if self.is_waiting():

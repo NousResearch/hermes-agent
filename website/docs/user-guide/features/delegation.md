@@ -37,6 +37,8 @@ A background child that needs approval for a command after the parent's turn has
 
 Where no chat can show the prompt once the parent's turn is over (API-server runs, webhooks, local viewers), the child's command is refused with an explicit "no approval channel" result. It is never reported as pending.
 
+One refusal ends the child's asking: once a prompt is denied, withdrawn or times out, every later gated command in that background delegation is refused with the same outcome instead of raising another card. A child whose gated action did not run (pending, refused or undeliverable approval) ends with status `blocked`, `exit_reason: approval_required` and an `approval_blockers` list, never `completed`, and an active `/goal` in that chat pauses on it (see [Goals](goals.md)).
+
 ## Single Task
 
 ```python

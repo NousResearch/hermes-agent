@@ -949,10 +949,16 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
-def _human_decision(spec: _GateSpec, *, command: str, description: str,
-                    pattern_key: str, pattern_keys: list[str],
-                    session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+def _human_decision(spec: _GateSpec, **kwargs) -> dict:
+    """:func:`_ask_human`, except that a background child refused once is refused again without a new prompt."""
+    from tools.approval_notify_lease import latched
+    return latched(kwargs["session_key"], lambda: _ask_human(spec, **kwargs))
+
+
+def _ask_human(spec: _GateSpec, *, command: str, description: str,
+               pattern_key: str, pattern_keys: list[str],
+               session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
+               is_ask: bool, smart: bool = False, pending_body=None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY

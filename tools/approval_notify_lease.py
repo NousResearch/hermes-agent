@@ -19,6 +19,7 @@ class NotifyLease:
         self.session_key = session_key
         self.callback = callback
         self.active = True
+        self.halted = None  # first refused result; later requests in this child repeat it
 
     def _target_locked(self):
         """The lease's own transport. A surface that published none (CLI, TUI, ACP) keeps main's
@@ -94,6 +95,23 @@ def stranded_denial(session_key, is_gateway, noun, pattern_key, description):
         "and no prompt can be answered from this context. Do NOT retry or rephrase; "
         "run it from an interactive turn instead.",
         pattern_key=pattern_key, description=description, outcome="notify_failed", noun=noun)
+
+
+# A user refusal, a withdrawn prompt or silence. notify_failed is not here: nobody was asked.
+_LATCHING_OUTCOMES = frozenset({"denied", "cancelled", "timeout"})
+
+
+def latched(session_key, ask):
+    """``ask()`` for a human decision, unless this background child was already refused: then the same
+    refusal again, with no new card. A child that re-asks after a no would otherwise get a fresh prompt
+    per retry until someone taps Allow."""
+    lease = current(session_key)
+    if lease is not None and lease.halted is not None:
+        return dict(lease.halted)
+    result = ask()
+    if lease is not None and result.get("outcome") in _LATCHING_OUTCOMES:
+        lease.halted = dict(result)
+    return result
 
 
 def current(session_key):

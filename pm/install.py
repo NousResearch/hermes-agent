@@ -876,12 +876,12 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
                                                    skip_invalid_secondary=skip_invalid_secondary, **inputs) or {})
         if not repair and package.expected_stamp(enabled, **inputs) != stamp:
             raise ValueError("Dependency inputs changed while preparing publication; retry.")
+        if not current and result.get("environment") is not None:
+            from pm.environments import flush_before_selecting
+            flush_before_selecting(result["environment"])
         if change is not None:
             change.publish(paths.repo_root())
         if not current:
-            if result.get("environment") is not None:
-                from pm.environments import flush_before_selecting
-                flush_before_selecting()
             facts.record_state("venv", stamp, enabled, **result)
         if change is not None:
             finish_publication(paths.repo_root())

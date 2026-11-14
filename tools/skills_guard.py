@@ -23,7 +23,7 @@ from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, rais
 from tools.threat_patterns import FORGET_RULES_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v15"
+SCANNER_VERSION = "skills-guard-v16"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {

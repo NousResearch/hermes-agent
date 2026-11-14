@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -95,5 +95,49 @@ describe('system-resources statusbar polling', () => {
     })
 
     expect(getLocalHardware).not.toHaveBeenCalled()
+  })
+
+  it('lists every installed GPU instead of only the first', async () => {
+    getLocalHardware.mockResolvedValue({
+      gpu_name: 'NVIDIA RTX PRO 6000 A',
+      gpu_util_percent: 1,
+      vram_total_bytes: 96 << 30,
+      vram_used_bytes: 1 << 30,
+      vram_usable_bytes: 90 << 30,
+      ram_total_bytes: 256 << 30,
+      ram_available_bytes: 200 << 30,
+      uma: false,
+      gpus: [
+        {
+          index: 0,
+          name: 'NVIDIA RTX PRO 6000 A',
+          util_percent: 1,
+          vram_used_bytes: 1 << 30,
+          vram_total_bytes: 96 << 30,
+          vram_free_bytes: 95 << 30
+        },
+        {
+          index: 1,
+          name: 'NVIDIA RTX PRO 6000 B',
+          util_percent: 40,
+          vram_used_bytes: 8 << 30,
+          vram_total_bytes: 96 << 30,
+          vram_free_bytes: 88 << 30
+        }
+      ]
+    })
+
+    $localModelsEnabled.set(true)
+    $statusbarHiddenIds.set([])
+    const { result, unmount } = renderHook(() => useSystemResourcesStatusbarItem())
+
+    await waitFor(() => expect(result.current.label).toBe('GPU0 1% · GPU1 40%'))
+
+    const panel = render(result.current.menuContent)
+
+    expect(panel.getAllByText('GPU 0')).toHaveLength(1)
+    expect(panel.getByText('NVIDIA RTX PRO 6000 B')).toBeTruthy()
+    expect(panel.getAllByText('40%')).toHaveLength(1)
+    unmount()
   })
 })

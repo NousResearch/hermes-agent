@@ -553,14 +553,14 @@ class TestHTTPHandling:
         with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000) as clock:
             async with TestClient(TestServer(_create_app(adapter))) as cli:
                 first = await cli.post("/webhooks/legacy", data=body, headers=headers)
-                assert first.status == 401
+                assert first.status == 404
                 clock.return_value += adapter._idempotency_ttl + 1
                 replay = await cli.post("/webhooks/legacy", data=body, headers=headers)
-                assert replay.status == 401
+                assert replay.status == 404
                 concurrent = await asyncio.gather(*(
                     cli.post("/webhooks/legacy", data=body, headers=headers) for _ in range(2)
                 ))
-                assert [response.status for response in concurrent] == [401, 401]
+                assert [response.status for response in concurrent] == [404, 404]
         adapter.handle_message.assert_not_called()
         adapter._direct_deliver.assert_not_called()
         adapter._handle_cron_trigger.assert_not_called()

@@ -258,7 +258,7 @@ deliver_extra:
 
 ## GitLab 支持
 
-同一适配器也适用于 GitLab。GitLab 使用 `X-Gitlab-Token` 进行认证（纯字符串匹配，非 HMAC），配置了签名令牌时则使用 Standard Webhooks 的 `webhook-signature`。请把路由的 pin 改为 `signature: gitlab`：仍为 `signature: github` 的路由会以 `401` 拒绝所有 GitLab 投递，即使 secret 正确。
+同一适配器也适用于 GitLab。GitLab 使用 `X-Gitlab-Token` 进行认证（纯字符串匹配，非 HMAC），配置了签名令牌时则使用 Standard Webhooks 的 `webhook-signature`。请把路由的 pin 改为 `signature: gitlab`：仍为 `signature: github` 的路由会以 `404` 拒绝所有 GitLab 投递，即使 secret 正确。
 
 对于事件过滤，GitLab 将 `X-GitLab-Event` 设置为 `Merge Request Hook`、`Push Hook`、`Pipeline Hook` 等值。在 `events` 中使用精确的请求头值：
 

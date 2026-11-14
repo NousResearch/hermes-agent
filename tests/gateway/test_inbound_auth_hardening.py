@@ -39,7 +39,6 @@ def _wecom_accepts(timestamp: str, presented_signature=None) -> bool:
 
 
 def _feishu_accepts(timestamp: str) -> bool:
-    pytest.importorskip("lark_oapi")
     from plugins.platforms.feishu.adapter import FeishuAdapter
     env = {"FEISHU_APP_ID": "cli", "FEISHU_APP_SECRET": "sec", "FEISHU_ENCRYPT_KEY": SECRET,
            "HERMES_HOME": os.environ["HERMES_HOME"]}
@@ -61,7 +60,7 @@ def test_validly_signed_request_outside_replay_window_is_refused(accepts):
 
 def _bluebubbles(presented: str) -> bool:
     pytest.importorskip("aiohttp")
-    from gateway.platforms.bluebubbles import BlueBubblesAdapter
+    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": SECRET}))
 

@@ -266,7 +266,7 @@ Valid `deliver` values: `log` · `github_comment` · `telegram` · `discord` · 
 
 ## GitLab support
 
-The same adapter works with GitLab. GitLab authenticates with `X-Gitlab-Token` (plain string match, not HMAC) or, when a signing token is configured, a Standard Webhooks `webhook-signature`. Change the route's pin to `signature: gitlab`: a route left at `signature: github` rejects every GitLab delivery with `401`, even with the correct secret.
+The same adapter works with GitLab. GitLab authenticates with `X-Gitlab-Token` (plain string match, not HMAC) or, when a signing token is configured, a Standard Webhooks `webhook-signature`. Change the route's pin to `signature: gitlab`: a route left at `signature: github` rejects every GitLab delivery with `404`, even with the correct secret.
 
 For event filtering, GitLab sets `X-GitLab-Event` to values like `Merge Request Hook`, `Push Hook`, `Pipeline Hook`. Use the exact header value in `events`:
 

@@ -2841,7 +2841,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             return False
         try:
             body_str = body_bytes.decode("utf-8", errors="replace")
-            computed = hashlib.sha256(f"{timestamp}{nonce}{self._encrypt_key}{body_str}".encode("utf-8")).hexdigest()
+            computed = hashlib.sha256(f"{timestamp}{nonce}{self._encrypt_key}{body_str}".encode()).hexdigest()
             # The signature covers the timestamp, so a stale one is a captured request being replayed
             # (the persisted message-id dedup only remembers 24 h).
             return secrets_match(signature, computed) and timestamp_fresh(timestamp)

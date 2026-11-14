@@ -289,9 +289,23 @@ class TestGoogleOAuthCredentials:
             assert "x_B-y_C-z_D-w_E-v" not in out, out
 
     @pytest.mark.parametrize("text", ["backup-sk-\x1blearn-model-weights-final", "scikit-\x1blearn",
-                                      "x_sk-le\u200barn_rate_schedule_v2"])
+                                      "x_sk-le\u200barn_rate_schedule_v2", "task_sk-learn\tpip\tInstalled2024Version",
+                                      "x-fc-config\tValue123\nNextLine",
+                                      "my-xox" + "b-not-a-token-name\tAbc123Def456Ghi789\n",
+                                      "backup-sk-\x1blearn-model-weights-final\nVersion1234567890abcdef"])
     def test_glued_identifiers_split_by_control_char_kept(self, text):
         _assert_unchanged(text)
+
+    @pytest.mark.parametrize("split", ["\x1b", "\u200b"])
+    def test_glued_key_split_into_short_runs_is_masked(self, split):
+        # Opaque only once joined: each fragment is under the 16-char run the exemption looks for.
+        for out in _both_modes(f"msg='log-ghp_Lx7zP2mX9vLk4nR{split}t8wYb1cDf6gHj3s'"):
+            assert "t8wYb1cDf6gHj3s" not in out, out
+
+    def test_glued_identifier_kept_when_the_next_line_holds_a_key(self):
+        text = "backup-sk-\x1blearn-model-weights-final\n" + "sk-" + "proj-Q7mZ2xW9rT4kL8vB3nH6pD1sF5gJ0cY"
+        for out in _both_modes(text):
+            assert out.startswith("backup-sk-\x1blearn-model-weights-final\n") and "Q7mZ2xW9rT4kL8vB" not in out, out
 
     @pytest.mark.parametrize("text", ["see /usr/lib/\x1bfoo/bar.so", "https://example.com/a\u200b/b/c",
                                       "v1//\x1bapi/" + "a" * 24])

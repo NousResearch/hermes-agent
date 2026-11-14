@@ -915,9 +915,10 @@ def _is_opaque_prefixed_token(token: str) -> bool:
     return False
 
 
-def _is_glued_identifier(m: "re.Match[str]") -> bool:
-    """A _PREFIX_SUB_RE match glued to an identifier by ``-``/``_`` whose body is not opaque."""
-    token = m.group(1)
+def _is_glued_identifier(m: "re.Match[str]", token: str | None = None) -> bool:
+    """A _PREFIX_SUB_RE match glued to an identifier by ``-``/``_`` whose body (``token``,
+    default the match's) is not opaque."""
+    token = m.group(1) if token is None else token
     # Google OAuth prefixes are distinctive even when base64url separators break every long run.
     return (m.start() > 0 and m.string[m.start() - 1] in "-_"
             and not token.startswith(("GOCSPX-", "ya29.", "1//0")) and not _is_opaque_prefixed_token(token))

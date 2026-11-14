@@ -58,7 +58,9 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
     The original span is replaced only when its live chars are all token-body chars and it does
     not run into a ``KEY=`` name, so a match never swallows prose. ``sub_re`` (default
     ``prefix_re``) finds the candidates, so a key glued to an identifier (``log-1//0…``) is found
-    too; ``skip(m)`` drops the candidates the contiguous pass would keep (``scikit-learn``).
+    too; ``skip(m, field)`` drops the candidates the contiguous pass would keep (``scikit-learn``),
+    judged on ``field``: the live text up to the first tab or line break, which the contiguous
+    pass never reads across (``task_sk-learn<TAB>Installed2024Version`` stays whole).
     """
     if _CONTROL_CHARS_RE.search(text) is None and "\x9b" not in text:
         return text
@@ -67,12 +69,13 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
         return text
     matches = []
     for m in (sub_re or prefix_re).finditer(shadow):
-        if skip is not None and skip(m):
-            continue
         body, body_start = m.group(1), m.start(1)
         start = orig_idx[body_start]
         end = orig_idx[m.end(1) - 1] + 1
         span = text[start:end]
+        if skip is not None and skip(m, "".join(
+                c for k, c in enumerate(re.split(r"[\t\n\r]", span, maxsplit=1)[0]) if not noise[start + k])):
+            continue
         # A span crossing a LINE boundary whose fragment already self-matches is a complete token
         # followed by another line (``ghp_<tok>\nbutton`` must keep ``button``): never join across
         # it. Clip to the first line instead, and mask that when it is itself a token split by

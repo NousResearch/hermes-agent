@@ -35,7 +35,7 @@ from ._schema_ddl import (
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
     _ephemeral_child_sql, _sql_json_extract, base_index_recognised, base_source_view_is_stale,
-    fts_layout_current, fts_layout_drift,
+    fts_layout_current, fts_layout_drift, fts_trigram_session_sql,
 )
 
 if TYPE_CHECKING:
@@ -959,6 +959,54 @@ def _heal_session_model_usage_pk(holder: StoreHolder, cursor: sqlite3.Cursor) ->
         cursor.execute("PRAGMA foreign_keys=ON")
 
 
+def _heal_reset_rows_carrying_a_delegate_marker(holder: StoreHolder, cursor: sqlite3.Cursor) -> None:
+    """Strip ``_delegate_from`` from a chat's /new continuation (``session_key`` set, ``_reset_from``
+    set) that picked it up: the marker hides the row from every session list while the gateway keeps
+    routing the chat into it (#109073). ``_reset_from`` already says what the row is, so the pair is
+    contradictory and the delegate marker is the stray. A keyed row WITHOUT ``_reset_from`` is a real
+    delegate child that captured a route (#138210) and keeps its marker: routing moves the chat off
+    it instead. Idempotent; probes first so a clean store takes no write lock on open."""
+    polluted = (
+        "session_key IS NOT NULL AND session_key != '' AND json_valid(model_config) "
+        f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NOT NULL "
+        f"AND {_sql_json_extract('model_config', '$._reset_from')} IS NOT NULL"
+    )
+    try:
+        ids = [row[0] for row in cursor.execute(f"SELECT id FROM sessions WHERE {polluted}").fetchall()]
+        if not ids:
+            return
+        healed = cursor.execute(
+            f"UPDATE sessions SET model_config = json_remove(model_config, '$._delegate_from') WHERE {polluted}"
+        ).rowcount
+    except sqlite3.OperationalError as exc:
+        logger.debug("reset-row delegate-marker heal skipped: %s", exc)
+        return
+    _index_healed_rows_for_trigram(holder, cursor, ids)
+    logger.warning("Healed %d chat session(s) hidden by a stray _delegate_from marker (#109073)", healed)
+
+
+def _index_healed_rows_for_trigram(holder: StoreHolder, cursor: sqlite3.Cursor, session_ids: list[str]) -> None:
+    """The marker kept these sessions' messages out of the external-content trigram index (the triggers
+    skipped them on write), so a heal that admits them must index them too, or substring search misses
+    them and a later edit sends the index a delete for a row it never held. Same window rule as the
+    triggers: ids a pending deferred rebuild will still backfill are left to it. A legacy inline layout
+    indexed every row already; a missing table or tokenizer has nothing to keep consistent."""
+    if _db_has_legacy_inline_fts(cursor) or not _fts_table_probe(holder, cursor, "messages_fts_trigram"):
+        return
+    marks = ", ".join("?" for _ in session_ids)
+    cursor.execute(
+        "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
+        "SELECT m.id, m.content, m.tool_name FROM messages m JOIN sessions s ON s.id = m.session_id "
+        f"WHERE m.session_id IN ({marks}) AND m.role <> 'tool' AND {fts_trigram_session_sql('s')} "
+        "AND (m.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+        "WHERE key = 'fts_rebuild_high_water'), -1) "
+        "OR m.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+        "WHERE key = 'fts_rebuild_progress'), -1)) "
+        "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
+        session_ids,
+    )
+
+
 # ── _init_schema ───────────────────────────────────────────────────────
 
 def _init_schema(holder: StoreHolder):
@@ -997,6 +1045,7 @@ def _init_schema(holder: StoreHolder):
     # already at v22+ when the column landed — the version-gated rebuild is unreachable there, #73823).
     # Same PK-rebuild constraint as gateway_routing above.
     _heal_session_model_usage_pk(holder, cursor)
+    _heal_reset_rows_carrying_a_delegate_marker(holder, cursor)
 
     # Indexes referencing reconciler-added columns must be created AFTER _reconcile_columns
     # (in SCHEMA_SQL the executescript would fail on legacy DBs).

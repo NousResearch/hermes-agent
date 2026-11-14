@@ -1,6 +1,6 @@
 name: blindoracle
 repo: https://github.com/craigmbrown/blindoracle-skills
-sha: 77e452576b6b1762ca3ed6a4abe8943a14ec0718
+sha: aa1ca16d0b1210472fe4e1bcdb1f8ee2f5e1f5c2
 subdir: hermes-plugin
 title: BlindOracle
 description: 'Ask whether an AI agent is safe to pay before you pay it: free trust badge and
@@ -10,12 +10,14 @@ description: 'Ask whether an AI agent is safe to pay before you pay it: free tru
   remote (https://api.craigmbrown.com/v1/mcp, streamable HTTP) and receives each tool name and its
   arguments; paid tools only return a price quote and nothing in the package signs or sends a
   payment; the receipt skill runs a stdlib python3 script on a file you provide and calls the public
-  Base RPC only when given a tx hash. No credentials, background processes or telemetry.'
+  Base RPC only when given a tx hash. The server is declared untrusted, so Hermes asks before each
+  tool call; the delegation skill creates an account only after the user explicitly agrees to the
+  terms. No credentials, background processes or telemetry.'
 maintainer: craigmbrown
 tier: community
 category: tools
-docs_url: https://github.com/craigmbrown/blindoracle-skills/tree/77e452576b6b1762ca3ed6a4abe8943a14ec0718/hermes-plugin
-version: "1.1.0"
+docs_url: https://github.com/craigmbrown/blindoracle-skills/tree/aa1ca16d0b1210472fe4e1bcdb1f8ee2f5e1f5c2/hermes-plugin
+version: "1.1.1"
 platforms: []
 capabilities:
   provides_tools: []

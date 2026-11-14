@@ -43,7 +43,12 @@ def _git_repo_files(root: str):
         return
     for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
         if p:
-            rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+            try:
+                rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+            except ValueError:
+                # A tracked entry whose path ends in a Windows reserved device name (`nul`, `con`, …)
+                # resolves to `\\.\` — no path relative to root exists, so it cannot be a completion.
+                continue
             if not rel.startswith("../"):
                 yield rel
 
@@ -54,7 +59,12 @@ def _walk_repo_files(root: str):
     try:
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             dirnames[:] = [d for d in dirnames if d not in _FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")]
-            rel_dir = os.path.relpath(dirpath, root)
+            try:
+                rel_dir = os.path.relpath(dirpath, root)
+            except ValueError:
+                # Reserved device name in the walk (see `_git_repo_files`); skip the whole subtree.
+                dirnames[:] = []
+                continue
             for f in filenames:
                 yield (f if rel_dir == "." else f"{rel_dir}/{f}").replace(os.sep, "/")
     except OSError:

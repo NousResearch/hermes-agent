@@ -8,6 +8,9 @@ BINARY_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff", ".tif",
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg",
     ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".aiff", ".opus",
+    # Speech-to-text inputs that are binary but were missing: a plain-text read of these
+    # returns codec bytes, so they must trip the binary guard like every other audio format.
+    ".mpga", ".oga", ".caf", ".aif", ".silk",
     ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz", ".z", ".tgz", ".iso",
     ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib", ".app", ".msi", ".deb", ".rpm",
     ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
@@ -76,6 +79,20 @@ def is_sqlite_sidecar(path: str) -> bool:
 
 def has_binary_extension(path: str) -> bool:
     return _has_extension_in(path, BINARY_EXTENSIONS)
+
+
+# Audio a speech-to-text tool can decode. A "binary file" refusal that only names images is a dead
+# end for a voice note the model could otherwise transcribe, so callers add a transcribe hint.
+# Mirrors ``tools.transcription_common.SUPPORTED_FORMATS`` plus the two formats ffmpeg decodes.
+AUDIO_EXTENSIONS = frozenset({
+    ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga",
+    ".opus", ".aac", ".flac", ".caf", ".aiff", ".aif", ".wma", ".silk",
+})
+assert AUDIO_EXTENSIONS <= BINARY_EXTENSIONS
+
+
+def has_audio_extension(path: str) -> bool:
+    return _has_extension_in(path, AUDIO_EXTENSIONS)
 
 
 def has_opaque_document_extension(path: str) -> bool:

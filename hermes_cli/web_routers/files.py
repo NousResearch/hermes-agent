@@ -1067,7 +1067,14 @@ def _fs_list_entries(target: Path) -> list[dict[str, Any]]:
             entries.append({
                 "name": entry.name,
                 "path": str(target / entry.name),
-                "isDirectory": entry.is_dir(follow_symlinks=False),
+                # Follow symlinks: a symlinked directory has to report as a
+                # directory or the tree renders it as a dead leaf the user
+                # cannot expand (e.g. a `~/code -> /mnt/data/code` root).
+                # Matches the local Electron reader and the SSH backend's
+                # `[ -d ]` test, both of which resolve links. is_dir() swallows
+                # the OSError a dangling link would raise, so a broken symlink
+                # is simply not a directory.
+                "isDirectory": entry.is_dir(follow_symlinks=True),
             })
     entries.sort(key=lambda item: (not item["isDirectory"], item["name"].lower(), item["name"]))
     return entries

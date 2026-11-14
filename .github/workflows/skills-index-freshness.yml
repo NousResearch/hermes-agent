@@ -51,11 +51,15 @@ jobs:
           python3 scripts/ci/skills_index_probe.py /tmp/skills-index.json >> "$GITHUB_OUTPUT"
 
       - name: Report status
+        env:
+          STATUS: ${{ steps.probe.outputs.status }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+          SUMMARY: ${{ steps.probe.outputs.summary }}
         run: |
-          echo "Probe status: ${{ steps.probe.outputs.status }}"
-          echo "Detail:       ${{ steps.probe.outputs.detail }}"
-          if [ -n "${{ steps.probe.outputs.summary }}" ]; then
-            echo "Summary:      ${{ steps.probe.outputs.summary }}"
+          echo "Probe status: $STATUS"
+          echo "Detail:       $DETAIL"
+          if [ -n "$SUMMARY" ]; then
+            echo "Summary:      $SUMMARY"
           fi
 
       - name: Get GitHub App token

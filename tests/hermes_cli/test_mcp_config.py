@@ -917,3 +917,31 @@ def test_tool_filters_keeps_explicit_empty_include():
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
     assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
     assert _tool_filters({}) == (None, None)
+
+
+class TestProbeSingleServerMcpMissing:
+    """#34220: fail fast when mcp SDK missing."""
+
+    def test_probe_raises_importerror_fast_when_mcp_missing(self, monkeypatch):
+        from hermes_cli import mcp_config
+        import tools.mcp_tool as mcp_tool
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False, raising=False)
+        with pytest.raises(ImportError) as exc_info:
+            mcp_config._probe_single_server(
+                "ghost-server",
+                {"command": "echo", "args": ["hi"]},
+                connect_timeout=5,
+            )
+        msg = str(exc_info.value)
+        assert "mcp" in msg.lower()
+        assert "hermes-agent[mcp]" in msg
+
+    def test_probe_actionable_error_mentions_pipx_inject(self, monkeypatch):
+        from hermes_cli import mcp_config
+        import tools.mcp_tool as mcp_tool
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False, raising=False)
+        with pytest.raises(ImportError) as exc_info:
+            mcp_config._probe_single_server(
+                "ghost-server", {"command": "echo"}, connect_timeout=5
+            )
+        assert "pipx inject" in str(exc_info.value)

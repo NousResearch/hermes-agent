@@ -1300,7 +1300,7 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
             # lead with the re-login, not only the backup's error.
             from agent.primary_auth_fallback import RUNTIME_KEY, primary_auth_failure_from_exc
             if failure := primary_auth_failure_from_exc(primary_exc, resolve_requested_provider(requested),
-                                                        runtime["provider"]):
+                                                        runtime["provider"], runtime.get("base_url")):
                 runtime[RUNTIME_KEY] = failure
             return runtime, entry
         raise primary_exc

@@ -14,6 +14,7 @@ from typing import Any
 
 from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
 from agent.message_content import flatten_message_text
+from agent.message_sanitization import normalize_finish_reason
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 
@@ -50,7 +51,7 @@ class RelayChatAccumulator:
         choice = choices[0] if choices else None  # Hermes never requests n>1
         if not isinstance(choice, dict):
             return
-        self._finish_reason = choice.get("finish_reason") or self._finish_reason
+        self._finish_reason = normalize_finish_reason(choice.get("finish_reason")) or self._finish_reason
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             return
@@ -71,7 +72,8 @@ class RelayChatAccumulator:
             self._tool_calls.feed(_tool_call_delta_view(tc_delta))
 
     def finalize(self) -> dict[str, Any]:
-        acc = self._tool_calls.materialize()
+        acc = self._tool_calls.materialize(
+            allow_replay=self._finish_reason in {"stop", "tool_calls", "function_call"})
         message = {"role": self._role, "content": "".join(self._content) or None,
             "reasoning_content": "".join(self._reasoning) or None,
             "refusal": "".join(self._refusal) or None,

@@ -3182,7 +3182,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if runaway:
             _close_half_read_stream("runaway_stream_close_failed")
             self._log_runaway_cut(runaway)
-        tool_calls.materialize()
+        tool_calls.materialize(allow_replay=not runaway and finish_reason in {"stop", "tool_calls", "function_call"})
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")

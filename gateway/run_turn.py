@@ -1173,23 +1173,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         _interrupt_detected: asyncio.Event, streaming_tts_consumer_holder: list, *,
         log_context: str, log: Callable[[], None],
     ) -> None:
-        """Peek the adapter's pending event, transcribe voice, then signal the agent + abort streaming TTS.
+        """Peek the adapter's pending event, then signal the agent + abort streaming TTS.
 
         Peek WITHOUT consuming: the event must stay for the post-run ``_dequeue_pending_event()``
-        (popping races the agent finishing). Transcribe BEFORE signaling so voice interrupts carry
-        the real transcript."""
-        from gateway.run import _build_media_placeholder
+        (popping races the agent finishing), which also transcribes a voice note, so the signal
+        never waits for STT (#143961)."""
         _peek_event = adapter._pending_messages.get(session_key)
-        pending_text = None
-        if _peek_event is not None:
-            pending_text = _peek_event.text or ""
-            if self._pending_event_audio_paths(_peek_event):
-                pending_text, _ = await self._transcribe_and_echo_pending_voice(
-                    _peek_event, adapter, source, pending_text, log_context=log_context,
-                    metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                )
-            elif not pending_text and (getattr(_peek_event, "media_urls", None) or []):
-                pending_text = _build_media_placeholder(_peek_event)
+        pending_text = None if _peek_event is None else (self._busy_interrupt_text(_peek_event) or "")
         log()
         agent.interrupt(pending_text)
         _interrupt_detected.set()

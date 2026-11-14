@@ -115,6 +115,23 @@ def test_interrupted_run_delivery_error_is_redacted(tmp_cron_dir):
     assert _KEY not in get_job(job["id"])["last_delivery_error"]
 
 
+def test_queued_delivery_error_settled_onto_job_is_length_bounded(tmp_path, monkeypatch):
+    from cron import delivery_queue, jobs, scheduler
+    from cron.jobs_error_text import MAX_PERSISTED_ERROR_CHARS
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
+    job = jobs.create_job(prompt="p", schedule="every 1h", deliver="telegram:fixture")
+    scheduler.run_one_job(job)
+    assert jobs.get_job(job["id"])["last_status"] == "delivery_queued"
+
+    delivery_queue.drain(lambda *_args: "refused: " + "x" * 50_000)
+
+    saved = jobs.get_job(job["id"])
+    assert saved["last_status"] == "delivery_failed"
+    assert len(saved["last_delivery_error"]) == MAX_PERSISTED_ERROR_CHARS
+
+
 def test_unknown_admission_reason_is_redacted_and_still_lifts_its_pause(tmp_path, monkeypatch):
     """CronExecutionUnknown text reaches jobs.json ``paused_reason`` and executions.db ``error``;
     both get the same scrubbed string, so a verified terminal receipt still lifts the pause."""

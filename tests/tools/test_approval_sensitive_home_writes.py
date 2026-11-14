@@ -85,6 +85,27 @@ class TestCreateAndLinkIntoSensitivePaths:
         assert detect_dangerous_command(command) == (False, None, None), command
 
 
+class TestQuotedHomePrefixHardline:
+    """A quoted home prefix followed by more path text names a subtree, not the home (#84639 review)."""
+
+    @pytest.mark.parametrize("command", ['rm -rf "/root/"projects/build', 'rm -rf "$HOME"/build'])
+    def test_quoted_prefix_subtree_is_not_hardline(self, monkeypatch, command):
+        from tools.approval import detect_hardline_command
+
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(command) == (False, None)
+
+    @pytest.mark.parametrize("command", [
+        'rm -rf "/root/"', 'rm -rf "/root/"*', 'rm -rf "/root/"./*', 'rm -rf "/root/"../*',
+        'rm -rf "$HOME"', 'rm -rf "$HOME"/*', "rm -rf /root",
+    ])
+    def test_quoted_home_root_stays_hardline(self, monkeypatch, command):
+        from tools.approval import detect_hardline_command
+
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(command)[0] is True, command
+
+
 class TestFileToolShellRcGate:
     @pytest.fixture()
     def home(self, tmp_path, monkeypatch):

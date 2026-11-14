@@ -110,6 +110,34 @@ class TestTrustGate:
         assert su.get_untrusted_project_skills_root() is None
 
 
+class TestClaudeSkillsLayout:
+    """Repos that ship skills for Claude Code (.claude/skills), often alongside .agents/skills."""
+
+    def _claude_skill(self, repo: Path, name: str, body: str) -> Path:
+        d = repo / ".claude" / "skills" / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: d\n---\n{body}\n")
+        return d / "SKILL.md"
+
+    def test_claude_skills_dir_is_a_trusted_project_root(self, project_env):
+        repo = project_env["repo"]
+        self._claude_skill(repo, "claude-only", "body")
+        _trust(project_env["config"], repo)
+        assert (repo / ".claude" / "skills").resolve() in su.get_project_skills_dirs()
+
+    def test_skill_shipped_for_two_harnesses_loads_once(self, project_env):
+        import json
+        from tools.skills_tool import skill_view
+        repo = project_env["repo"]
+        # Byte-identical copy of the .agents skill: must resolve, not be refused as ambiguous.
+        src = repo / ".agents" / "skills" / "conv-skill" / "SKILL.md"
+        self._claude_skill(repo, "conv-skill", "x").write_bytes(src.read_bytes())
+        _trust(project_env["config"], repo)
+        result = json.loads(skill_view("conv-skill"))
+        assert result.get("success") is True, result
+        assert ".agents" in result["skill_dir"]
+
+
 class TestPrecedence:
     def test_project_paths_are_readonly_owned(self, project_env):
         _trust(project_env["config"], project_env["repo"])

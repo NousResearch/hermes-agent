@@ -21,6 +21,14 @@ export interface ArtifactRecord {
 export interface ArtifactLoadFailure {
   error: unknown
   session: SessionInfo
+  /**
+   * Which half of the per-session work failed. The load spans TWO steps — a
+   * transcript READ and the artifact COLLECTION over what came back — and a
+   * single catch block used to report both as "could not be read". A collect
+   * failure means the transcript arrived fine and only the artifact scan
+   * choked, which is a different defect with a different fix.
+   */
+  phase: 'read' | 'collect'
 }
 
 export interface ArtifactLoadResult {
@@ -88,7 +96,34 @@ function isPythonPackageDownload(value: string): boolean {
   )
 }
 
+/**
+ * Placeholder paths that appear in PROSE about how to deliver a file (the
+ * system prompt's own "write MEDIA:/absolute/path/to/file" example, and the
+ * tutorial paths around it). They are documentation, not delivered files, but
+ * they carry a real-looking absolute path and a MEDIA tag — so the artifact
+ * index used to list them as downloadable artifacts.
+ *
+ * Matched literally: these exact strings are what the prompt templates emit.
+ * A real user path that merely CONTAINS "absolute/path/to" is not one of them.
+ */
+const PLACEHOLDER_ARTIFACT_PATHS: readonly string[] = [
+  '/absolute/path/to/file',
+  '/absolute/path/to/file.png',
+  '/path/to/file',
+  '/path/to/image.png'
+]
+
+function isPlaceholderArtifactPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+
+  return PLACEHOLDER_ARTIFACT_PATHS.some(candidate => normalized === candidate.toLowerCase())
+}
+
 function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (isPlaceholderArtifactPath(value)) {
+    return false
+  }
+
   if (!explicit && isPythonPackageDownload(value)) {
     return false
   }
@@ -533,6 +568,33 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
   return Array.from(found.values())
 }
 
+/**
+ * The backend that OWNS a session, as a request scope.
+ *
+ * The sessions list merges every connected backend's rows, so a row can belong
+ * to a host other than the one the panel happens to be talking to. A row that
+ * names its owning connection carries it in `connection_id`; an untagged row
+ * belongs to the ambient backend that supplied the list.
+ *
+ * Reading a foreign session's transcript from the wrong backend is a 404 —
+ * the transcript is simply not in that host's store. Passing the bare profile
+ * name therefore made every cross-host session in the list fail its read, and
+ * the panel reported those as unreadable sessions.
+ */
+export function artifactSessionScope(session: SessionInfo): { connectionId?: string; profile?: string } {
+  const connectionId = (session.connection_id ?? '').trim()
+  const profile = (session.profile ?? '').trim()
+
+  // Both halves are required: a row tagged with a connection but no profile
+  // cannot be routed (the owner route demands both), and the ambient backend
+  // serves it.
+  if (connectionId && profile) {
+    return { connectionId, profile }
+  }
+
+  return { profile: session.profile }
+}
+
 export async function loadArtifactsForSessions(
   sessions: SessionInfo[],
   loadPage: (
@@ -549,10 +611,14 @@ export async function loadArtifactsForSessions(
   // be tens of megabytes, so retaining complete transcripts exhausts the
   // Desktop renderer even when transport requests are paginated.
   for (const session of sessions) {
-    try {
-      const sessionArtifacts = new Map<string, ArtifactRecord>()
-      let offset = 0
+    const sessionArtifacts = new Map<string, ArtifactRecord>()
+    let offset = 0
+    let readError: unknown = null
+    let collectError: unknown = null
 
+    // The READ phase: fetch the transcript page by page. A failure here means
+    // the transcript itself is unavailable — transport, auth, or a store error.
+    try {
       while (true) {
         const page = await loadPage(session, { limit: ARTIFACT_MESSAGE_PAGE_SIZE, offset })
         const pageJsonChars = (JSON.stringify(page.messages) ?? '').length
@@ -563,10 +629,19 @@ export async function loadArtifactsForSessions(
           )
         }
 
-        for (const artifact of collectArtifactsForSession(session, page.messages)) {
-          if (!sessionArtifacts.has(artifact.id)) {
-            sessionArtifacts.set(artifact.id, artifact)
+        // The COLLECT phase: scan the page just read. It gets its own catch so
+        // a scan error is not reported as an unreadable session — and it must
+        // not abort the READ phase, which still has pages to fetch.
+        try {
+          for (const artifact of collectArtifactsForSession(session, page.messages)) {
+            if (!sessionArtifacts.has(artifact.id)) {
+              sessionArtifacts.set(artifact.id, artifact)
+            }
           }
+        } catch (error) {
+          collectError = error
+
+          break
         }
 
         // Legacy backends ignore pagination and return the full transcript.
@@ -576,10 +651,16 @@ export async function loadArtifactsForSessions(
 
         offset += page.messages.length
       }
-
-      artifacts.push(...sessionArtifacts.values())
     } catch (error) {
-      failures.push({ error, session })
+      readError = error
+    }
+
+    if (readError !== null) {
+      failures.push({ error: readError, session, phase: 'read' })
+    } else if (collectError !== null) {
+      failures.push({ error: collectError, session, phase: 'collect' })
+    } else {
+      artifacts.push(...sessionArtifacts.values())
     }
   }
 

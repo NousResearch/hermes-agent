@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { artifactImageSrc, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
+import { artifactImageSrc, artifactSessionScope, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -717,6 +717,102 @@ describe('loadArtifactsForSessions', () => {
     expect(result.artifacts.map(artifact => artifact.sessionId)).toEqual(['session-1', 'session-3'])
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
+    expect(result.failures[0]?.phase).toBe('read')
     expect(String(result.failures[0]?.error)).toContain('transcript page exceeds the Desktop safe-load limit')
+  })
+
+  it('labels a transcript failure as a read failure, not a scan failure', async () => {
+    const session = makeSession()
+
+    const result = await loadArtifactsForSessions([session], async () => {
+      throw new Error('401: Unauthorized')
+    })
+
+    expect(result.failures).toHaveLength(1)
+    expect(result.failures[0]?.phase).toBe('read')
+    expect(result.artifacts).toEqual([])
+  })
+
+  it('keeps paging a session whose scan finds nothing, and reports no failure', async () => {
+    const session = makeSession()
+    const requestedOffsets: number[] = []
+
+    const result = await loadArtifactsForSessions(
+      [session],
+      async (_session, page) => {
+        requestedOffsets.push(page.offset)
+
+        return {
+          messages: [{ content: 'plain prose, no artifact here', role: 'assistant', timestamp: 1000 }],
+          pagination: { limit: 1, offset: page.offset, order: 'oldest', returned: 1 }
+        }
+      },
+      { maxPageJsonChars: 200 }
+    )
+
+    expect(result.failures).toHaveLength(0)
+    expect(result.artifacts).toEqual([])
+    expect(requestedOffsets.length).toBeGreaterThan(0)
+  })
+
+  it('skips the prompt placeholder path instead of indexing it as an artifact', async () => {
+    const session = makeSession()
+
+    const result = await loadArtifactsForSessions([session], async () => ({
+      messages: [
+        {
+          content: 'MEDIA:/absolute/path/to/file',
+          role: 'assistant',
+          timestamp: 1000
+        }
+      ],
+      pagination: { limit: 1, offset: 0, order: 'oldest', returned: 1 }
+    }))
+
+    expect(result.artifacts).toEqual([])
+    expect(result.failures).toEqual([])
+  })
+
+  it('still indexes a real path that merely contains the placeholder fragment', async () => {
+    const session = makeSession()
+    const realPath = '/home/weidong/absolute/path/to/report.png'
+
+    const result = await loadArtifactsForSessions([session], async () => ({
+      messages: [{ content: `MEDIA:${realPath}`, role: 'assistant', timestamp: 1000 }],
+      pagination: { limit: 1, offset: 0, order: 'oldest', returned: 1 }
+    }))
+
+    expect(result.artifacts.map(artifact => artifact.value)).toEqual([realPath])
+  })
+})
+
+describe('artifactSessionScope', () => {
+  it('routes a row tagged with its owning connection to that connection', () => {
+    const scope = artifactSessionScope(
+      makeSession({ connection_id: 'remote-a', profile: 'default' })
+    )
+
+    expect(scope).toEqual({ connectionId: 'remote-a', profile: 'default' })
+  })
+
+  it('leaves an untagged row on the ambient backend', () => {
+    const scope = artifactSessionScope(makeSession({ profile: 'default' }))
+
+    expect(scope.connectionId).toBeUndefined()
+    expect(scope.profile).toBe('default')
+  })
+
+  it('does not route a row that names a connection but no profile', () => {
+    const scope = artifactSessionScope(makeSession({ connection_id: 'remote-a' }))
+
+    expect(scope.connectionId).toBeUndefined()
+  })
+
+  it('keeps a remote profile name distinct from the local one', () => {
+    const scope = artifactSessionScope(
+      makeSession({ connection_id: 'remote-a', profile: 'worker' })
+    )
+
+    expect(scope).toEqual({ connectionId: 'remote-a', profile: 'worker' })
   })
 })

@@ -74,8 +74,22 @@ def _blocked_toolsets_for_role(role: str) -> list[str]:
         name for name, defn in TOOLSETS.items() if defn.get("tools") and set(defn.get("tools", ())).issubset(blocked_names)
     )
 
+
+def _target_profile_disabled_toolsets(profile_home) -> list[str]:
+    """Read a routed profile's additional toolset denials inside its own scope."""
+    if profile_home is None:
+        return []
+    from hermes_cli.config import load_config_readonly
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    with delegated_profile_scope(profile_home):
+        agent_cfg = (load_config_readonly() or {}).get("agent")
+    raw_disabled = agent_cfg.get("disabled_toolsets") if isinstance(agent_cfg, dict) else None
+    return [str(name) for name in raw_disabled] if isinstance(raw_disabled, (list, tuple, set)) else []
+
+
 def _resolve_child_toolsets(
-    parent_agent, toolsets: Optional[list[str]], effective_role: str
+    parent_agent, toolsets: Optional[list[str]], effective_role: str, profile_home=None,
 ) -> tuple[list[str], list[str]]:
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
@@ -117,7 +131,8 @@ def _resolve_child_toolsets(
         inherited_disabled = [name for name in inherited_disabled if name != "delegation"]
         if "delegation" not in child_toolsets:
             child_toolsets.append("delegation")
-    child_disabled_toolsets = list(
-        dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
-    )
+    child_disabled_toolsets = list(dict.fromkeys(
+        inherited_disabled + _target_profile_disabled_toolsets(profile_home)
+        + _blocked_toolsets_for_role(effective_role) + ["kanban"],
+    ))
     return child_toolsets, child_disabled_toolsets

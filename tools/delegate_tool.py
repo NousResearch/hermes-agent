@@ -259,7 +259,9 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(
+        parent_agent, toolsets, effective_role, profile_home=profile_home,
+    )
     child_prompt = _build_child_system_prompt(
         workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,

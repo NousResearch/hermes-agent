@@ -243,7 +243,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         cfg = _load_secrets_config(home)
     except Exception:
         return {}
-    if not cfg:
+    if not cfg:  # removed: its earlier values are no longer applied, so stop masking them
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
 
     try:

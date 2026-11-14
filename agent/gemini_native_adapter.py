@@ -97,12 +97,17 @@ _MISSING_KEY_ERROR = (
 
 
 def bare_gemini_model_id(model: str) -> str:
-    """Strip Gemini's own provider prefix from an aggregator-style model id."""
+    """Strip the prefixes a foreign spelling of the same id can carry: an aggregator's vendor prefix
+    (``google/``, ``gemini/``) and the ``models/`` prefix Gemini's own listings return, which every
+    ``{base}/models/{model}:…`` builder would otherwise double (#152786)."""
     name = (model or "").strip()
-    for prefix in ("google/", "gemini/"):
-        if name.lower().startswith(prefix):
-            return name[len(prefix):].strip() or name
-    return name
+    while True:
+        for prefix in ("google/", "gemini/", "models/"):
+            if name.lower().startswith(prefix) and len(name) > len(prefix):
+                name = name[len(prefix):].strip()
+                break
+        else:
+            return name
 
 
 def gemini_requires_tool_call_ids(model: str) -> bool:

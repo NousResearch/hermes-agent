@@ -105,6 +105,21 @@ class _Request:
     headers: Optional[dict[str, str]]
 
 
+# A listing-side prefix is a property of how the provider spells its catalog, not of the model:
+# Gemini's native ``v1beta`` ListModels and its OpenAI-compatible surface both answer
+# ``models/<id>``, while the curated catalog, the picker and the request builders keep the bare id.
+_LISTING_ID_PREFIXES: dict[str, str] = {"gemini": "models/"}
+
+
+def _listing_lookup(normalized: str, model_id: str) -> str:
+    """Catalog-membership form of *model_id*: the listing's spelling and the bare id must compare
+    equal in BOTH directions, so an id taken verbatim from the listing matches its catalog entry and
+    vice versa (#152786). Only this comparison form is normalized — ``_Request.requested`` still
+    reaches the wire exactly as the user (or the client) spelled it."""
+    prefix = _LISTING_ID_PREFIXES.get(normalized, "")
+    return model_id[len(prefix):] if prefix and model_id.startswith(prefix) else model_id
+
+
 # ── Provider branches (None = not decided here) ─────────────────────────
 
 def _validate_moa(req: _Request) -> dict[str, Any]:
@@ -636,10 +651,10 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None
-    if req.normalized == "gemini":
-        # Gemini's OpenAI-compat listing prefixes ids with "models/"; curated list and user input
-        # use the bare id, so strip before comparing.
-        api_models = [m[len("models/"):] if isinstance(m, str) and m.startswith("models/") else m for m in api_models]
+    if req.normalized in _LISTING_ID_PREFIXES:
+        # The listing prefixes ids the curated catalog and the user input keep bare; strip so a
+        # requested id taken from the listing matches its own entry.
+        api_models = [_listing_lookup(req.normalized, m) if isinstance(m, str) else m for m in api_models]
     match = _match_in_catalog(req.lookup, api_models)
     if match.exact:
         return _accept()
@@ -799,6 +814,9 @@ def validate_requested_model(
     from providers import get_provider_profile
     profile = get_provider_profile(normalized) if normalized else None
     lookup = (profile.normalize_model_id(requested, api_key=api_key or "") if profile is not None else None) or requested
+    # The id the provider's own listing returns is a valid request even when it carries that
+    # listing's prefix; compare it in the same form the catalog uses (#152786).
+    lookup = _listing_lookup(normalized, lookup)
 
     if not requested:
         return _reject("Model name cannot be empty.")

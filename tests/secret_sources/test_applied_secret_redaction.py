@@ -173,3 +173,27 @@ def test_partial_private_key_print_masks_the_body_next_to_a_lone_armor_line():
     assert redact_sensitive_text(prose, force=True) == prose
     digest = hashlib.sha256(b"doc").hexdigest()
     assert digest in redact_sensitive_text(f"{lines[0]}\n{digest}\n", force=True)
+
+
+
+@pytest.mark.parametrize("indent", [None, 2], ids=["compact", "pretty"])
+def test_service_account_json_key_lines_never_leak_once_decoded(tmp_path, indent):
+    """A service-account JSON carries its key as ``\\n``-escaped text: no real newline, and every
+    key line sits inside one string. Once something decodes it and splits lines (``jq -r``,
+    ``sed 's/\\\\n/\\n/g' | grep -v PRIVATE``), each body line must still be masked."""
+    sa = json.dumps({"type": "service_" + "account", "project_id": "demo-project",
+                     "private_key": RSA_KEY + "\n", "client_email": "svc@demo-project.iam.example"},
+                    indent=indent)
+    redact_secret_sources.publish_secret_source_values(tmp_path, {"GOOGLE_APPLICATION_CREDENTIALS_JSON": sa})
+    with _profile(tmp_path):
+        decoded = json.loads(sa)["private_key"]
+        shown = "\n".join(ln for ln in decoded.splitlines() if "PRIVATE" not in ln)
+        out = redact_sensitive_text(shown, force=True)
+        assert not [ln for ln in RSA_BODY if ln in out]
+        assert redact_sensitive_text("demo-project", force=True) == "demo-project"
+
+
+def test_short_multiline_value_does_not_register_its_joined_form(tmp_path):
+    redact_secret_sources.publish_secret_source_values(tmp_path, {"REGION_LIST_SECRET": "us-east\neu-west"})
+    with _profile(tmp_path):
+        assert redact_sensitive_text("deploy to us-easteu-west later", force=True) == "deploy to us-easteu-west later"

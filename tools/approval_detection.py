@@ -185,6 +185,9 @@ _PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|
 # Windows drive root (`C:/`, `C:/*`, `C:/*.*`; backslashes are flattened to `/` by the
 # Windows-path detection variant).
 _HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
+# Quoted root that ENDS its shell word (past `./`, `..`, globs; a glued `>nul` ends it too): `"C:\"*.*` is the
+# root, `"C:\"Users\me` one word naming a subdirectory. Bare roots carry each rule's own terminator.
+_HARDLINE_DRIVE_QUOTED = r'["\'](?:' + _HARDLINE_DRIVE_ROOT + r')["\'](?:(?:\.\.?)?/)*(?:\.\.?)?(?:\*(?:\.\*)?)?(?=\s|$|[)`;|&<>])'
 # PowerShell -Recurse and its unambiguous prefixes (same set as _PS_RECURSE below).
 _PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
 # _CMDPOS, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
@@ -247,9 +250,9 @@ HARDLINE_PATTERNS = [
     # Recursive delete whose target is a drive ROOT (`C:\`, `C:\*`, `C:/*.*`); `C:\build` and
     # `C:` (the drive's current directory) fall through to the DANGEROUS tier.
     (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))'
-     r'[^\n;&|]*\s' + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&"\'<>])'), "recursive delete of drive root"),
+     r'[^\n;&|]*\s(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>]))', "recursive delete of drive root"),
     # An attached redirect (`C:\>nul`) ends the operand too.
-    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&<>])'), "recursive delete of drive root"),
+    (_RM_FLAG_PREFIX + '(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out

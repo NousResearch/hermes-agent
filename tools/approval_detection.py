@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 
 from tools import approval_parser_budget as _parser_budget
+from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 
 logger = logging.getLogger("tools.approval")
@@ -974,8 +975,9 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
     # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
     # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed. Measured
-    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`); nesting that only the
-    # escape strip mints (`\$\(`, `$''(`) is bounded by the scan budget instead.
+    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`); comments and quoted-heredoc
+    # bodies are data. Nesting that only the escape strip mints (`\$\(`, `$\<newline>(`, `\")\"`)
+    # is bounded by the scan budget instead (`$''(` nests too, but its scan stays linear).
     if _parser_budget.substitution_depth(unicodedata.normalize("NFKC", command)) > _MAX_SUBSTITUTION_DEPTH:
         return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
@@ -1294,86 +1296,6 @@ def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
     return pos
-
-
-def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str = "",
-                brace: bool = False, stop_unterminated: bool = False, naive_backtick: bool = False,
-                comments: bool = False):
-    """Yield ``(kind, i, j, quote)`` lexical steps over ``text[start:end]`` without expanding.
-
-    The single quote/escape state machine behind every detection scanner. ``kind`` is ``"char"``
-    (one char), ``"esc"`` (backslash + the char it escapes; never inside single quotes), ``"quote"``
-    (an opening/closing quote char) or ``"subst"`` (a ``$(...)`` / backtick / ``${...}`` span);
-    With *comments*, ``"comment"`` spans are skipped without interpreting their quote syntax.
-    ``quote`` is the state the step was read in (``None``, ``'`` or ``"``). Substitutions are
-    recognized unquoted when ``"u"`` is in *subst*, inside double quotes when ``"q"`` is; *brace*
-    adds unquoted ``${...}``. An unterminated substitution falls through as plain chars unless
-    *stop_unterminated*, which yields ``("subst", i, None, quote)`` and ends the scan (the caller
-    descends to *end* itself). *naive_backtick* closes a backtick at the next backtick even if
-    escaped (the quoted-prose masker's historical behavior)."""
-    n = len(text) if end is None else end
-    quote: str | None = None
-    i = start
-    budget = _parser_budget.active()
-    while i < n:
-        if budget is not None:  # one unit per lexed char; inline, this loop is the hot path
-            budget.remaining -= 1
-            if budget.remaining < 0:
-                raise _parser_budget.ParserBudgetExceeded
-        ch = text[i]
-        kind, j = "char", i + 1
-        if comments and quote is None and _is_shell_comment_start(text, i):
-            kind, j = "comment", text.find("\n", i, n)
-            if j < 0:
-                j = n
-        elif quote != "'" and ch == "\\" and i + 1 < n:
-            kind, j = "esc", i + 2
-        elif ch == quote or (quote is None and ch in "'\""):
-            kind = "quote"
-        elif quote != "'" and ("q" if quote else "u") in subst and (
-            ch == "`" or text.startswith("$(", i) or (brace and not quote and text.startswith("${", i))
-        ):
-            if ch == "`":
-                close = text.find("`", i + 1) + 1 or None if naive_backtick else _scan_backtick_end(text, i)
-            elif text[i + 1] == "(":
-                close = _scan_dollar_paren_end(text, i)
-            else:
-                close = text.find("}", i + 2) + 1 or None
-            if close is not None:
-                kind, j = "subst", close
-            elif stop_unterminated:
-                yield ("subst", i, None, quote)
-                return
-        yield (kind, i, j, quote)
-        if kind == "quote":
-            quote = None if quote else ch
-        i = j
-
-
-def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
-    return _parser_budget.memo(_dollar_paren_end, command, start)
-
-
-def _dollar_paren_end(command: str, start: int) -> int | None:
-    depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
-        if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
-    return None
-
-
-def _scan_backtick_end(command: str, start: int) -> int | None:
-    return _parser_budget.memo(_backtick_end, command, start)
-
-
-def _backtick_end(command: str, start: int) -> int | None:
-    # Backticks have no quote awareness: only a backslash escapes the next char.
-    match = re.compile(r"(?:\\.|[^`\\])*`", re.DOTALL).match(command, start + 1)
-    _parser_budget.charge((match.end() if match else len(command)) - start)
-    return match.end() if match else None
 
 
 def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
@@ -1997,4 +1919,6 @@ def detect_content_rule_keys(command: str) -> list[str]:
         with _parser_budget.parser_budget(command):
             return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
     except (_parser_budget.ParserBudgetExceeded, RecursionError):
-        return []  # detect_dangerous_command reports the parser limit; it is no content rule
+        # Safe only because the hardline floor runs first on the same command, walks every variant
+        # under an equal budget and refuses it, so no gate acts on this [] (pinned by a test).
+        return []

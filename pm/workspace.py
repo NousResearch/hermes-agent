@@ -86,6 +86,9 @@ def _published_store_entries(directory: Path) -> frozenset[str]:
     return frozenset(name for name in names if (directory / name).is_dir())
 
 
+_ROOT_DATA_DIRS = frozenset({"locales", "skills", "optional-skills", "plugin-catalog", "optional-mcps"})
+
+
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
@@ -120,16 +123,16 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         return [name for name in names if name in nested_excluded or name.startswith(".")
                 or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
-    # ``locales`` rides the same one-pass directory sweep: translation catalogs are
-    # loaded relative to the source root, rather than as package data, and the
-    # directory is intentionally not a setuptools package. Naming it here keeps a
-    # single copy even when the include patterns (or their ["*"] default) already
-    # match it — a second pass would collide with the copied directory.
+    # Runtime data dirs ride the same one-pass directory sweep: they are read beside the
+    # project root (agent/i18n.py, tools/skills_sync.py, hermes_cli/plugin_catalog.py,
+    # hermes_cli/mcp_catalog.py), not as package data, and are deliberately not setuptools
+    # packages. Naming them here keeps a single copy even when the include patterns (or their
+    # ["*"] default) already match — a second pass would collide with the copied directory.
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and (entry.name in where_roots
-                     or entry.name == "locales"
+                     or entry.name in _ROOT_DATA_DIRS
                      or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
             shutil.copytree(entry, target, ignore=ignore)

@@ -26,7 +26,8 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import daemon_env, daemon_identity, harness_pid_file, namespace_harness_dirs
+from tools.browser_harness_dirs import (
+    daemon_env, daemon_identity, harness_current_target, harness_pid_file, namespace_harness_dirs)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -522,6 +523,17 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
 
+def _record_driven_tab(env: dict, task_id: Optional[str]) -> None:
+    """Tell the task's vault supervisor which tab this exec's daemon drives, so a later
+    ``browser_vault`` fill lands in that tab rather than the first one on the origin."""
+    if not (env.get("BU_CDP_WS") or env.get("BU_CDP_URL")):
+        return
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
+    if supervisor is not None:
+        supervisor.set_driven_target(harness_current_target(env))
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
                    force_local_sidecar: bool = False, real_profile: bool = True) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
@@ -873,6 +885,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         dispatched = dispatch()
     _reload_if_republished(env, generation)
     _own_harness_daemon(env)
+    _record_driven_tab(env, task_id)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]

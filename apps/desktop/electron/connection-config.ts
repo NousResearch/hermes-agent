@@ -36,6 +36,7 @@
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 import { readStatusCode } from './api-transport'
 import { sharesHostBackend } from './host-backend-singleton'
+import { PROFILE_ID_ARG_RE } from './profile-id-guard'
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
@@ -517,7 +518,7 @@ function normalizeSshConfig(entry) {
   // historical same-name behavior in the caller.
   const remoteProfile = String(entry.remoteProfile || '').trim()
 
-  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+  if (PROFILE_ID_ARG_RE.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
     out.remoteProfile = remoteProfile
   }
 
@@ -618,7 +619,7 @@ function profileRemoteOverride(config, profile) {
 function normalizeRemoteProfileName(value) {
   const remoteProfile = String(value || '').trim()
 
-  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+  if (PROFILE_ID_ARG_RE.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
     return { remoteProfile }
   }
 

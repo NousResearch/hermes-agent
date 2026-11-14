@@ -40,6 +40,9 @@ EXPANSION_COMMANDS = [
     "echo `echo a`#; echo SECOND",
     "echo ${value:- #}; echo SECOND",
     'echo $"translated"#; echo SECOND',
+    # Deprecated $[...] arithmetic: an unevaluated branch never reports the bad '#', so the suffix runs.
+    "true || echo $[ 1 #]; echo SECOND",
+    "true || echo $\\\n[ 1 #]; echo SECOND",
 ]
 # Enable extglob in the submitted input before Bash parses the next command;
 # never depend on the test runner's ambient shell options.

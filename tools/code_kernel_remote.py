@@ -29,7 +29,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
+from tools.code_kernel import (
+    RUNNER_CELL_SOURCE,
+    KernelRegistry,
+    lost_state_note,
+    stale_modules_warning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +217,7 @@ def _reap_unlocked(idle_timeout: int) -> list[RemoteKernel]:
     now = time.monotonic()
     doomed = [key for key, kernel in _REMOTE_KERNELS.items()
               if kernel.attached == 0 and now - kernel.last_used > idle_timeout]
-    return [_REMOTE_KERNELS.pop(key) for key in doomed]
+    return [_REGISTRY.pop_lost(key, "idle") for key in doomed]
 
 
 def _evict_over_cap_unlocked(keep: tuple) -> list[RemoteKernel]:
@@ -225,7 +230,7 @@ def _evict_over_cap_unlocked(keep: tuple) -> list[RemoteKernel]:
         return []
     by_age = sorted((key for key in unpinned if key != keep and _REMOTE_KERNELS[key].attached == 0),
                     key=lambda key: _REMOTE_KERNELS[key].last_used)
-    return [_REMOTE_KERNELS.pop(key) for key in by_age[: len(unpinned) - cap]]
+    return [_REGISTRY.pop_lost(key, "evicted") for key in by_age[: len(unpinned) - cap]]
 
 
 atexit.register(shutdown_all_remote_kernels)
@@ -296,16 +301,20 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                            sandbox_tools: frozenset, *, reset: bool,
-                           idle_exit: int) -> tuple[Optional[RemoteKernel], bool, bool, bool]:
-    """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
-    idle-expired entries on the way in."""
+                           idle_exit: int) -> tuple[Optional[RemoteKernel], bool, bool, str]:
+    """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, lost_why); reaps
+    idle-expired entries on the way in. ``lost_why`` is ``""`` unless earlier state is gone
+    without a reset (the registry evicted or reaped it, or the remote process is gone)."""
     from tools.environments.sandbox_scope import hosted_scope
     owner_scope = hosted_scope()
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
-    state_lost = state_reset = False
+    state_reset = False
     with _REGISTRY.lock:
         expired = _reap_unlocked(idle_exit)
         kernel = _REMOTE_KERNELS.get(key)
+        lost_why = _REGISTRY.take_lost(key)
+    if reset:
+        lost_why = ""
     for doomed in expired:
         doomed.kill()
     if kernel is not None and reset:
@@ -316,17 +325,25 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         # the same answer: report the loss, respawn fresh (kill is then only
         # best-effort dir cleanup; the process is already gone).
         _REGISTRY.discard(key, kernel)
-        kernel, state_lost = None, True
+        kernel, lost_why = None, "gone"
     reused = kernel is not None
-    if kernel is None:
+    if reused:
+        # A marker only describes the kernel a NEW one replaces; one left by a race with this
+        # live kernel already registered reports nothing.
+        lost_why = ""
+    else:
         kernel = _spawn_remote_kernel(env, env_type, owner, task_env_id, sandbox_tools, idle_exit=idle_exit)
         if kernel is not None:
             from agent.delegation_context import is_delegated_child_context
             kernel.pinned = is_delegated_child_context()
             kernel.owner_scope = owner_scope
-            with _REGISTRY.lock:
+        with _REGISTRY.lock:
+            if kernel is not None:
                 _REMOTE_KERNELS[key] = kernel
-    return kernel, reused, state_reset, state_lost
+            elif lost_why:
+                # Fail-open runs per-call, whose result has no kernel report: keep it for the next call.
+                _REGISTRY.mark_lost(key, lost_why)
+    return kernel, reused, state_reset, lost_why
 
 
 def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
@@ -372,7 +389,7 @@ def execute_in_remote_kernel(
     per-call). ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
     from tools.code_kernel import _resolve_owner
     owner = _resolve_owner(task_env_id)
-    kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
+    kernel, reused, state_reset, lost_why = _acquire_remote_kernel(
         env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
     if kernel is None:
         return None  # fail open to per-call
@@ -386,7 +403,7 @@ def execute_in_remote_kernel(
     try:
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                                  reused=reused, state_reset=state_reset, state_lost=state_lost)
+                                  reused=reused, state_reset=state_reset, lost_why=lost_why)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -395,7 +412,7 @@ def execute_in_remote_kernel(
 
 def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-                       reused: bool, state_reset: bool, state_lost: bool) -> dict[str, Any]:
+                       reused: bool, state_reset: bool, lost_why: str) -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -424,6 +441,9 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
         # kernel as the timeout path does: leaving it registered would let the
         # next call reuse a kernel whose state silently missed this cell.
         _REGISTRY.discard(key, kernel)
+        if lost_why or reused:
+            with _REGISTRY.lock:
+                _REGISTRY.mark_lost(key, lost_why or "failed")
         raise
     finally:
         stop_event.set()
@@ -454,10 +474,11 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     result["stderr_clipped"] = bool(cell_payload.get("stderr_clipped"))
     if state_reset:
         kernel_info["state_reset"] = True
-    if state_lost:
+    if lost_why:
         kernel_info.update(state_lost=True, note=(
             "The previous remote kernel was gone (transport drop, container "
-            "restart, or idle self-exit); state from earlier calls was lost and a fresh kernel was started."))
+            "restart, or idle self-exit); state from earlier calls was lost and a fresh kernel was started."
+            if lost_why == "gone" else lost_state_note(lost_why)))
     if cell_status == "error" and result["traceback"]:
         result["error"] = result["traceback"].strip().splitlines()[-1]
     stale_warning = stale_modules_warning(cell_payload)

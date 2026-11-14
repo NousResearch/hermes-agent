@@ -38,4 +38,25 @@ describe('clarifySettledRows', () => {
       ['assistant', 'done']
     ])
   })
+
+  it.each([
+    ['cancelled', '(cancelled)'],
+    ['timed_out', '(timed out)']
+  ])('shows a %s form as the abandoned-form line it showed live, not as skips', (outcome, reason) => {
+    const content = JSON.stringify({
+      outcome,
+      responses: [
+        { question: 'Pick a colour?', status: 'answered', user_response: 'red' },
+        { question: 'Sizes?', status: 'unanswered', user_response: null }
+      ]
+    })
+
+    const [, line] = toTranscriptMessages([{ content, context: '2 questions', name: 'clarify', role: 'tool' }])
+
+    expect(line?.role).toBe('system')
+    expect(line?.text).toContain('✓ Pick a colour? → red')
+    expect(line?.text).toContain('· Sizes? (no answer)')
+    expect(line?.text).toContain(reason)
+    expect(line?.text).not.toContain('(skipped)')
+  })
 })

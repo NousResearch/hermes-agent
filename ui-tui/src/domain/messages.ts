@@ -1,6 +1,6 @@
 import type { SessionInfo } from '@hermes/shared/gateway-types'
 
-import { storedClarifySettledRows } from '../app/clarifyTranscript.js'
+import { storedClarifyRows } from '../app/clarifyTranscript.js'
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
@@ -24,17 +24,17 @@ export const userDisplay = (text: string) => {
 const storedRowId = (role: string, rowId: unknown): Pick<Msg, 'rowId'> =>
   role === 'user' && Number.isSafeInteger(rowId) && (rowId as number) > 0 ? { rowId: rowId as number } : {}
 
-/** A resumed tool row joins the next reply's trail; a settled clarify shows its answers as main's TUI wrote them
- * live (the trail, then a `question → answer` bubble). Returns the trail lines still pending. */
+/** A resumed tool row joins the next reply's trail; a clarify row shows what the live turn wrote after its trail
+ * (the answers bubble, or the abandoned form's system line). Returns the trail lines still pending. */
 const pushToolRow = (out: Msg[], pending: string[], { content, context, name }: TranscriptRow): string[] => {
-  const settled = name === 'clarify' && content ? storedClarifySettledRows(content) : null
+  const clarify = name === 'clarify' && content ? storedClarifyRows(content) : null
 
-  if (!settled) {
+  if (!clarify) {
     return [...pending, buildToolTrailLine(name ?? 'tool', context ?? '')]
   }
 
-  out.push({ kind: 'trail', role: 'system', text: '', tools: [...pending, settled.trail] })
-  out.push({ role: 'user', text: settled.userText })
+  out.push({ kind: 'trail', role: 'system', text: '', tools: [...pending, clarify.trail] })
+  out.push({ role: clarify.abandoned ? 'system' : 'user', text: clarify.text })
 
   return []
 }

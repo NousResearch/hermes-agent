@@ -52,6 +52,7 @@ vi.mock('@/i18n', () => ({
       sessions: {
         newChat: 'New chat',
         noSessions: 'No sessions',
+        noSessionsInFilter: 'No sessions in this filter',
         title: 'Sessions',
         untitledSession: 'Untitled session'
       }
@@ -194,5 +195,40 @@ describe('ChatSessionList', () => {
 
     expect(getSessions).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('Newly created session')
+  })
+
+  it('lists chat sessions only: automation sources are excluded by default', async () => {
+    getSessions.mockResolvedValueOnce(response('first', 'First session'))
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChatSessionList activeSessionId={null} />
+        </MemoryRouter>
+      )
+    })
+
+    const options = getSessions.mock.calls[0]?.[2] as {
+      excludeSources?: string[]
+      profile?: string
+    }
+    expect(options.profile).toBe('')
+    expect(options.excludeSources).toEqual(
+      expect.arrayContaining(['cron', 'tool', 'oneshot', 'api_server'])
+    )
+  })
+
+  it('says the list is filtered, not empty, when only automation runs exist', async () => {
+    getSessions.mockResolvedValueOnce({ sessions: [], total: 0, limit: 30, offset: 0 })
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChatSessionList activeSessionId={null} />
+        </MemoryRouter>
+      )
+    })
+
+    expect(container.textContent).toContain('No sessions in this filter')
   })
 })

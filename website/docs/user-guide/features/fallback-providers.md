@@ -341,7 +341,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` takes precedence over `provider`. Hermes uses the configured `api_key` for authentication, falling back to `OPENAI_API_KEY` if not set. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
+`base_url` takes precedence over `provider`. Hermes uses the configured `api_key` for authentication; without one it falls back to `OPENAI_API_KEY` only for OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
 
 ---
 

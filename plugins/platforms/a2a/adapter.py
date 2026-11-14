@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -16,7 +17,6 @@ import socket
 import threading
 import time
 import urllib.parse
-import urllib.request
 from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -297,6 +297,9 @@ class A2AAdapter(BasePlatformAdapter):
         # do_GET/do_POST run on ThreadingHTTPServer's per-connection OS threads, which never inherit
         # the profile scope contextvar (same class as A2A_PORT above).
         self._public_url = _get_scoped_secret("A2A_PUBLIC_URL", "").strip()
+        # Push callbacks are checked and sent from those threads too; run them in this scope so the
+        # shared SSRF guard reads this profile's allow_private_urls / fake_ip_ranges.
+        self._scope_ctx = contextvars.copy_context()
         self._agents = self._load_served_agents(extra)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread = self._watchdog_thread = None  # type: Optional[threading.Thread]
@@ -346,6 +349,10 @@ class A2AAdapter(BasePlatformAdapter):
         logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
                     "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
         sec = self._security_context
+        if sec.unusable_peer_tokens:
+            logger.error("A2A: A2A_PEER_TOKENS is set but has no name:token pair (expected \"alice:tok1,bob:tok2\"); %s",
+                         "only the shared A2A_BEARER_TOKEN is accepted." if sec.bearer_token
+                         else "every request is refused (401) until it is fixed.")
         if sec.dispatch_fails_closed():
             logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
                          "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
@@ -846,16 +853,16 @@ class A2AAdapter(BasePlatformAdapter):
         callback_url = self.tasks.pop_push_url(task_id)
         if not callback_url:
             return
-        if not security.is_safe_callback_url(callback_url, localhost_mode=self._security_context.localhost_only()):
+        scope, localhost_mode = self._scope_ctx.copy(), self._security_context.localhost_only()
+        if not scope.run(security.is_safe_callback_url, callback_url, localhost_mode=localhost_mode):
             return fail("blocked — unsafe callback URL: %s", callback_url)
         payload = protocol.status_update(task_id, context_id, state, (reply or "")[:2000])
         headers = {"Content-Type": "application/json"}
         if signature := self._security_context.sign_push_payload(payload):
             headers["X-A2A-Signature"] = signature
         try:
-            req = urllib.request.Request(callback_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status = resp.status
+            status = scope.run(security.post_callback, callback_url, json.dumps(payload).encode("utf-8"), headers,
+                               localhost_mode=localhost_mode)
         except Exception as e:
             return fail("failed: %s", e)
         if not 200 <= status < 300:

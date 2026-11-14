@@ -1,0 +1,17 @@
+name: offense
+repo: https://github.com/offense-research/offense-hermes-plugin
+sha: 3689398072bfe6f5960e387d8b5cdddf75bea631
+version: "0.3.0"
+description: "Offense security tools for Hermes: free npm/pnpm dependency advisory audits and prepaid hosted security tools (source, infrastructure, target, TLS, API) through the official Offense MCP server, exposed as mcp__offense__* tools. Disclosure — the plugin connects to the configured Offense origin (https://app.purpleteam.sh by default, moving to https://offense.sh) over HTTPS; the free audit sends sanitized dependency names, exact versions and relative paths, prepared by Offense's `offense.mjs` Node helper that the bundled skill tells the agent to run from an Offense checkout or download from the Offense origin (not part of the pinned package; it runs through your terminal tool); hosted tools upload the selected source, artifact, target or infrastructure only after a reviewed quote and an explicit run; the free audit needs no account; OFFENSE_API_KEY is read through Hermes' secret store and kept in the active profile; hosted calls spend prepaid Offense credit on your account and are gated by trust: untrusted, a $5.00 per-chat spend limit and a $0.05-$1.00 cost per reviewed quote; no self-updater, no telemetry."
+maintainer: offense-research
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/offense-research/offense-hermes-plugin/blob/3689398072bfe6f5960e387d8b5cdddf75bea631/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OFFENSE_API_KEY

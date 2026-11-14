@@ -529,7 +529,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
 
-- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's live manager already bound, on any host that serves several profiles, multiplexed or not, and logs `memory_provider_instance_shared`.
 - **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
 - **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
 

@@ -1,0 +1,29 @@
+name: hermis
+title: H.E.R.M.I.S
+repo: https://github.com/gabogabucho/H.E.R.M.I.S
+sha: 6c9582c634d106df888d934dc30fa03951448b4c
+description: " Disclosure — Windows only, not crypto. Runs a background WebSocket server on 127.0.0.1 (ephemeral port + session token) in a daemon thread. On the first autopilot or surface draw it launches a bundled transparent always-on-top Electron overlay as a detached process via npm (first run executes `npm ci` from the committed lockfile, downloading pinned npm packages and the Electron binary; disable with HERMIS_OVERLAY_AUTOSTART=0). The overlay obtains a short-lived interactive session ticket from the local Hermes gateway control socket and listens only to voice.status and wake.detected. It renders HTML/SVG blocks from replies in a sandboxed iframe that may load scripts from cdnjs/jsdelivr/unpkg, and loads https images. While Autopilot is on, the titles of up to 15 open windows are sent to your model provider on every turn. launch_app opens desktop apps by name only (shells, interpreters and paths are refused); with arguments or outside a small allowlist Hermes asks you first, except an allowlisted browser opening exactly one http/https URL, which opens without asking. layout_windows moves, resizes and focuses real windows via Win32 (user32); Store apps are found with a read-only powershell Get-StartApps lookup. Every child process gets an allowlisted minimal environment without provider keys. Optional camera gestures (off by default, Autopilot only) process frames locally with MediaPipe, and the model is downloaded once from storage.googleapis.com (SHA-256 verified). Reads config.yaml read-only and writes state.json, overlay.json, overlay.log and the gesture model to the plugin data dir."
+maintainer: gabogabucho
+tier: community
+category: desktop
+requires_hermes: ">=0.22.3"
+version: "0.1.0"
+platforms:
+- windows
+docs_url: https://github.com/gabogabucho/H.E.R.M.I.S#readme
+readme: true
+capabilities:
+  provides_tools:
+  - autopilot
+  - render_surface
+  - close_surface
+  - list_surfaces
+  - layout_windows
+  - launch_app
+  provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - post_llm_call
+  provides_middleware: []
+  requires_env: []

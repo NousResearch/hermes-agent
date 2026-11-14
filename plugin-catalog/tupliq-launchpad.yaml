@@ -1,0 +1,20 @@
+name: tupliq-launchpad
+repo: https://github.com/muhammadsalihu/tupliq-launchpad
+sha: 3870f4e2769008cded30338cc42b8779438624a4
+description: RevenueCat revenue & subscription metrics for your apps, plus git changelog drafting for Play Store releases.
+maintainer: muhammadsalihu
+tier: community
+category: tools
+version: "1.0.0"
+title: "Tupliq Launchpad"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - launchpad_overview
+    - launchpad_revenue
+    - launchpad_chart
+    - launchpad_changelog
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - REVENUECAT_API_KEY

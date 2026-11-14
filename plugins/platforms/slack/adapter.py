@@ -12,7 +12,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from typing import Awaitable, Callable, ClassVar, Collection, Dict, Optional, Any, Tuple, List
 
 aiohttp: Any = None
 try:
@@ -46,10 +46,10 @@ from gateway.approval_actor import approval_refusal, clarify_refusal, refusal_te
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    platform_gate_env as _scoped_gate_env, send_error
+    platform_gate_env as _scoped_gate_env, request_never_left, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
+from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -67,7 +67,13 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_image_batch import collect_image_uploads
+    from .adapter_forwarded import (
+        append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
+        slack_file_marker as _slack_file_marker)
 except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_forwarded import (  # type: ignore
+        append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
+        slack_file_marker as _slack_file_marker)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
@@ -161,18 +167,6 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*
 # Thread-root images delivered on a mid-thread cold start; other messages' files
 # are text markers only (the root is usually the artifact the mention is about).
 _THREAD_ROOT_IMAGE_MAX = 4
-
-
-def _slack_file_marker(file_obj: dict[str, Any]) -> str:
-    """Render a compact text marker for a Slack file so text-only context shows attachments. Name is
-    sanitized (newlines/brackets stripped) so a hostile filename can't fake context structure."""
-    name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
-    name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
-    mimetype = str(file_obj.get("mimetype") or "")
-    for kind in ("image", "video", "audio"):
-        if mimetype.startswith(kind + "/"):
-            return f"[{kind}: {name}]"
-    return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
 
 
 # GFM tables: Slack mrkdwn shows pipe tables as literal pipes, so they are wrapped in ```
@@ -628,17 +622,17 @@ def _render_slack_table_block(
     return text
 
 
-def _extract_text_from_slack_attachments(attachments: list) -> str:
+def _extract_text_from_slack_attachments(attachments: list, own_ids: Collection[str] = (),
+                                         seen_text: str = "") -> str:
     """Extract readable text from legacy ``attachments`` (alert/CI bots post empty ``text``).
-    Prefers structured fields; uses ``fallback`` only when nothing else exists."""
+    Prefers structured fields; uses ``fallback`` only when nothing else exists. Forwards and
+    linked messages render first, under the same budget and dedupe as the live inbound path."""
     if not attachments:
         return ""
-    lines: list[str] = []
+    lines = shared_message_sections(attachments, _extract_text_from_slack_blocks, own_ids, seen_text)
     for att in attachments:
-        if not isinstance(att, dict):
-            continue
-        # Permalink unfurls repeat a message the agent already reads (inbound path skips them too).
-        if att.get("is_msg_unfurl"):
+        # Other permalink unfurls echo our own message (inbound path skips them too).
+        if not isinstance(att, dict) or att.get("is_msg_unfurl") or is_forward(att):
             continue
         got: list[str] = [str(att[key]) for key in ("pretext", "title", "text") if att.get(key)]
         for field in att.get("fields", []) or []:
@@ -1494,7 +1488,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                     ) as resp:
                         if resp.status != 200:
                             body = await _read_error_text_limited(resp)
-                            logger.warning(
+                            logger.warning(  # health: allow HX017 -- Slack's error body, not a message
                                 "[Slack] response_url POST returned %s: %s", resp.status, body[:200]
                             )
                             return SendResult(
@@ -3548,22 +3542,78 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
 
     @staticmethod
-    def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
-        """Resolve a workspace ID from the event plus Bolt's outer payload.
-        Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload."""
+    def _event_team_id(event: dict, body: Optional[dict] = None,
+                       install_set: Optional[Any] = None) -> str:
+        """Resolve the workspace this process is authenticated in for an event.
+
+        None of Slack's team fields is guaranteed to name an installing workspace: in a
+        Slack Connect channel the inner ``event.team`` can be the *sender's* org, and the
+        envelope ``team_id`` is documented to vary (Events API / Enterprise Grid: the Grid
+        example carries an envelope workspace that differs from ``authorizations[0].team_id``).
+        Trusting any single field first keyed the dedup id and the session scope to a team
+        the app has no installation in, letting the message+mention pair through as two
+        turns (#143792).
+
+        Candidate order follows Bolt's shared-channel rule — ``authorizations[0].team_id``,
+        then the envelope ``team_id``, then the inner ``event.team``. When ``install_set``
+        (the authenticated ``_team_clients`` ids) is supplied, only a candidate inside it
+        may win; when none matches and exactly one workspace is authenticated, that
+        workspace wins — both halves of a Connect pair then collapse onto it even if every
+        Slack field names the partner org. Otherwise empty: a foreign team must never
+        scope a session or a dedupe id.
+        """
+        candidates: list[str] = []
+        if isinstance(body, dict):
+            for authorization in body.get("authorizations") or []:
+                if isinstance(authorization, dict) and authorization.get("team_id"):
+                    candidates.append(str(authorization["team_id"]))
+                    break  # authorizations carries at most one entry on the wire
+            envelope_team = body.get("team_id")
+            if isinstance(envelope_team, str) and envelope_team:
+                candidates.append(envelope_team)
+            elif isinstance(envelope_team, dict) and envelope_team.get("id"):
+                candidates.append(str(envelope_team["id"]))
         for payload in (event, body or {}):
             if not isinstance(payload, dict):
                 continue
             team = payload.get("team_id") or payload.get("team")
             if isinstance(team, str) and team:
-                return team
-            if isinstance(team, dict) and team.get("id"):
-                return str(team["id"])
-        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
-        for authorization in authorizations or []:
-            if isinstance(authorization, dict) and authorization.get("team_id"):
-                return str(authorization["team_id"])
-        return ""
+                candidates.append(team)
+            elif isinstance(team, dict) and team.get("id"):
+                candidates.append(str(team["id"]))
+        if install_set is not None:
+            installs = {str(t) for t in install_set}
+            if installs:
+                for candidate in candidates:
+                    if candidate in installs:
+                        return candidate
+                if len(installs) == 1:
+                    # No Slack field names an authenticated workspace, but exactly one
+                    # is authenticated (single-install deployments): that install wins —
+                    # a Connect pair still collapses even when every field names the
+                    # partner org. A foreign team must never scope a session (#143792).
+                    return next(iter(installs))
+                return ""
+            # No workspace authenticated yet (pre-auth events, test fixtures): the
+            # install set is no local truth at all — keep the field order.
+        return candidates[0] if candidates else ""
+
+    def _team_in_install_set(self, team_id: str) -> str:
+        """Pass a team id through only when it names an authenticated workspace.
+
+        The event resolver deliberately returns ``""`` instead of adopting a foreign
+        team (#143792); callers that fall back to cached ids must not undo that.
+        """
+        if not team_id:
+            return ""
+        installs = getattr(self, "_team_clients", None) or {}
+        return team_id if str(team_id) in installs else ""
+
+    def _is_foreign_author(self, author_team: str, resolved_team: str) -> bool:
+        """A ``T…`` author outside every authenticated workspace. A member of a sibling install
+        is not foreign: ``authorizations[0]`` may name another install of the same Grid org."""
+        return bool(author_team and resolved_team and author_team != resolved_team
+                    and not self._team_in_install_set(author_team))
 
     @staticmethod
     def _context_channel_id(context: Any) -> str:
@@ -3594,7 +3644,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         thread_ts = (
             assistant_thread.get("thread_ts") or _first_truthy(event, ("thread_ts", "message_ts")))
         user_id = assistant_thread.get("user_id") or event.get("user") or context.get("user_id")
-        team_id = self._event_team_id(event, body) or str(assistant_thread.get("team_id") or "")
+        team_id = (
+            self._event_team_id(event, body, install_set=getattr(self, "_team_clients", None))
+            or self._team_in_install_set(str(assistant_thread.get("team_id") or "")))
         return {
             "channel_id": _str_or_empty(channel_id), "thread_ts": _str_or_empty(thread_ts),
             "user_id": _str_or_empty(user_id), "team_id": _str_or_empty(team_id),
@@ -3701,10 +3753,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._evict_oldest_by_ts(
             self._titled_assistant_threads, self._TITLED_ASSISTANT_THREADS_MAX, lambda e: e[2])
 
-    def _seed_dm_session(
+    async def _seed_dm_session(
         self, metadata: dict[str, str], *, thread_ts: Optional[str], fail_log: tuple[Any, ...]
     ) -> None:
-        """Prime the session store for a DM (optionally thread-scoped); lifecycle only, no agent loop."""
+        """Prime the session store for a DM (optionally thread-scoped); lifecycle only, no agent loop.
+        A new route writes the routing index (state.db + sessions.json): in a worker, off the loop."""
         session_store = getattr(self, "_session_store", None)
         channel_id, user_id = metadata.get("channel_id", ""), metadata.get("user_id", "")
         if not session_store or not channel_id or not user_id:
@@ -3719,7 +3772,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             chat_topic=metadata.get("context_channel_id") or None,
             scope_id=metadata.get("team_id") or None)
         try:
-            session_store.get_or_create_session(source)
+            await asyncio.to_thread(session_store.get_or_create_session, source)
         except Exception:
             logger.debug(*fail_log, exc_info=True)
 
@@ -3730,7 +3783,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         thread_ts = metadata.get("thread_ts", "")
         if thread_ts:  # seed so assistant threads get stable user scoping
-            self._seed_dm_session(
+            await self._seed_dm_session(
                 metadata,
                 thread_ts=thread_ts,
                 fail_log=(
@@ -3751,7 +3804,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         lifecycle event."""
         context = event.get("context") or event.get("app_context") or {}
         user_id = event.get("user") or event.get("user_id") or ""
-        team_id = self._event_team_id(event, body)
+        team_id = self._event_team_id(event, body, install_set=getattr(self, "_team_clients", None))
         return {
             "context_channel_id": self._context_channel_id(context),
             "user_id": _str_or_empty(user_id), "team_id": _str_or_empty(team_id)}
@@ -3770,7 +3823,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._cache_agent_view_context(metadata)
         # ``app_home_opened`` (tab == "messages") replaces ``assistant_thread_started`` in
         # Slack's Agent experience; lifecycle only (no welcome message, no agent loop).
-        self._seed_dm_session(
+        await self._seed_dm_session(
             metadata,
             thread_ts=None,
             fail_log=(
@@ -3831,8 +3884,43 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             client, channel_id, msg_ts, event, team_id, explicit_allowlist)
         if thread_ts is None:
             return
-        await self._handle_slack_message(
-            self._synthetic_reaction_event(event, action, thread_ts, team_id))
+        synthetic = self._synthetic_reaction_event(event, action, thread_ts, team_id)
+        # The synthetic event stamps the install team, so without the reactor's own
+        # workspace an external-org user reacting in a DM — or handed off into a DM
+        # target — would pass the prefilter's external-DM gate (#143792).
+        if str(channel_id).startswith("D") or str(synthetic["channel"]).startswith("D"):
+            reactor_team = await self._resolve_author_team(user_id, channel_id, team_id)
+            if reactor_team:
+                synthetic["user_team"] = reactor_team
+        await self._handle_slack_message(synthetic)
+
+    async def _resolve_author_team(self, user_id: str, channel_id: str, team_id: str) -> str:
+        """``T…`` home workspace of ``user_id`` via cached ``users.info``, or "" when unknown.
+        Used to stamp synthetic DM events so the _prefilter_inbound external-DM gate can judge
+        them. Lookup failure returns "" — the gate's documented empty-author fail-open."""
+        if not user_id:
+            return ""
+        # Lazily created: tests build adapters via object.__new__.
+        cache = getattr(self, "_user_team_cache", None)
+        if cache is None:
+            cache = self._user_team_cache = {}
+        key = (str(team_id), str(user_id))
+        if key in cache:
+            return cache[key]
+        try:
+            client = self._team_clients.get(team_id) if team_id else None
+            payload = _slack_response_payload(
+                await (client or self._get_client(channel_id)).users_info(user=user_id))
+        except Exception as exc:
+            logger.debug("[Slack] users.info team lookup for %s failed: %s", user_id, exc,
+                         exc_info=exc)
+            return ""
+        user_team = (payload.get("user") or {}).get("team_id")
+        if not (isinstance(user_team, str) and user_team.startswith("T")):
+            return ""
+        cache[key] = user_team
+        self._trim_oldest_dict_entries(cache, self._USER_NAME_CACHE_MAX)
+        return user_team
 
     def _synthetic_reaction_event(
         self, event: dict, action: str, thread_ts: str, team_id: str) -> dict:
@@ -3957,7 +4045,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         file_id = event.get("file_id") or (event.get("file") or {}).get("id") or ""
         if not channel_id or not file_id:
             return
-        team_id = self._event_team_id(event, body)
+        team_id = self._event_team_id(event, body, install_set=getattr(self, "_team_clients", None))
         try:
             client = self._team_clients.get(team_id) if team_id else None
             info_resp = await (client or self._get_client(channel_id)).files_info(file=file_id)
@@ -3975,6 +4063,30 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         file_obj = info_resp.get("file") or {}
         if not str(file_obj.get("mimetype", "")).startswith("video/"):
             return
+        # An external-org file share must not re-enter as a synthetic host-team DM: the
+        # fallback event below stamps the install team, which would slip past the
+        # _prefilter_inbound external-DM gate (#143792). The documented file_shared
+        # payload carries no sender team, so resolve the sharer from the event fields,
+        # the file object, or users.info — before the stamp.
+        if str(channel_id).startswith("D") or event.get("channel_type") == "im":
+            sharer_id = event.get("user_id") or file_obj.get("user", "")
+            # `event.team` may name the receiving workspace rather than the actor.
+            # Check the sharer's actual workspace before using that routing hint.
+            sender_team = event.get("user_team", "")
+            if not (isinstance(sender_team, str) and sender_team.startswith("T")):
+                sender_team = await self._resolve_author_team(
+                    sharer_id, channel_id, team_id)
+            if not sender_team:
+                sender_team = next((
+                    v for v in (event.get("team"), file_obj.get("user_team"))
+                    if isinstance(v, str) and v.startswith("T")), "")
+            if self._is_foreign_author(sender_team, team_id):
+                logger.info(
+                    "[Slack] Ignoring file share DM from external-org user %s (team %s) in %s",
+                    sharer_id, sender_team, channel_id)
+                return
+            # Sharer team unresolved (API-less or omitted fields): the prefilter's
+            # documented empty-author fail-open applies here too (#143792 follow-ups).
         share = self._first_file_share(file_obj, channel_id)
         ts = share.get("ts") or event.get("event_ts") or ""
         thread_ts = share.get("thread_ts") or ""
@@ -4104,20 +4216,21 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         return getattr(runner, "_is_user_authorized", None)
 
     def _early_reject_unauthorized(
-            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None) -> bool:
+            self, user_id: str, channel_id: str, is_dm: bool, *,
+            thread_id: Optional[str] = None, is_bot: bool = False) -> bool:
         """True (logged) when the sender is definitively unauthorized. Injected profile-bound check
         first (works under multiplex, where the handler has no ``__self__``), then runner
         introspection. Unknown (None) is NOT a rejection. ``thread_id``: thread-scoped profile_routes."""
         chat_type = "dm" if is_dm else "group"
         decision = (
-            self._is_sender_authorized(user_id, chat_type, channel_id, thread_id=thread_id)
+            self._is_sender_authorized(user_id, chat_type, channel_id, is_bot=is_bot, thread_id=thread_id)
             if user_id and getattr(self, "_authorization_check", None) is not None
             else None)
         auth_fn = self._runner_auth_fn()
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
                 chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
-                thread_id=thread_id)
+                thread_id=thread_id, is_bot=is_bot)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4203,7 +4316,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             att_text = att.get("text", "")
             att_footer = att.get("footer", "")
             att_fallback = att.get("fallback", "")
-            if att.get("is_msg_unfurl"):
+            if att.get("is_msg_unfurl") or is_forward(att):  # forwards: append_forwards
                 continue
             if att_title and att_url:
                 header = f"📎 [{att_title}]({att_url})"
@@ -4318,7 +4431,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             ) = await self._collect_thread_root_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
         elif is_mentioned:
-            await _fetch(after_ts=self._get_thread_watermark(**watermark_args), force_refresh=True)
+            await _fetch(after_ts=await self._get_thread_watermark(**watermark_args), force_refresh=True)
         else:
             # Restart rehydration (#63530 restart gap / #33215): persistent sessions survive gateway
             # restarts, but thread replies posted while the gateway was down never reached the session. On
@@ -4329,12 +4442,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             rehydration_key = self._thread_rehydration_key(
                 channel_id, event_thread_ts, user_id, team_id)
             if rehydration_key in self._thread_rehydration_checked:
-                self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+                await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
                 return channel_context, thread_root_media_urls, thread_root_media_types
-            watermark_ts = self._get_thread_watermark(**watermark_args)
+            watermark_ts = await self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
-        self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+        await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
         self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
@@ -4440,12 +4553,37 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
         # the same ts must not suppress each other.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
-        dedup_team_id = self._event_team_id(event, payload)
+        dedup_team_id = self._event_team_id(event, payload, install_set=getattr(self, "_team_clients", None))
+        if getattr(self, "_team_clients", None) and not dedup_team_id:
+            logger.info("[Slack] Ignoring event with no authenticated workspace: type=%s channel=%s",
+                        event.get("type"), event.get("channel", ""))
+            return None
         if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
             return None
         channel_id = event.get("channel", "")
         if self._is_ignored_channel(channel_id):
             logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
+            return None
+        # A Slack Connect external-org user can DM the bot even though their home workspace
+        # never installed it. Their DM event carries the sender's org as the inner ``team``,
+        # while the envelope resolves to our install, so mismatch means foreign-org sender
+        # and the DM must be refused regardless of allowlists (#143792).
+        # Author workspace: only a ``T…`` workspace id may be compared — ``user_team`` can
+        # be an enterprise ``E…`` id (Bolt) and neither field is guaranteed present. With
+        # no ``T…`` author id the gate does not fire (documented gap, #143792 follow-ups).
+        author_team = ""
+        for field in ("user_team", "team"):
+            value = event.get(field)
+            if isinstance(value, str) and value.startswith("T"):
+                author_team = value
+                break
+        is_dm_event = (
+            event.get("channel_type") == "im" or str(channel_id).startswith("D")
+            or str(event.get("_hermes_reaction_source_channel", "")).startswith("D"))
+        if is_dm_event and self._is_foreign_author(author_team, dedup_team_id):
+            logger.info(
+                "[Slack] Ignoring DM from external-org user %s (team %s) in %s",
+                event.get("user"), author_team, channel_id)
             return None
         if await self._drop_bot_sender(event):
             return None
@@ -4536,6 +4674,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         if blocks and not is_command_text:
             text = self._append_block_text(
                 text, blocks, self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
+        # Forwards (``is_share``) carry the content the user is pointing at; unfurls are previews.
+        text = append_forwards(text, event.get("attachments"), _extract_text_from_slack_blocks,
+                               own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
         text = self._append_link_unfurls(text, event.get("attachments") or [])
         ts = event.get("ts", "")
         outer_team_id = dedup_team_id
@@ -4545,10 +4686,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         user_id = event.get("user") or assistant_meta.get("user_id", "")
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
-        # File-upload events may omit team_id; recover it for multi-workspace token lookup.
+        # File-upload events may omit team_id; recover it for multi-workspace token lookup —
+        # but only from ids this adapter is actually installed in (#143792).
         team_id = (
-            outer_team_id or assistant_meta.get("team_id", "") or self._channel_team.get(channel_id, "")
-        )
+            outer_team_id
+            or self._team_in_install_set(assistant_meta.get("team_id", ""))
+            or self._team_in_install_set(self._channel_team.get(channel_id, "")))
         agent_context = self._agent_view_context_for_event(
             event, str(team_id or ""), str(user_id or ""))
         if team_id and channel_id:
@@ -4566,7 +4709,17 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
-        if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
+        # _drop_bot_sender already resolved bot-user posts without payload bot markers.
+        # Preserve that verdict at the early authorization seam: otherwise an allowed
+        # peer bot is checked as a human before MessageEvent.source.is_bot is set.
+        # Same probe condition as _drop_bot_sender, so normally a cache hit. The team key can
+        # differ when only the outer payload carries it; this then makes _peer_bot_drop's
+        # users.info lookup earlier instead of adding one.
+        sender_is_bot = self._event_declares_bot_sender(event) or bool(
+            user_id and not event.get("client_msg_id") and await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id))
+        if self._early_reject_unauthorized(
+                user_id, channel_id, is_dm, thread_id=thread_ts, is_bot=sender_is_bot):
             return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
@@ -4660,8 +4813,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             scope_id=str(team_id) if team_id else None,
             message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
-            # authorize them. Same predicate as the drop gate (api_human_users stay human).
-            is_bot=self._event_declares_bot_sender(event))
+            # authorize them. Same predicates as the drop gates (api_human_users stay human): a peer
+            # bot known only via users.info (no bot_id/subtype) is a bot here too, or it would reach
+            # the gateway as a person and escape the bot loop guard. Cached by _peer_bot_drop.
+            is_bot=self._event_declares_bot_sender(event) or await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id))
         source.shared_session = event.get("channel_type") == "mpim"  # a group DM keys "dm" but is shared
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
@@ -4804,7 +4960,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         media_types = list(thread_root_media_types)
         media_text_inlined: list[bool] = [False] * len(media_urls)
         notices: list[str] = []
-        for f in event.get("files", []):
+        for f in files_with_forwarded(event.get("files"), event.get("attachments")):
             if f.get("file_access") == "check_file_info":
                 f = await self._resolve_file_stub(f, channel_id, team_id, notices)
                 if f is None:
@@ -4821,9 +4977,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 cached_path, media_type, injection = cached
                 media_urls.append(cached_path)
                 media_types.append(media_type)
-                media_text_inlined.append(bool(injection))
-                if injection:
-                    text = f"{injection}\n\n{text}" if text else injection
+                text, (inlined,) = inline_document_text(text, injection, [bool(injection)])
+                media_text_inlined.append(inlined)
             except Exception as e:  # pragma: no cover - defensive logging
                 self._note_attachment_failure(
                     notices, self._describe_slack_download_failure(e, file_obj=f),
@@ -5172,7 +5327,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         """
         await ack()
 
-        team_id = self._event_team_id({}, body)
+        team_id = self._event_team_id({}, body, install_set=getattr(self, "_team_clients", None))
         action_id = action.get("action_id", "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
@@ -5181,7 +5336,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         user_id = body.get("user", {}).get("id", "")
 
         if not self._is_interactive_user_authorized(user_id, channel_id=channel_id, user_name=user_name, team_id=team_id):
-            logger.warning("[Slack] Unauthorized model picker click by %s (%s) - ignoring", user_name, user_id)
+            logger.warning("[Slack] Unauthorized model picker click by %s - ignoring", user_id)
             return
 
         # Look up the picker state. The send path may have stored it under a
@@ -5465,7 +5620,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         Returns ``(team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id)`` or
         None (logged) when the user is not authorized."""
         await ack()
-        team_id = self._event_team_id({}, body)
+        team_id = self._event_team_id({}, body, install_set=getattr(self, "_team_clients", None))
         action_id, value, message, msg_ts, channel_id, user_name, user_id = (
             self._interaction_fields(body, action))
         auth_kwargs: dict[str, Any] = {"channel_id": channel_id, "user_name": user_name}
@@ -5473,7 +5628,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             auth_kwargs["team_id"] = team_id
         if not self._is_interactive_user_authorized(user_id, **auth_kwargs):
             logger.warning(
-                "[Slack] Unauthorized %s click by %s (%s) - ignoring", kind, user_name, user_id)
+                "[Slack] Unauthorized %s click by %s - ignoring", kind, user_id)
             return None
         return team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id
 
@@ -5546,7 +5701,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                     **post_kwargs)
             logger.info(
                 "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
-                session_key, choice, user_name)
+                session_key, choice, user_id)
         except Exception as exc:
             logger.error(
                 "Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
@@ -5593,7 +5748,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                                                   extra=self.config.extra)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
-                session_key, choice, user_name)
+                session_key, choice, user_id)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0
@@ -5684,7 +5839,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             # Privacy: choice text may carry user context — INFO gets metadata only.
             logger.info(
                 "Slack button resolved clarify (id=%s, choice_index=%d, user=%s)", clarify_id, idx,
-                user_name)
+                user_id)
             logger.debug("Slack clarify choice text (id=%s): %.100r", clarify_id, resolved_text)
         else:
             # Entry evicted/gateway restarted — show expiry, not a misleading ✓.
@@ -5695,7 +5850,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     # ----- Thread context fetching -----
 
     @staticmethod
-    def _render_message_text(msg: dict, bot_uid: str = "") -> str:
+    def _render_message_text(msg: dict, bot_uid: str = "", own_ids: Collection[str] = ()) -> str:
         """Display text for a message: ``text`` minus bot mentions plus readable block/attachment
         text, URLs and file markers (no JSON dump, unlike ``_serialize_slack_blocks_for_agent``)."""
         msg_text = (msg.get("text") or "").strip()
@@ -5724,7 +5879,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Legacy ``attachments``: alerting/CI bots often post empty ``text`` with
         # the real content in attachment fields or nested blocks.
         attachments = msg.get("attachments") or []
-        attachments_text = _extract_text_from_slack_attachments(attachments).strip()
+        attachments_text = _extract_text_from_slack_attachments(
+            attachments, own_ids or ({bot_uid} - {""}), msg_text).strip()
         if attachments_text and _unseen(attachments_text, msg_text):
             extras.append(attachments_text)
         if blocks:
@@ -5858,7 +6014,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
-            msg_text = self._render_message_text(msg, bot_uid=bot_uid)
+            msg_text = self._render_message_text(
+                msg, bot_uid=bot_uid, own_ids=own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
             if not msg_text:
                 continue
             if bot_uid:
@@ -5958,7 +6115,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = self._render_message_text(parent, bot_uid=bot_uid or "")
+            text = self._render_message_text(
+                parent, bot_uid=bot_uid or "", own_ids=own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
             if strip_bot_mention and bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
@@ -5977,8 +6135,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             cached = self._thread_context_cache.get(
                 self._thread_cache_key(channel_id, thread_ts, team_id))
             root = self._thread_root_message(cached.messages, thread_ts) if cached else None
-            files = root.get("files") if root else None
-            if not isinstance(files, list):
+            files = files_with_forwarded(root.get("files"), root.get("attachments")) if root else []
+            if not files:
                 return media_urls, media_types
             for f in files:
                 if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:
@@ -6170,23 +6328,28 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         meta_key = f"slack_thread_watermark:{channel_id}:{thread_ts}"
         return getattr(session_store, method)(session_key, meta_key, *args)
 
-    def _get_thread_watermark(
+    async def _get_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
-        """Return the last Slack thread ts this session consumed (persisted)."""
+        """Return the last Slack thread ts this session consumed (persisted). Read in a worker: the
+        store's lock is held across its state.db writes, which must not stall the event loop."""
         try:
-            return str(self._thread_watermark_io(
-                "get_session_metadata", channel_id, thread_ts, user_id, team_id, "") or "")
+            return str(await asyncio.to_thread(
+                self._thread_watermark_io, "get_session_metadata", channel_id, thread_ts, user_id,
+                team_id, "") or "")
         except Exception:
             return ""
 
-    def _set_thread_watermark(
+    async def _set_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, watermark_ts: str, team_id: str = ""
     ) -> None:
-        """Persist the latest thread ts seen (session metadata, survives restarts)."""
+        """Persist the latest thread ts seen (session metadata, survives restarts). A full
+        routing-index save (state.db + the fsynced sessions.json mirror): in a worker, never on
+        the event loop."""
         if not watermark_ts:
             return
         try:
-            self._thread_watermark_io(
+            await asyncio.to_thread(
+                self._thread_watermark_io,
                 "set_session_metadata", channel_id, thread_ts, user_id, team_id, watermark_ts)
         except Exception:
             logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)
@@ -6707,7 +6870,7 @@ async def _standalone_send(
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
     tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
-        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
+        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured", nothing_sent=True)
     token = tokens[0]
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
@@ -6758,7 +6921,7 @@ async def _standalone_send(
                     break
         return send_error(f"Slack API error: {last_error}")
     except Exception as e:  # the text may echo the proxy URL: it reaches the model
-        return send_error(f"Slack send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}")
+        return send_error(f"Slack send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}", nothing_sent=request_never_left(e))
 
 
 _SETUP_STEPS = (

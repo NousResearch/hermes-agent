@@ -4,6 +4,8 @@ module-level ``sys.path`` edit, and names the owner to call instead."""
 import importlib.util
 from pathlib import Path
 
+from hermes_agent.compat.paths import PathMoves
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "install_root_lint.py"
 
 
@@ -66,7 +68,51 @@ def test_new_root_climb_and_module_sys_path_edit_fail_and_name_the_owner(tmp_pat
     assert lint.collect(tmp_path) == {
         "root_from_file": ["pkg/sub/mod.py:3", "top.py:2"],
         "module_sys_path": ["pkg/sub/mod.py:4"],
+        "moved_climb": [],
     }
     rises = lint.regressions(lint.tally(lint.collect(tmp_path)), {"root_from_file": {"top.py": 1}})
     assert rises == ["root_from_file: pkg/sub/mod.py (1, baseline 0)", "module_sys_path: pkg/sub/mod.py (1, baseline 0)"]
     assert "hermes_cli._startup_fast.project_root_str()" in lint.FIX_HINT
+
+
+def test_a_moved_file_is_judged_where_it_is_and_a_climb_to_its_old_root_blocks(tmp_path, monkeypatch):
+    """After ``pkg`` moves into ``hermes_agent/``: a climb that reaches the root counts under the old path,
+    a baselined climb that reached the old root blocks, and a new file climbing to the package passes."""
+    lint = _load()
+    moves = PathMoves({"pkg": "hermes_agent.pkg"})
+    monkeypatch.setattr(lint, "original_path", moves.original)
+    monkeypatch.setattr(lint, "current_path", moves.current)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.setuptools.packages.find]\ninclude = ["hermes_agent", "hermes_agent.*"]\n', encoding="utf-8")
+    (tmp_path / "hermes_agent" / "pkg").mkdir(parents=True)
+    climb = "from pathlib import Path\nROOT = Path(__file__).resolve().parents[{}]\n"
+    for name, levels in (("fixed", 2), ("stale", 1), ("new", 1)):
+        (tmp_path / "hermes_agent" / "pkg" / f"{name}.py").write_text(climb.format(levels), encoding="utf-8")
+
+    found = lint.collect(tmp_path)
+    assert found["root_from_file"] == ["hermes_agent/pkg/fixed.py:2"]
+    assert lint.regressions(lint.tally(found), {}) == ["root_from_file: hermes_agent/pkg/fixed.py (1, baseline 0)"]
+    baseline = {"root_from_file": {"pkg/fixed.py": 1, "pkg/stale.py": 1}}
+    assert lint.regressions(lint.tally(found), baseline) == []
+    assert lint.moved_climbs(found, baseline) == ["hermes_agent/pkg/stale.py:2"]
+
+
+def test_a_file_moved_twice_is_judged_against_its_first_path(tmp_path, monkeypatch):
+    """``MOVES`` after a second move keeps both old names (``hermes_constants`` and the intermediate
+    ``hermes_agent.hermes_constants``); the baseline is keyed by the first path, and so is a module that
+    moved again inside a package that had already moved."""
+    lint = _load()
+    moves = PathMoves({"hermes_agent.hermes_constants": "hermes_agent.constants",
+                       "hermes_agent.pkg.old": "hermes_agent.pkg.new",
+                       "hermes_constants": "hermes_agent.constants", "pkg": "hermes_agent.pkg"})
+    monkeypatch.setattr(lint, "original_path", moves.original)
+    monkeypatch.setattr(lint, "current_path", moves.current)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.setuptools.packages.find]\ninclude = ["hermes_agent", "hermes_agent.*"]\n', encoding="utf-8")
+    (tmp_path / "hermes_agent" / "pkg").mkdir(parents=True)
+    climb = "from pathlib import Path\nROOT = Path(__file__).resolve().parents[{}]\n"
+    (tmp_path / "hermes_agent" / "constants.py").write_text(climb.format(1), encoding="utf-8")
+    (tmp_path / "hermes_agent" / "pkg" / "new.py").write_text(climb.format(2), encoding="utf-8")
+
+    baseline = {"root_from_file": {"hermes_constants.py": 1, "pkg/old.py": 1}}
+    assert lint.regressions(lint.tally(lint.collect(tmp_path)), baseline) == []

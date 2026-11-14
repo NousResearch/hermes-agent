@@ -220,6 +220,10 @@ class PlatformRegistry:
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
+        # Loads that ended without registering, kept even when the plugin manager's failure path
+        # disposes the registration (which cancels the load, so it is never "consumed"): the config
+        # loader must not read that platform's absence as its YAML keys being deleted.
+        self._failed_loads: set[_LoadKey] = set()
         # Manifest-declared env names per deferred platform (``requires_env``), recorded without
         # importing the adapter so ``gateway.platform_activation`` can tell a configured platform
         # from an unconfigured one. A hint only: a stale entry costs one extra import, never a miss.
@@ -262,6 +266,7 @@ class PlatformRegistry:
         with self._lock:
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, name), None)
+            self._failed_loads.discard((scope, name))  # a new generation gets its own verdict
             if name not in entries:
                 deferred[name] = loader
 
@@ -353,6 +358,8 @@ class PlatformRegistry:
             with self._lock:
                 was_cancelled = load_key in self._cancelled_inflight
                 entries, deferred = self._scope_maps(load_key[0])
+                if name not in entries:
+                    self._failed_loads.add(load_key)
                 if not was_cancelled and name not in entries and name not in deferred:
                     self._consumed_loaders[load_key] = loader
                 self._inflight.pop(load_key, None)
@@ -401,9 +408,20 @@ class PlatformRegistry:
         actually configures; importing every bundled adapter (~20 SDKs) just to read metadata cost
         every cold start ~0.5 s. *wanted* is :func:`gateway.platform_activation.has_activation_evidence`
         (or a test stub); entries that are already loaded are always returned."""
+        return self.configured_load(wanted)[0]
+
+    def configured_load(self, wanted: Callable[[str], bool]) -> tuple[list[PlatformEntry], bool]:
+        """``configured_entries`` plus whether a *wanted* platform failed to load (now or on an earlier
+        pass: a failed lazy loader stays consumed). The caller decides what that absence means; to the
+        YAML loader it is not evidence that the platform's settings were deleted."""
         self._resolve_all(wanted)
         with self._lock:
-            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
+            scope = self.current_scope_key()
+            entries = list({**self._entries, **self._scoped_entries.get(scope, {})}.values())
+            unresolved = {name for (owner, name) in self._consumed_loaders if owner in (None, scope)}
+            unresolved.update(name for (owner, name) in self._failed_loads if owner in (None, scope))
+            unresolved.difference_update(entry.name for entry in entries)
+        return entries, any(wanted(name) for name in unresolved)
 
     def loaded_entries(self) -> list[PlatformEntry]:
         """Entries already materialized (never imports a deferred adapter)."""
@@ -422,12 +440,20 @@ class PlatformRegistry:
             # A concrete registration supersedes any pending deferred loader.
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, entry.name), None)
+            self._failed_loads.discard((scope, entry.name))
             deferred.pop(entry.name, None)
             prev = entries.get(entry.name)
             if prev is not None:
                 logger.info("Platform '%s' re-registered (was %s, now %s)", entry.name, prev.source, entry.source)
             entries[entry.name] = entry
             logger.debug("Registered platform adapter: %s (%s)", entry.name, entry.source)
+
+    def forget_failed_loads(self, scope: Optional[str]) -> None:
+        """Drop *scope*'s failed-load records: a force reload re-decides which of that profile's plugins
+        exist, and one disabled or removed since its import failed must stop holding back YAML cleanup.
+        Other profiles' records stay: their plugins were not reloaded."""
+        with self._lock:
+            self._failed_loads = {key for key in self._failed_loads if key[0] != scope}
 
     def unregister(self, name: str, *, scope: Optional[str] = None) -> bool:
         """Remove a platform entry. Returns True if it existed."""

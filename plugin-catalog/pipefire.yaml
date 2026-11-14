@@ -1,0 +1,19 @@
+name: pipefire
+title: Pipefire
+repo: https://github.com/mikelovatt/pipefire-cli
+sha: 7397c62d6f429275f1418ee2722c77df6ec1d1d5
+subdir: hermes
+version: "1.1.0"
+description: "Pipefire (pipefire.ai) is cold email software for agencies that sets up and runs outreach for you. This plugin connects Hermes to Pipefire's MCP server (Streamable HTTP at https://pipefire.ai/mcp) and adds two skills. 16 free email deliverability tools with no account or key: MX, SPF, DKIM, DMARC, BIMI and MTA-STS checks, blacklist lookups, email header analysis, cold email and subject line scoring, sending domain ideas and DNS record generators. Pipefire customers can sign in with OAuth to read campaigns, replies, mailboxes and results. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to pipefire.ai. The free tools look up public DNS and blacklist data. Account tools see only the signed-in team's data; the plugin stores no credentials. Every tool is annotated read-only except pause_campaign, resume_campaign, create_campaign (draft only), redraft_reply and request_lead_list; the package marks the server untrusted, so Hermes asks before any of them runs and refuses them in unattended runs. Sending and launching happen only in the Pipefire console. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Pipefire
+tier: community
+category: tools
+docs_url: https://github.com/mikelovatt/pipefire-cli/tree/7397c62d6f429275f1418ee2722c77df6ec1d1d5/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

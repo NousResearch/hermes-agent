@@ -572,6 +572,9 @@ def main() -> int:
         raise ValueError("completion checkout does not match request")
     # -I deliberately ignores inherited PYTHONPATH during PM preparation.
     sys.path.insert(0, str(root))
+    from hermes_agent.compat import install
+
+    install()
     sys.stdout = _ForwardedOutput(sys.stdout, request.get("stdout_isatty", False))
     if "--prepared" in sys.argv[3:]:
         # Claim the selected generation's lease and process its .pth files only

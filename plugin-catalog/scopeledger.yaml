@@ -1,0 +1,24 @@
+name: scopeledger
+title: ScopeLedger
+description: Local-first billing-evidence reconciliation and owner-review reports for service agencies.
+repo: https://github.com/221h0lmes/scopeledger-hermes
+sha: 7bda42a2c0bd28bd5918bbc1ddc9f30d018a75c1
+version: "0.3.7"
+maintainer: 221h0lmes
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+readme: true
+known_issues:
+  - Source records require manual preparation; original PDF/DOCX mappings require human review and certification.
+  - PDF extraction uses local Poppler; scanned documents need an external OCR workflow.
+capabilities:
+  provides_tools:
+    - scopeledger_projects
+    - scopeledger_document
+    - scopeledger_audit
+    - scopeledger_draft
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

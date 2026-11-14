@@ -1,5 +1,6 @@
 """The per-profile derived-value cache behind ``list_profiles`` (``hermes_cli.profiles``)."""
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -40,3 +41,18 @@ def _cached_profile_read(path: Path, kind: str, compute, signature_of=_profile_f
         _PROFILE_FILE_CACHE.clear()
     _PROFILE_FILE_CACHE[key] = (signature, value)
     return value
+
+
+def yaml_scalar_to_json(value):
+    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
+def json_safe_dumps(value) -> str:
+    """``value`` as strict JSON (a cacheable, per-caller-copyable derived value), or ``"{}"`` when it
+    cannot be one (NaN/inf, unhashable YAML keys): one hand-edited profile.yaml must not fail a list."""
+    try:
+        return json.dumps(value, default=yaml_scalar_to_json, allow_nan=False)
+    except (TypeError, ValueError):
+        return "{}"

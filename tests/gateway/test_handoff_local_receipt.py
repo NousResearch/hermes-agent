@@ -13,6 +13,8 @@ import pytest
 
 from tests.gateway.test_authority_cold_route_recovery import _Runner, _source
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):

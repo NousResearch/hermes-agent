@@ -190,10 +190,13 @@ gateway:
     upload_failed: "✗ Échec de l'envoi du rapport de débogage : {error}"
     header: "**Rapport de débogage envoyé :**"
     auto_delete: "⏱ Les pastes s'effaceront automatiquement dans 6 heures."
-    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
+    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share --nous` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
-    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint_local: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse, ou `/debug local` pour l'afficher ici."
+    nous_refused: "Rien n'a été téléversé. Les envois privés vers Nous ne sont pas disponibles ici : lancez `hermes debug share --nous` dans un terminal, ou utilisez Send diagnostics dans l'application de bureau. `/debug upload` téléverse plutôt la synthèse vers un paste public."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -368,6 +371,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — session démarrée sans titre."
     title_empty_untitled: "\n⚠️ Le titre est vide après nettoyage — session démarrée sans titre."
     tip: "\n✦ Astuce : {tip}"
+    paused_left: "\n⚠️ {count} message(s) envoyé(s) pendant la pause de la conversation précédente sont toujours enregistrés dans la conversation précédente, sans réponse. Pour les exécuter : /resume {session_id}, puis {discard}."
   restart:
     in_progress: "⏳ Redémarrage du gateway déjà en cours..."
     restarting: "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `hermes gateway restart`."
@@ -689,6 +693,7 @@ gateway:
     disabled: "⚠️ Mode YOLO **DÉSACTIVÉ** pour cette session — les commandes dangereuses nécessiteront une approbation."
     enabled: "⚡ Mode YOLO **ACTIVÉ** pour cette session — toutes les commandes sont auto-approuvées. À utiliser avec prudence."
   shared:
+    fallback_model_suffix: " — secours pour `{primary}`"
     session_db_unavailable: "Base de données de sessions indisponible."
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found: "Session introuvable dans la base de données."
@@ -749,11 +754,6 @@ gateway:
       (Échec du formatage de la réponse, texte brut :)
 
       {content}
-    turn_error_no_details: "aucun détail disponible"
-    turn_error_detailed: |-
-      Désolé, j'ai rencontré une erreur ({error_type}).
-      {error_detail}
-      Réessayez ou utilisez /reset pour démarrer une nouvelle session.
     turn_error: "Désolé, j'ai rencontré une erreur."
     context_injection_refused: "Injection de contexte refusée."
     no_home_channel: |-
@@ -867,6 +867,8 @@ gateway:
     reject_loop: "L'agent est en cours d'exécution — utilisez /loop status / pause / stop pendant l'exécution, ou /stop avant de définir une nouvelle boucle."
     draining_maintenance: "⏳ Cet agent se vide pour une opération de maintenance et n'accepte pas de nouveaux tours pour le moment. Il sera de retour dans un instant — merci de renvoyer votre message d'ici peu."
     another_turn_running: "⏳ Un autre tour est encore en cours sur cette session. Pour protéger la transcription, ce message n'a pas été traité. Attendez la fin du tour actif, puis renvoyez-le."
+    setup_timeout: "⏳ La préparation du tour s'est bloquée sans activité de l'agent et a été annulée. Merci de renvoyer ton message."
+    setup_waiting: "⏳ Ce tour démarre encore ({minutes} min, aucune activité de l'agent pour l'instant). Ton message est en file d'attente. Utilise /stop pour l'annuler, ainsi que tout ce qui est en file d'attente."
     behavior_queue_short: "mise en file pour le prochain tour"
     behavior_queue_long: "Les messages seront mis en file pour le prochain tour pendant que Hermes est occupé."
     behavior_steer_short: "orientation de l'exécution en cours (après le prochain appel d'outil)"
@@ -946,6 +948,7 @@ gateway:
     ack_generate: "Génération d'AGENTS.md à partir d'une analyse du projet…"
   moa:
     prepare_failed: "Échec de la préparation du tour MoA."
+    managed_session: "/moa n'est pas disponible dans cette session : les sessions en mode sans échec, sans configuration, kanban et à worker géré exécutent chaque tour sur leur propre modèle. Envoyez le prompt sans /moa."
   quick_command:
     no_output: "La commande n'a renvoyé aucune sortie."
     timed_out: "Délai de la commande rapide dépassé (30 s)."
@@ -1170,6 +1173,7 @@ platform:
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
   shared:
+    response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
       ...(tronqué)
@@ -1371,8 +1375,6 @@ platform:
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
       auto_args_description: "Arguments : {args_hint}"
       auto_description_fallback: "Exécuter /{name}"
-    limits:
-      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     forum:
       default_title: "Nouvelle publication"
     voice:
@@ -1456,6 +1458,11 @@ platform:
       affirm: "✓ Oui"
       negate: "✗ Non"
       other: "✏️ Autre (saisir)"
+      multi_hint: "Sélectionnez une ou plusieurs options, puis touchez Envoyer."
+      send: "✅ Envoyer"
+      selected_count: "Sélectionnées : {count}"
+      select_one: "Sélectionnez d'abord au moins une option."
+      toggle_failed: "Impossible de mettre à jour la sélection — touchez à nouveau."
       expired_toast: "⚠️ Ce prompt a expiré — veuillez utiliser /retry."
       expired_body: "⚠️ Cette question a expiré ou la session a été réinitialisée — veuillez utiliser /retry."
       type_answer: "✏️ Saisissez votre réponse dans le chat."
@@ -1958,7 +1965,7 @@ slash:
   version:
     description: "Afficher la version de Hermes Agent"
   debug:
-    description: "Envoyer un rapport de débogage (infos système + journaux) et obtenir des liens partageables"
+    description: "Rapport de débogage (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) : affiche d'abord l'avis de confidentialité ; /debug upload partage les liens"
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
@@ -4145,7 +4152,7 @@ tips:
   t246: "La variable d'environnement HERMES_HOME_MODE (octal, ex. 0701) définit des permissions de répertoire personnalisées pour la traversée par le serveur web."
   t247: "Mode conteneur : placez .container-mode dans HERMES_HOME et la CLI hôte s'exécute automatiquement dans le conteneur."
   t248: "Ctrl+C a 5 niveaux de priorité : annuler l'enregistrement → annuler les invites → annuler le sélecteur → interrompre l'agent → quitter."
-  t249: "Chaque interruption pendant une exécution de l'agent est consignée dans ~/.hermes/interrupt_debug.log avec horodatage."
+  t249: "Les interruptions pendant une exécution de l'agent sont consignées dans agent.log (à consulter avec `hermes logs`) ; définissez HERMES_DEBUG_INTERRUPT=1 pour une trace détaillée."
   t250: "BROWSER_CDP_URL connecte les outils navigateur à n'importe quel navigateur de la famille Chromium en cours d'exécution — accepte WebSocket, HTTP ou host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true active l'anti-détection avancée avec un Chromium personnalisé (Scale Plan)."
   t252: "La CLI passe automatiquement en mode compact dans les terminaux de moins de 80 colonnes."
@@ -4242,7 +4249,7 @@ tips:
   t343: "/voice tts bascule en mode TTS seul — l'agent répond à voix haute mais vous continuez à taper vos prompts."
   t344: "/reload-skills rescanne ~/.hermes/skills/ pour que les skills déposées apparaissent sans redémarrer la session."
   t345: "/indicator kaomoji|emoji|unicode|ascii choisit le style de l'indicateur d'activité de la TUI affiché pendant les exécutions de l'agent."
-  t346: "/debug téléverse un bundle de support (infos système + journaux) et renvoie des liens partageables — fonctionne aussi dans le chat."
+  t346: "/debug upload téléverse un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) et renvoie un lien partageable — fonctionne aussi dans le chat."
   t347: "hermes -z \"<prompt>\" est le one-shot le plus pur : la réponse finale sur stdout, rien d'autre — idéal pour les pipes dans des scripts."
   t348: "hermes chat --pass-session-id injecte l'ID de session dans le prompt système pour que l'agent puisse y faire référence lui-même."
   t349: "hermes chat --image path/to/pic.png joint une image locale à une requête -q unique, sans étape de téléversement séparée."

@@ -159,11 +159,11 @@ def _discover_launchd() -> list[dict]:
         _locate_launchd_gateway_service, get_launchd_plist_path, launchd_gateway_labels_for_install,
         legacy_launchd_labels_for_install,
     )
-    from hermes_cli.update_fleet_scope import launchd_label_foreign_home
+    from hermes_cli.update_fleet_scope import launchd_label_skip_notice
     derived = launchd_gateway_labels_for_install()
     jobs = []
     for label in derived + legacy_launchd_labels_for_install(exclude=set(derived)):
-        if launchd_label_foreign_home(label) is not None:
+        if launchd_label_skip_notice(label) is not None:
             continue
         domain, pid = _locate_launchd_gateway_service(label)
         if domain is None or not pid or pid <= 0:
@@ -537,6 +537,17 @@ def _replay_env(home: str) -> dict:
     return served_profile_child_env(target_home=home, inherit_credentials=True)
 
 
+def _bare_replay_env(home: str) -> dict:
+    """The replayed gateway's env: no supervisor marker of the updater's (an ``/update`` sent to a
+    launchd/systemd gateway carries them), or the replay believes the service launched it and skips
+    the supervised-gateway guard (#73480). Its profile pin rides on."""
+    from hermes_cli.gateway_runtime_start import strip_supervisor_markers
+    env = strip_supervisor_markers(_replay_env(home))
+    for leaked in ("HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
+        env.pop(leaked, None)
+    return env
+
+
 def _relaunch_bare(entry: dict) -> int:
     """Replay a bare gateway from its recorded argv under its recorded home; the new PID once it
     is serving. A gateway already serving that home (an earlier attempt's) is adopted instead."""
@@ -544,9 +555,7 @@ def _relaunch_bare(entry: dict) -> int:
         return existing
     logs = Path(entry["home"]) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    env = _replay_env(entry["home"])
-    for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
-        env.pop(leaked, None)
+    env = _bare_replay_env(entry["home"])
     with open(logs / "gateway-update-resume.log", "ab") as log:
         proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
                                 # detached-spawn: ok — resumes the paused gateway after an update; it must outlive the updater

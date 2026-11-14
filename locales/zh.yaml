@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ 无法上传调试报告：{error}"
     header: "**调试报告已上传：**"
     auto_delete: "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
+    full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share --nous`。"
     share_hint: "请将这些链接分享给 Hermes 团队以获得支持。"
     report_label: "报告"
-    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug` 可上传摘要报告。"
+    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug upload` 可上传摘要报告。"
+    upload_hint: "未上传任何内容。发送 `/debug upload` 可上传摘要报告。"
+    upload_hint_local: "未上传任何内容。发送 `/debug upload` 可上传摘要报告，或发送 `/debug local` 在此查看。"
+    nous_refused: "未上传任何内容。此处无法使用 Nous 私有上传：请在终端运行 `hermes debug share --nous`，或使用桌面应用中的 Send diagnostics。`/debug upload` 则会将摘要上传到公开的粘贴服务。"
   deny:
     stale: "❌ 命令已拒绝（批准已过期）。"
     no_pending: "没有待拒绝的命令。"
@@ -332,6 +335,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — 会话以未命名方式启动。"
     title_empty_untitled: "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
     tip: "\n✦ 提示：{tip}"
+    paused_left: "\n⚠️ 上一个对话暂停期间你发送的 {count} 条消息仍保存在上一个对话中，尚未回复。要运行它们：/resume {session_id}，然后 {discard}。"
   restart:
     in_progress: "⏳ 网关重启已在进行中……"
     restarting: "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
@@ -600,6 +604,7 @@ gateway:
     disabled: "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
     enabled: "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
   shared:
+    fallback_model_suffix: " — 备用，原为 `{primary}`"
     session_db_unavailable: "会话数据库不可用。"
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found: "数据库中未找到该会话。"
@@ -646,8 +651,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ 无法发送{kind}附件（{file_name}）。"
     delivery_failed_retry: "⚠️ 多次尝试后消息仍发送失败。请重试——你的请求已处理，但响应无法送达。"
     plain_fallback_prefix: "（响应格式化失败，以下为纯文本：）\n\n{content}"
-    turn_error_no_details: "无可用详情"
-    turn_error_detailed: "抱歉，我遇到了一个错误（{error_type}）。\n{error_detail}\n请重试，或用 /reset 开始新会话。"
     turn_error: "抱歉，我遇到了一个错误。"
     context_injection_refused: "上下文注入已被拒绝。"
     no_home_channel: "📬 {platform} 尚未设置主频道。主频道是 Hermes 投递定时任务结果和跨平台消息的地方。\n\n输入 {sethome_cmd} 将此聊天设为主频道，或忽略以跳过。"
@@ -746,6 +749,8 @@ gateway:
     reject_loop: "代理正在运行——运行中可使用 /loop status / pause / stop，或先 /stop 再设置新循环。"
     draining_maintenance: "⏳ 此代理正在为维护操作排空任务，目前不接受新的回合。稍后即会恢复——请稍等片刻后重新发送。"
     another_turn_running: "⏳ 此会话上还有另一回合仍在运行。为保护对话记录，这条消息未被处理。请等待当前回合结束后重新发送。"
+    setup_timeout: "⏳ 本轮准备工作卡住且代理无任何活动，已取消。请重新发送你的消息。"
+    setup_waiting: "⏳ 本轮仍在启动中（{minutes} 分钟，代理尚无活动）。你的消息已排队。使用 /stop 可取消本轮及队列中的全部消息。"
     behavior_queue_short: "排队至下一回合"
     behavior_queue_long: "Hermes 忙碌时，消息将排队至下一回合处理。"
     behavior_steer_short: "引导至当前运行（下一次工具调用后）"
@@ -804,6 +809,7 @@ gateway:
     ack_generate: "正在根据项目扫描生成 AGENTS.md…"
   moa:
     prepare_failed: "准备 MoA 回合失败。"
+    managed_session: "此会话无法使用 /moa：安全模式、无配置、kanban 和托管 worker 会话的每一轮都在自身模型上运行。请直接发送提示，不要加 /moa。"
   quick_command:
     no_output: "命令没有返回任何输出。"
     timed_out: "快捷命令超时（30 秒）。"
@@ -979,6 +985,7 @@ platform:
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
   shared:
+    response_as_file: "📎 回复较长：完整内容已作为文件附上。"
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
@@ -1169,8 +1176,6 @@ platform:
         unknown: "未知技能：`{name}`。开始输入即可获得自动补全建议。"
       auto_args_description: "参数：{args_hint}"
       auto_description_fallback: "运行 /{name}"
-    limits:
-      response_truncated: "⚠️ **回复已截断** — 本次回复超出了投递上限（{max_messages} 条消息）。有 {dropped_chars} 个字符未能送达；完整回复见会话日志。"
     forum:
       default_title: "新帖子"
     voice:
@@ -1249,6 +1254,11 @@ platform:
       affirm: "✓ 是"
       negate: "✗ 否"
       other: "✏️ 其他（输入回答）"
+      multi_hint: "选择一个或多个选项，然后点击发送。"
+      send: "✅ 发送"
+      selected_count: "已选择：{count}"
+      select_one: "请先至少选择一个选项。"
+      toggle_failed: "无法更新选择，请再点一次。"
       expired_toast: "⚠️ 此提示已过期 — 请使用 /retry。"
       expired_body: "⚠️ 此问题已过期或会话已重置 — 请使用 /retry。"
       type_answer: "✏️ 请在聊天中输入你的回答。"
@@ -1706,7 +1716,7 @@ slash:
   version:
     description: "显示 Hermes Agent 版本"
   debug:
-    description: "上传调试报告（系统信息 + 日志）并获取可分享链接"
+    description: "调试报告（版本、配置键名、错误计数；不含日志文本）：先显示隐私声明；/debug upload 分享链接"
   quit:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
@@ -3820,7 +3830,7 @@ tips:
   t246: "HERMES_HOME_MODE 环境变量（八进制，如 0701）为 Web 服务器遍历设置自定义目录权限。"
   t247: "容器模式：在 HERMES_HOME 中放置 .container-mode，主机 CLI 就会自动切换到容器内执行。"
   t248: "Ctrl+C 有 5 个优先级层级：取消录音 → 取消提示 → 取消选择器 → 中断代理 → 退出。"
-  t249: "代理运行期间的每次中断都会带时间戳记录到 ~/.hermes/interrupt_debug.log。"
+  t249: "代理运行期间的中断会记录到 agent.log（使用 `hermes logs` 查看）；设置 HERMES_DEBUG_INTERRUPT=1 可获取详细跟踪。"
   t250: "BROWSER_CDP_URL 可把浏览器工具连接到任何运行中的 Chromium 系浏览器——支持 WebSocket、HTTP 或 host:port。"
   t251: "BROWSERBASE_ADVANCED_STEALTH=true 启用基于自定义 Chromium 的高级反检测（Scale 套餐）。"
   t252: "终端宽度不足 80 列时，CLI 会自动切换到紧凑模式。"
@@ -3917,7 +3927,7 @@ tips:
   t343: "/voice tts 切换仅 TTS 模式——代理的回复会朗读出来，但你仍然用打字输入提示词。"
   t344: "/reload-skills 重新扫描 ~/.hermes/skills/，让直接放入的技能无需重启会话即可出现。"
   t345: "/indicator kaomoji|emoji|unicode|ascii 选择代理运行期间 TUI 忙碌指示器的样式。"
-  t346: "/debug 上传支持包（系统信息 + 日志）并返回可分享的链接——在聊天中也能用。"
+  t346: "/debug upload 上传摘要（版本、配置键名、错误计数；不含日志文本）并返回可分享的链接——在聊天中也能用。"
   t347: "hermes -z \"<prompt>\" 是最纯粹的一次性调用：只在 stdout 输出最终答案，别无其他——非常适合在脚本中做管道处理。"
   t348: "hermes chat --pass-session-id 把会话 ID 注入系统提示词，让代理可以引用自己的会话。"
   t349: "hermes chat --image path/to/pic.png 为单次 -q 查询附加本地图片，无需单独上传步骤。"

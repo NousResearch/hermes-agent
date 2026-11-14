@@ -44,15 +44,19 @@ _MGMT_RELOAD_TIMEOUT = 15
 # HTTPS_PROXY semantics use a single CONNECT tunnel, so only the tunnel listener is exposed.
 _DEFAULT_TUNNEL_PORT = 9090
 
+# OpenAI's data-residency hosts (us./eu.api.openai.com) are the same API and key as the canonical host
+# (``hermes_cli.providers.is_official_openai_host``); a ``model.base_url`` pointed at one must not 403.
+_OPENAI_HOSTS: tuple[str, ...] = ("api.openai.com", "*.api.openai.com")
+
 # Hosts allowed by default for AI inference traffic.  Anything else is 403'd.
 _DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = (
-    "openrouter.ai", "*.openrouter.ai", "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
+    "openrouter.ai", "*.openrouter.ai", *_OPENAI_HOSTS, "api.anthropic.com", "generativelanguage.googleapis.com",
     "api.x.ai", "api.mistral.ai", "api.groq.com", "api.together.xyz", "api.deepseek.com", "inference.nousresearch.com",
 )
 
 # Provider env-var name -> upstream hosts on which the Authorization Bearer token is swapped.
 _BEARER_PROVIDERS: dict[str, tuple[str, ...]] = {
-    "OPENROUTER_API_KEY": ("openrouter.ai", "*.openrouter.ai"), "OPENAI_API_KEY": ("api.openai.com",),
+    "OPENROUTER_API_KEY": ("openrouter.ai", "*.openrouter.ai"), "OPENAI_API_KEY": _OPENAI_HOSTS,
     "GROQ_API_KEY": ("api.groq.com",), "TOGETHER_API_KEY": ("api.together.xyz",),
     "DEEPSEEK_API_KEY": ("api.deepseek.com",), "MISTRAL_API_KEY": ("api.mistral.ai",),
     "XAI_API_KEY": ("api.x.ai",), "NOUS_API_KEY": ("inference.nousresearch.com",),

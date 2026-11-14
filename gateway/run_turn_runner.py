@@ -26,6 +26,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.platforms.helpers import message_editing_capabilities
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
@@ -307,10 +308,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
-                    supports_incremental_stream = (
-                        getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-                    )
+                    supports_incremental_stream = any(message_editing_capabilities(
+                        adapter, ctx.source.chat_id, transport=getattr(scfg, "transport", "auto")))
                     consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter,

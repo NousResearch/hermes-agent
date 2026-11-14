@@ -836,6 +836,50 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  remainder in stray block <div>s / trailing <br>s — none of which our own
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
+/** Unwrap a lone block wrapper back to inline content, keeping the selection.
+ *
+ *  Moving the text nodes out resets Chromium's selection to the editor's
+ *  start. Keep DOM endpoints (and direction), not serialized text offsets:
+ *  chips are atomic and the wrapper's trailing newline is being removed.
+ *  The caret can also sit at the editor's own element position — that is
+ *  what placeCaretEnd and paste's setStartAfter leave behind — and such a
+ *  selection must be restored too, or it collapses to offset 0 and the
+ *  next paste lands at the very start of the draft (#139578). */
+function unwrapLoneComposerBlock(editor: HTMLElement) {
+  const wrapper = editor.childNodes.length === 1 ? (editor.firstChild as HTMLElement) : null
+
+  if (
+    wrapper?.nodeType !== Node.ELEMENT_NODE ||
+    (wrapper.tagName !== 'DIV' && wrapper.tagName !== 'P') ||
+    wrapper.dataset.slot === RICH_INPUT_SLOT
+  ) {
+    return
+  }
+
+  const selection = editor.ownerDocument.getSelection()
+  const anchorNode = selection?.anchorNode
+  const focusNode = selection?.focusNode
+  const anchorOffset = selection?.anchorOffset ?? 0
+  const focusOffset = selection?.focusOffset ?? 0
+  // Ownership is read before the move: afterwards the wrapper is empty.
+  const owned = (node: Node | null | undefined): node is Node => !!node && (node === editor || wrapper.contains(node))
+  const ownsSelection = owned(anchorNode) && owned(focusNode)
+
+  editor.replaceChildren(...Array.from(wrapper.childNodes))
+
+  if (!selection || !ownsSelection || !anchorNode || !focusNode || !editor.isConnected) {
+    return
+  }
+
+  // An element-positioned endpoint past the wrapper (the editor held exactly
+  // one child, so any offset > 0 meant "after it") maps to the editor's new
+  // end; an offset of 0 keeps meaning "before the text".
+  const endpoint = (node: Node, offset: number): [Node, number] =>
+    node === wrapper ? [editor, offset] : node === editor && offset > 0 ? [editor, editor.childNodes.length] : [node, offset]
+
+  selection.setBaseAndExtent(...endpoint(anchorNode, anchorOffset), ...endpoint(focusNode, focusOffset))
+}
+
 export function normalizeComposerEditorDom(editor: HTMLElement) {
   const selectedContainer = composerCollapsedSelectionContainer(editor)
 
@@ -859,33 +903,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     removeComposerJunk(editor, tailBlock)
   }
 
-  // Unwrap a lone block wrapper back to inline content.
-  if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
-    const wrapper = editor.firstChild as HTMLElement
-
-    if ((wrapper.tagName === 'DIV' || wrapper.tagName === 'P') && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
-      // Moving the text nodes out resets Chromium's selection to the editor's
-      // start. Keep DOM endpoints (and direction), not serialized text offsets:
-      // chips are atomic and the wrapper's trailing newline is being removed.
-      const selection = editor.ownerDocument.getSelection()
-      const anchorNode = selection?.anchorNode
-      const focusNode = selection?.focusNode
-      const anchorOffset = selection?.anchorOffset ?? 0
-      const focusOffset = selection?.focusOffset ?? 0
-      const ownsSelection = anchorNode && focusNode && wrapper.contains(anchorNode) && wrapper.contains(focusNode)
-
-      editor.replaceChildren(...Array.from(wrapper.childNodes))
-
-      if (ownsSelection && editor.isConnected) {
-        selection?.setBaseAndExtent(
-          anchorNode === wrapper ? editor : anchorNode,
-          anchorOffset,
-          focusNode === wrapper ? editor : focusNode,
-          focusOffset
-        )
-      }
-    }
-  }
+  unwrapLoneComposerBlock(editor)
 
   // A trailing <br> right after a chip / only whitespace is a phantom line.
   const last = editor.lastChild

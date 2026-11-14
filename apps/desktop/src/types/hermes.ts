@@ -492,6 +492,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     busy_input_mode?: string
+    timestamp_format?: string
     timestamps?: boolean
     tool_progress?: boolean | string
   }

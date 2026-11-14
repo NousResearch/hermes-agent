@@ -5,6 +5,7 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { composerServiceTier } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
+import { setTimestampFormatFromConfig } from '@/lib/time'
 import { $busyInputConfig, busyInputOwnerKey, normalizeBusyInputMode } from '@/store/busy-input-mode'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -157,6 +158,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
+        setTimestampFormatFromConfig(config.display?.timestamp_format)
         setShowReasoningFromConfig(localShowReasoning(config.display))
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)

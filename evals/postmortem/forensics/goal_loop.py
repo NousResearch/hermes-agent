@@ -3,7 +3,7 @@ messages and the persisted goal state.
 
     python -m evals.postmortem.forensics.goal_loop --db state_copy.db
 
-Reproduces: how many ``[Continuing toward your standing goal]`` nudges fired and how soon after the
+Reproduces: how many ``/goal`` continuation nudges fired and how soon after the
 previous assistant turn; how many of those turns had just said they were waiting; the goal's final
 persisted wait barrier (what it was parked on, since when); and the count of async-batch and
 background-process notifications that re-entered the root.
@@ -31,7 +31,7 @@ def main(argv=None) -> int:
         if m["role"] == "assistant":
             last_assistant = m
         elif m["role"] == "user":
-            if c.startswith("[Continuing toward your standing goal]"):
+            if c.startswith(("[Continuing toward your standing goal]", "[Automated goal continuation")):
                 gap = float(m["timestamp"]) - float(last_assistant["timestamp"]) if last_assistant else None
                 nudges.append({"ts": m["timestamp"], "gap_s": round(gap, 1) if gap is not None else None,
                                "prev_turn_said_waiting": bool(last_assistant and _WAITING.search(last_assistant.get("content") or ""))})

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from hermes_cli.goals import CONTINUATION_MARKER
 
 
 @pytest_asyncio.fixture
@@ -76,7 +77,7 @@ async def test_the_goal_judge_runs_on_the_owner(owner, monkeypatch):
     assert seen == [('write the report', 'drafted the outline')]
     assert decision['should_continue'] is True
     assert decision['message'] == '↻ Continuing toward goal (1/20): only the outline exists'
-    assert decision['continuation_prompt'].startswith('[Continuing toward your standing goal]')
+    assert decision['continuation_prompt'].startswith(CONTINUATION_MARKER)
     assert json.loads(owner.db.get_meta('goal:' + owner.target))['turns_used'] == 1
 
     from gateway.session_viewer_automation import viewer_driven

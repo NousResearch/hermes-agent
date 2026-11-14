@@ -161,3 +161,21 @@ def test_primary_failures_a_relogin_cannot_fix_are_not_called_lapsed_logins(make
     from agent.primary_auth_fallback import primary_auth_failure_from_exc
 
     assert primary_auth_failure_from_exc(make_exc(), "anthropic", "custom") is None
+
+
+def test_the_exported_primary_failure_never_carries_a_secret_from_the_primarys_error():
+    """The turn result's ``primary_auth_failure`` descriptor leaves the agent with the turn, so the
+    primary's error text in it is redacted exactly as the lead's copy is."""
+    from agent.primary_auth_fallback import PrimaryAuthFailure, lead_failed_turn_with_primary_auth
+
+    secret = "sk-ant-api03-" + "Z" * 40
+    agent = type("A", (), {"provider": "custom"})()
+    agent._primary_auth_failure = PrimaryAuthFailure(
+        provider="anthropic", error=f"401 from Anthropic for key {secret}", relogin="hermes auth add anthropic",
+        backup="custom")
+    result = {"failed": True, "final_response": "backup refused", "failure_reason": "auth"}
+    lead_failed_turn_with_primary_auth(agent, result)
+
+    exported = result["primary_auth_failure"]
+    assert secret not in exported["error"] and secret not in result["final_response"]
+    assert exported["provider"] == "anthropic" and exported["relogin"] == "hermes auth add anthropic"

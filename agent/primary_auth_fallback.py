@@ -134,6 +134,8 @@ def lead_failed_turn_with_primary_auth(agent: Any, result: Any) -> None:
                              error=result.get("error"))
     body = str(result.get("final_response") or "").strip()
     result["final_response"] = f"{lead}\n\nBackup provider said: {body}" if body else lead
-    result["primary_auth_failure"] = {"provider": failure.provider, "error": failure.error,
-                                      "relogin": failure.relogin}
+    from agent.redact import redact_sensitive_text
+
+    result["primary_auth_failure"] = {"provider": failure.provider, "relogin": failure.relogin,
+                                      "error": redact_sensitive_text(failure.error, force=True)}
     result["_primary_auth_led"] = True

@@ -122,3 +122,45 @@ def test_another_member_or_an_unrelated_group_message_is_not_taken_as_the_code(l
         worker.join(5)
     assert out["code"] == ""  # timed out: neither message answered it
     adapter._bot.delete_message.assert_not_awaited()
+
+
+def test_a_late_reply_to_an_ended_card_is_still_deleted_and_never_a_turn(loop, monkeypatch):
+    """After the request times out the card is forgotten as a request, not as a code card: a late reply
+    carrying the code must not fall through to the agent as chat text."""
+    from gateway.session_vault_prompt import vault_prompt_scope
+    from tools.thread_context import propagate_context_to_thread
+    monkeypatch.setattr("gateway.session_vault_prompt.CODE_TIMEOUT_S", 1)
+    adapter = _adapter()
+    out = {}
+    with vault_prompt_scope(_turn(loop, adapter), SimpleNamespace()):
+        worker = threading.Thread(target=propagate_context_to_thread(
+            lambda: out.update(code=unlock.get_code_prompt_callback()("login.example.com", ""))), daemon=True)
+        worker.start()
+        worker.join(5)
+    assert out["code"] == ""
+    wait_until(lambda: not adapter._vault_code_replies(), what="card retired by its timer")
+    asyncio.run_coroutine_threadsafe(
+        adapter._handle_text_message(_update(CODE, chat_type="group", reply_to=700), SimpleNamespace()), loop).result(5)
+    adapter._message_handler.assert_not_awaited()
+    assert not adapter._pending_text_batches
+    adapter._bot.delete_message.assert_awaited_once()
+
+
+def test_each_card_has_its_own_timer_and_an_old_timer_never_ends_a_newer_card(loop):
+    adapter = _adapter()
+    cards = iter([SimpleNamespace(message_id=700, chat_id=CHAT, message_thread_id=None),
+                  SimpleNamespace(message_id=701, chat_id=CHAT, message_thread_id=None)])
+    adapter._bot.send_message = AsyncMock(side_effect=lambda **_kw: next(cards))
+    got = []
+
+    async def post_two():
+        await adapter.send_vault_code_prompt(str(CHAT), "a.example", "", user_id=str(AUTHOR), submit=lambda c: got.append(c) is None,
+                                             timeout_s=0.2)
+        await adapter.send_vault_code_prompt(str(CHAT), "b.example", "", user_id=str(AUTHOR), submit=lambda c: got.append(c) is None,
+                                             timeout_s=30)
+    asyncio.run_coroutine_threadsafe(post_two(), loop).result(5)
+    wait_until(lambda: (str(CHAT), "700") not in adapter._vault_code_replies(), what="first card's timer")
+    assert (str(CHAT), "701") in adapter._vault_code_replies()  # the newer card survived the older timer
+    assert asyncio.run_coroutine_threadsafe(
+        adapter.consume_vault_code_reply(_update(CODE, reply_to=701).message), loop).result(5) is True
+    assert got == [CODE]

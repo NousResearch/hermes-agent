@@ -1061,7 +1061,7 @@ def _kill_process_group_posix(proc) -> None:
         _kill_known_pids(proc, descendants)
     else:
         try:
-            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            _signal_group_frozen(pgid, signal.SIGTERM)
             if not _wait_for_group_exit(proc, pgid, 1.0):
                 if not _leader_is_ours(pgid, expected_start):
                     # Leader exited during the grace window; do not escalate to
@@ -1081,6 +1081,25 @@ def _kill_process_group_posix(proc) -> None:
             # PIDs instead so a live child (a group we may not signal) cannot outlive us.
             _kill_known_pids(proc, descendants)
     _sweep_escaped_descendants(descendants, pgid)
+
+
+def _signal_group_frozen(pgid, sig) -> None:
+    """``killpg(pgid, sig)``, with the group stopped around it on macOS. macOS signals a
+    group's members one by one, so a killed foreground child can wake its waiting shell
+    before the shell is signalled, and the shell runs the next command of ``a; b`` during
+    cancellation. Stopped, every member holds ``sig`` pending and takes it on SIGCONT before
+    running another instruction. Linux signals the group under one lock and skips this.
+    The stop is best-effort: a failure there must never block the signal itself."""
+    darwin = sys.platform == "darwin"
+    if darwin:
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGSTOP)  # windows-footgun: ok — darwin only
+    try:
+        os.killpg(pgid, sig)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+    finally:
+        if darwin:
+            with contextlib.suppress(OSError):
+                os.killpg(pgid, signal.SIGCONT)  # windows-footgun: ok — darwin only
 
 
 def _kill_known_pids(proc, descendants) -> None:

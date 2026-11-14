@@ -1312,6 +1312,28 @@ from loading. A plugin that must also run on older builds either feature-detects
 through a namespace import (`import * as sdk from '@hermes/plugin-sdk'`, then
 `sdk.WorkspacePageHeaderControl ?? …`) or keeps the raw `Contribute` form above.
 
+### Reading an area (`useContributions`)
+
+A plugin that replaces a core surface (its own sidebar, a launcher) needs the
+rows other plugins contribute, not just its own. `useContributions(area)` is the
+hook core slots use: it returns the area's resolved contributions — sorted by
+`order`, then registration, ids already namespaced (`kanban:nav`) — and
+re-renders only when that area changes.
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+
+function NavRows() {
+  const rows = sdk.useContributions(sdk.SIDEBAR_NAV_AREA)
+  return rows.map(c => jsx(MyRow, { key: c.id, ...c.data })) // { codicon, label, path, tier? }
+}
+```
+
+The array is the registry's shared, `readonly` snapshot (a stable reference
+until the area changes, so it is safe as a memo dependency): read it, never
+mutate it. Older desktop builds don't export the hook, so feature-detect it
+through the namespace import (`typeof sdk.useContributions === 'function'`).
+
 ### Sidebar nav visibility and order (`SIDEBAR_NAV_PREFS_AREA`)
 
 A plugin hides or re-orders the sidebar's top nav rows by **contributing a
@@ -2488,7 +2510,7 @@ pipeline as a trust boundary.
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
-| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
+| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `useContributions`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |

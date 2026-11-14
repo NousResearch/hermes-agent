@@ -1775,6 +1775,11 @@ export type { GatewayEventListener } from '@/contrib/events'
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+/** Live, read-only view of one contribution area: the same snapshot core
+ *  slots render (enabled, `when`-filtered, sorted by `order` then
+ *  registration), re-rendering only when that area changes. Lets a plugin mirror an area other plugins fill —
+ *  e.g. a replacement sidebar listing every `SIDEBAR_NAV_AREA` row. */
+export { useContributions } from '@/contrib/react/use-contributions'
 
 // -- contracts ----------------------------------------------------------------
 

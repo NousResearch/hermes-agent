@@ -478,6 +478,50 @@ def test_end_to_end_telemetry_tracked_but_lifecycle_refused(skills_home):
     assert load_usage()["mine"]["view_count"] == 1
 
 
+def test_force_loaded_review_skill_is_never_archived_even_with_prune_builtins(skills_home, monkeypatch):
+    """``sdlc-review`` is force-loaded into every review-lane worker, so the curator must never
+    archive it — not even with ``curator.prune_builtins`` on, which is what archived it in prod and
+    killed every review claim with ``kanban_skills_unavailable`` before the first model call.
+
+    Ordinary built-ins stay prunable under the same config, i.e. the guard is not a curator off-switch.
+    """
+    from tools import skill_usage
+    from tools.skill_usage import (
+        archive_skill, is_curation_eligible, is_protected_builtin, load_usage,
+        STATE_ACTIVE, STATE_ARCHIVED,
+    )
+
+    # Shipped set, not a monkeypatched sentinel.
+    assert is_protected_builtin("sdlc-review"), "sdlc-review must ship in PROTECTED_BUILTIN_SKILLS"
+
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "sdlc-review", category="devops")
+    _write_skill(skills_dir, "ordinary-builtin")
+    (skills_dir / ".bundled_manifest").write_text(
+        "sdlc-review:abc\nordinary-builtin:def\n", encoding="utf-8",
+    )
+
+    ok, msg = archive_skill("sdlc-review")
+    assert ok is False
+    assert "protected built-in" in msg, msg
+    assert is_curation_eligible("sdlc-review", skills_dir / "devops" / "sdlc-review") is False
+    rec = load_usage().get("sdlc-review", {})
+    assert rec.get("state", STATE_ACTIVE) == STATE_ACTIVE
+    assert rec.get("archived_at") is None
+    assert (skills_dir / "devops" / "sdlc-review" / "SKILL.md").exists()
+    assert not (skills_dir / ".archive" / "sdlc-review").exists()
+
+    # The curator is still fully functional for ordinary skills: with prune_builtins on, a normal
+    # bundled skill is eligible and actually moves to .archive/.
+    assert is_curation_eligible("ordinary-builtin", skills_dir / "ordinary-builtin") is True
+    ok, msg = archive_skill("ordinary-builtin")
+    assert ok is True, msg
+    assert (skills_dir / ".archive" / "ordinary-builtin" / "SKILL.md").exists()
+    assert not (skills_dir / "ordinary-builtin").exists()
+    assert load_usage()["ordinary-builtin"]["state"] == STATE_ARCHIVED
+
+
 # ---------------------------------------------------------------------------
 # Unmanaged enumeration + adoption
 #
@@ -555,8 +599,8 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
             json.dumps({"installed": {name: {}}}), encoding="utf-8",
         )
     elif kind == "protected":
-        # Shipped set is currently empty (plan graduated to a built-in
-        # command) — stage a sentinel to exercise the mechanism.
+        # Stage a sentinel so this test never depends on what ships in the
+        # protected set (it is non-empty: it carries the force-loaded review-lane skill).
         name = "sentinel-protected-skill"
         monkeypatch.setattr(skill_usage, "PROTECTED_BUILTIN_SKILLS", {name})
         _write_skill(skills_dir, name)

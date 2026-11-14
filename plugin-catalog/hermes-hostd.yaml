@@ -1,0 +1,23 @@
+name: hostd-client
+repo: https://github.com/violetSoftware/hermes-hostd-plugin
+sha: 3c325c9d3143edf81a019dfa6155587e6d9e7ad5
+version: "0.1.0rc2"
+title: Hermes Hostd
+description: Request command execution from a separately managed hermes-hostd daemon over HTTP or VSOCK, with host-side approval.
+maintainer: violetSoftware
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+platforms: [linux]
+readme: true
+known_issues:
+  - Requires separately installing and configuring the matching hermes-hostd daemon; catalog installation installs only the client plugin.
+  - Version 0.1.0rc2 requires the Hermes-managed HOSTD_AUTH_TOKEN secret; legacy client token-file selectors must be removed.
+  - Commands run with the daemon account's privileges; this is not a command sandbox.
+  - Optional ntfy decisions are unsigned and do not authenticate the human approver; protect notification and reply-channel access.
+  - HTTP encryption requires an externally managed secure tunnel or TLS proxy protecting every hop; VSOCK has no native encryption.
+capabilities:
+  provides_tools: [run_on_host]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: [HOSTD_AUTH_TOKEN]

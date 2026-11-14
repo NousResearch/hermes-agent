@@ -485,6 +485,32 @@ def test_an_activation_racing_the_pass_start_never_gives_the_snapshot_a_foreign_
         set_multiplex_active(False)
 
 
+def test_an_activation_landing_after_the_publish_still_lets_removal_revoke_the_write(launch_home, monkeypatch):
+    """Activation lands mid-pass, after the source's first write is published but before the pass
+    records it: the snapshot froze that write, so removing the source must still take it out."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli import env_loader
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    real_sanitize = env_loader._sanitize_loaded_credentials
+
+    def sanitize_then_activate():
+        real_sanitize()
+        activate_multi_profile_hosting()
+
+    monkeypatch.setattr(env_loader, "_sanitize_loaded_credentials", sanitize_then_activate)
+    manager = get_plugin_manager()
+    try:
+        manager.discover_and_load()  # boot: the source writes VAULT_ONLY_KEY, activation lands before it is recorded
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
+        monkeypatch.setattr(env_loader, "_sanitize_loaded_credentials", real_sanitize)
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
+        assert capture_launch_env()["SYSTEMD_ONLY_TOKEN"] == "env-only"
+    finally:
+        set_multiplex_active(False)
+
 def test_a_source_reapplying_over_a_value_it_did_not_write_leaves_the_frozen_launch_env(launch_home):
     """The source wrote v1 at boot, then the operator's value replaced it before activation: the
     frozen env holds the operator's value, and the source's next write is not over its own earlier

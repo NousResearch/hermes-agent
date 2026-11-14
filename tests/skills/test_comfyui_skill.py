@@ -241,6 +241,18 @@ def test_comfy_cli_host_aliases_get_their_token(monkeypatch):
     assert [e.get("CIVITAI_API_TOKEN") for e in envs] == [None, None, civ]
 
 
+def test_explicit_token_wins_and_dotless_lookalike_gets_none(monkeypatch):
+    _inherit_tokens(monkeypatch)
+    mod = _load_auto_fix_deps()
+    hf = "hf_" + "e" * 30
+    calls = _record_subprocess(monkeypatch, mod)
+    for url in ("https://huggingface.co/o/r/m.safetensors", "https://evilhuggingface.co/m.safetensors"):
+        assert mod.install_model(url, "loras", hf_token=hf)
+    hf_env, lookalike_env = (_child_env(env) for _cmd, env in calls)
+    assert hf_env.get("HF_API_TOKEN") == hf
+    assert "HF_API_TOKEN" not in lookalike_env
+
+
 def test_malformed_model_url_fails_closed_without_raising(monkeypatch):
     monkeypatch.delenv("HF_API_TOKEN", raising=False)
     mod = _load_auto_fix_deps()

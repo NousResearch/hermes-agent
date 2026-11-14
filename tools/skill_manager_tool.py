@@ -35,7 +35,7 @@ from tools.skill_manager_guards import (
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
-    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline, _scan_scope)
+    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -430,8 +430,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
-    scope = _scan_scope(skill_dir, target)
-    baseline, scan_error = _scan_baseline(skill_dir, scope)
+    scope, baseline, scan_error = _scan_baseline(skill_dir, target)
     if scan_error:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home

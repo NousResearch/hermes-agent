@@ -1,5 +1,7 @@
 """Background-review skill writes are content-scanned even with skills.guard_agent_created off."""
+import errno
 import json
+import os
 from contextlib import contextmanager
 
 import pytest
@@ -253,3 +255,72 @@ def test_background_write_through_a_symlinked_alias_scans_the_alias(skills):
                             "file_content": HIDDEN})
     assert result["success"] is False, result
     assert "scripts/run.sh" in result["error"] and ref.read_bytes() == before
+
+
+def _seed_hardlinked_sibling(skills):
+    """references/workflow.md hardlinked at scripts/run.sh: the .sh name gets the padded-code rule."""
+    _seed(skills)
+    ref = skills / "bg-skill" / "references" / "workflow.md"
+    sibling = skills / "bg-skill" / "scripts" / "run.sh"
+    sibling.parent.mkdir()
+    os.link(ref, sibling)
+    return ref, sibling
+
+
+def test_hardlinked_sibling_written_through_by_copy_fallback_is_scanned(skills, monkeypatch):
+    """On a bind mount the rename fails with EBUSY and atomic_replace copies through the existing inode,
+    so the hardlinked sibling takes the new bytes too; it must be in scope and the write rolled back."""
+    import utils
+    ref, sibling = _seed_hardlinked_sibling(skills)
+    real_replace = os.replace
+    def busy_replace(src, dst):
+        if os.path.realpath(dst) == str(ref.resolve()):
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return real_replace(src, dst)
+    monkeypatch.setattr(utils.os, "replace", busy_replace)
+    with _origin(BACKGROUND_REVIEW):
+        before = ref.read_bytes()
+        mark_background_review_skill_read(ref)
+        result = _dispatch({"action": "write_file", "name": "bg-skill", "file_path": "references/workflow.md",
+                            "file_content": HIDDEN})
+    assert result["success"] is False, result
+    assert "scripts/run.sh" in result["error"]
+    assert ref.read_bytes() == before and sibling.read_bytes() == before
+    assert os.path.samefile(ref, sibling)
+
+
+def test_hardlinked_sibling_keeps_old_bytes_on_the_rename_path(skills):
+    """The normal rename gives the target a new inode, so the sibling is unchanged and nothing it
+    carries is introduced by the write."""
+    ref, sibling = _seed_hardlinked_sibling(skills)
+    with _origin(BACKGROUND_REVIEW):
+        before = sibling.read_bytes()
+        mark_background_review_skill_read(ref)
+        result = _dispatch({"action": "write_file", "name": "bg-skill", "file_path": "references/workflow.md",
+                            "file_content": HIDDEN})
+    assert result["success"] is True, result
+    assert sibling.read_bytes() == before and ref.read_text(encoding="utf-8") == HIDDEN
+
+
+def test_symlink_loop_in_skill_returns_a_clean_scan_error(skills, monkeypatch):
+    """Path.resolve() raises RuntimeError on a symlink loop on Python 3.11/3.12 (3.13+ does not): the
+    background write must fail closed with the scan error, not raise out of skill_manage."""
+    from pathlib import Path
+    with _origin(BACKGROUND_REVIEW):
+        _seed(skills)
+        loop = skills / "bg-skill" / "references"
+        (loop / "a").symlink_to("b")
+        (loop / "b").symlink_to("a")
+        real_resolve = Path.resolve
+        def resolve(self, strict=False):
+            if self.name in ("a", "b") and self.parent == loop:
+                raise RuntimeError(f"Symlink loop from {self!s}")
+            return real_resolve(self, strict)
+        monkeypatch.setattr(Path, "resolve", resolve)
+        ref = loop / "workflow.md"
+        before = ref.read_bytes()
+        mark_background_review_skill_read(ref)
+        result = _dispatch({"action": "write_file", "name": "bg-skill", "file_path": "references/workflow.md",
+                            "file_content": "Do the other thing.\n"})
+    assert result["success"] is False, result
+    assert "Security scan could not complete" in result["error"] and ref.read_bytes() == before

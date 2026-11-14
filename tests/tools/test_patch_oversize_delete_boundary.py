@@ -28,14 +28,31 @@ def test_same_size_replacement_at_delete_boundary_survives(tmp_path, monkeypatch
     assert path.read_text() == 'b' * 1024
 
 
-def test_digest_bound_delete_matches_and_rejects_symlink(tmp_path):
+def test_delete_oversized_symlink_preserves_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(file_operations, '_RAW_READ_MAX_BYTES', 64)
+    target = tmp_path / 'large-target'
+    target.write_text('a' * 1024)
+    link = tmp_path / 'link'
+    link.symlink_to(target)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    star = '*' * 3
+    patch, error = parse_v4a_patch(f'{star} Begin Patch\n{star} Delete File: {link}\n{star} End Patch\n')
+    assert error is None
+    from tools.patch_parser import apply_v4a_operations
+    result = apply_v4a_operations(patch, ops)
+    assert result.success, result.error
+    assert not link.is_symlink()
+    assert target.read_text() == 'a' * 1024
+
+
+def test_digest_bound_delete_matches_and_rejects_changed_target(tmp_path):
     target = tmp_path / 'target'
     target.write_bytes(b'bytes')
     digest = hashlib.sha256(b'bytes').hexdigest()
     link = tmp_path / 'link'
     link.symlink_to(target)
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
-    assert ops.delete_file(str(link), expected_sha256=digest).error
+    assert ops.delete_file(str(link), expected_sha256='a' * 64).error
     assert link.is_symlink() and target.read_bytes() == b'bytes'
     assert not ops.delete_file(str(target), expected_sha256=digest).error
     assert not target.exists()

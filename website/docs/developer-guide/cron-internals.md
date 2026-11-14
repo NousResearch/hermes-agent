@@ -112,6 +112,15 @@ its live adapters (`scheduler.drain_delivery_queue`); each row is claimed at mos
 (`pending → delivering → delivered | failed | suppressed`). A row whose claiming gateway
 died mid-send is fenced `unknown` and never retried.
 
+Script-only (`no_agent`) jobs normally deliver inline. If a resolved target's platform
+is not registered yet (for example, Desktop catch-up before gateway plugin discovery),
+`cron/scheduler_delivery_readiness.py` instead queues the exact composed output under
+the same execution ID. The row remains `pending` until those platforms register;
+unready rows do not block other deliveries. Empty/silent output never enters the queue.
+The gateway replays only delivery, never the script. Once claimed, the ordinary
+at-most-once/unknown-send fence still applies. If registration never succeeds, the
+saved payload remains queued and the deferral is logged rather than discarded.
+
 `cron/delivery_outcome.py::settle_queued_delivery` then writes the terminal outcome
 back onto the run that queued it:
 

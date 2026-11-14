@@ -428,7 +428,12 @@ class TestMattermostFileUpload:
         # Mock the download (GET)
         mock_dl_resp = AsyncMock()
         mock_dl_resp.status = 200
-        mock_dl_resp.read = AsyncMock(return_value=b"\x89PNG\x00fake-image-data")
+        mock_dl_resp.headers = {}
+
+        async def _body(_size):
+            yield b"\x89PNG\x00fake-image-data"
+
+        mock_dl_resp.content = MagicMock(iter_chunked=_body)
         mock_dl_resp.content_type = "image/png"
         mock_dl_resp.__aenter__ = AsyncMock(return_value=mock_dl_resp)
         mock_dl_resp.__aexit__ = AsyncMock(return_value=False)
@@ -541,6 +546,7 @@ class TestMattermostMediaTypes:
         self.adapter = _make_adapter()
         self.adapter._bot_user_id = "bot_user_id"
         self.adapter.handle_message = AsyncMock()
+        self.adapter.set_authorization_check(lambda *args, **kwargs: True)
 
     def _make_event(self, file_ids):
         post_data = {
@@ -565,9 +571,14 @@ class TestMattermostMediaTypes:
         file_info = {"name": "photo.png", "mime_type": "image/png"}
         self.adapter._api_get = AsyncMock(return_value=file_info)
 
+        async def chunks(_size):
+            yield b"\x89PNG fake"
+
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"\x89PNG fake")
+        mock_resp.headers = {}
+        mock_resp.content = MagicMock()
+        mock_resp.content.iter_chunked = chunks
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
@@ -579,6 +590,16 @@ class TestMattermostMediaTypes:
         msg = self.adapter.handle_message.call_args[0][0]
         assert msg.media_types == ["image/png"]
         assert msg.media_types[0].startswith("image/")
+
+    @pytest.mark.asyncio
+    async def test_unwired_authorization_check_downloads_nothing(self):
+        self.adapter.set_authorization_check(None)
+        self.adapter._download_attachments = AsyncMock(return_value=(["/tmp/photo.png"], ["image/png"]))
+
+        await self.adapter._handle_ws_event(self._make_event(["file1"]))
+
+        self.adapter._download_attachments.assert_not_awaited()
+        assert self.adapter.handle_message.call_args[0][0].media_urls == []
 
 
 @pytest.mark.asyncio

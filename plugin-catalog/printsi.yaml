@@ -1,0 +1,24 @@
+name: printsi
+title: printsi
+repo: https://github.com/magnusahmad/printsi-agent-plugins
+sha: 0f51fe54c86c0f0516ff6fa662e21252dfb8f751
+subdir: printsi
+description: "Get a PDF professionally printed and delivered. 19 MCP tools: a free preflight that reads the PDF from disk (bleed, trim size, safe areas, image resolution, fonts, colour) and returns each issue with its position and fix plus the page preview as an image; quotes for printing with tracked delivery; a payment link a person pays on Stripe; order tracking and support tickets. A Hermes Desktop pane draws the page to scale with each issue marked, and shows the order's progress with a pay button. Flyers today, delivered in the contiguous US. Portable Agent Plugins v1 package (mcp.json + one skill) with a desktop/plugin.js; no Python. The stdio MCP server ships in the package as one readable, unminified JavaScript file (server/printsi.mjs, run with node; Node.js 18+ required), so nothing is downloaded at run time; its TypeScript source and a locked build that reproduces it are in the repository under source/. Disclosure — calls the printsi API (printsi-api-live.magnus-ahmad.workers.dev) and nothing else; uploads the PDF being checked or printed and sends the delivery name, address, phone and email to printsi and its print supplier; saves check previews to a temp folder the server creates; orders cost real money, but the plugin cannot pay: order_purchase returns a link and a person pays on Stripe, with the card held until the printer accepts; the server is marked untrusted and only tools that send nothing of the user's are marked read-only, so Hermes asks before every tool that uploads a file, sends an address or changes something; a tool argument can name no file except the PDF, and no folder to write to; no account is needed: on first use it mints a printsi guest key and keeps it, with order tokens, in the plugin's own data folder in the Hermes profile, and reads no other credential store; the Desktop pane only reads this plugin's own tool results (no network, no files, no tool calls) and opens printsi's payment page in the browser when the user presses the button; the skill's optional helper scripts run Chrome and Ghostscript locally and fetch segno from PyPI through uvx; no telemetry (PRINTSI_TELEMETRY=0), no update checks, no self-updating code."
+maintainer: magnusahmad
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/magnusahmad/printsi-agent-plugins/tree/main/printsi#readme
+version: "0.3.4"
+image: https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/0f51fe54c86c0f0516ff6fa662e21252dfb8f751/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/0f51fe54c86c0f0516ff6fa662e21252dfb8f751/docs/screenshot-1-fail.png
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/0f51fe54c86c0f0516ff6fa662e21252dfb8f751/docs/screenshot-2-quote.png
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/0f51fe54c86c0f0516ff6fa662e21252dfb8f751/docs/screenshot-3-approve-pay.png
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/0f51fe54c86c0f0516ff6fa662e21252dfb8f751/docs/screenshot-4-delivered.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -32,7 +32,28 @@ def _callback_api():
             (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback),
             (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback),
             # The unlock owner: a manager unlocked on a worker must still be released with its session.
-            (vault_unlock.get_current_session_id, vault_unlock.set_current_session_id))
+            (vault_unlock.get_current_session_id, vault_unlock.set_current_session_id),
+            # A background fork's dispatch-side tool whitelist: without it a parallel batch escapes it.
+            (_get_tool_whitelist, _set_tool_whitelist))
+
+
+def _get_tool_whitelist():
+    """The thread's ``pre_tool_call`` tool whitelist as ``(allowed, deny_fmt)``, or None."""
+    from hermes_cli.plugins import _thread_tool_whitelist
+
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    return None if allowed is None else (allowed, getattr(_thread_tool_whitelist, "fmt", None))
+
+
+def _set_tool_whitelist(state) -> None:
+    from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
+
+    if state is None:
+        clear_thread_tool_whitelist()
+    elif state[1] is None:
+        set_thread_tool_whitelist(state[0])
+    else:
+        set_thread_tool_whitelist(*state)
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:

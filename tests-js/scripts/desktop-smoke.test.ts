@@ -751,6 +751,40 @@ test.each<[Record<string, string | null> | undefined]>([
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test('the post-update smoke reseeds the profile the update kept, but no home outside the run', async (): Promise<void> => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-post-update-'))
+  const home = path.join(root, 'home')
+  const userData = path.join(root, 'root', 'user-data')
+  const exe = path.join(root, 'root', 'fake-desktop')
+  fs.mkdirSync(path.join(root, 'root'), { recursive: true })
+  fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n')
+  fs.chmodSync(exe, 0o755)
+  fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ payload: 'bundled', bundleEnv: {} }))
+  // What the OLD phase and the update left in the profile.
+  fs.mkdirSync(path.join(home, 'sessions'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'config.yaml'), 'display:\n  skin: ares\n')
+  fs.writeFileSync(path.join(home, 'sessions', 'old.json'), '{}')
+
+  const refuseLaunch = async (): Promise<never> => { throw new Error('launch refused by test') }
+
+  const options = { exe, root: path.join(root, 'root'), origin: 'bundled' as const, home, 'user-data': userData, out: root,
+    'expect-commit': 'a'.repeat(40) }
+
+  try {
+    await expect(runInstalledDesktopSmoke({ ...options, phase: 'new' }, refuseLaunch)).rejects.toThrow('launch refused by test')
+    expect(yaml.load(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'custom' }, display: { skin: 'ares' } })
+    expect(fs.readFileSync(path.join(home, 'sessions', 'old.json'), 'utf8')).toBe('{}')
+
+    // A fresh-install smoke still refuses the same populated profile.
+    await expect(runInstalledDesktopSmoke({ ...options, phase: 'installed' }, refuseLaunch)).rejects.toThrow('refusing to seed an existing profile')
+
+    // A prediction that falls through to a home this run never made is someone's real profile.
+    fs.writeFileSync(path.join(root, 'install-stamp.json'),
+      JSON.stringify({ payload: 'bundled', bundleEnv: { HERMES_HOME: null, HERMES_DESKTOP_USER_DATA_DIR: null } }))
+    await expect(runInstalledDesktopSmoke({ ...options, phase: 'new' }, refuseLaunch)).rejects.toThrow("is not one of this run's homes")
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('writeEnvFile without a URL keeps the journey provider endpoint', (): void => {
   // The install e2e configures the mock provider through the CLI, which writes
   // OPENAI_BASE_URL/OPENAI_API_KEY. The desktop smoke then calls writeEnvFile with

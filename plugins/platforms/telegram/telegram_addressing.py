@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterator, Optional
 
+from plugins.platforms.telegram.telegram_entities import addressing_sources
+
 _SEPARATORS = " \t\n\r,:;"
 _RAW_LEADING_HANDLE_RE = re.compile(r"(?:/[A-Za-z0-9_]+)?@([A-Za-z0-9_]{2,31})\b")
 
@@ -75,10 +77,9 @@ def _leading_handles(text: str, entities: list) -> Iterator[str]:
 
 
 def leading_bot_handles(message: Any, is_bot_handle: Callable[[str], bool]) -> set[str]:
-    """Bot handles the head of the message text or caption is addressed to."""
+    """Bot handles the head of the message text, caption or rich blocks is addressed to."""
     found: set[str] = set()
-    for text, entities in ((getattr(message, "text", None) or "", getattr(message, "entities", None) or []),
-                           (getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or [])):
+    for text, entities in addressing_sources(message):
         found.update(h for h in _leading_handles(text, entities) if is_bot_handle(h))
     return found
 
@@ -91,9 +92,7 @@ def _command_after_address(text: str, bot_username: str, *, has_entities: bool =
 
 def foreign_command_target(message: Any, bot_username: str) -> Optional[str]:
     """Only an opening command, optionally after our address, can override our later mention."""
-    for field in ("text", "caption"):
-        text = getattr(message, field, None) or ""
-        entities = getattr(message, "entities" if field == "text" else "caption_entities", None) or []
+    for text, entities in addressing_sources(message):
         command = _command_after_address(text, bot_username, has_entities=bool(entities))
         if not command or not command.group(2) or command.group(2).lower() == bot_username.lower():
             continue

@@ -1,0 +1,18 @@
+name: toolfound
+title: Toolfound
+repo: https://github.com/MelMayssonOwen/hermes-plugins
+sha: f203c3f897784d731ef48bc0974104a4d08cf5f8
+subdir: toolfound
+description: "Search the Toolfound product directory, compare alternatives, plan a launch and use launch-preparation helpers through its hosted MCP server, with a launch workflow skill bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure: every tool call goes to https://toolfound.com/api/mcp; discovery tools need no account. toolfound_submit_product sends the product details and owner email the user confirms, and the owner completes verification separately. The package marks the server untrusted so Hermes asks before write-capable calls. The tool list comes from the server at run time and is not covered by the pinned sha."
+maintainer: MelMayssonOwen
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/MelMayssonOwen/hermes-plugins/blob/f203c3f897784d731ef48bc0974104a4d08cf5f8/toolfound/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -52,7 +52,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
-_session_approved: dict[str, set] = {}
+_session_approved: dict[str | tuple[str, str], set] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
 # ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
@@ -133,12 +133,18 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Withdraw foreground waits when the turn ends. Dispatch-owned background
+    waits survive until their worker ends or the session is cleared."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            entry.event.set()
+        queue = _gateway_queues.get(session_key, [])
+        for entry in list(queue):
+            # A background child's wait stays answerable when its lease can still deliver prompts.
+            if entry.owner is None or entry.owner.callback is None:
+                queue.remove(entry)
+                entry.event.set()
+        if not queue:
+            _gateway_queues.pop(session_key, None)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -195,7 +201,8 @@ def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optiona
 
 
 def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str], *,
-                                  actor_id: Any = None, admin_ids: Iterable[str] = (), extra: Any = None) -> int:
+                                  actor_id: Any = None, admin_ids: Any = (), extra: Any = None,
+                                  admitted: bool = True) -> int:
     """Resolve the approval a native button card was rendered for.
 
     Only the card's own request can resolve: a card whose request already settled (timed out, answered
@@ -206,8 +213,9 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
     nothing.
 
     With *actor_id* the clicker's authority (``gateway.approval_actor.may_answer``, with the platform
-    *extra* / *admin_ids*) is checked against that same entry. The Deny-only check, the authority check
-    and the settle are one critical section."""
+    *extra* / *admin_ids*, and the chat's slash policy for the answer's own ``/approve`` or ``/deny``)
+    is checked against that same entry (*admitted* as there). The Deny-only check, the authority
+    check and the settle are one critical section."""
     if not request_id:
         return 0
     with _lock:  # re-entrant: the settle below takes it again
@@ -216,7 +224,9 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
             return 0
         if target is not None and actor_id is not None:
             from gateway.approval_actor import may_answer
-            if not may_answer(target.authority, actor_id, admin_ids, extra):
+            from gateway.approval_actor import approval_commands
+            if not may_answer(target.authority, actor_id, admin_ids, extra, approval_commands(choice),
+                              admitted=admitted):
                 return 0
         return resolve_gateway_approval(session_key, choice, request_id=request_id)
 
@@ -312,9 +322,9 @@ def submit_pending(session_key: str, approval: dict):
 
 
 def approve_session(session_key: str, pattern_key: str):
-    """Approve a pattern for this session only."""
+    """Approve a pattern for this session and the profile executing it."""
     with _lock:
-        _session_approved.setdefault(session_key, set()).add(pattern_key)
+        _session_approved.setdefault(_session_grant_key(session_key), set()).add(pattern_key)
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
@@ -352,10 +362,16 @@ def clear_session(session_key: str) -> None:
     if not session_key:
         return
     with _lock:
-        _session_approved.pop(session_key, None)
+        # A child routed to another profile keeps its grants in that profile's
+        # namespace; retire those grants with the same conversation session.
+        for key in list(_session_approved):
+            if key == session_key or (isinstance(key, tuple) and key[0] == session_key):
+                _session_approved.pop(key, None)
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
+        from tools.approval_notify_lease import revoke_session_locked
+        revoke_session_locked(session_key)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
@@ -429,6 +445,20 @@ def _sync_permanent_from_disk(approved: set, key: str) -> None:
     _permanent_baseline_by_home[key] = on_disk
 
 
+def _session_grant_key(session_key: str) -> str | tuple[str, str]:
+    """A parent's session grant cannot authorize a child running as another profile (any route, room or not).
+
+    Ordinary turns keep their legacy session key. A profile route runs with its own
+    home/credentials; approvals in that child are keyed by both the session and home.
+    The mark is scoped by delegated_profile_scope and survives nested child routes.
+    """
+    from gateway.hosted_room_execution_policy import profile_routed
+    if not profile_routed():
+        return session_key
+    from hermes_constants import hermes_home_key
+    return (session_key, hermes_home_key())
+
+
 def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     """``'permanent'``, ``'session'`` or None for one key, from ONE read of both stores, so the
     decision and its provenance label cannot disagree when a grant is revoked concurrently.
@@ -437,7 +467,7 @@ def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         permanent = _permanent_set()
-        session = _session_approved.get(session_key, set())
+        session = _session_approved.get(_session_grant_key(session_key), set())
         if any(alias in permanent for alias in aliases):
             return "permanent"
         if any(alias in session for alias in aliases):
@@ -633,16 +663,24 @@ def _user_approved(session_key: str, description: str) -> dict:
 
 
 def _gateway_notify_cb(session_key: str):
+    from tools.approval_notify_lease import current
+    lease = current(session_key)
+    if lease is not None:
+        return lease.notify if lease.deliverable() else None
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, gateway: bool = False) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
+    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
+    A gateway background child that no chat can show a prompt to fails closed instead (#133514)."""
+    from tools.approval_notify_lease import stranded_denial
+    if (denied := stranded_denial(session_key, gateway, spec.noun, pattern_key, description)) is not None:
+        return denied
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
@@ -1018,7 +1056,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied, gateway=is_gateway,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.

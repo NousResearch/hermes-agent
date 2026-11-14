@@ -73,7 +73,14 @@ def _adapter_media_method(ext, voice, force_document=False):
     return ("send_voice", "audio") if voice else ("send_document", "document")
 
 
-def _live_adapter(platform, *, lookup_failed_warning=None):
+class SharedBotTargetRefused(PermissionError):
+    """``_live_adapter`` refused a shared-bot satellite a target no route maps to it. Raised, not
+    ``None``: ``None`` means "no live adapter" and sends the caller to a standalone fallback.
+    A ``PermissionError`` so bundled platform plugins catch it by the builtin type without
+    importing a core name outside the published plugin API."""
+
+
+def _live_adapter(platform, chat_id=None, thread_id=None, *, lookup_failed_warning=None):
     """``(runner, adapter)`` for the in-process gateway; ``(None, None)`` standalone (cron);
     ``(runner, None)`` when the lookup fails — logged when a warning is given, never silently
     swallowed (a silent fall-through could recreate a reconnect storm).
@@ -82,7 +89,11 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     ``runner.adapters`` hit — that map holds the default profile's bots, so a secondary profile's turn
     would post/react with the default bot's identity. A profile with no adapter for the platform
     yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
-    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
+    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``.
+
+    A shared-bot satellite's map borrows the primary's bots unscoped, so the borrowed bot is only
+    handed out for a (*chat_id*, *thread_id*) a default-bot route maps to that profile
+    (``_shared_bot_target_allowed``, #147602); every caller here picks its own target."""
     try:
         from gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
@@ -95,11 +106,19 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
         if not callable(resolve):  # bare runner stubs without the authz mixin
             return runner, runner.adapters.get(platform)
         from hermes_cli.profiles import get_active_profile_name
-        return runner, resolve(platform, get_active_profile_name())
+        profile = get_active_profile_name()
+        adapter = resolve(platform, profile)
+        allowed = adapter is None or runner._shared_bot_target_allowed(platform, profile, chat_id, thread_id)
     except Exception:
         if lookup_failed_warning:
             logger.warning(lookup_failed_warning, exc_info=True)
         return runner, None
+    if not allowed:
+        where = f"{getattr(platform, 'value', platform)}:{chat_id}" + (f" thread {thread_id}" if thread_id else "")
+        raise SharedBotTargetRefused(
+            f"Profile '{profile}' shares the default profile's bot and no gateway.profile_routes entry routes "
+            f"{where} to it; refusing to send through the shared bot.")
+    return runner, adapter
 
 
 def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
@@ -149,9 +168,10 @@ async def _resolve_slack_user_target(token, chat_id):
     except ImportError:
         return None, {"error": "aiohttp not installed. Run: "
                       f"{install_hint('messaging')}"}
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url()
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             async def post_api(method, payload):
@@ -185,7 +205,8 @@ async def _resolve_slack_user_target(token, chat_id):
             dm_id = (opened.get("channel") or {}).get("id")
             return (dm_id, None) if dm_id else (None, _error("Slack conversations.open did not return a DM channel ID"))
     except Exception as e:
-        return None, _error(f"Slack DM resolution failed: {e}")
+        # aiohttp echoes a malformed proxy URL (password included) as the InvalidURL text.
+        return None, _error(f"Slack DM resolution failed: {describe_proxy_error(e, proxy) or e}")
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
@@ -201,9 +222,12 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
     from gateway.config import Platform
-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
-        "Matrix: live gateway adapter lookup failed; falling back to an "
-        "ephemeral connect (may re-init E2EE per send)"))
+    try:
+        _, live_adapter = _live_adapter(Platform.MATRIX, chat_id, thread_id, lookup_failed_warning=(
+            "Matrix: live gateway adapter lookup failed; falling back to an "
+            "ephemeral connect (may re-init E2EE per send)"))
+    except SharedBotTargetRefused as e:
+        return _error(str(e))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
         return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)

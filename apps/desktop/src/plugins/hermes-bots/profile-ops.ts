@@ -33,7 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
+import { aliasMetaFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -233,6 +233,13 @@ function serverReportedTitle(bot: RosterRow, server: BotMeta | null): string | u
   return typeof bot.title === 'string' ? bot.title.trim() : undefined
 }
 
+/** The record a server overlay starts from. A first record for a configured
+ *  alias's row starts from the alias's record: botRosterMeta prefers the direct
+ *  key once it exists, so a server-only record would hide the alias's look. */
+function overlayBase<T extends BotMeta>(bot: RosterRow, key: string, meta: Record<string, T>): Partial<T> {
+  return meta[key] || aliasMetaFor(bot, meta) || {}
+}
+
 /** Server ui_meta (per roster row) beats local storage for the compact
  *  fields it carries; local-only fields (avatar image data URL, extracted
  *  pet icon) are PRESERVED — the server copy never includes them, so a
@@ -280,7 +287,7 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
         continue
       }
 
-      const mine = next[key] || {}
+      const mine = overlayBase(bot, key, next)
 
       const merged = {
         ...mine,

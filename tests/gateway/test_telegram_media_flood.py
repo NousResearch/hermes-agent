@@ -172,10 +172,19 @@ async def test_flood_on_downloaded_image_upload_defers_instead_of_text_fallback(
     from tools import url_safety
 
     class _Resp:
-        content = b"image-bytes"
+        headers: dict = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
 
         def raise_for_status(self):
             return None
+
+        async def aiter_bytes(self):
+            yield b"image-bytes"
 
     class _Client:
         async def __aenter__(self):
@@ -184,7 +193,7 @@ async def test_flood_on_downloaded_image_upload_defers_instead_of_text_fallback(
         async def __aexit__(self, *exc):
             return False
 
-        async def get(self, url):
+        def stream(self, method, url):
             return _Resp()
 
     monkeypatch.setattr(url_safety, "is_safe_url", lambda *a, **k: True)

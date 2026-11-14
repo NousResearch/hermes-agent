@@ -56,11 +56,12 @@ from tui_gateway.user_messages import (
     resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
 _hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / ".env")
 
 
 # ── Panic logger: crashes otherwise leave no forensics (stdout is the JSON-RPC pipe, stderr doesn't
@@ -741,13 +742,6 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     if not (body := (text if text is not None else kind).strip()):
         return
     out_kind = kind if text is not None else "status"
-    # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
-    # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
-    # See #97239.
-    if out_kind == "lifecycle":
-        from agent.conversation_compression import is_compaction_progress_status
-        if is_compaction_progress_status(body):
-            out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -1264,21 +1258,17 @@ _BOOL_WORDS = {
 
 
 def _restart_slash_worker(sid: str, session: dict):
-    # Close the slash-worker subprocess as part of finalize itself, not just in the callers.
-    # Defense-in-depth: every session-end path goes through _finalize_session (it's the single
-    # ``_finalized``-guarded chokepoint), so folding worker cleanup in here means a future code path that
-    # calls _finalize_session directly — without the surrounding _teardown_session / _shutdown_sessions
-    # worker.close() — can't reintroduce the #38095 leak. Idempotent: _SlashWorker.close() is
-    # poll()-guarded, so the explicit close() still in those callers is harmless.
-    worker = session.get("slash_worker")
+    # Respawn on the agent's current route (model, provider, base_url) after a switch or compression.
+    worker, agent = session.get("slash_worker"), session.get("agent")
     if worker is None:
         return  # never spawned one; spawning here would fork the per-worker MCP fleet for nothing
     with contextlib.suppress(Exception):
         worker.close()
     try:
-        new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
+        new_worker = _SlashWorker(session["session_key"], getattr(agent, "model", _resolve_model()),
                                   profile_home=session.get("profile_home"),
-                                  provider=getattr(session.get("agent"), "provider", None) or None)
+                                  provider=getattr(agent, "provider", None) or None,
+                                  base_url=getattr(agent, "base_url", None) or None)
     except Exception:
         session["slash_worker"] = None
         return
@@ -1490,7 +1480,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
-            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
+            pending_provider or provider, model, getattr(agent, "api_mode", None), getattr(agent, "base_url", None))) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,

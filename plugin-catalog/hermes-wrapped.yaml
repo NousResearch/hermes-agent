@@ -1,0 +1,19 @@
+name: hermes-wrapped
+repo: https://github.com/devpras22/hermes-wrapped
+sha: 9d71bb10a48c7a393c1794248627ea542be47cfb
+version: "0.1.2"
+description: "Your week with Hermes as a 30-second video, delivered every Sunday: what your agent did, what it cost, and how much of your time went into upkeep versus Hermes working for you. Built from Hermes's own session records by code: no model calls, no tokens, secrets and home paths stripped. Disclosure — reads your Hermes session history (read-only) to build the video, runs a pinned `npx hyperframes@0.8.217` renderer that downloads a headless Chrome on first use, and `hermes wrapped schedule` adds a weekly cron job that delivers the video to your chosen chat with `hermes send`."
+title: Hermes Wrapped
+maintainer: devpras22
+tier: community
+category: general
+requires_hermes: '>=0.22.0'
+docs_url: https://github.com/devpras22/hermes-wrapped
+platforms: []
+capabilities:
+  provides_tools:
+  - wrapped_make
+  provides_hooks:
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -526,3 +526,17 @@ test('Webapp builds install privately and never disturb the native Desktop insta
   expect(readFileSync(path.join(source, 'apps/desktop/dist/index.html'), 'utf8')).toBe('native renderer')
   expect(existsSync(path.join(source, 'apps/desktop/dist-webapp/hermes-build.json'))).toBe(true)
 }, 60_000)
+
+test('a desktop bundle build compiles the Webapp in its prepared checkout, beside its other products', async () => {
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const source = path.join(fixture(), 'source')
+  webappSource(source)
+  // scripts/bundles/desktop.py installed the Desktop workspace's dependencies into the checkout itself.
+  dependency(source, 'apps/desktop', 'vite')
+  const out = path.join(source, 'apps/desktop/build/products/webapp')
+  execFileSync(process.execPath, [path.join(repo, 'scripts/build/webapp.mjs'), '--source', source, '--out', out],
+    { stdio: 'pipe' })
+  expect(readFileSync(path.join(out, 'index.html'), 'utf8')).toContain('<script')
+  expect(productCurrent({ source, product: 'webapp', out })).toBe(true)
+  expect(existsSync(path.join(source, 'apps/desktop/dist-webapp'))).toBe(false)
+}, 60_000)

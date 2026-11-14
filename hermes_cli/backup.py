@@ -23,6 +23,7 @@ from hermes_constants import (
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
+from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, read_header_bytes_preopen
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
@@ -366,7 +367,7 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
+        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0, tracking_path=path)
         return fn(conn), None
     except Exception as exc:
         return None, exc
@@ -388,7 +389,6 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
             return False
     except OSError:
         return False
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     if not force and has_live_connection(path):
         return False
 
@@ -428,7 +428,6 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX locks
         # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
             return _done("cannot read header", size=size)

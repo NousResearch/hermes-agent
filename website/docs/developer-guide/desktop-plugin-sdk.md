@@ -1154,8 +1154,8 @@ Core ships one directive as the reference consumer: `::preview{file="…"}`
 renders the workspace HTML file **live inside the message** — a sandboxed
 `srcdoc` iframe with an opaque origin (scripts run and the widget is fully
 interactive; no reach into the app, its storage, or the bridge). The frame
-sizes itself to the content (height live, width adopted from the content's
-intrinsic span, flush left in the message flow), and a theme prelude hands
+spans the message column up to 960px and follows it on resize, its height
+follows the content live, and a theme prelude hands
 the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
 `--accent`, `--border`, `--card`), the app font, and a transparent
 background — so widget-shaped HTML reads as native while a full page keeps

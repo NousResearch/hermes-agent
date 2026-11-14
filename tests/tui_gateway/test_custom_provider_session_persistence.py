@@ -112,7 +112,7 @@ def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
     # Keep credential-pool resolution off the developer's real HERMES home.
     monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
 
-    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "unused"}}
+    fake_cfg = {"agent": {"system_prompt": ""}, "model": model_cfg or {"default": "unused"}}
     with (
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
         patch("tui_gateway.server._get_db", return_value=MagicMock()),

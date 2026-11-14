@@ -542,6 +542,11 @@ def _settle_interrupted_update() -> None:
 
 _settle_interrupted_update()
 
+# After the repair above: a merge killed while writing hermes_agent/ must not keep the repair from running.
+from hermes_agent.compat import install as _install_compat
+
+_install_compat()
+
 
 def _pin_launcher_home() -> None:
     """A minted launcher (``hermes_cli._launchers``) pins ``HERMES_HOME`` to the install's default

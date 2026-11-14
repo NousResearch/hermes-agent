@@ -10,12 +10,9 @@ import shutil
 import stat
 import sys
 from collections.abc import Callable, Mapping, MutableMapping
-from contextvars import ContextVar, Token
 from pathlib import Path
 
 _profile_fallback_warned: bool = False
-_UNSET = object()
-_HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
 
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
@@ -29,24 +26,39 @@ DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
 
 
-def set_hermes_home_override(path: str | Path | None) -> Token:
-    """Set a context-local Hermes home override and return its reset token.
+def set_hermes_home_override(path: str | Path | None):
+    """Set a context-local Hermes home override (``None``: the process home); returns a token for
+    :func:`reset_hermes_home_override`.
 
-    Deliberately does not mutate ``os.environ`` (shared by every thread in the process).
+    Deliberately does not mutate ``os.environ`` (shared by every thread in the process). The
+    override is one field of the runtime scope state (``hermes_scope``), so with a scope bound a
+    call naming another profile moves the whole scope (local) or raises ``ScopeSwitchRefused``
+    (hosted); see ``agent.runtime_scope.legacy_switch``. New code binds a scope instead
+    (``agent.runtime_scope.bind_profile_scope``).
     """
-    value: str | object = _UNSET if path is None else str(path)
-    return _HERMES_HOME_OVERRIDE.set(value)
+    from hermes_scope import current_scope, push_state
+    if current_scope() is not None:
+        from agent.runtime_scope import legacy_switch
+        switched = legacy_switch(path)
+        if switched is not None:
+            return switched
+    return push_state(home=None if path is None else str(path))
 
 
-def reset_hermes_home_override(token: Token) -> None:
-    """Restore the previous context-local Hermes home override."""
-    _HERMES_HOME_OVERRIDE.reset(token)
+def reset_hermes_home_override(token) -> None:
+    """Undo the ``set_hermes_home_override`` that returned *token*."""
+    token.reset()
 
 
 def get_hermes_home_override() -> str | None:
-    """Return the active context-local Hermes home override, if any."""
-    override = _HERMES_HOME_OVERRIDE.get()
-    return str(override) if override is not _UNSET and override else None
+    """Return the active context-local Hermes home override, if any.
+
+    Read through ``sys.modules``, not an import: this module is on the boot path (launchers,
+    ``hermes_bootstrap``, ``pm``) and must work alone, including in a checkout an update left
+    half-written. Nothing can be bound before ``hermes_scope`` has finished importing, so while
+    it is absent or still initialising (another thread's first import) there is no override."""
+    current_state = getattr(sys.modules.get("hermes_scope"), "current_state", None)
+    return (current_state().home or None) if current_state is not None else None
 
 
 def _expand_hermes_home(path: str) -> Path:
@@ -762,6 +774,18 @@ _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile
                       "host": "real", "user": "real", "real_home": "real", "real-home": "real"}
 
 
+def _bound_terminal_home_mode() -> str | None:
+    """The bound profile's ``TERMINAL_HOME_MODE``, or ``None`` with no terminal scope bound or a policy
+    without the key: a session policy frozen before ``home_mode`` was projected keeps the process value
+    it ran with, not ``auto``. A served profile's turn must not read the LAUNCH profile's bridged value
+    from ``os.environ`` (#146103). Read through ``sys.modules`` for the same boot-path reason as
+    ``get_hermes_home_override``: no scope can be bound before ``tools.terminal_scope`` is imported."""
+    get_terminal_scope = getattr(sys.modules.get("tools.terminal_scope"), "get_terminal_scope", None)
+    policy = get_terminal_scope() if get_terminal_scope is not None else None
+    mode = None if policy is None else policy.get("TERMINAL_HOME_MODE")
+    return None if mode is None else str(mode).strip() or "auto"
+
+
 def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """Subprocess ``HOME`` override, or ``None``.
 
@@ -770,7 +794,7 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = _env_get(env, "TERMINAL_HOME_MODE", "auto").lower() or "auto"
+    mode = (_bound_terminal_home_mode() or _env_get(env, "TERMINAL_HOME_MODE", "auto")).lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":
@@ -834,6 +858,27 @@ def socket_safe_tmpdir() -> str:
     if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
         return candidate
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
+
+
+# ---- Launch-only env vars ----
+# Only the real launch environment (service unit ``Environment=``, container image, operator
+# export) may set these. Every Hermes user-writable layer skips them, so a user ``.env`` or a
+# user-configured secret source cannot repoint a deployment bootstrap value. ``HERMES_MANAGED_DIR``
+# would void administrator policy at a directory the user controls (#135200); ``HERMES_HOME``
+# moves identity, policy and plugin scope wholesale — one write to ``~/.hermes/.env`` would
+# otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
+# Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
+# ``hermes_cli.config.reload_env``, ``agent.secret_sources.registry.apply_all`` (reported as
+# ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
+# writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
+LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME"})
+
+
+def is_launch_only_env_key(name: str) -> bool:
+    """True when ``name`` is a launch-only key in any letter case. Windows env names are
+    case-insensitive, so ``hermes_managed_dir=`` in a ``.env`` would set ``HERMES_MANAGED_DIR``;
+    folding on POSIX too is harmless (a lowercase name there is a distinct var nothing reads)."""
+    return name.upper() in LAUNCH_ONLY_ENV_KEYS
 
 
 # ---- Managed mode (NixOS declarative config) ----
@@ -957,6 +1002,29 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     except (OSError, NotImplementedError):
         pass
     _chown_to_hermes_uid(path)
+
+
+def ensure_private_store(path: str | Path, *, home: str | Path | None = None) -> int:
+    """Create *path* (parents too) as an owner-only ``0700`` credential store and return the
+    ``subprocess`` ``umask`` for a child that writes secrets into it: ``0o077``, so files the child
+    creates land ``0600`` (a child's own ``writeFile`` takes the process umask, which this caller
+    cannot otherwise reach). An existing store is tightened too: files written before this policy
+    keep their mode, so the directory is what closes them off.
+
+    Managed installs (group-share by design, #77579) and containers / ``HERMES_SKIP_CHMOD``
+    (mounts shared across UIDs) keep the inherited modes and get ``-1`` (inherit the umask): the
+    carve-outs ``hermes_cli.config._secure_file`` makes. ``HERMES_HOME_MODE`` is not applied: it
+    opens the home for traversal to a served subdirectory, never to a credential store.
+    """
+    from hermes_dir_acl import make_user_dir
+
+    private = get_managed_system(home) is None and not _container_or_chmod_skipped()
+    target = make_user_dir(path, mode=0o700 if private else 0o777, parents=True, exist_ok=True)
+    if not private:
+        return -1
+    with contextlib.suppress(OSError, NotImplementedError):
+        os.chmod(target, 0o700)
+    return 0o077
 
 
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:
@@ -1433,7 +1501,7 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 # update post-probe shares this set so the guard that BLOCKS and the hint that EXPLAINS agree.
 FIRST_PARTY_MODULE_ROOTS = frozenset({
     "agent", "acp_adapter", "cli", "cron", "gateway", "model_tools", "plugins",
-    "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils",
+    "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils", "hermes_agent",
 })
 
 

@@ -840,7 +840,7 @@ def _profile_skill_sync_status(r) -> str:
 
 
 def _sync_profiles_after_update() -> None:
-    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill, Honcho profiles."""
+    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill."""
     # All profiles incl. the active one: seed_profile_skills() subprocesses with an explicit
     # HERMES_HOME, so sync_skills()'s module-level HERMES_HOME cache can't skew it.
     with suppress(Exception):
@@ -863,12 +863,6 @@ def _sync_profiles_after_update() -> None:
         if backfilled:
             print()
             print(f"→ Seeded .env for {len(backfilled)} profile(s) (empty placeholder): {', '.join(backfilled)}")
-
-    with suppress(Exception):
-        from plugins.memory import import_provider_module
-        synced = import_provider_module("honcho", "cli").sync_honcho_profiles_quiet()
-        if synced:
-            print(f"\n-> Honcho: synced {synced} profile(s)")
 
 
 def _refresh_cua_driver_after_update() -> None:
@@ -918,6 +912,11 @@ def _install_default_tools_after_update() -> None:
         return
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
+            # The entry found may be a row another checkout recorded: claim it, or that
+            # checkout's upgrade drops the row and `pm gc` deletes this one's tool. Claiming
+            # an installed tool downloads and re-hashes nothing.
+            with suppress(pm.InstallError, OSError):
+                pm.ensure(name, explicit=True, verify=False)
             continue
         print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
@@ -1067,6 +1066,11 @@ def _run_post_update_maintenance(
     owed_step("config_migration", lambda: _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     ))
+    # Catalog plugins marked ``default: true`` that a profile never had: a fresh install's home, or a
+    # default added since the last update. A failed fetch is retried from a later boot, so nothing is owed.
+    with _best_effort('Default plugin install failed: %s'):
+        from hermes_cli.default_plugins import install_and_record
+        install_and_record()
 
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))

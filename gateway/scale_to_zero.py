@@ -266,6 +266,6 @@ def suspend_self(environ: Optional[dict] = None, *, socket_path: str = FLY_API_S
         logger.info("scale-to-zero: machine suspend accepted by flaps (%s)", status_line)
     else:
         body = response.split(b"\r\n\r\n", 1)[-1][:500].decode("utf-8", "replace")
-        logger.warning("scale-to-zero: flaps suspend rejected: %s %s", status_line,
+        logger.warning("scale-to-zero: flaps suspend rejected: %s %s", status_line,  # health: allow HX017 -- flaps API error body
                        json.dumps(body)[:500])
     return ok

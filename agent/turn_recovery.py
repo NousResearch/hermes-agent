@@ -1048,10 +1048,11 @@ def nonretryable_client_error_result(
     agent._flush_status_buffer()
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
+    from gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
     _nonretryable_summary = agent._summarize_api_error(api_error)
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
-    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
+    agent._emit_diagnostic_status(TerminalFailureText(f"❌ {_label}: {_nonretryable_summary}"))
     # The endpoint/status trace is developer detail: verbose only (the log has it always).
     if getattr(agent, "verbose_logging", False):
         _vlines(
@@ -1195,6 +1196,7 @@ def max_retries_exhausted_result(
         _print_billing_or_entitlement_guidance,
     )
 
+    from gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
     agent._flush_status_buffer()
     _final_summary = agent._summarize_api_error(api_error)
     _billing_guidance = ""
@@ -1202,12 +1204,12 @@ def max_retries_exhausted_result(
     if _is_billing:
         if classified.billing_unverified:
             # Ambiguous body — hedge the terminal line.
-            agent._emit_diagnostic_status(
+            agent._emit_diagnostic_status(TerminalFailureText(
                 "❌ Provider reported usage/credit exhaustion "
                 f"(unverified — may be a content-filter rejection) — {_final_summary}"
-            )
+            ))
         else:
-            agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}")
+            agent._emit_diagnostic_status(TerminalFailureText(f"❌ Billing or credits exhausted — {_final_summary}"))
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified,
@@ -1218,12 +1220,12 @@ def max_retries_exhausted_result(
             _print_billing_or_entitlement_guidance(agent, **_billing_kw)
     elif is_rate_limited:
         _reset = reset_hint(api_error)
-        agent._emit_diagnostic_status(
+        agent._emit_diagnostic_status(TerminalFailureText(
             f"❌ Rate limited after {attempts} {'attempt' if attempts == 1 else 'retries'} — {_final_summary}"
             f"{f' (resets in {_reset})' if _reset else ''}"
-        )
+        ))
     else:
-        agent._emit_diagnostic_status(f"❌ API failed after {attempts} retries — {_final_summary}")
+        agent._emit_diagnostic_status(TerminalFailureText(f"❌ API failed after {attempts} retries — {_final_summary}"))
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
@@ -1746,7 +1748,12 @@ def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bo
         return False
     agent._buffer_diagnostic_status(
         _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
-    return bool(agent._try_activate_fallback(reason=classified.reason))
+    if not agent._try_activate_fallback(reason=classified.reason):
+        return False
+    # The status above is dropped once the fallback answers: log the trigger (#152101).
+    logger.warning("%sCodex app-server turn failed (%s: %s) — switched to fallback",
+                   agent.log_prefix, classified.reason.value, str(error)[:200])
+    return True
 
 
 def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any, classified: Any = None) -> bool:
@@ -1929,9 +1936,11 @@ def route_classified_error(
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
-    # escalate to the fallback chain once; False -> terminal handling.
+    # escalate to the fallback chain once; False -> terminal handling. A verdict that opts out
+    # (a missing CLI login no other provider can fix, #132337) fails closed instead.
     if (
         classified.is_auth
+        and classified.should_fallback
         and not _retry.auth_failover_attempted
         and agent._fallback_index < len(agent._fallback_chain)
     ):

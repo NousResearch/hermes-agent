@@ -59,8 +59,9 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
         if allowed is not True:
             return f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}"
-    except Exception as e:
+    except Exception as e:  # the guard is on: a scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
 
 
@@ -837,13 +838,11 @@ def skill_manage(
 def _skill_manage_description() -> str:
     return (
         "Create, update or delete skills: your procedural memory for recurring "
-        "tasks. The call is an operations array (a single "
-        "edit is a list of one); it applies atomically — any failure rolls "
-        "every touched skill back. Ops: create (full SKILL.md; lands in "
+        "tasks. The operations apply atomically — any failure rolls "
+        "every touched skill back. Ops: create (lands in "
         "the profile's skills directory or configured skills.create_dir; must precede that skill's other "
-        "ops), patch (targeted old_string/new_string fix — preferred; "
-        "content alone REPLACES the whole file, read it via skill_view() "
-        "first), write_file/remove_file (supporting files), delete (sole "
+        "ops), patch (targeted old_string/new_string fix — preferred), "
+        "write_file/remove_file (supporting files), delete (sole "
         "op only). Existing skills are modified wherever they live. "
         f"Description: max {SKILL_PROMPT_DESC_LIMIT} chars, 'Use when <trigger>. <behavior>.', never "
         "the category name (the index shows it). Write lessons, not logs: "
@@ -886,7 +885,7 @@ SKILL_MANAGE_SCHEMA = {
             "operations": {
                 "type": "array",
                 "description": (
-                    "Ordered ops; each names its target skill (lowercase, hyphens/underscores, "
+                    "Ordered ops (a single edit is a list of one); each names its target skill (lowercase, hyphens/underscores, "
                     "max 64 chars). Each action is its own shape; another action's text slot is invalid."
                 ),
                 # Per-action branches, not one flat union: with one object holding content /
@@ -908,7 +907,7 @@ SKILL_MANAGE_SCHEMA = {
                     }, ("old_string", "new_string")),
                     _op_schema("patch", {
                         "content": {"type": "string",
-                                    "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort)."},
+                                    "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort — read it via skill_view() first)."},
                     }, ("content",)),
                     _op_schema("write_file", {
                         "file_path": _FILE_PATH,
@@ -940,4 +939,7 @@ from tools.registry import registry, tool_error
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")))
+        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
+    # The flat single-op shape old transcripts replay, and the batch's top-level default name.
+    compat_args=("action", "name", "content", "category", "file_path", "file_content", "old_string",
+                 "new_string", "replace_all", "absorbed_into"))

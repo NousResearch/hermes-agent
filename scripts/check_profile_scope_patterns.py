@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import subprocess
@@ -28,10 +29,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import original_path
+from scripts.code_health import gitio
 PATTERNS = ROOT / "scripts" / "ci" / "profile_scope_patterns.json"
 SUFFIXES = (".py", ".ts", ".tsx")
 SKIP_PREFIXES = ("tests/", "website/", "skills/", "optional-skills/", "evals/", "scripts/", ".worktrees/")
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,7 @@ def scan_text(rel: str, text: str, patterns: list[dict], lines: set[int] | None 
     src_lines = text.split("\n")
     for p in patterns:
         path_rx = p.get("_path_rx")
-        if path_rx is not None and not path_rx.search(rel):
+        if path_rx is not None and not path_rx.search(original_path(rel)):
             continue
         for m in p["_rx"].finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1
@@ -77,31 +80,23 @@ def scan_text(rel: str, text: str, patterns: list[dict], lines: set[int] | None 
     return findings
 
 
-def _git(*args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-    return proc.stdout
-
-
 def added_lines_vs_base(base: str, head: str | None) -> dict[str, set[int]]:
     """``{path: {added line numbers in head}}`` for lint-able files changed between *base* and *head*
-    (working tree when *head* is None)."""
-    rev = [base, head] if head else [base]
-    diff = _git("diff", "--no-color", "-U0", "--diff-filter=AM", *rev, "--")
+    (working tree when *head* is None). A file moved by a chunk is compared with its base file through
+    ``MOVES``; the old-path files the shim generator writes are left out."""
     out: dict[str, set[int]] = {}
-    current: str | None = None
-    for raw in diff.split("\n"):
-        if raw.startswith("+++ "):
-            name = raw[4:]
-            current = name[2:] if name.startswith("b/") else None
-            if current is not None and not _lint_path(current):
-                current = None
+    for change in gitio.changed_files(ROOT, base, head):
+        if change.new is None or not _lint_path(change.new):
             continue
-        if current is None:
+        after = (_read(change.new, head) or "").split("\n")
+        if change.status == "A":
+            out[change.new] = set(range(1, len(after) + 1))
             continue
-        m = _HUNK_RE.match(raw)
-        if m:
-            start, count = int(m.group(1)), int(m.group(2) or "1")
-            out.setdefault(current, set()).update(range(start, start + count))
+        before = (_read(change.old, base) or "").split("\n")
+        opcodes = difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
+        added = {j + 1 for tag, _, _, j1, j2 in opcodes if tag in ("replace", "insert") for j in range(j1, j2)}
+        if added:
+            out[change.new] = added
     return out
 
 

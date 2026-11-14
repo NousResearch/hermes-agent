@@ -160,6 +160,7 @@ class State(enum.Enum):
 @dataclass
 class _CacheEntry:
     state: State
+    chat_id: str
     payload: Any = None
 
 
@@ -174,7 +175,7 @@ class RequestCache:
 
     def register_pending(self, chat_id: str) -> str:
         rid = str(uuid.uuid4())
-        self._entries[rid] = _CacheEntry(state=State.PENDING)
+        self._entries[rid] = _CacheEntry(state=State.PENDING, chat_id=chat_id)
         return rid
 
     def get(self, request_id: str) -> Optional[_CacheEntry]:
@@ -585,6 +586,10 @@ class LineAdapter(BasePlatformAdapter):
             return
         request_id = parsed.get("request_id", "") if parsed.get("action") == "show_response" else ""
         entry = self._cache.get(request_id) if request_id else None
+        if entry is not None and entry.chat_id != chat_id:
+            # A request id is a routing handle, not a capability: another chat
+            # holding it gets the same answer as for an unknown id (SECURITY.md §2.6).
+            entry = None
         if not self._client or not reply_token:
             return
         if entry is None:

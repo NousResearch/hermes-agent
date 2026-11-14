@@ -404,7 +404,7 @@ class BrowseShSource(SkillSource):
             return None
         slug = item["slug"]
         md_url = self._resolve_skill_md_url(slug, item)
-        content = _get_text(md_url, follow_redirects=True) if md_url else None
+        content = _get_text(md_url) if md_url else None
         if content is None:
             return None
         meta = self._item_to_meta(item)
@@ -417,7 +417,7 @@ class BrowseShSource(SkillSource):
 
     def _resolve_skill_md_url(self, slug: str, item: dict) -> Optional[str]:
         """``skillMdUrl`` from ``/api/skills/{slug}``; fallback to a ``raw.githubusercontent.com`` ``sourceUrl``."""
-        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug), follow_redirects=True)
+        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug))
         md_url = data.get("skillMdUrl") if isinstance(data, dict) else None
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url

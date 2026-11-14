@@ -4,7 +4,8 @@ Legacy compression rotation mints a new physical ``session_id`` mid-conversation
 into a fresh cache bucket. ``resolve_prompt_cache_scope()`` maps the physical id to the ROOT
 of its compression lineage — NOT ``get_conversation_root`` (the Portal-attribution walk),
 which would collapse /branch children and delegate trees into one id. ``/new`` starts a
-fresh scope; fork children (branch, delegate, tool-tagged) are isolated. Hosts minting one id
+fresh scope; fork children (branch, delegate, tool-tagged) are isolated from their parent, and one
+parent's delegated children share a scope of their own (``sibling_cache_scope``). Hosts minting one id
 per RESPONSE declare the conversation via ``gateway_session_key``, which wins over the lineage
 walk and is hashed to ``gwk_<sha256[:24]>`` (it embeds platform/chat/user identifiers).
 """
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _MEMO_ATTR = "_prompt_cache_scope_memo"
 _DECLARED_SCOPE_PREFIX = "gwk_"
+_SIBLING_SCOPE_PREFIX = "sub_"
 
 
 def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
@@ -168,6 +170,12 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
     (the physical id without ancestry/DB). Memoized on the agent."""
     inherited = getattr(agent, "_inherited_cache_scope", None)
+    # Two sibling streams under one key evict each other on a slot-keyed route. Read per call:
+    # a child can fall back onto such a route after it was built.
+    if is_sibling_cache_scope(inherited) and is_slot_keyed_cache_route(
+        getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),
+    ):
+        inherited = None
     if isinstance(inherited, str) and inherited:
         return _apply_fork_tag(agent, inherited)
     sid = str(getattr(agent, "session_id", None) or "")
@@ -190,6 +198,25 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
         except Exception:
             pass  # frozen/slotted doubles: resolution works, just unmemoized
     return _apply_fork_tag(agent, scope)
+
+
+def sibling_cache_scope(parent: Any) -> Optional[str]:
+    """One cache scope for every child of *parent* (``sub_<sha256[:24]>`` of the parent's scope).
+
+    Providers that cache automatically only match inside the scope the client sends, and a
+    scope per child made each sibling pay for the prefix they all share. The scope is not the
+    parent's own, so a delegation tree adds one bucket rather than joining its parent's.
+    ``resolve_prompt_cache_scope`` ignores it while the child is on a slot-keyed route.
+    """
+    parent_scope = resolve_prompt_cache_scope_safe(parent)
+    if not parent_scope:
+        return None
+    return _SIBLING_SCOPE_PREFIX + hashlib.sha256(parent_scope.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
+def is_sibling_cache_scope(scope: Any) -> bool:
+    """True when *scope* is the one a parent's children share (:func:`sibling_cache_scope`)."""
+    return isinstance(scope, str) and scope.startswith(_SIBLING_SCOPE_PREFIX)
 
 
 # ``<scope>::<tag>`` — double colon so gateway session keys that already contain single

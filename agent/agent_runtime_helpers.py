@@ -1853,10 +1853,8 @@ def anthropic_prompt_cache_policy(
 
 
 def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
-    """Ask the registered ProviderProfile for a custom client, if any. Resolves by provider name,
-    then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
-    A profile that raises is logged and skipped: a third-party plugin must not be able to take
-    the turn down, it can only fail to provide a client."""
+    """Ask the registered ProviderProfile for a custom client: by provider name, then by ``base_url``
+    prefix (``acp://…``). A raising HTTP profile is skipped; a process profile's error propagates (#139807)."""
     try:
         from providers import get_provider_profile
     except Exception:
@@ -1877,6 +1875,8 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
+        if getattr(profile, "auth_type", "") == "external_process":
+            raise
         _ra().logger.warning(
             "Provider profile %r failed to create a client; falling back to the standard client path",
             getattr(profile, "name", provider_name) or "?", exc_info=True,
@@ -2257,8 +2257,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
-            from agent.credential_pool import load_pool
-            agent._credential_pool = load_pool(new_provider)
+            from agent.custom_entry_pool import load_route_pool
+            agent._credential_pool = load_route_pool(new_provider, agent.base_url)
         except Exception as _pool_exc:
             logger.warning(
                 "switch_model: credential pool reload failed for %s (%s); "

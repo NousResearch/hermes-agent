@@ -38,10 +38,9 @@ from agent.transports.chat_completions import is_router_timeout_shim, router_tim
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
-# Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
-# boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
-# misidentify and, without an api_key, return 401 on every leg (issue #89863).
+# Never fingerprint a remote endpoint: Ollama-compat routes misidentify and 401 without a key (#89863).
 from agent.model_metadata import is_local_endpoint
+from agent.process_transport import waits_like_local
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
@@ -625,10 +624,9 @@ def _stream_env_stale_base() -> tuple[float, bool]:
     return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), "HERMES_STREAM_STALE_TIMEOUT" in os.environ
 
 
-def _configured_stale_base(agent) -> float:
-    """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
-    cfg = get_provider_stale_timeout(agent.provider, agent.model)
-    return cfg if cfg is not None else _stream_env_stale_base()[0]
+def _stream_stale_timeout_is_explicit(agent) -> bool:
+    """A per-provider ``stale_timeout_seconds`` or HERMES_STREAM_STALE_TIMEOUT is set, whatever its value."""
+    return get_provider_stale_timeout(agent.provider, agent.model) is not None or _stream_env_stale_base()[1]
 
 
 def _local_stream_stale_timeout_default() -> float:
@@ -1868,8 +1866,8 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
-            from agent.credential_pool import load_pool
-            fallback_pool = load_pool(fb_provider)
+            from agent.custom_entry_pool import load_route_pool
+            fallback_pool = load_route_pool(fb_provider, getattr(agent, "base_url", None))
             if fallback_pool and fallback_pool.has_credentials():
                 agent._credential_pool = fallback_pool
                 logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)
@@ -2887,7 +2885,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return base, cfg, min(base, 60.0)
         read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
-        if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
+        if read == 120.0 and waits_like_local(self.agent.base_url, self.agent.provider):
             read = base  # local providers prefill for minutes
             logger.debug("Local provider detected (%s) — stream read timeout raised to %.0fs", self.agent.base_url, read)
         elif read == 120.0 and stale is not None and stale != float("inf") and stale > read:
@@ -3841,13 +3839,14 @@ class _StreamingCall(StreamingWaitMonitor):
     # ── orchestration ───────────────────────────────────────────────────
 
     def _resolve_stale_timeout(self) -> None:
-        """Set ``_stream_stale_timeout``. Local endpoints (unless the env is set) get
+        """Set ``_stream_stale_timeout``. Local endpoints (unless a stale timeout is set) get
         long but FINITE patience — 900s / ``agent.local_stream_stale_timeout`` /
         HERMES_LOCAL_STREAM_STALE_TIMEOUT — an infinite one stalled sessions on a
         crashed endpoint forever. Cloud values scale with context size and are
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
-        base = _configured_stale_base(self.agent)
-        if base == 180.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
+        # Presence, not value: an explicit 180 is the operator's deadline, not the unset default.
+        if (not _stream_stale_timeout_is_explicit(self.agent)
+                and waits_like_local(self.agent.base_url, self.agent.provider)):
             self._stream_stale_timeout = _local_stream_stale_timeout_default()
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)

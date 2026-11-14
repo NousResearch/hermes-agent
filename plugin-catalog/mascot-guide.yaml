@@ -1,0 +1,22 @@
+name: mascot-guide
+repo: https://github.com/kangmochi/mascot-widget
+sha: 260806425aa0f6702cedfd26ae2a65c2f03150c6
+title: Mascot Widget
+description: 'A mascot that floats in the corner of Hermes Desktop: it says what the agent is doing, shows tokens, context and session cost, and opens a status panel with copy, compress and stop. Colours, aura glow, size and the position of the bubble, cards and panel are adjustable, with Simple and Advanced settings tabs and three layout presets. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware or env vars.'
+maintainer: kangmochi
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/kangmochi/mascot-widget
+image: https://raw.githubusercontent.com/kangmochi/mascot-widget/260806425aa0f6702cedfd26ae2a65c2f03150c6/docs/shots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kangmochi/mascot-widget/260806425aa0f6702cedfd26ae2a65c2f03150c6/docs/shots/working.png
+  - https://raw.githubusercontent.com/kangmochi/mascot-widget/260806425aa0f6702cedfd26ae2a65c2f03150c6/docs/shots/widget.png
+  - https://raw.githubusercontent.com/kangmochi/mascot-widget/260806425aa0f6702cedfd26ae2a65c2f03150c6/docs/shots/settings.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

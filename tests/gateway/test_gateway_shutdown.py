@@ -53,7 +53,7 @@ def test_cron_provider_stop_cannot_override_gateway_exit_code():
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()
     runner._pending_messages = {"session": "pending text"}
-    runner._pending_approvals = {"session": {"command": "rm -rf /tmp/x"}}
+    runner._session_state("session").persistent.approvals = {"command": "rm -rf /tmp/x"}
     runner._restart_drain_timeout = 0.0
 
     release = asyncio.Event()
@@ -89,7 +89,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner.adapters == {}
     assert runner._running_agents == {}
     assert runner._pending_messages == {}
-    assert runner._pending_approvals == {}
+    assert all(state.persistent.approvals is None for state in runner._sessions_map().values())
     assert runner._shutdown_event.is_set() is True
 
 

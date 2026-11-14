@@ -6,6 +6,44 @@ the chat id and the ack metadata; acks go through ``adapter._send_lifecycle_ack`
 
 from __future__ import annotations
 
+from typing import Optional
+
+
+def prompt_actor(adapter, event) -> dict:
+    """Who answers *event*'s prompt press: the clicker, the bot-owning profile's answer policy, and
+    whether the connector admitted the clicker (``admitted_authors``)."""
+    from gateway.approval_actor import runner_answer_policy
+    from gateway.relay.admitted_authors import answer_admitted
+
+    # Identity first: this answer is consumed before handle_message, and without the transport
+    # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
+    adapter._canonicalize(event.source)
+    return {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_answer_policy(event.source),
+            "admitted": answer_admitted(event)}
+
+
+def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) -> Optional[str]:
+    """The localized refusal when *actor* (``actor_id`` + ``admin_ids`` + ``admitted``) may not answer
+    the pending prompt *state*, else None: the requester / approvers / admins rule of
+    ``gateway.approval_actor``."""
+    from gateway import approval_actor
+
+    admitted = actor.get("admitted", True)
+    session_key = str(state.get("session_key") or "")
+    kind = state.get("kind")
+    if kind == "exec_approval":
+        requester = approval_actor.approval_refusal(session_key, actor["actor_id"], admin_ids=actor["admin_ids"],
+                                                    request_id=state.get("request_id"), choice=option_id,
+                                                    admitted=admitted)
+    elif kind == "slash_confirm":
+        requester = approval_actor.slash_confirm_refusal(session_key, str(state.get("confirm_id") or ""),
+                                                         actor["actor_id"], admin_ids=actor["admin_ids"],
+                                                         admitted=admitted)
+    else:
+        requester = approval_actor.clarify_refusal(str(state.get("clarify_id") or ""), actor["actor_id"],
+                                                   admin_ids=actor["admin_ids"], admitted=admitted)
+    return approval_actor.refusal_text(requester) if requester else None
+
 
 async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) -> None:
     from gateway.relay import adapter as _relay

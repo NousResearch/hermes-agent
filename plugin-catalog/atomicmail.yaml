@@ -1,0 +1,31 @@
+name: atomicmail
+title: Atomic Mail
+repo: https://github.com/Atomic-Mail/atomic-mail-agentic
+sha: 2b8ec2e6e91eeb121cb56bdca153f88d266895ef
+subdir: integrations/hermes-plugin
+description: "Gives a Hermes agent its own @atomicmail.ai address in one command, with no account or signup form (proof-of-work sign-up). Mail from the user's allowed addresses wakes the agent and its reply goes out in the same thread; every allowed sender's DKIM signature is checked first, so a forged From: cannot drive the agent. Tools read, search, send and reply, and schedule meetings with real calendar invitations (send, update, cancel, read RSVPs, answer invitations). Disclosure — gives the agent its own @atomicmail.ai inbox: mail from addresses in ATOMICMAIL_ALLOWED_USERS (none by default) that passes a DKIM check reaches the agent as a chat message and the agent's reply is emailed back; ATOMICMAIL_TRUST_FROM_HEADER=true turns the DKIM check off, so a forged From: can then drive the agent; the model can send new mail, replies, calendar invitations, updates, cancellations and RSVPs from that address to any recipient without a Hermes approval prompt (the tools only ask the model to confirm with the user first), and Atomic Mail adds a \"Sent from Atomic Mail Agentic\" footer; network calls to Atomic Mail only (auth.atomicmail.ai for sign-up and sign-in, api.atomicmail.ai for JMAP: polling, reading, sending, invitations, and downloading each new allowed message for the DKIM check) plus DNS TXT lookups for DKIM keys (system resolver; when it returns nothing, DNS-over-HTTPS at cloudflare-dns.com, then dns.google; ATOMICMAIL_DNS_OVER_HTTPS=off disables that); a background polling task (every 20 s) while the gateway runs; Atomic Mail's anti-spam proof-of-work (scrypt, not cryptocurrency mining) costs about 20-45 CPU-seconds per sign-in, roughly every 10 minutes while the gateway polls (a few percent of one core) and once per tool session otherwise; the inbox API key is stored in Hermes's .env through hermes_cli.config and read with the profile-scoped secret reader; seen-message ids in plugin-data/atomicmail/state.json; no telemetry."
+maintainer: Atomic-Mail
+tier: community
+category: platform
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Atomic-Mail/atomic-mail-agentic/tree/2b8ec2e6e91eeb121cb56bdca153f88d266895ef/integrations/hermes-plugin
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - atomicmail_whoami
+    - atomicmail_read_inbox
+    - atomicmail_read_message
+    - atomicmail_search
+    - atomicmail_send
+    - atomicmail_reply
+    - atomicmail_send_invite
+    - atomicmail_update_invite
+    - atomicmail_cancel_invite
+    - atomicmail_list_invites
+    - atomicmail_respond_to_invite
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ATOMICMAIL_API_KEY

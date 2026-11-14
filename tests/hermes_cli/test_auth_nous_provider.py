@@ -1121,7 +1121,7 @@ def test_poll_for_token_timeout_raises_actionable_message():
 
 
 def _run_device_login_with_portal_inference_url(monkeypatch, portal_inference_url):
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
 
     monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
     monkeypatch.setattr(auth, "_request_device_code", lambda **kw: {

@@ -1,7 +1,7 @@
 name: forgebruecke
 title: Forgebrücke
 repo: https://github.com/studioluftbruecke/hermes-forgebruecke
-sha: f01d5dae2b643ef2a2efffbdccaea7d9417632cf
+sha: 71bb5c17e0f27df66d157f3b910ac4750dcdeaca
 description: >-
   A bridge between Hermes and your self-hosted Forgejo: Hermes works as its own account, writes
   follow Hermes' approval setting, and a desk in Hermes Desktop shows the pull requests that wait for you.
@@ -10,14 +10,14 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://forgebruecke.luftbruecke.studio
-version: "0.0.22"
-image: https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/banner.png
+version: "0.0.26"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-1.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-2.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-3.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-4.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-5.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-5.png
 readme: true
 platforms: [linux, macos]
 known_issues:

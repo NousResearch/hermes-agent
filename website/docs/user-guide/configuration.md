@@ -3128,7 +3128,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_extract` (including redirect targets), browser navigation, `vision_analyze` image URLs, skills hub downloads and image-source fetches. `web_search` takes a query rather than a URL and does not filter its result list. Other URL fetches (kanban URL attachments, cron URL monitors, gateway media downloads) only apply the private-address SSRF check, not this blocklist.
+When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it: the page is withheld from the agent, but the blocked host still saw the request. `web_search` takes a query rather than a URL and does not filter its result list. Other URL fetches (kanban URL attachments, cron URL monitors, gateway media downloads) only apply the private-address SSRF check, not this blocklist.
 
 Domain rules support:
 - Exact domains: `admin.example.com`

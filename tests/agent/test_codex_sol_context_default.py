@@ -8,11 +8,12 @@ from agent import model_metadata as mm
 
 
 @pytest.mark.parametrize("catalog", [{}, {"gpt-6.1-sol": 272_000}])
-def test_sol_uses_published_default_without_changing_other_codex_models(monkeypatch, catalog):
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-6.1-terra"])
+def test_codex_61_defaults_do_not_inherit_legacy_or_public_api_limits(monkeypatch, catalog, model):
     monkeypatch.setattr(mm, "_fetch_codex_oauth_context_lengths_with_source", lambda *a, **k: (catalog, True))
     monkeypatch.setattr(mm, "_codex_oauth_max_context_cache", {})
     route = dict(provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex", api_key="test")
-    assert mm.get_model_context_length("gpt-6.1-sol", **route) == 500_000
+    assert mm.get_model_context_length(model, **route) == 500_000
     assert mm.get_model_context_length("gpt-6-luna", **route) == 272_000
     assert mm.get_model_context_length("gpt-6.1-sol-900k", **route) == 900_000
 

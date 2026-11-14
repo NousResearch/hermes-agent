@@ -1650,9 +1650,9 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
     return None
 
 
-# Subscription defaults when discovery is unavailable (longest-key-first); Sol uses its published 500K default.
+# Subscription defaults when discovery is unavailable (longest-key-first); the 6.1 models default to 500K.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 500_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6.1-sol": 500_000, "gpt-6.1-terra": 500_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,

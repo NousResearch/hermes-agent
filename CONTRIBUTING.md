@@ -370,6 +370,16 @@ hermes-agent/
 └── AGENTS.md                 # Development guide for AI coding assistants
 ```
 
+### Detached gateway media
+
+Attachment auto-TTS can outlive the text turn on adapters that opt in. Keep its
+worker and cancellation ownership separate from the conversation guard, and bind
+the source profile for synthesis, upload and cleanup. See
+[Detached attachment speech](website/docs/developer-guide/gateway-internals.md#detached-attachment-speech)
+for the adapter capability, concurrency, deadlines and subprocess limitations.
+Tests for lifecycle changes must retain idle `/stop`, shutdown, profile routing
+and real child-process cleanup coverage, not only mocked synthesis.
+
 ### User configuration (stored in `~/.hermes/`)
 
 | Path | Purpose |

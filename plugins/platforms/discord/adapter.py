@@ -3464,16 +3464,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
-    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
-        """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
-        for gid, text_ch_id in self._voice_text_channels.items():
-            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
-                success = await self.play_in_voice_channel(gid, audio_path)
-                return SendResult(success=success)
-        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
-
-
     # --- Voice channel methods (join / leave / play) ---
 
     def _load_voice_fx_config(self) -> dict[str, Any]:

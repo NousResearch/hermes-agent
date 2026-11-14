@@ -34,7 +34,9 @@ def test_version_local_segment_is_not_a_phone(text):
     assert redact_sensitive_text(text, force=True) == text
 
 
-@pytest.mark.parametrize("text", ["call +" + "4915123456789 now", "tel:+" + "4915123456789", "(+" + "15551234567)"])
+@pytest.mark.parametrize("text", ["call +" + "4915123456789 now", "tel:+" + "4915123456789", "(+" + "15551234567)",
+                                  "\u7535\u8bdd+" + "8613812345678", "\u0422\u0435\u043b\u0435\u0444\u043e\u043d+" + "79161234567",
+                                  "\u00e9+" + "4915123456789"])
 def test_phone_number_still_masked(text):
     assert "****" in redact_sensitive_text(text, force=True)
 

@@ -757,7 +757,7 @@ _WEBAPP_LINK_CREDENTIAL_RE = re.compile(
 
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers. A ``+`` glued
 # to a word or dot is a version suffix, not a phone: ``python-3.14.7+20260901-linux-x64`` (#142574).
-_SIGNAL_PHONE_RE = re.compile(r"(?<![\w.])(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+_SIGNAL_PHONE_RE = re.compile(r"(?<![0-9A-Za-z_.])(\+[1-9]\d{6,14})(?![A-Za-z0-9])")  # ASCII: CJK-glued numbers still mask
 
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).

@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
-from utils import atomic_write_text, is_truthy_value
+from utils import atomic_write_bytes, atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -417,16 +417,37 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
     return (None, guard) if guard else (skill_dir, None)
 
 
+_UTF8_BOM_BYTES = b"\xef\xbb\xbf"
+
+
+def _write_skill_content(target: Path, content: str, before: Optional[bytes]) -> None:
+    """Write ``content`` in the style the target already had: line endings and a leading UTF-8 BOM
+    survive the rewrite, so a one-line patch stays a one-line diff and the file's bytes (and every
+    content hash over them) are unchanged. ``before`` is the pre-write bytes, None for a new file,
+    which is written exactly as supplied. The same rule ``write_file``/``patch`` follow, so a skill
+    copied from a Windows install keeps its CRLF (#153752)."""
+    if before is not None:
+        from tools.file_operations_common import _detect_line_ending, _normalize_line_endings
+        on_disk = before.decode("utf-8-sig")
+        if ending := _detect_line_ending(on_disk):
+            content = _normalize_line_endings(content, ending)
+        if before.startswith(_UTF8_BOM_BYTES) and not content.startswith("\ufeff"):
+            content = "\ufeff" + content
+    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644, newline="")
+
+
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
                    content: str) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
     (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
-    restores the original (or unlinks a new file). Error dict or None."""
+    restores the original bytes (or unlinks a new file). Error dict or None."""
     original = None
+    before = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
-        original = target.read_text(encoding="utf-8-sig")
+        before = target.read_bytes()
+        original = before.decode("utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
     baseline, scan_error = _scan_baseline(skill_dir)
@@ -434,12 +455,12 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    _write_skill_content(target, content, before)
     scan_error = _security_scan_skill(skill_dir, baseline)
     if not scan_error:
         return None
-    if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
+    if before is not None:
+        atomic_write_bytes(target, before)
     else:
         target.unlink(missing_ok=True)
     return _err(scan_error)

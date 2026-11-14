@@ -17,7 +17,7 @@ from tools import approval_context as _ctx
 from tools.approval_ansi_c import expand_ansi_c_quotes
 from utils import unlink_files_older_than
 from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
+    _FALLBACK_MATCH_SUFFIX, _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
 
 logger = logging.getLogger("tools.approval")
 
@@ -112,7 +112,7 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
     )
     # The parser-limit block is almost always a giant inline payload, not a forbidden operation, and is typically
     # followed by blind rephrase retries: say what to do instead, and save the payload for the user.
-    if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
+    if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION) or description.endswith(_FALLBACK_MATCH_SUFFIX):
         saved = _save_blocked_payload(command) if command else None
         message += _RECOVERY_PREFIX + (f"Your command was saved to {saved} for the user to review. " if saved else "")
         message += _RECOVERY_STEPS

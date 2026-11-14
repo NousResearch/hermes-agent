@@ -392,7 +392,7 @@ def detect_hardline_command(command: str) -> tuple:
         verdict = (True, _PARSER_LIMIT_DESCRIPTION)
     except _parser_budget.ParserBudgetExceeded:
         fallback = _hardline_fallback(command)
-        verdict, complete = ((True, fallback) if fallback else (False, None)), False
+        verdict, complete = ((True, fallback + _FALLBACK_MATCH_SUFFIX) if fallback else (False, None)), False
     _parser_budget.record_scan(command, complete)
     return verdict
 
@@ -1016,6 +1016,9 @@ _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payl
 # A scan that ran out of its step budget: approval, never remembered (a session or always grant
 # would wave every later unscanned command through), and not a hardline refusal.
 _SCAN_INCOMPLETE_DESCRIPTION = "command too complex to scan fully; review before running"
+# A refusal from the budget-trip fallback, which also reads quoted text as code: say so, so the block
+# message can point at splitting the command instead of claiming the operation was seen.
+_FALLBACK_MATCH_SUFFIX = " (a quick re-read of a command too complex to scan fully; quoted text can match)"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
 

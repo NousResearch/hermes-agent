@@ -88,3 +88,13 @@ def test_a_stored_scan_incomplete_key_never_pre_approves(store, guard, gate):
     assert result["approved"] is False
     callback.assert_called_once()  # a person was asked
     assert callback.call_args.kwargs.get("allow_session") is False
+
+
+def test_a_fallback_refusal_says_where_it_came_from_and_how_to_recover(gate):
+    # The fallback reads quoted text as code, so a benign `echo "shutdown complete"` behind padding
+    # refuses; the block must say so and point at splitting, not claim the operation was seen.
+    result = check_all_command_guards(GREP_500 + '\necho "shutdown complete"', "local")
+    assert result["hardline"] is True
+    assert "quoted text can match" in result["message"]
+    assert "Split the work into smaller commands" in result["message"]
+

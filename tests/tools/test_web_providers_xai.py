@@ -131,6 +131,19 @@ class TestXAIProviderSearchJSONPath:
         assert result["success"] is True
         assert len(result["data"]["web"]) == 3
 
+    def test_commentary_message_is_not_parsed_as_results(self):
+        """A ``phase: commentary`` narration item ahead of the final JSON must not become the
+        annotation-paired text or a result row; only the final message's JSON counts."""
+        from plugins.web.xai import provider as xai_provider
+
+        payload = {"output": [
+            {"type": "message", "phase": "commentary", "content": [{"type": "output_text", "text": "Searching now.",
+             "annotations": [{"type": "url_citation", "url": "https://narration.example", "title": "noise"}]}]},
+            {"type": "message", "phase": "final_answer", "content": [{"type": "output_text", "text": self._GROK_JSON}]},
+        ]}
+        text_blocks, annotations = xai_provider.XAIWebSearchProvider._collect_output_text(payload)
+        assert text_blocks == [self._GROK_JSON] and annotations == []
+
     def test_drops_rows_without_url(self):
         from plugins.web.xai import provider as xai_provider
 

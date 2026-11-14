@@ -65,14 +65,37 @@ def _worth_registering(name: str, value: str) -> bool:
     return _key_has_secret_keyword(name) and not _PLAIN_WORD_OR_HOST_RE.fullmatch(stripped)
 
 
+def _pem_texts(value: str) -> list[str]:
+    """Every PEM-bearing text in *value*: itself, and each string inside it when it is JSON (a
+    service-account ``private_key`` carries its key as ``\\n``-escaped text, compact or pretty)."""
+    texts = [value] if _PEM_ARMOR in value else []
+    if _PEM_ARMOR in value and "\\n" in value:
+        try:
+            stack = [json.loads(value)]
+        except ValueError:
+            stack = [value.replace("\\n", "\n")]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                stack.extend(item.values())
+            elif isinstance(item, list):
+                stack.extend(item)
+            elif isinstance(item, str) and _PEM_ARMOR in item:
+                texts.append(item)
+    return texts
+
+
 def _multiline_fragments(value: str) -> list[str]:
-    """The joined form (what a text input or ``tr -d '\\n'`` leaves) and, for a PEM value, each body line."""
-    if "\n" not in value and "\r" not in value:
-        return []
-    joined = value.replace("\r", "").replace("\n", "")
-    if _PEM_ARMOR not in value:
-        return [joined]
-    return [joined, *(ln for ln in (raw.strip() for raw in value.splitlines()) if _SECRET_LINE_RE.fullmatch(ln))]
+    """The joined form (what a text input or ``tr -d '\\n'`` leaves) and, for a PEM value (or a JSON
+    value holding one), each body line."""
+    out: list[str] = []
+    if "\n" in value or "\r" in value:
+        joined = value.replace("\r", "").replace("\n", "")
+        if len(joined) >= _MIN_VALUE_CHARS * 2:  # ``us\neu`` -> ``useu`` would scrub ordinary words
+            out.append(joined)
+    for text in _pem_texts(value):
+        out.extend(ln for ln in (raw.strip() for raw in text.splitlines()) if _SECRET_LINE_RE.fullmatch(ln))
+    return out
 
 
 def _exact_forms(values: dict[str, str]) -> tuple[str, ...]:

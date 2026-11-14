@@ -1,6 +1,8 @@
 """Replay uses the failed send's identity across restarts and shared sessions."""
 
+import asyncio
 import json
+import sqlite3
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -181,3 +183,128 @@ def test_existing_ledger_migrates_without_inventing_routing():
     row = dl.sweep_recoverable()[0]
     assert row["content"] == "the final answer"
     assert row["routing_metadata"] == {}
+
+
+def replay_runner(adapter):
+    runner = _ReplayHarness._runner()
+    runner._async_session_store.lookup_by_session_key = AsyncMock(return_value=None)
+    runner.adapters = {Platform.RELAY: adapter}
+    runner._running = True
+    runner._background_tasks = set()
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_a_send_the_local_transport_refused_does_not_spend_an_attempt():
+    _record(routing_metadata=ROUTING)
+    _orphan("ob-1")
+    adapter, connector = relay()
+    connector.next_send_result = {"success": False, "error": "relay transport not connected"}
+    runner = replay_runner(adapter)
+
+    assert await runner._redeliver_pending_obligations() == 0
+    # More refusals than the whole budget: the reply must still be owed, not abandoned.
+    for _ in range(dl.MAX_ATTEMPTS + 1):
+        assert await runner._redeliver_failed_obligations_for_platform(Platform.SLACK, relay_adapter=adapter) == 0
+    refused = _row("ob-1")
+    assert (refused["state"], refused["attempts"]) == ("failed", 0)
+    assert refused["last_error"] == "relay transport not connected"
+
+    connector.next_send_result = {"success": True, "message_id": "m1"}
+    assert await runner._redeliver_failed_obligations_for_platform(Platform.SLACK, relay_adapter=adapter) == 1
+    assert _row("ob-1")["state"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_that_may_have_reached_the_platform_still_spends_an_attempt():
+    _record(routing_metadata=ROUTING)
+    _orphan("ob-1")
+    adapter, connector = relay()
+    connector.next_send_result = {"success": False, "error": "relay transport connection lost"}
+    runner = replay_runner(adapter)
+
+    assert await runner._redeliver_pending_obligations() == 0
+
+    lost = _row("ob-1")
+    assert (lost["state"], lost["attempts"]) == ("failed", 1)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delivery_record_is_retried_without_sending_the_reply_again(monkeypatch):
+    _record(routing_metadata=ROUTING)
+    _orphan("ob-1")
+    adapter, connector = relay()
+    runner = replay_runner(adapter)
+    record, writes = dl.mark_delivered, []
+
+    def busy_once(obligation_id):
+        writes.append(obligation_id)
+        if len(writes) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return record(obligation_id)
+
+    monkeypatch.setattr(dl, "mark_delivered", busy_once)
+    monkeypatch.setattr("gateway.relay.obligation_replay.SETTLE_RETRY_DELAYS", (0.001, 0.001), raising=False)
+
+    assert await runner._redeliver_pending_obligations() == 1
+
+    assert _row("ob-1")["state"] == "delivered"
+    assert len(writes) == 2
+    assert [frame["op"] for frame in connector.sent] == ["send"]
+
+
+@pytest.mark.asyncio
+async def test_handshakes_during_a_running_replay_share_it_and_get_one_more_pass():
+    from gateway.relay.obligation_replay import _schedule_replay
+
+    adapter, _ = relay()
+    runner = replay_runner(adapter)
+    passes, release = [], asyncio.Event()
+
+    async def sweep(platform, *, relay_adapter=None):
+        passes.append(platform)
+        await release.wait()
+        return 0
+
+    runner._redeliver_failed_obligations_for_platform = sweep
+    for _ in range(4):
+        _schedule_replay(runner, adapter, Platform.SLACK)
+    await asyncio.sleep(0)
+    assert len(passes) == 1 and len(runner._background_tasks) == 1
+
+    release.set()
+    await asyncio.gather(*runner._background_tasks)
+
+    assert passes == [Platform.SLACK, Platform.SLACK]
+    # Nothing is left behind, so a later handshake starts a fresh worker.
+    _schedule_replay(runner, adapter, Platform.SLACK)
+    await asyncio.gather(*runner._background_tasks)
+    assert len(passes) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_relay_fronted_plugin_platform_is_replayed_at_boot_and_on_replacement():
+    from gateway.relay.obligation_replay import replay_on_relay_replacement
+
+    plugin = Platform("irc")
+    assert plugin not in list(Platform)  # a plugin platform is not an enum iteration member
+    _record(platform="irc", routing_metadata=ROUTING)
+    _orphan("ob-1")
+    adapter, connector = relay()
+    connector._identities = [("irc", "")]
+    runner = replay_runner(adapter)
+
+    assert await runner._redeliver_pending_obligations() == 1
+    assert _row("ob-1")["state"] == "delivered"
+    assert connector.sent[0]["op"] == "send"
+
+    passes = []
+
+    async def sweep(platform, *, relay_adapter=None):
+        passes.append(platform)
+        return 0
+
+    runner._redeliver_failed_obligations_for_platform = sweep
+    replay_on_relay_replacement(runner, adapter)
+    await asyncio.gather(*runner._background_tasks)
+    assert passes == [plugin]

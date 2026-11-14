@@ -2415,6 +2415,7 @@ cli:
   goal:
     barrier_lifted: "▶ Bac na sprice bainte — ag atosú."
     paused_interrupted: "⏸ Sprioc ar sos — cuireadh isteach ar an seal. Úsáid /goal resume le leanúint ar aghaidh, nó /goal clear le stopadh."
+    paused_turn_failed: "⏸ Sprioc ar sos — theip ar an seal tar éis atriailacha ({reason}). Ceartaigh an chúis, ansin úsáid /goal resume le leanúint ar aghaidh, nó /goal clear le stopadh."
   loop:
     wakeup_firing: "↻ Dúiseacht /loop #{tick} á scaoileadh…"
     paused_interrupted: "⏸ Lúb ar sos — cuireadh isteach ar sheal na dúiseachta. Úsáid /loop resume le leanúint ar aghaidh, nó /loop stop le deireadh a chur leis."

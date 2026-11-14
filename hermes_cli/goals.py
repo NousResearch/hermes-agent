@@ -1195,6 +1195,16 @@ class GoalManager:
         self._state.clear_wait()   # a wait barrier is meaningless once paused
         return self._save()
 
+    def pause_after_failed_turn(self, result: Any) -> str:
+        """A failed turn already ran the in-turn retries and recovery: pause an active goal with the
+        failure reason instead of leaving it active with nothing queued. The user notice, or ''."""
+        if not self.is_active() or (isinstance(result, dict) and result.get("compression_exhausted")):
+            return ""  # compression exhaustion has its own bounded recovery (tui_gateway / gateway reset)
+        reason = str(result.get("failure_reason") or "error") if isinstance(result, dict) else "error"
+        self.pause(reason=f"turn failed ({reason})")
+        from agent.i18n import t
+        return t("cli.goal.paused_turn_failed", reason=reason)
+
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None

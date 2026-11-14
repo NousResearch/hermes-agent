@@ -2415,6 +2415,7 @@ cli:
   goal:
     barrier_lifted: "▶ Barreira do objetivo removida — retomando."
     paused_interrupted: "⏸ Objetivo pausado — o turno foi interrompido. Use /goal resume para continuar ou /goal clear para parar."
+    paused_turn_failed: "⏸ Objetivo pausado — o turno falhou após as novas tentativas ({reason}). Corrija a causa e use /goal resume para continuar ou /goal clear para parar."
   loop:
     wakeup_firing: "↻ Despertar #{tick} do /loop disparando…"
     paused_interrupted: "⏸ Loop pausado — o turno de despertar foi interrompido. Use /loop resume para continuar ou /loop stop para encerrá-lo."

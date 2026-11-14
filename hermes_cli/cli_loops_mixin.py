@@ -867,9 +867,11 @@ class CLILoopsMixin:
 
         # Empty/whitespace responses are almost always transient failures (API error,
         # empty stream): judging would say "continue" and trip the parse-failure backstop.
-        # A failed turn (a refused one: its folder is gone) never reached the model, so the judge
-        # would grade the previous reply and burn the whole budget; same rule as the TUI's hook.
+        # A failed turn (provider error after retries, a refused one) has no reply to judge: the
+        # judge would grade the previous one. Pause with the reason rather than sit idle as active.
         if getattr(self, "_last_turn_failed", False):
+            if notice := mgr.pause_after_failed_turn(getattr(self, "_last_turn_result", None)):
+                _cprint(f"  {_DIM}{notice}{_RST}")
             return
         last_response = self._last_assistant_response_text()
         if not last_response.strip():

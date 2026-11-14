@@ -358,6 +358,16 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
+    async def _post_turn_goal_failure_pause(self, *, session_entry: Any, source: Any, final_response: str) -> None:
+        """A failed turn already exhausted its retries: pause an active goal with the reason and say so
+        after delivery, instead of leaving it active with nothing queued."""
+        def _load():
+            from hermes_cli.goals import GoalManager
+            return lambda sid: GoalManager(session_id=sid)
+        mgr = await self._post_turn_manager(session_entry, "goal failure pause", "goals", _load)
+        if mgr is not None and (msg := mgr.pause_after_failed_turn(self._captured_turn_result())) and source is not None:
+            await self._defer_goal_status_notice_after_delivery(source, msg)
+
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
     ) -> None:
@@ -380,7 +390,9 @@ class GatewayGoalsMixin:
         # released with no text, so a --until judge never grades it.
         failed = self._turn_failed()
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip() and not failed:
+        if failed:
+            hooks.insert(0, ("goal failure pause", self._post_turn_goal_failure_pause))
+        elif final_text.strip():
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
@@ -399,12 +411,17 @@ class GatewayGoalsMixin:
         await publish_async(active_authority(self), source.chat_id, only_if_present=only_if_present)
 
     @staticmethod
-    def _turn_failed() -> bool:
-        """Whether the owner recorded this turn's result as failed (``session_ingress`` captures it
-        around ``_handle_message``; turns outside an owner capture nothing)."""
+    def _captured_turn_result() -> Any:
+        """The owner's recorded result for this turn (``session_ingress`` captures it around
+        ``_handle_message``; turns outside an owner capture nothing)."""
         from gateway.session_results import execution_result
         captured = execution_result.get() or {}
-        result = captured.get('terminal_result', captured.get('result'))
+        return captured.get('terminal_result', captured.get('result'))
+
+    @classmethod
+    def _turn_failed(cls) -> bool:
+        """Whether the owner recorded this turn's result as failed."""
+        result = cls._captured_turn_result()
         return isinstance(result, dict) and bool(result.get('failed'))
 
     @staticmethod

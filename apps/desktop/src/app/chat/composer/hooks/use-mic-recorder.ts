@@ -262,13 +262,13 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       )
 
       stopMeterRef.current = meter.stop
-      await meter.ready
-      meterStartedAt = audioContext.currentTime * 1_000
-
-      if (audioContextRef.current === audioContext && options.onPcm) {
+      if (options.onPcm) {
         pcmTapRef.current = startPcmTap(audioContext, source, options)
         options.onPcmRate?.(audioContext.sampleRate)
       }
+
+      await meter.ready
+      meterStartedAt = audioContext.currentTime * 1_000
     } catch {
       failMeter()
     }
@@ -386,9 +386,6 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       resolver?.(null)
     }
 
-    await startMeter(stream, options)
-    checkCurrent()
-
     try {
       recorder.start()
       startedAtRef.current = Date.now()
@@ -397,6 +394,9 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       cleanup()
       throw micError(error, copy)
     }
+
+    // The worklet can take time to load or resume. Capture must already be running.
+    void startMeter(stream, options)
   }
 
   const stop: MicRecorderHandle['stop'] = () =>

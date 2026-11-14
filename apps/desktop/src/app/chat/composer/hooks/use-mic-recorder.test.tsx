@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type MicRecorderErrorCopy, type MicRecording, useMicRecorder } from './use-mic-recorder'
 
 const meter = vi.hoisted(() => ({
+  ready: null as Promise<boolean> | null,
   onLevel: null as ((level: number, audioTimeMs: number) => void) | null,
   onError: null as (() => void) | null
 }))
@@ -28,7 +29,7 @@ vi.mock('@/lib/voice-level-meter', () => ({
     context.addEventListener('statechange', onStateChange)
 
     return {
-      ready: Promise.resolve(true),
+      ready: meter.ready ?? Promise.resolve(true),
       stop: () => {
         context.removeEventListener('error', onError)
         context.removeEventListener('statechange', onStateChange)
@@ -67,6 +68,7 @@ class FakeAudioContext extends EventTarget {
   static throwOnConstruct = false
   state: AudioContextState = 'running'
   currentTime = 40
+  sampleRate = 48_000
   closing = deferred()
 
   constructor() {
@@ -81,6 +83,10 @@ class FakeAudioContext extends EventTarget {
 
   createMediaStreamSource() {
     return { connect: vi.fn() }
+  }
+
+  createScriptProcessor() {
+    return { connect: vi.fn(), disconnect: vi.fn() }
   }
 
   resume = vi.fn(async () => undefined)
@@ -335,6 +341,36 @@ describe('useMicRecorder level meter', () => {
     const recording = await stopped
     expect(recording).toMatchObject({ heardSpeech: true, meterFailed: false })
     expect(recording?.audio.size).toBe('onsetcommandclip'.length)
+  })
+
+  it('captures the opening words while the meter is initializing', async () => {
+    const gate = deferred()
+    meter.ready = gate.promise.then(() => true)
+    const { result } = renderHook(() => useMicRecorder(copy))
+    const onPcmRate = vi.fn()
+    let started!: Promise<void>
+
+    try {
+      act(() => {
+        started = result.current.handle.start({ onPcm: vi.fn(), onPcmRate })
+      })
+      await flush()
+
+      const recorder = FakeMediaRecorder.instances[0]
+      expect(recorder.state).toBe('recording')
+      expect(result.current.recording).toBe(true)
+      expect(onPcmRate).toHaveBeenCalledWith(48_000)
+      recorder.emit('opening words')
+
+      const clip = await act(() => result.current.handle.stop())
+      expect(clip?.audio.size).toBe('opening wordsclip'.length)
+    } finally {
+      meter.ready = null
+      gate.resolve()
+      await act(async () => {
+        await started
+      })
+    }
   })
 
   it('reports worklet failure instead of silently waiting for speech', async () => {

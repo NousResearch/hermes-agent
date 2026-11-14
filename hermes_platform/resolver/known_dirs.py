@@ -7,6 +7,7 @@ does not install there, so callers compose tables without OS branches.
 
 from __future__ import annotations
 
+import os
 import sys
 
 _POSIX = sys.platform != "win32"
@@ -17,7 +18,10 @@ def homebrew_dirs() -> tuple[str, ...]:
     return ("/opt/homebrew/bin", "/usr/local/bin") if sys.platform == "darwin" else ()
 
 
-def user_local_bin() -> tuple[str, ...]:
+def user_local_bin(*, home: str | None = None) -> tuple[str, ...]:
+    """Use a caller-owned account home when ambient HOME belongs to a profile."""
+    if home is not None:
+        return (os.path.join(home, ".local", "bin"),)
     return ("~/.local/bin",) if _POSIX else ("%USERPROFILE%/.local/bin",)
 
 

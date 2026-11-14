@@ -21,6 +21,7 @@ def resolve_external_process_command(command: str) -> Optional[str]:
     """Absolute path of the provider CLI ``command``, or ``None`` when nothing executable matches."""
     if not command:
         return None
+    from hermes_constants import get_real_home
     from hermes_platform.resolver import locate_command
     from hermes_platform.resolver.known_dirs import user_local_bin
 
@@ -29,7 +30,7 @@ def resolve_external_process_command(command: str) -> Optional[str]:
         # An operator-configured relative path (./bin/agent) means the launch cwd, as it did
         # under shutil.which; anchor it so the resolver's absolute-only explicit check accepts it.
         lookup = os.path.abspath(os.path.expandvars(os.path.expanduser(command)))
-    found = locate_command(lookup, known_dirs=user_local_bin()).command
+    found = locate_command(lookup, known_dirs=user_local_bin(home=get_real_home())).command
     if found:
         # Known dirs are written with "/" (%USERPROFILE%/.local/bin); normalize so a Windows hit
         # reads as one native path in status and in the spawned argv.

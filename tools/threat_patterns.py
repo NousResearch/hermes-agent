@@ -27,15 +27,28 @@ _CHUNK_OVERLAP = 4096
 _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
-# "forget your original instructions" (#26977); shared with tools/skills_guard.py. The word before `forget` is
-# consumed rather than looked behind so a "don't / never / do not forget" exclusion holds across any run of spaces
-# or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent` negate) and never reach
-# across a line break, so a heading line above the payload cannot suppress it.
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py and tools/cronjob_prompt_scan.py.
+# The word before `forget` is consumed rather than looked behind so a "don't / never / do not forget" exclusion holds
+# across any run of spaces or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent`
+# negate). `_` (Markdown emphasis) counts as punctuation, not as part of the neighbouring word.
 _NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
             r"|cannot|not|never)")
-FORGET_RULES_RE = (rf"(?:(?<![\w’'])(?!{_NEGATOR}[ \t])[\w’']{{1,64}}[ \t]{{1,64}}|(?:^|[^\w’' \t]|(?<!\w)[’'])[ \t]{{0,64}})"
+FORGET_RULES_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’']){{1,64}}[ \t]{{1,64}}"
+                   r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]{0,64})"
                    r"forget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
-                   r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)\b")
+                   r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)(?![^\W_])")
+# A negator hard-wrapped onto the line above (`Do not⏎forget …`), emphasised (`**Don't** forget`) or followed by
+# `ever` still negates: callers blank that `forget` before matching FORGET_RULES_RE. One line break at most, so a
+# heading separated from the payload by a blank line cannot suppress it. Same length and newlines, so offsets hold.
+_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*[ \t]*(?:\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
+                             r"forget(?![^\W_])", re.IGNORECASE)
+
+
+def mask_negated_forget(text: str) -> str:
+    """``text`` with every negated ``forget`` blanked; the input for FORGET_RULES_RE."""
+    return _NEGATED_FORGET.sub(lambda m: m[1] + " " * 6, text)
+
+
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s{1,64}to)\s{1,64}[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
@@ -190,13 +203,17 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     # ``а``) — that needs a TR#39 database.  Each whitespace run then collapses to
     # one char (newline-preserving, for the ``[^\n]`` spans) so the bounded ``\s``
     # quantifiers still see arbitrarily long whitespace as a single separator.
-    normalised = _WS_RUN.sub(_collapse_ws, unicodedata.normalize("NFKC", content))
+    folded = unicodedata.normalize("NFKC", content)
+    normalised = _WS_RUN.sub(_collapse_ws, folded)
+    # Masked before the collapse: a blank line between a negator and `forget` must still break the negation.
+    masked = _WS_RUN.sub(_collapse_ws, mask_negated_forget(folded))
     found_ids: set[str] = set()
     step = MAX_SCAN_CHARS - _CHUNK_OVERLAP
-    for start in range(0, len(normalised), step):
+    for start in range(0, max(len(normalised), len(masked)), step):
         end = start + MAX_SCAN_CHARS
         for compiled, pid in patterns:
-            if pid not in found_ids and _window_has_match(compiled, normalised, start, end):
+            text = masked if pid == "forget_rules" else normalised
+            if pid not in found_ids and _window_has_match(compiled, text, start, end):
                 found_ids.add(pid)
                 findings.append(pid)
     return findings

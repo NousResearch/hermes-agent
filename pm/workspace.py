@@ -136,6 +136,13 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(entry, target)
+    # agent.i18n resolves its catalogs from its own module location, and the managed environment
+    # runs the snapshot's copy, so a generation without locales/ turns every translated string
+    # into its raw key (#152630). locales/ sits beside the packages, so no packages.find include
+    # pattern names it and nothing else copies it.
+    locales = source / "locales"
+    if locales.is_dir() and not locales.is_symlink():
+        shutil.copytree(locales, destination / "locales", ignore=ignore)
 
 
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,

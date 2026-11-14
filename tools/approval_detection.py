@@ -420,6 +420,29 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
+# `git` plus the global options that may sit before the subcommand (`git -C <dir> reset --hard`).
+# Value-taking options consume their separate value word; any other option is a single dash token.
+# A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as
+# one argument. Each option is an atomic group with the value-taking form tried first: the two
+# alternatives overlap (`-c x` is also two dash-or-word tokens), so a non-atomic run of option-like
+# tokens (`git -c -c -c ... x`) is re-split exponentially on a failed match. The run is capped:
+# every later `git` word starts a new search, and an uncapped run made `git -c git -c ... x` quadratic.
+_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
+_GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env'
+        rf'|--attr-source)\s+{_GIT_WORD}|-{_GIT_WORD})){{0,64}}\s+')
+_GIT_PUSH = rf'{_GIT}push\b'
+# The push's own arguments, bounded to ONE command segment: a later command's flag is never the
+# push's (`git push -q origin main && grep -f patterns.txt log` is not a force push). A quoted
+# string is one atom, so a quoted `;`/`&`/`|` (`-o 'ci;skip'`) does not end the segment, and a
+# flag inside quotes is not seen; a redirection's `&`/`|` (`2>&1`, `&>`, `>|`) stays inside too.
+# Every alternative starts on a different character (or lookaround), so a failed match scans a
+# run once instead of re-splitting it exponentially (`>&>&>&...`, `'a' 'a' 'a' ...`). The scan
+# stops at a nested push, whose own search covers the rest, so `git push git push ...` is linear.
+_GIT_PUSH_ARGS = (r'''(?:(?>'[^']*'|"(?:[^"\\]|\\[\s\S])*")|'(?![^']*')|"(?![^"]*")'''
+                  r'''|\\[\s\S]|(?!''' + _GIT_PUSH + r''')[^;&|\n'"\\]|(?<=[<>])&|(?<![<>])&(?=>)|(?<=>)\|)*''')
+# An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
+_GIT_PUSH_ARG_START = r'''\s["']?'''
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -663,20 +686,31 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations. `git reset --hard` accepts any unambiguous long-flag prefix (--h,
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
-    (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (rf'{_GIT}reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    # Git force push. The flag search is bounded to the PUSH's own command segment, so a LATER
+    # command's `-f` (grep -f, pkill -f) no longer trips the force-push prompt on a plain push.
+    # The short form takes git's combined spelling (`-qf`), and the `+refspec` force spelling is a
+    # rule of its own; both were force pushes the old single-token `-f` pattern missed. Quotes are
+    # NOT a boundary here: the shell strips them before git sees the command, so `git push
+    # "--force"` is still a force push.
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_ARG_START}--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    # `-o` takes the rest of a short-flag cluster as its value (`-ofoo` is push option "foo").
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_ARG_START}-(?!-)[a-np-z]*f[a-z]*\b',
+     "git force push short flag (rewrites remote history)"),
+    # A push option's value (`-o +foo`) is not a refspec.
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}(?<!\s-o)(?<!\s--push-option){_GIT_PUSH_ARG_START}\+[^\s;&|\n]+',
+     "git force push (rewrites remote history)"),
+    (rf'{_GIT}clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
     # tokens' case in the detection input (every other pattern matches case-insensitively and is
     # unaffected). The safe merged-only -d / --delete stays ungated by design — git itself refuses
     # to delete a branch that is not fully merged.
-    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
+    (rf'{_GIT}branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (rf'{_GIT}branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (rf'{_GIT}branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
@@ -743,7 +777,7 @@ _REMOVED_PATTERN_KEY_ALIASES = {
 # with stored allowlist/session entries), both ways.
 _PATTERN_KEY_ALIASES: dict[str, set[str]] = {}
 for _canonical_key, _legacy_key in [
-    (d, p.split(r'\b')[1] if r'\b' in p else p[:20]) for p, d in DANGEROUS_PATTERNS
+    (d, p.split(r'\b')[1] if r'\b' in p else p[:20]) for p, d in ((p.replace(_GIT, r'\bgit\s+'), d) for p, d in DANGEROUS_PATTERNS)
 ] + list(_REMOVED_PATTERN_KEY_ALIASES.items()):
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
@@ -1732,6 +1766,11 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
+    # An escaped separator is literal text inside its word (`git push -o ci\;skip -f`), but
+    # normalization strips the backslash and leaves a real `;` that ends a segment-bounded match.
+    joined = re.sub(r'\\(.)', lambda m: '_' if m.group(1) in ';&|' else m.group(0), command)
+    if joined != command and fresh(variant := _normalize_command_for_detection(_mask_quoted_newlines(joined))):
+        yield variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc

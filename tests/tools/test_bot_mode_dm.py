@@ -521,6 +521,22 @@ def test_bare_peer_name_shadowing_a_local_teammate_is_ambiguous(tmp_path, monkey
     assert result["peers"] == ["ops"]
 
 
+def test_bare_peer_name_shadowing_two_local_friendly_names_is_refused(tmp_path, monkeypatch):
+    """A peer name matching the friendly name of TWO local bots is still a local collision:
+    the local ambiguity must not hand the bare name to the peer route (#145241)."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("aaa", "bbb"), peers=("ops",))
+    _rename(home, "aaa", display_name="Ops")
+    _rename(home, "bbb", title="Ops")
+
+    for target in ("ops", "@ops"):
+        result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping",
+                                                           agent=_FakeAgent(home)))
+        assert "ambiguous" in result["error"]
+    assert calls == []
+
+
 def test_peer_agent_form_still_reaches_the_peer_when_names_collide(tmp_path, monkeypatch):
     """The explicit '<peer>/<agent>' form is unambiguous even under a name collision —
     the refusal above must not take it away."""

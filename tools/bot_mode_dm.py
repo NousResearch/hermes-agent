@@ -193,6 +193,20 @@ def _resolve_local_name(target: str, roster: list[str], root: Path | None = None
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+def _local_claims(target: str, roster: list[str], root: Path) -> set[str]:
+    """Every local folder id ``target`` could name: its exact folder id, or every bot whose
+    friendly name forms match. Unlike ``_resolve_local_name`` an ambiguous friendly name still
+    counts, so two bots titled like a peer cannot hand the bare name to the peer route."""
+    resolved = _resolve_local_name(target, roster, root)
+    if resolved is not None:
+        return {resolved}
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    want = target.strip().lower()
+    aliases = local_alias_map(root)
+    return set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+
+
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
@@ -317,13 +331,11 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         # Refuse and name both routes — 'peer/<agent>' still reaches the peer, a friendly
         # name / @-slug still reaches the local bot. A name that only matches the caller's
         # own profile stays peer-bound: local delivery to yourself is refused anyway.
-        if peer_match is None:
-            local_hit = _resolve_local_name(raw_target, roster, root)
-            if local_hit is not None and local_hit != me:
-                return sender.roster_err(
-                    f"'{raw_target}' is ambiguous: it names both a local profile and a "
-                    f"registered peer. Use '{peer_name}/<agent>' for the peer, or the local "
-                    "bot's friendly name to reach it on this install.")
+        if peer_match is None and _local_claims(raw_target, roster, root) - {me}:
+            return sender.roster_err(
+                f"'{raw_target}' is ambiguous: it names both a local profile and a "
+                f"registered peer. Use '{peer_name}/<agent>' for the peer, or the local "
+                "bot's friendly name to reach it on this install.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin

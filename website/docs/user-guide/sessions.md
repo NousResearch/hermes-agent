@@ -953,7 +953,9 @@ left behind — the import is a clean transcript, not a byte-for-byte replay.
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and returns views of actual messages from the DB rather than generating summaries.
+The agent has a built-in `session_search` tool that performs full-text search across past conversations (in a messaging chat, by default only that chat; see below) using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and returns views of actual messages from the DB rather than generating summaries.
+
+In a messaging chat (a DM, group, channel or thread), discovery and browse search **only that conversation** by default (`scope="chat"`), filtered in SQL on every search path. Pass `scope="all"` for explicit cross-conversation recall. Every result carries an `origin` (platform, chat type, chat name), and in a chat also `same_origin`. Treat `same_origin=false` results as another chat's history and confirm before you relay them. A chat-scoped search with no hits reports `recall_scope.matches_outside_scope`, so the agent can tell "nothing in this chat" apart from "matches exist only elsewhere". Sessions recorded before chat ids were stored (no `chat_id`/`session_key`) are only reachable with `scope="all"`. Reading a session by `session_id` is explicit and is never narrowed, only labelled. CLI, TUI/desktop, API server, cron and kanban sessions, and `profile=` recall, default to `scope="all"`; an explicit `scope="chat"` there narrows to that conversation's session key.
 
 ### Four calling shapes
 
@@ -1020,6 +1022,7 @@ The keyword mode supports standard FTS5 query syntax:
 
 ### Optional parameters
 
+- `scope` — `chat` or `all`. Defaults to `chat` in a messaging chat and to `all` elsewhere. An explicit `scope="chat"` without a chat origin returns no results instead of widening to everything.
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
 - `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.

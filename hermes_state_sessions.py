@@ -1129,7 +1129,8 @@ class SessionSessionsMixin:
         exclude_sources: list[str] | None = None,
         timeout_seconds: float = 3.0,
         candidate_limit: int | None = None,
-        lineage_limit: int | None = None,
+        lineage_limit: int | None = None, session_key: str | None = None, chat_id: str | None = None,
+        source: str | None = None,
     ) -> list[dict[str, Any]]:
         """Latency-bounded recent-conversation browse (``session_search()``): preselect a small candidate set
         from the indexed durable activity timestamp (fallback ``started_at``), resolve only those across
@@ -1158,6 +1159,9 @@ class SessionSessionsMixin:
             placeholders = ",".join("?" for _ in exclude_sources)
             candidate_clauses.append(f"s.source NOT IN ({placeholders})")
             candidate_params.extend(exclude_sources)
+        if session_key or chat_id:  # chat-origin scope (session key, else chat id, + platform) before LIMIT
+            candidate_clauses.append(("s.session_key = ?" if session_key else "s.chat_id = ?") + (" AND s.source = ?" if source else ""))
+            candidate_params.extend([session_key or chat_id, *([source] if source else [])])
         candidate_where = " AND ".join(candidate_clauses)
 
         # A compression continuation is an implementation edge, unlike /new
@@ -1237,7 +1241,7 @@ class SessionSessionsMixin:
             )
             SELECT
                 tip.id,
-                tip.source,
+                tip.source, tip.session_key, tip.chat_id, tip.chat_type, tip.display_name,
                 tip.model,
                 COALESCE(tip.title, s.title) AS title,
                 s.started_at AS started_at,

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
+from tools import session_search_scope as _scope
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -47,7 +48,8 @@ _EXCLUDE_SESSION_IDS_CAP = 20
 _RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
-_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
+_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started",
+                           "session_key", "chat_id", "chat_type", "display_name")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
@@ -273,10 +275,12 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[dict[str, Any]]:
+def _title_match_result(db, query: str, current_lineage_root: Optional[str], scope: str = "all",
+                        origin: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
-    session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
+    scoped = _scope.origin_filters(scope, origin)
+    session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query, **scoped), None,
                                         "resolve_session_by_title failed for %r", title_query)
     if not session_id:
         return None
@@ -289,6 +293,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
         return None
+    if scope == "chat" and _scope.same_origin(session_meta, origin) is False:
+        return None
     messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
     anchor_id = messages[0].get("id") if messages else None
     view = {} if anchor_id is None else _quiet(
@@ -299,7 +305,7 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     def shape(key, fallback, anchor=None, max_content_len=1200):
         return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
                 for m in (view.get(key) or fallback)]
-    return {**_discovery_entry(
+    entry = {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
         source=session_meta.get("source", "unknown"), model=session_meta.get("model") or "unknown",
         title=title, matched_role="session_title", match_message_id=anchor_id,
@@ -309,6 +315,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
         messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
         "_lineage_root": lineage_root}
+    _scope.annotate(entry, session_meta, origin)
+    return entry
 
 
 def _discover_payload(db, query: str, detail: str, results: list, **extra) -> str:
@@ -354,11 +362,12 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
 def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[list[str]] = None) -> str:
-    """Discovery shape: FTS5 plus adaptive or full result hydration."""
+              exclude_session_ids: Optional[list[str]] = None, scope: str = "all",
+              origin: Optional[dict[str, Any]] = None) -> str:
+    """Discovery shape: FTS5 plus adaptive or full result hydration, filtered to *scope*."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, scope, origin)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
     if title_result:
@@ -366,22 +375,32 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
-    raw_results, err = _loud(lambda: db.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+    def _search(**scoped):
+        return db.search_messages(
+            query=query, role_filter=role_filter or ["user", "assistant"],
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts, **scoped)
+    raw_results, err = _loud(lambda: _search(**_scope.scope_filters(scope, origin)), "FTS5 search failed: %s",
+                             "Search failed")
     if err:
         return err
-    # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
-    # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
-    # order within each class.
-    raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
-    # See #19434.
+    # Same-origin rows first, then cron demoted below interactive ones, BEFORE dedup so a
+    # high-volume cron corpus (or another chat) can't starve this chat's sessions out of the
+    # top `limit`; the stable sort keeps BM25 order within each class. See #19434.
+    raw_results = sorted(raw_results, key=lambda r: (_scope.same_origin(r, origin) is False,
+                                                     (r.get("source") or "") in _DEMOTED_SESSION_SOURCES))
     if not raw_results and not title_result:
+        # A chat-scoped miss says how many other conversations match, so the model can offer scope='all'.
+        outside = None
+        if scope == "chat":
+            unscoped = _quiet(_search, [], "unscoped discovery count failed")
+            outside = len({_resolve_lineage(db, r["session_id"]) for r in unscoped} - {current_lineage_root})
         return _discover_payload(db, query, detail, [], message=(
-            "No matching sessions found. FTS5 ANDs all terms by default — "
+            "No matching sessions found" + (" in this chat; pass scope='all' to search other conversations"
+                                            if scope == "chat" else "") + ". FTS5 ANDs all terms by default — "
             "broaden with OR (`alpha OR beta`), exact-match with quoted "
-            "phrases, exclude with NOT, or prefix-match with `deploy*`."))
+            "phrases, exclude with NOT, or prefix-match with `deploy*`."),
+            **_scope.payload_fields([], scope, origin, matches_outside_scope=outside))
     seen_sessions: dict[str, dict[str, Any]] = {}
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
@@ -420,10 +439,12 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         # Adaptive: only the top-ranked result is fully hydrated.
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
+            _scope.annotate(entry, {**match_info, **_get_session_meta(db, lineage_root)}, origin)
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions),
+                             **_scope.payload_fields(results, scope, origin), link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "
@@ -471,7 +492,8 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=target / "state.db", read_only=True)
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str | None = None) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str | None = None,
+                  origin: Optional[dict[str, Any]] = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
     if not meta:
@@ -482,14 +504,17 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
         return err
     shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
     total, truncated = len(shaped), len(shaped) > head + tail
+    provenance: dict[str, Any] = {}
+    _scope.warn_if_foreign(provenance, meta, origin)
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
-               session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
+               session_meta={**_session_meta_block(meta), "origin": _scope.origin_label(meta)},
+               message_count=total, truncated=truncated, **provenance,
                messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
 
-def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
+def _read_scoped(db, sid: str, profile: Optional[str], origin: Optional[dict[str, Any]] = None) -> str:
     """Read shape scoped to ONE store: the caller's profile, or the profile it named.
 
     A miss is a miss. Profiles are isolated islands, so a bare id never falls through to
@@ -497,7 +522,7 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
     transcript to any caller holding the id (#106761). The hint tells the model how to
     ask properly: ``@session:<profile>/<id>`` or ``profile=``.
     """
-    result = _read_session(db, sid, link_profile=profile)
+    result = _read_session(db, sid, link_profile=profile, origin=origin)
     if json.loads(result).get("success") is not False or profile:
         return result
     if _cross_profile_reads_confined():
@@ -506,8 +531,9 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str | None = None, link_profile: str | None = None) -> str:
-    """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
+def _list_recent_sessions(db, limit: int, current_session_id: str | None = None, link_profile: str | None = None,
+                          scope: str = "all", origin: Optional[dict[str, Any]] = None) -> str:
+    """Browse shape: metadata for the most recent sessions in *scope* (no LLM, no FTS5)."""
     def _browse():
         # Never use list_sessions_rich(order_by_last_active=True) here: it walks every
         # compression chain and derives activity/previews before LIMIT, which can
@@ -520,20 +546,25 @@ def _list_recent_sessions(db, limit: int, current_session_id: str | None = None,
             raise RuntimeError("session database does not support bounded recent-session browse")
         sessions = bounded_list(
             limit=limit + 15,  # extra so we can skip current / compression roots
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES), timeout_seconds=3.0)
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES), timeout_seconds=3.0,
+            **_scope.origin_filters(scope, origin))
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id) if current_session_id else (None, False))
         # Compression continuation: the root was summarised into the live child, so hide
         # it. /new-reset children carry no transcript — keep that root browsable.
         hidden = {current_session_id, current_root if has_compression_hop and current_root else None}
+        visible = [x for x in sessions if x.get("id", "") not in hidden
+                   and not (scope == "chat" and _scope.same_origin(x, origin) is False)][:limit]
         results = [{
             "session_id": s.get("id", ""), "link": _session_link(s.get("id", ""), link_profile),
             "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
-            "message_count": s.get("message_count", 0), "preview": s.get("preview", "")}
-            for s in [x for x in sessions if x.get("id", "") not in hidden][:limit]]
-        return _ok(mode="browse", results=results, count=len(results), message=(
-            f"Showing {len(results)} most recent sessions. Pass a query= to search, "
-            "or session_id+around_message_id to scroll."))
+            "message_count": s.get("message_count", 0), "preview": s.get("preview", "")} for s in visible]
+        for entry, s in zip(results, visible):
+            _scope.annotate(entry, s, origin)
+        in_chat = " in this chat (pass scope='all' for other conversations)" if scope == "chat" else ""
+        return _ok(mode="browse", results=results, count=len(results), **_scope.payload_fields(results, scope, origin),
+                   message=(f"Showing {len(results)} most recent sessions{in_chat}. Pass a query= to search, "
+                            "or session_id+around_message_id to scroll."))
 
     out, err = _loud(_browse, "Error listing recent sessions: %s", "Failed to list recent sessions")
     return err or out
@@ -558,7 +589,7 @@ def _anchor_in_live_context(db, anchor_state, anchor_sid: str, current_session_i
 
 
 def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
-            current_session_id: str | None = None) -> str:
+            current_session_id: str | None = None, origin: Optional[dict[str, Any]] = None) -> str:
     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
     try:
         around_message_id = int(around_message_id)
@@ -592,6 +623,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
             session_meta = _get_session_meta(db, owning) or session_meta
     if not messages:
         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
+    _scope.warn_if_foreign(extra, session_meta, origin)
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
@@ -605,17 +637,22 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail,
-              after=None, before=None, exclude_session_ids=None) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
+              after=None, before=None, exclude_session_ids=None, scope=None, origin=None) -> str:
+    """Mode dispatch (see module docstring); scroll wins when an anchor is set. Explicit
+    read/scroll is never scope-filtered, only labelled; discovery and browse honour *scope*."""
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(db, session_id.strip(), profile)
+            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, origin)
+        return _read_scoped(db, session_id.strip(), profile, origin)
     browse = not query or not isinstance(query, str) or not query.strip()
+    scope = _scope.resolve_scope(scope, origin)
+    if scope == "chat" and origin is None:  # fail closed: never widen an explicit chat scope to everything
+        return _ok(mode="browse" if browse else "discover", query=None if browse else query.strip(), results=[],
+                   count=0, scope=scope, message=_scope.NO_ORIGIN_MESSAGE)
     # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
     limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
     if browse:
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile, scope=scope, origin=origin)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
@@ -626,13 +663,14 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
-        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
+        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids), scope=scope, origin=origin)
 
 
 def session_search(query: str = "", role_filter: str | None = None, limit: int | None = None, db=None,
                    current_session_id: str | None = None, session_id: str | None = None, around_message_id: int | None = None,
                    window: int = 5, sort: str | None = None, profile: str | None = None, detail: str = "adaptive",
-                   after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
+                   after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None,
+                   scope: str | None = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
     from hermes_constants import get_hermes_home
@@ -672,10 +710,14 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
         if db is None:
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
+    # profile= is explicit cross-profile recall: the current chat's origin never applies to another
+    # profile's database, so there it defaults to scope='all' (an explicit scope='chat' fails closed).
+    origin = None if profile_db is not None else _scope.current_origin(db, current_session_id)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+                         after=after, before=before, exclude_session_ids=exclude_session_ids,
+                         scope=scope, origin=origin)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -704,7 +746,10 @@ SESSION_SEARCH_SCHEMA = {
         "conclude 'not found' from history alone. Use for questions about past "
         "conversations: 'what did we do about X', 'where did we leave Y'. When "
         "referring the user to a session, write its `link` value verbatim "
-        "inline (it renders as a titled link)."
+        "inline (it renders as a titled link). In a messaging chat, discovery and browse "
+        "default to THIS chat's history (scope='chat'); pass scope='all' only for explicit "
+        "cross-conversation recall, and treat same_origin=false results as another chat's "
+        "history that needs confirmation before you relay it."
     ),
     "parameters": {
         "type": "object",
@@ -763,6 +808,15 @@ SESSION_SEARCH_SCHEMA = {
                     "time. ISO date/datetime (a date-only value is midnight UTC that "
                     "day) or relative duration (7d = older than a week). Use only "
                     "when the user names a time frame."
+                ),
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["chat", "all"],
+                "description": (
+                    "Discovery and browse. 'chat' = only this conversation's sessions (the default "
+                    "in a messaging chat); 'all' = every conversation in the profile (the default "
+                    "elsewhere: CLI, TUI/desktop, API server, cron). Results carry origin and, in a chat, same_origin."
                 ),
             },
             "exclude_session_ids": {
@@ -832,6 +886,6 @@ registry.register(
         query=args.get("query") or "", limit=args.get("limit"), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
-                                    "after", "before", "exclude_session_ids")}),
+                                    "after", "before", "exclude_session_ids", "scope")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

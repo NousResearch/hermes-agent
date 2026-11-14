@@ -850,6 +850,14 @@ def _pick(updates: dict[str, Any], job: dict[str, Any], key: str) -> Any:
     return updates[key] if key in updates else job.get(key)
 
 
+def _resolve_update_deliver(job: dict[str, Any], deliver: Optional[str]) -> Optional[str]:
+    """Keep literal 'origin' when the edited job already owns one; else resolve as on create."""
+    owned = job.get("origin") or any(
+        "origin" in [p.strip().lower() for p in (_normalize_deliver_param(job.get(k)) or "").split(",")]
+        for k in ("deliver", "failure_deliver"))
+    return deliver if owned else _resolve_cron_context_deliver(deliver)
+
+
 def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str, Any]) -> Optional[str]:
     """prompt / name / deliver / skills / model pins; returns an error string or None."""
     prompt, deliver, skill, skills = a["prompt"], a["deliver"], a["skill"], a["skills"]
@@ -866,17 +874,17 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
         bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
         if bot_chat_error:
             return bot_chat_error
-        updates["deliver"] = _resolve_cron_context_deliver(_normalize_deliver_param(deliver))
+        updates["deliver"] = _resolve_update_deliver(job, _normalize_deliver_param(deliver))
     if a["failure_deliver"] is not None:
         # '' clears the override (failures fall back to deliver); non-empty values share
-        # deliver's validation AND its cron-context origin resolution (a job created from
-        # inside a cron run must never store literal 'origin').
+        # deliver's validation AND its update-path origin resolution (an origin-less job edited
+        # from inside a cron run still resolves the running job's ephemeral origin).
         _norm_fd = _normalize_deliver_param(a["failure_deliver"])
         if _norm_fd:
             bot_chat_error = _validate_bot_chat_deliver(_norm_fd)
             if bot_chat_error:
                 return bot_chat_error
-            _norm_fd = _resolve_cron_context_deliver(_norm_fd)
+            _norm_fd = _resolve_update_deliver(job, _norm_fd)
         updates["failure_deliver"] = _norm_fd
     if a["catch_up"] is not None:
         updates["catch_up"] = a["catch_up"]

@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
@@ -228,17 +229,9 @@ def _require_task_id(args: dict) -> str:
         "default to. Pass an explicit task_id; discover task ids with kanban_list.")
 
 
-def _owned_task() -> str:
-    """The task this execution owns: ``$HERMES_KANBAN_TASK`` for the dispatcher-owned worker
-    only. A cron run fired in-process from a worker sees the same env but owns nothing."""
-    if not _is_dispatcher_owned_worker():
-        return ""
-    return (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-
-
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
-    return os.environ.get(var) if task_id and _owned_task() == task_id else None
+    return os.environ.get(var) if task_id and owned_kanban_task() == task_id else None
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
@@ -259,7 +252,7 @@ def _reject_inherited_task_mutation(tid: str, env_tid: Optional[str] = None) -> 
     """Refuse a mutation of the card whose ``HERMES_KANBAN_TASK`` this execution inherited
     without owning it; naming it explicitly must not stand in for the dispatcher's grant."""
     env_tid = env_tid if env_tid is not None else (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if env_tid and tid == env_tid and not _owned_task():
+    if env_tid and tid == env_tid and not owned_kanban_task():
         raise _Reject(
             f"refusing to mutate task {tid}: this run inherited it from the Kanban worker that "
             "fired it and does not own it. Report findings in this run's output or file a new "
@@ -276,7 +269,7 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     sibling or cross-tenant runs (see #19534).
     """
     env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if env_tid and not _owned_task():
+    if env_tid and not owned_kanban_task():
         # Inherited, not owned (cron run fired from the worker): the worker's card is
         # read-only here, while other cards keep the orchestrator path.
         _reject_inherited_task_mutation(tid, env_tid)
@@ -308,7 +301,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     _enforce_worker_task_ownership(tid)
     if (
         tool_name in _RUN_LIFECYCLE_TOOLS
-        and _owned_task()
+        and owned_kanban_task()
         and _worker_run_id(tid) is None
     ):
         raise _Reject(

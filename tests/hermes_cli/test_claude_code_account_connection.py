@@ -40,6 +40,34 @@ def test_windows_claude_code_removal_command_is_unambiguous_powershell():
     assert " -f " not in command and not command.strip().endswith(" -f")
 
 
+def test_macos_claude_code_removal_deletes_only_the_users_keychain_item(monkeypatch):
+    """Scoped like Claude Code's logout: unscoped, ``security`` deletes whichever item matches first,
+    which can be Claude Code's MCP OAuth state (account ``unknown``) instead of the login. The account
+    is the reader's, written out literally: Desktop runs this in the user's shell (fish included),
+    whose ``$USER`` may be unset."""
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    pwd = pytest.importorskip("pwd")  # the account falls back to the passwd entry (POSIX only)
+    from hermes_cli.web_routers.oauth import _oauth_provider_disconnect_command
+
+    def command():
+        return _oauth_provider_disconnect_command({"id": "claude-code", "flow": "external"}, platform="darwin")
+
+    monkeypatch.setenv("USER", "alice")
+    assert command().startswith('security delete-generic-password -a alice -s "Claude Code-credentials" 2>/dev/null; ')
+    assert command().endswith("rm -f ~/.claude/.credentials.json")
+    assert "$" not in command()
+
+    monkeypatch.delenv("USER")
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: MagicMock(pw_name="bob"))
+    assert "-a bob -s" in command()
+
+    monkeypatch.setenv("USER", "o'brien")  # quoted for every shell Desktop runs
+    assert "-a 'o'\"'\"'brien' -s" in command()
+
+
 def test_disconnect_is_not_success_when_nothing_was_cleared(monkeypatch):
     """A no-op clear must not be a 200 the client can toast as removed."""
     from hermes_cli import auth as auth_mod

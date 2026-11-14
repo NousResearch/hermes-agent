@@ -299,6 +299,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
     from agent.message_metadata import withheld_prompt_text
+    from agent.system_wrappers import cron_prompt_display_text
 
     messages = []
     tool_call_args = {}
@@ -326,6 +327,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
             # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.
             content_text = withheld_prompt_text(m) or content_text
+            # A cron run's first row is the scheduler's hint + run time + job prompt: show the prompt.
+            content_text = cron_prompt_display_text(content_text) or content_text
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message

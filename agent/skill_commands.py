@@ -181,6 +181,9 @@ def describe_skill_invocation(content: Any, separator: str = " — ") -> Optiona
     label = name if name.startswith("/") else f"/{name}"
     instruction = extract_user_instruction_from_skill_message(content)
     if instruction and instruction is not content:
+        # A skill-backed cron job carries the cron hint + run time as its "instruction"; show the job prompt.
+        from agent.system_wrappers import cron_prompt_display_text
+        instruction = cron_prompt_display_text(instruction) or instruction
         # An excerpt (head + tail joined by SKILL_EXCERPT_JOINT) can put the
         # joint inside the span — keep only the side the marker was found on.
         instruction = " ".join(instruction.split(SKILL_EXCERPT_JOINT)[0].split())

@@ -164,7 +164,7 @@ _PROBE_SENTINEL_STATUS = {
 def _read_probe_branches(arg: str, body: str) -> str:
     """Every read probe: run ``body`` on a readable regular file, else classify the path
     (denied, not regular, missing). ``ls`` is only asked when ``[ -e ]`` already failed.
-    A symlink's target is resolved with ``readlink`` and listed itself, so a link into an
+    A symlink chain is resolved with ``readlink`` (8 hops) and its target listed, so a link into an
     unsearchable directory is denied while a dangling one stays not regular; ``ls -L``
     cannot do this portably (BSD ``ls -L`` silently lists the link when the target's
     stat fails). ``LC_ALL=C`` pins the strerror text the ``case`` matches."""
@@ -172,8 +172,8 @@ def _read_probe_branches(arg: str, body: str) -> str:
         f"if [ -f {arg} ] && [ -r {arg} ]; then {body}; "
         f"elif [ -f {arg} ]; then echo {DENIED_SENTINEL}; "
         f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-        f"else __hq={arg}; if [ -L {arg} ]; then __hq=$(readlink -- {arg}); "
-        f"case \"$__hq\" in /*) ;; *) __hq=\"$(dirname -- {arg})/$__hq\";; esac; fi; "
+        f"else __hq={arg}; __hn=0; while [ -L \"$__hq\" ] && [ $__hn -lt 8 ]; do __ht=$(readlink -- \"$__hq\"); "
+        f"case \"$__ht\" in /*) __hq=$__ht;; *) __hq=\"$(dirname -- \"$__hq\")/$__ht\";; esac; __hn=$((__hn+1)); done; "
         f"case \"$(LC_ALL=C ls -d -- \"$__hq\" 2>&1)\" in "
         f"*'Permission denied'|*'Operation not permitted') echo {DENIED_SENTINEL};; "
         f"*) if [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; else echo {MISSING_SENTINEL}; fi;; "

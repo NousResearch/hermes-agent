@@ -66,6 +66,21 @@ def test_symlink_into_unsearchable_dir_is_permission_denied(file_ops, sealed_lin
     assert not result.not_found
 
 
+@pytest.fixture
+def chained_sealed_link(sealed_link, tmp_path):
+    chained = tmp_path / "chained.txt"
+    chained.symlink_to(sealed_link.name)
+    return chained
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("op", READ_OPS)
+def test_symlink_chain_into_unsearchable_dir_is_permission_denied(file_ops, chained_sealed_link, op):
+    result = getattr(file_ops, op)(str(chained_sealed_link))
+    assert result.error and "Permission denied" in result.error
+    assert not result.not_found
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("op", READ_OPS)
 def test_dangling_symlink_stays_not_regular(file_ops, tmp_path, op):
@@ -102,6 +117,17 @@ def test_absent_path_is_still_not_found(file_ops, tmp_path, op):
 
 
 @pytest.mark.platforms("posix")
+def test_backend_binary_write_under_unsearchable_dir_names_the_denial(locked_dir, monkeypatch):
+    from tools import file_tools
+    from tools.file_tools_write_guards import _check_binary_document_write
+
+    monkeypatch.setattr(file_tools, "_file_ops_uses_host_paths", lambda _ops: False)
+    error = _check_binary_document_write(str(locked_dir / "doc.pdf"), "denied-pdf")
+    assert error and "permission denied" in error
+    assert "retry once" not in error
+
+
+@pytest.mark.platforms("posix")
 def test_write_file_on_unreadable_file_names_the_denial_not_read_first(locked_file):
     """write_file must not tell the model to read a file read_file cannot read (refusal loop)."""
     import json
@@ -111,5 +137,8 @@ def test_write_file_on_unreadable_file_names_the_denial_not_read_first(locked_fi
     result = json.loads(write_file_tool(str(locked_file), "new\n", task_id="denied-write"))
     assert "permission denied" in result["error"]
     assert "Read the file" not in result["error"]
+    assert "call write_file again" not in result["error"]
     locked_file.chmod(0o600)
     assert locked_file.read_text() == "secret\n"
+    result = json.loads(write_file_tool(str(locked_file), "new\n", task_id="denied-write"))
+    assert "call write_file again" in result["error"]

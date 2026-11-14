@@ -2650,6 +2650,8 @@ export const jaOverrides = {
       stageAll: 'すべてステージ',
       viewAsTree: 'ツリー表示',
       viewAsList: 'リスト表示',
+      viewAsSmart: '重要度順に表示',
+      applySmartOrder: '更新された順序を適用',
       revert: '取り消し',
       revertAll: 'すべて取り消し',
       revertConfirm: 'このファイルの変更を破棄してコミット済みの状態に戻しますか？この操作は元に戻せません。',

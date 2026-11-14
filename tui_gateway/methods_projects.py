@@ -395,6 +395,7 @@ def _build_project_tree(
     db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
+    from functools import cache
     from tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
@@ -405,7 +406,7 @@ def _build_project_tree(
         + [str(r.get("root") or "") for r in discovered])
     tree = project_tree.build_tree(
         projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
-        hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
+        hydrate=hydrate, is_junk_root=cache(_is_repo_junk), is_junk_cwd=cache(_is_session_cwd_junk),
         exists=_dir_exists_cached)
     return tree, active_id
 

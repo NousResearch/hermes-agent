@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import httpx
@@ -545,6 +546,47 @@ class TestBlueBubblesTimeoutErrorNormalization:
 
         assert not result.success
         assert "500 Internal Server Error" in (result.error or "")
+
+
+
+class TestBlueBubblesErrorTextNeverCarriesThePassword:
+    """Every REST URL carries ``?password=``; httpx's HTTPStatusError text embeds it (#146420)."""
+
+    @staticmethod
+    def _status_error(url):
+        response = httpx.Response(401, request=httpx.Request("GET", url))
+        return httpx.HTTPStatusError(f"Client error '401 Unauthorized' for url '{url}'",
+                                     request=response.request, response=response)
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_log_masks_password(self, monkeypatch, caplog):
+        adapter = _make_adapter(monkeypatch)
+
+        async def failing_get(path):
+            raise self._status_error(adapter._api_url(path))
+        monkeypatch.setattr(adapter, "_api_get", failing_get)
+
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.bluebubbles.adapter"):
+            assert await adapter.connect() is False
+        assert "/api/v1/ping?password=***" in caplog.text
+        assert "password=secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_send_failure_result_masks_password(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def failing_post(path, payload):
+            raise self._status_error(adapter._api_url(path))
+        monkeypatch.setattr(adapter, "_api_post", failing_post)
+
+        result = await adapter.send("chat-1", "hello")
+        assert not result.success
+        assert "401 Unauthorized" in result.error
+        assert "password=secret" not in result.error
 
 
 

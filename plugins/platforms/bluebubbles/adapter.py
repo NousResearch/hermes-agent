@@ -73,6 +73,16 @@ def _redact(text: str) -> str:
     return _EMAIL_RE.sub("[REDACTED]", _PHONE_RE.sub("[REDACTED]", text))
 
 
+def _safe_error(exc: BaseException, server_url: Optional[str]) -> str:
+    """Log/SendResult text for a REST failure. Every request URL carries ``?password=`` and
+    httpx's HTTPStatusError text embeds that URL, so query credentials are masked here: the
+    default log redaction leaves URL query params alone. Empty text falls back to the type name
+    so the base-layer timeout guard can still match it (#78183)."""
+    from agent.redact import redact_sensitive_text
+    return (describe_proxy_error(exc, env_proxy_for_redaction(server_url))
+            or redact_sensitive_text(str(exc), force=True, redact_url_credentials=True) or type(exc).__name__)
+
+
 def check_bluebubbles_requirements() -> bool:
     try:
         import aiohttp
@@ -184,7 +194,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=_safe_error(exc, self.server_url))
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -217,7 +227,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or exc)
+            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, _safe_error(exc, self.server_url))
             await self._close_client()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
@@ -307,7 +317,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.warning("[bluebubbles] webhook registration returned status %s: %s", status, res.get("message"))
             return False
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to register webhook with server: %s", exc)
+            logger.warning("[bluebubbles] failed to register webhook with server: %s", _safe_error(exc, self.server_url))
             return False
 
     async def _unregister_webhook(self) -> bool:
@@ -323,7 +333,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if removed:
                 logger.info("[bluebubbles] webhook unregistered: %s", self._webhook_register_url_for_log)
         except Exception as exc:
-            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", exc)
+            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", _safe_error(exc, self.server_url))
         return removed
 
     # --- Chat GUID resolution ---
@@ -421,7 +431,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
         except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
-            return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(self.server_url)) or str(e))
+            return SendResult(success=False, error=_safe_error(e, self.server_url))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -497,7 +507,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # Videos, documents, and everything else
             return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
+            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), _safe_error(exc, self.server_url))
             return None
 
     # --- Webhook handling ---

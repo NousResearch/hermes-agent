@@ -139,3 +139,19 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
         monkeypatch.undo()
         importlib.reload(photon_adapter)
         importlib.reload(photon_cli)
+
+
+def test_mirror_carries_npmrc_release_age_gate(tmp_path, monkeypatch) -> None:
+    """The read-only-tree mirror is where `npm ci`/`npm install` actually runs, so the
+    sidecar's .npmrc (min-release-age, #134019) must be mirrored next to the lockfile."""
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    source = tmp_path / "src"
+    _seed_source(source)
+    (source / ".npmrc").write_text("min-release-age=14\n", encoding="utf-8")
+    _freeze_writability(monkeypatch, writable=False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+
+    assert mirror != source
+    assert (mirror / ".npmrc").read_text(encoding="utf-8") == "min-release-age=14\n"

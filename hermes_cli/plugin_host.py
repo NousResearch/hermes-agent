@@ -460,8 +460,12 @@ class PluginHost:
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:
         from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES
-        ctx = self._plugin_ctx(params)
         facade, method = str(params.get("facade") or ""), str(params.get("method") or "")
+        if facade == "llm" and method in {"stream", "astream"}:
+            raise PluginHostUnsupported(
+                "Plugin LLM streaming is not supported over request/response IPC; "
+                "use completion methods or an operator-reviewed in-process plugin")
+        ctx = self._plugin_ctx(params)
         if facade not in HOST_REMOTE_FACADES or method.startswith("_"):
             raise PluginHostUnsupported(f"ctx.{facade}.{method} is not available in the plugin host")
         target = getattr(getattr(ctx, facade), method)

@@ -522,6 +522,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     stub = types.SimpleNamespace(
         _SESSION_TOKEN="secret-xyz",
         _ws_auth_ok=_fake_ws_auth_ok,
+        _ws_request_is_allowed=lambda ws: True,
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
     monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
@@ -552,6 +553,35 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     # The bug symptom was a traceback; we don't assert on stderr because
     # capturing asyncio's internal "exception was never retrieved" logging
     # is flaky. The assertion that matters is: no CancelledError escaped.
+
+def test_ws_events_applies_the_dashboard_host_origin_guard(kanban_home, monkeypatch):
+    """Every core dashboard WS runs ``_ws_request_is_allowed`` after the credential check;
+    the kanban stream must too, so a valid credential from a foreign Origin is refused."""
+    from starlette.websockets import WebSocketDisconnect
+
+    from hermes_cli import web_server, web_server_chat
+
+    monkeypatch.setattr(web_server_chat, "_ws_auth_ok", lambda ws: True)
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(
+            "/api/plugins/kanban/events",
+            headers={"host": "127.0.0.1:9119", "origin": "http://evil.example"},
+        ):
+            pass
+    assert exc.value.code == 1008
+
+    with c.websocket_connect(
+        "/api/plugins/kanban/events",
+        headers={"host": "127.0.0.1:9119", "origin": "http://127.0.0.1:9119"},
+    ) as ws:
+        assert ws is not None
+
 
 # ---------------------------------------------------------------------------
 # Bulk actions
@@ -1195,7 +1225,8 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
     def _fake_ws_auth_ok(ws):
         return ws.query_params.get("token", "") == "secret-xyz"
 
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz", _ws_auth_ok=_fake_ws_auth_ok)
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz", _ws_auth_ok=_fake_ws_auth_ok, _ws_request_is_allowed=lambda ws: True)
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
     monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 

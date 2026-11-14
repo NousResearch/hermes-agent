@@ -4081,7 +4081,7 @@ display:
       stale_nonstream: "⚠️ Aucune réponse du fournisseur depuis {seconds} s (sans streaming, modèle : {model}). {hint}"
       stale_nonstream_abort: "⚠️ Aucune réponse du fournisseur depuis {seconds} s (sans streaming, modèle : {model}). Abandon de l'appel."
       bedrock_stale: "⚠️ Aucun événement de Bedrock depuis {seconds} s (modèle : {model}). Abandon..."
-      empty_keepalive: "⚠️ Le flux du fournisseur a renvoyé une trame keepalive vide — nouvel essai de ce tour sans streaming (le streaming reste désactivé pour cette session)."
+      empty_keepalive: "⚠️ Le flux du fournisseur a renvoyé une trame keepalive vide — nouvel essai de ce tour sans streaming (le streaming reste désactivé sur cette route)."
       malformed_exhausted: "❌ Le fournisseur a renvoyé des données de streaming mal formées après {attempts} tentatives. Il rencontre peut-être des problèmes — réessayez dans un instant."
       empty_exhausted: "❌ Le fournisseur a renvoyé un flux de réponse vide après {attempts} tentatives. Il rencontre peut-être des problèmes — réessayez dans un instant."
       nonstream_retry_succeeded: "⚠  Le streaming a échoué sur une erreur serveur du fournisseur ; le nouvel essai sans streaming a réussi."
@@ -4193,6 +4193,7 @@ explainer:
     exhausted_situation_reset: "sa limite d'utilisation se réinitialise dans {window}. Envoyez /retry ensuite, ou changez de modèle avec /model."
     exhausted_situation_unavailable: "il semble temporairement indisponible. Patientez une minute puis envoyez /retry, ou changez de modèle avec /model."
     exhausted: "{lead} — {situation} Pour éviter cela à l'avenir, ajoutez un fournisseur de secours avec `hermes fallback add`.\n\nRéponse du fournisseur : {summary}"
+    stream_lifetime_exhausted: "Lors des {attempts} tentatives, la réponse était encore en cours quand agent.stream_max_lifetime ({cap}s) a interrompu le flux. Augmentez agent.stream_max_lifetime ou définissez 0 pour désactiver cette limite si ce modèle a réellement besoin de ce délai."
     nonretryable:
       model_not_found: "Le modèle '{model}' n'est pas disponible chez {label}. Choisissez un autre modèle avec /model (ou `hermes model` dans un terminal).{prefix_hint}"
       format_error: "{label} a rejeté cette requête comme mal formée, le modèle n'a donc pas répondu. Démarrez une session propre avec /new ou changez de modèle avec /model ; si cela persiste, lancez `hermes doctor`."

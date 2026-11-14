@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ 제공자가 {seconds}초 동안 응답하지 않았어요(비스트리밍, 모델: {model}). {hint}"
       stale_nonstream_abort: "⚠️ 제공자가 {seconds}초 동안 응답하지 않았어요(비스트리밍, 모델: {model}). 호출을 중단해요."
       bedrock_stale: "⚠️ Bedrock에서 {seconds}초 동안 이벤트가 없어요(모델: {model}). 중단하는 중..."
-      empty_keepalive: "⚠️ 제공자 스트림이 빈 keepalive 프레임을 반환했어요 — 이번 턴을 스트리밍 없이 다시 시도해요(이 세션에서는 스트리밍이 계속 꺼져 있어요)."
+      empty_keepalive: "⚠️ 제공자 스트림이 빈 keepalive 프레임을 반환했어요 — 이번 턴을 스트리밍 없이 다시 시도해요(이 경로에서는 스트리밍이 계속 꺼져 있어요)."
       malformed_exhausted: "❌ {attempts}번 시도한 뒤에도 제공자가 잘못된 형식의 스트리밍 데이터를 반환했어요. 제공자에 문제가 있을 수 있어요 — 잠시 후 다시 시도하세요."
       empty_exhausted: "❌ {attempts}번 시도한 뒤에도 제공자가 빈 응답 스트림을 반환했어요. 제공자에 문제가 있을 수 있어요 — 잠시 후 다시 시도하세요."
       nonstream_retry_succeeded: "⚠  제공자 서버 오류로 스트리밍이 실패했지만, 비스트리밍 재시도는 성공했어요."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "사용 한도는 {window} 후에 초기화돼요. 그 뒤에 /retry를 보내거나 /model로 모델을 바꿔 보세요."
     exhausted_situation_unavailable: "일시적으로 사용할 수 없는 것 같아요. 1분 정도 기다린 뒤 /retry를 보내거나 /model로 모델을 바꿔 보세요."
     exhausted: "{lead} — {situation} 앞으로 이런 일을 피하려면 `hermes fallback add`로 백업 제공자를 추가하세요.\n\n제공자 응답: {summary}"
+    stream_lifetime_exhausted: "총 {attempts}번의 시도에서 응답이 계속 스트리밍되는 중에 agent.stream_max_lifetime({cap}초)이 중단했어요. 이 모델에 실제로 이만큼 시간이 필요하다면 agent.stream_max_lifetime을 늘리거나 0으로 설정해 제한을 끄세요."
     nonretryable:
       model_not_found: "모델 '{model}'은(는) {label}에서 사용할 수 없어요. /model(터미널에서는 `hermes model`)로 다른 모델을 선택하세요.{prefix_hint}"
       format_error: "{label}이(가) 이 요청을 잘못된 형식으로 판단해 거부해서 모델이 답변하지 않았어요. /new로 깨끗한 세션을 시작하거나 /model로 모델을 바꿔 보세요. 계속 발생하면 `hermes doctor`를 실행하세요."

@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Geen antwoord van verskaffer vir {seconds} s nie (sonder stroming, model: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Geen antwoord van verskaffer vir {seconds} s nie (sonder stroming, model: {model}). Staak oproep."
       bedrock_stale: "⚠️ Geen gebeurtenisse van Bedrock vir {seconds} s nie (model: {model}). Staak..."
-      empty_keepalive: "⚠️ Verskafferstroom het 'n leë keepalive-raam teruggestuur — herprobeer hierdie beurt sonder stroming (stroming bly vir hierdie sessie af)."
+      empty_keepalive: "⚠️ Verskafferstroom het 'n leë keepalive-raam teruggestuur — herprobeer hierdie beurt sonder stroming (stroming bly op hierdie roete af)."
       malformed_exhausted: "❌ Verskaffer het ná {attempts} pogings wanvormige stroomdata teruggestuur. Die verskaffer ondervind dalk probleme — probeer oor 'n oomblik weer."
       empty_exhausted: "❌ Verskaffer het ná {attempts} pogings 'n leë antwoordstroom teruggestuur. Die verskaffer ondervind dalk probleme — probeer oor 'n oomblik weer."
       nonstream_retry_succeeded: "⚠  Stroming het met 'n verskafferbedienerfout misluk; die herprobeer sonder stroming het geslaag."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "sy gebruikslimiet word oor {window} teruggestel. Stuur daarna /retry, of verander modelle met /model."
     exhausted_situation_unavailable: "dit lyk tydelik onbeskikbaar. Wag 'n minuut en stuur /retry, of verander modelle met /model."
     exhausted: "{lead} — {situation} Om dit in die toekoms te vermy, voeg 'n terugvalverskaffer by met `hermes fallback add`.\n\nVerskaffer het gesê: {summary}"
+    stream_lifetime_exhausted: "Die antwoord het met al {attempts} pogings nog gestroom toe agent.stream_max_lifetime ({cap}s) dit afgesny het. Verhoog agent.stream_max_lifetime, of stel dit op 0 om die limiet af te skakel, as hierdie model werklik so lank moet stroom."
     nonretryable:
       model_not_found: "Model '{model}' is nie op {label} beskikbaar nie. Kies 'n ander model met /model (of `hermes model` in 'n terminaal).{prefix_hint}"
       format_error: "{label} het hierdie versoek as wanvormig verwerp, so die model het nie geantwoord nie. Begin 'n skoon sessie met /new of verander modelle met /model; as dit aanhou gebeur, voer `hermes doctor` uit."

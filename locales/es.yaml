@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Sin respuesta del proveedor durante {seconds} s (sin streaming, modelo: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Sin respuesta del proveedor durante {seconds} s (sin streaming, modelo: {model}). Cancelando la llamada."
       bedrock_stale: "⚠️ Sin eventos de Bedrock durante {seconds} s (modelo: {model}). Cancelando..."
-      empty_keepalive: "⚠️ La transmisión del proveedor devolvió una trama keepalive vacía — se reintenta este turno sin streaming (el streaming queda desactivado en esta sesión)."
+      empty_keepalive: "⚠️ La transmisión del proveedor devolvió una trama keepalive vacía — se reintenta este turno sin streaming (el streaming queda desactivado en esta ruta)."
       malformed_exhausted: "❌ El proveedor devolvió datos de streaming mal formados tras {attempts} intentos. Puede que el proveedor tenga problemas: inténtalo de nuevo en un momento."
       empty_exhausted: "❌ El proveedor devolvió una transmisión de respuesta vacía tras {attempts} intentos. Puede que el proveedor tenga problemas: inténtalo de nuevo en un momento."
       nonstream_retry_succeeded: "⚠  El streaming falló con un error del servidor del proveedor; el reintento sin streaming funcionó."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "su límite de uso se restablece en {window}. Envía /retry después, o cambia de modelo con /model."
     exhausted_situation_unavailable: "parece no estar disponible temporalmente. Espera un minuto y envía /retry, o cambia de modelo con /model."
     exhausted: "{lead} — {situation} Para evitarlo en el futuro, añade un proveedor de respaldo con `hermes fallback add`.\n\nEl proveedor dijo: {summary}"
+    stream_lifetime_exhausted: "En los {attempts} intentos, la respuesta seguía llegando cuando agent.stream_max_lifetime ({cap}s) cortó el flujo. Aumenta agent.stream_max_lifetime o establece 0 para desactivar el límite si este modelo necesita realmente tanto tiempo."
     nonretryable:
       model_not_found: "El modelo '{model}' no está disponible en {label}. Elige otro modelo con /model (o `hermes model` en una terminal).{prefix_hint}"
       format_error: "{label} rechazó esta solicitud por estar mal formada, así que el modelo no respondió. Inicia una sesión limpia con /new o cambia de modelo con /model; si sigue ocurriendo, ejecuta `hermes doctor`."

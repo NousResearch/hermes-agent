@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Nessuna risposta dal provider da {seconds} s (senza streaming, modello: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Nessuna risposta dal provider da {seconds} s (senza streaming, modello: {model}). Chiamata annullata."
       bedrock_stale: "⚠️ Nessun evento da Bedrock da {seconds} s (modello: {model}). Annullamento..."
-      empty_keepalive: "⚠️ Lo stream del provider ha restituito un frame keepalive vuoto — ripeto questo turno senza streaming (lo streaming resta disattivato per questa sessione)."
+      empty_keepalive: "⚠️ Lo stream del provider ha restituito un frame keepalive vuoto — ripeto questo turno senza streaming (lo streaming resta disattivato su questa rotta)."
       malformed_exhausted: "❌ Il provider ha restituito dati di streaming malformati dopo {attempts} tentativi. Il provider potrebbe avere problemi — riprova tra un momento."
       empty_exhausted: "❌ Il provider ha restituito uno stream di risposta vuoto dopo {attempts} tentativi. Il provider potrebbe avere problemi — riprova tra un momento."
       nonstream_retry_succeeded: "⚠  Lo streaming non è riuscito per un errore del server del provider; il nuovo tentativo senza streaming è andato a buon fine."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "il suo limite di utilizzo si ripristina tra {window}. Invia /retry dopo, oppure cambia modello con /model."
     exhausted_situation_unavailable: "sembra temporaneamente non disponibile. Attendi un minuto e invia /retry, oppure cambia modello con /model."
     exhausted: "{lead} — {situation} Per evitarlo in futuro, aggiungi un provider di riserva con `hermes fallback add`.\n\nRisposta del provider: {summary}"
+    stream_lifetime_exhausted: "In tutti i {attempts} tentativi, la risposta era ancora in corso quando agent.stream_max_lifetime ({cap}s) ha interrotto lo stream. Aumenta agent.stream_max_lifetime oppure imposta 0 per disattivare il limite se questo modello richiede davvero così tanto tempo."
     nonretryable:
       model_not_found: "Il modello '{model}' non è disponibile su {label}. Scegli un altro modello con /model (o `hermes model` in un terminale).{prefix_hint}"
       format_error: "{label} ha rifiutato questa richiesta perché malformata, quindi il modello non ha risposto. Avvia una sessione pulita con /new oppure cambia modello con /model; se continua a succedere, esegui `hermes doctor`."

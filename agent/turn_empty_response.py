@@ -229,7 +229,7 @@ def _partial_stream_reply(agent: Any) -> Optional[str]:
         return None
     recovered = agent._strip_think_blocks(partial).strip()
     logger.info("Partial stream content delivered (%d chars) — using as final response", len(recovered))
-    agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
+    agent._emit_diagnostic_status(tl("display.status.turn.stream_interrupted_partial"))
     # A streamed fragment isn't a confirmed preview: gateway fallback delivery
     # sends the text plus the abnormal-turn explanation.
     agent._response_was_previewed = False

@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Gan freagra ón soláthraí le {seconds} soic (gan sruthú, samhail: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Gan freagra ón soláthraí le {seconds} soic (gan sruthú, samhail: {model}). Ag tobscor an ghlao."
       bedrock_stale: "⚠️ Gan imeachtaí ó Bedrock le {seconds} soic (samhail: {model}). Ag tobscor..."
-      empty_keepalive: "⚠️ Thug sruth an tsoláthraí fráma keepalive folamh ar ais — ag atriail an tseala seo gan sruthú (fanfaidh an sruthú múchta don seisiún seo)."
+      empty_keepalive: "⚠️ Thug sruth an tsoláthraí fráma keepalive folamh ar ais — ag atriail an tseala seo gan sruthú (fanfaidh an sruthú múchta don bhealach seo)."
       malformed_exhausted: "❌ Thug an soláthraí sonraí sruthaithe míchumtha ar ais tar éis {attempts} iarracht. D'fhéadfadh fadhbanna a bheith ag an soláthraí — bain triail eile as i gceann nóiméid."
       empty_exhausted: "❌ Thug an soláthraí sruth freagra folamh ar ais tar éis {attempts} iarracht. D'fhéadfadh fadhbanna a bheith ag an soláthraí — bain triail eile as i gceann nóiméid."
       nonstream_retry_succeeded: "⚠  Theip ar an sruthú le hearráid freastalaí ón soláthraí; d'éirigh leis an atriail gan sruthú."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "athshocraítear a theorainn úsáide i gceann {window}. Seol /retry ina dhiaidh sin, nó athraigh an tsamhail le /model."
     exhausted_situation_unavailable: "is cosúil nach bhfuil sé ar fáil go sealadach. Fan nóiméad agus seol /retry, nó athraigh an tsamhail le /model."
     exhausted: "{lead} — {situation} Chun é seo a sheachaint amach anseo, cuir soláthraí cúltaca leis le `hermes fallback add`.\n\nDúirt an soláthraí: {summary}"
+    stream_lifetime_exhausted: "Bhí an freagra fós á shruthú i ngach ceann de na {attempts} iarracht nuair a ghearr agent.stream_max_lifetime ({cap}s) é. Méadaigh agent.stream_max_lifetime, nó socraigh 0 chun an teorainn a mhúchadh, má bhíonn an oiread sin ama de dhíth ar an tsamhail seo."
     nonretryable:
       model_not_found: "Níl an tsamhail '{model}' ar fáil ar {label}. Roghnaigh samhail eile le /model (nó `hermes model` i dteirminéal).{prefix_hint}"
       format_error: "Dhiúltaigh {label} don iarratas seo mar iarratas míchumtha, mar sin níor fhreagair an tsamhail. Tosaigh seisiún glan le /new nó athraigh an tsamhail le /model; má leanann sé ag tarlú, rith `hermes doctor`."

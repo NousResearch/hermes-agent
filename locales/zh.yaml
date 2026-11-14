@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ 提供方已 {seconds} 秒无响应（非流式，模型：{model}）。{hint}"
       stale_nonstream_abort: "⚠️ 提供方已 {seconds} 秒无响应（非流式，模型：{model}）。正在中止调用。"
       bedrock_stale: "⚠️ Bedrock 已 {seconds} 秒没有事件（模型：{model}）。正在中止..."
-      empty_keepalive: "⚠️ 提供方的流返回了空的 keepalive 帧——本回合改为非流式重试（本会话将保持关闭流式输出）。"
+      empty_keepalive: "⚠️ 提供方的流返回了空的 keepalive 帧——本回合改为非流式重试（此路由将保持关闭流式输出）。"
       malformed_exhausted: "❌ 尝试 {attempts} 次后，提供方仍返回格式错误的流式数据。提供方可能出现了问题——请稍后再试。"
       empty_exhausted: "❌ 尝试 {attempts} 次后，提供方仍返回空的响应流。提供方可能出现了问题——请稍后再试。"
       nonstream_retry_succeeded: "⚠  流式输出因提供方服务器错误而失败；非流式重试已成功。"
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "它的用量上限将在 {window} 后重置。届时请发送 /retry，或用 /model 切换模型。"
     exhausted_situation_unavailable: "它似乎暂时不可用。请等一分钟后发送 /retry，或用 /model 切换模型。"
     exhausted: "{lead}——{situation}为避免以后再出现这种情况，请用 `hermes fallback add` 添加备用提供方。\n\n提供方返回：{summary}"
+    stream_lifetime_exhausted: "全部 {attempts} 次尝试中，响应仍在流式传输时就被 agent.stream_max_lifetime（{cap} 秒）中断。如果该模型确实需要这么长时间，请增大 agent.stream_max_lifetime，或将其设为 0 以关闭限制。"
     nonretryable:
       model_not_found: "{label} 上没有模型“{model}”。请用 /model（或在终端中用 `hermes model`）选择其他模型。{prefix_hint}"
       format_error: "{label} 认为这个请求格式错误并拒绝了它，因此模型没有回答。请用 /new 开始一个干净的会话，或用 /model 切换模型；如果持续发生，请运行 `hermes doctor`。"

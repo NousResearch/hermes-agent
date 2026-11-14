@@ -3784,7 +3784,7 @@ display:
       stale_nonstream: "⚠️ Nincs válasz a szolgáltatótól {seconds} mp óta (stream nélkül, modell: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Nincs válasz a szolgáltatótól {seconds} mp óta (stream nélkül, modell: {model}). A hívás megszakítása."
       bedrock_stale: "⚠️ Nincs esemény a Bedrocktól {seconds} mp óta (modell: {model}). Megszakítás..."
-      empty_keepalive: "⚠️ A szolgáltató streamje üres keepalive keretet adott vissza — a kör újrapróbálása streamelés nélkül (a streamelés a munkamenet végéig kikapcsolva marad)."
+      empty_keepalive: "⚠️ A szolgáltató streamje üres keepalive keretet adott vissza — a kör újrapróbálása streamelés nélkül (a streamelés ezen az útvonalon kikapcsolva marad)."
       malformed_exhausted: "❌ A szolgáltató {attempts} próbálkozás után is hibás streamadatot adott vissza. Lehet, hogy a szolgáltatónál problémák vannak — próbáld újra egy kicsit később."
       empty_exhausted: "❌ A szolgáltató {attempts} próbálkozás után is üres válaszstreamet adott vissza. Lehet, hogy a szolgáltatónál problémák vannak — próbáld újra egy kicsit később."
       nonstream_retry_succeeded: "⚠  A streamelés szolgáltatói szerverhibával meghiúsult; a stream nélküli újrapróbálás sikerült."
@@ -3888,6 +3888,7 @@ explainer:
     exhausted_situation_reset: "a használati kerete {window} múlva áll vissza. Utána küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
     exhausted_situation_unavailable: "úgy tűnik, átmenetileg nem érhető el. Várj egy percet, és küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
     exhausted: "{lead} — {situation} Hogy ez a jövőben ne forduljon elő, adj hozzá tartalék szolgáltatót a `hermes fallback add` paranccsal.\n\nA szolgáltató válasza: {summary}"
+    stream_lifetime_exhausted: "A válasz mind a(z) {attempts} kísérletnél még érkezett, amikor az agent.stream_max_lifetime ({cap}s) megszakította. Növeld az agent.stream_max_lifetime értékét, vagy állítsd 0-ra a korlát kikapcsolásához, ha ennek a modellnek valóban ennyi idő kell."
     nonretryable:
       model_not_found: "A(z) '{model}' modell nem érhető el itt: {label}. Válassz másik modellt a /model paranccsal (vagy terminálban a `hermes model` paranccsal).{prefix_hint}"
       format_error: "A(z) {label} hibás formátumúnak ítélte és elutasította ezt a kérést, így a modell nem válaszolt. Indíts tiszta munkamenetet a /new paranccsal, vagy válts modellt a /model paranccsal; ha továbbra is előfordul, futtasd a `hermes doctor` parancsot."

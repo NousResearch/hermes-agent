@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Sağlayıcıdan {seconds} sn boyunca yanıt yok (akışsız, model: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Sağlayıcıdan {seconds} sn boyunca yanıt yok (akışsız, model: {model}). Çağrı iptal ediliyor."
       bedrock_stale: "⚠️ Bedrock'tan {seconds} sn boyunca olay gelmedi (model: {model}). İptal ediliyor..."
-      empty_keepalive: "⚠️ Sağlayıcı akışı boş bir keepalive çerçevesi döndürdü — bu tur akış olmadan yeniden deneniyor (akış bu oturum boyunca kapalı kalır)."
+      empty_keepalive: "⚠️ Sağlayıcı akışı boş bir keepalive çerçevesi döndürdü — bu tur akış olmadan yeniden deneniyor (akış bu rota için kapalı kalır)."
       malformed_exhausted: "❌ Sağlayıcı {attempts} denemeden sonra da bozuk akış verisi döndürdü. Sağlayıcıda sorun olabilir — biraz sonra yeniden deneyin."
       empty_exhausted: "❌ Sağlayıcı {attempts} denemeden sonra da boş bir yanıt akışı döndürdü. Sağlayıcıda sorun olabilir — biraz sonra yeniden deneyin."
       nonstream_retry_succeeded: "⚠  Akış bir sağlayıcı sunucu hatasıyla başarısız oldu; akışsız yeniden deneme başarılı oldu."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "kullanım sınırı {window} içinde sıfırlanıyor. Sonrasında /retry gönderin veya /model ile model değiştirin."
     exhausted_situation_unavailable: "geçici olarak kullanılamıyor gibi görünüyor. Bir dakika bekleyip /retry gönderin veya /model ile model değiştirin."
     exhausted: "{lead} — {situation} Bunun ileride yaşanmaması için `hermes fallback add` ile bir yedek sağlayıcı ekleyin.\n\nSağlayıcının yanıtı: {summary}"
+    stream_lifetime_exhausted: "Yanıt, {attempts} denemenin tümünde agent.stream_max_lifetime ({cap}s) tarafından kesildiğinde hâlâ akıyordu. Bu model gerçekten bu kadar süre gerektiriyorsa agent.stream_max_lifetime değerini artırın veya sınırı kapatmak için 0 yapın."
     nonretryable:
       model_not_found: "'{model}' modeli {label} üzerinde kullanılamıyor. /model ile (veya terminalde `hermes model` ile) farklı bir model seçin.{prefix_hint}"
       format_error: "{label} bu isteği hatalı biçimli bularak reddetti, bu yüzden model yanıt vermedi. /new ile temiz bir oturum başlatın veya /model ile model değiştirin; sorun sürerse `hermes doctor` çalıştırın."

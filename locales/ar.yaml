@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ لا رد من المزوّد منذ {seconds} ث (دون بث، النموذج: {model}). {hint}"
       stale_nonstream_abort: "⚠️ لا رد من المزوّد منذ {seconds} ث (دون بث، النموذج: {model}). جارٍ إلغاء الاستدعاء."
       bedrock_stale: "⚠️ لا أحداث من Bedrock منذ {seconds} ث (النموذج: {model}). جارٍ الإلغاء..."
-      empty_keepalive: "⚠️ أعاد بث المزوّد إطار keepalive فارغًا — إعادة محاولة هذا الدور دون بث (يبقى البث معطّلًا طوال هذه الجلسة)."
+      empty_keepalive: "⚠️ أعاد بث المزوّد إطار keepalive فارغًا — إعادة محاولة هذا الدور دون بث (يبقى البث معطّلًا على هذا المسار)."
       malformed_exhausted: "❌ أعاد المزوّد بيانات بث تالفة بعد عدة محاولات ({attempts}). قد يواجه المزوّد مشكلات — حاول مجددًا بعد لحظات."
       empty_exhausted: "❌ أعاد المزوّد بث رد فارغًا بعد عدة محاولات ({attempts}). قد يواجه المزوّد مشكلات — حاول مجددًا بعد لحظات."
       nonstream_retry_succeeded: "⚠  فشل البث بسبب خطأ في خادم المزوّد؛ ونجحت إعادة المحاولة دون بث."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "يُعاد ضبط حدّ استخدامه خلال {window}. أرسل /retry بعد ذلك، أو بدّل النموذج عبر /model."
     exhausted_situation_unavailable: "يبدو أنه غير متاح مؤقتًا. انتظر دقيقة ثم أرسل /retry، أو بدّل النموذج عبر /model."
     exhausted: "{lead} — {situation} لتجنّب هذا مستقبلًا، أضف مزوّدًا احتياطيًا عبر `hermes fallback add`.\n\nردّ المزوّد: {summary}"
+    stream_lifetime_exhausted: "كان الرد لا يزال يتدفق في جميع المحاولات البالغ عددها {attempts} عندما قطعه agent.stream_max_lifetime ({cap} ث). ارفع قيمة agent.stream_max_lifetime أو اضبطها على 0 لتعطيل الحد إذا كان هذا النموذج يحتاج فعلًا إلى كل هذا الوقت."
     nonretryable:
       model_not_found: "النموذج '{model}' غير متاح لدى {label}. اختر نموذجًا آخر عبر /model (أو `hermes model` في الطرفية).{prefix_hint}"
       format_error: "رفض {label} هذا الطلب لأنه مشوّه الصيغة، فلم يُجب النموذج. ابدأ جلسة نظيفة عبر /new أو بدّل النموذج عبر /model؛ وإن تكرر ذلك، شغّل `hermes doctor`."

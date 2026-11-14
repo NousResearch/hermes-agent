@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Sem resposta do fornecedor por {seconds} s (sem streaming, modelo: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Sem resposta do fornecedor por {seconds} s (sem streaming, modelo: {model}). Abortando a chamada."
       bedrock_stale: "⚠️ Nenhum evento do Bedrock por {seconds} s (modelo: {model}). Abortando..."
-      empty_keepalive: "⚠️ O stream do fornecedor retornou um frame keepalive vazio — repetindo este turno sem streaming (o streaming fica desativado nesta sessão)."
+      empty_keepalive: "⚠️ O stream do fornecedor retornou um frame keepalive vazio — repetindo este turno sem streaming (o streaming fica desativado nesta rota)."
       malformed_exhausted: "❌ O fornecedor retornou dados de streaming malformados após {attempts} tentativas. O fornecedor pode estar com problemas — tente novamente em instantes."
       empty_exhausted: "❌ O fornecedor retornou um stream de resposta vazio após {attempts} tentativas. O fornecedor pode estar com problemas — tente novamente em instantes."
       nonstream_retry_succeeded: "⚠  O streaming falhou com um erro de servidor do fornecedor; a nova tentativa sem streaming funcionou."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "o limite de uso dele é redefinido em {window}. Envie /retry depois disso, ou troque de modelo com /model."
     exhausted_situation_unavailable: "parece estar temporariamente indisponível. Aguarde um minuto e envie /retry, ou troque de modelo com /model."
     exhausted: "{lead} — {situation} Para evitar isso no futuro, adicione um fornecedor de reserva com `hermes fallback add`.\n\nO fornecedor disse: {summary}"
+    stream_lifetime_exhausted: "Nas {attempts} tentativas, a resposta ainda estava sendo transmitida quando agent.stream_max_lifetime ({cap}s) interrompeu o fluxo. Aumente agent.stream_max_lifetime ou defina 0 para desativar o limite se este modelo realmente precisar desse tempo."
     nonretryable:
       model_not_found: "O modelo '{model}' não está disponível em {label}. Escolha outro modelo com /model (ou `hermes model` em um terminal).{prefix_hint}"
       format_error: "{label} rejeitou esta solicitação como malformada, então o modelo não respondeu. Inicie uma sessão limpa com /new ou troque de modelo com /model; se continuar acontecendo, execute `hermes doctor`."

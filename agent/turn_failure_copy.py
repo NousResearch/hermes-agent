@@ -349,9 +349,8 @@ def exhausted_copy(
     A stream cut by ``agent.stream_max_lifetime`` names the setting: the provider was responding,
     so neither waiting nor a backup provider helps."""
     if isinstance(error, StreamLifetimeExceeded):
-        return (f"The response was still streaming when agent.stream_max_lifetime ({error.cap:g}s) cut it, "
-                f"on all {attempts} attempts. Raise agent.stream_max_lifetime, or set it to 0 to turn the "
-                "cap off, if this model legitimately streams this long.")
+        return _copy("explainer.failure.stream_lifetime_exhausted", lang=lang,
+                     cap=f"{error.cap:g}", attempts=attempts)
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead_key = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD)

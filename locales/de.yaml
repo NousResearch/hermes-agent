@@ -3767,7 +3767,7 @@ display:
       stale_nonstream: "⚠️ Seit {seconds} s keine Antwort vom Anbieter (ohne Streaming, Modell: {model}). {hint}"
       stale_nonstream_abort: "⚠️ Seit {seconds} s keine Antwort vom Anbieter (ohne Streaming, Modell: {model}). Aufruf wird abgebrochen."
       bedrock_stale: "⚠️ Seit {seconds} s keine Ereignisse von Bedrock (Modell: {model}). Abbruch..."
-      empty_keepalive: "⚠️ Der Stream des Anbieters hat einen leeren Keepalive-Frame geliefert — dieser Zug wird ohne Streaming wiederholt (Streaming bleibt für diese Sitzung aus)."
+      empty_keepalive: "⚠️ Der Stream des Anbieters hat einen leeren Keepalive-Frame geliefert — dieser Zug wird ohne Streaming wiederholt (Streaming bleibt auf dieser Route aus)."
       malformed_exhausted: "❌ Der Anbieter hat nach {attempts} Versuchen fehlerhafte Streaming-Daten geliefert. Möglicherweise hat der Anbieter Probleme — versuchen Sie es gleich noch einmal."
       empty_exhausted: "❌ Der Anbieter hat nach {attempts} Versuchen einen leeren Antwort-Stream geliefert. Möglicherweise hat der Anbieter Probleme — versuchen Sie es gleich noch einmal."
       nonstream_retry_succeeded: "⚠  Streaming ist mit einem Serverfehler des Anbieters fehlgeschlagen; der Versuch ohne Streaming war erfolgreich."
@@ -3871,6 +3871,7 @@ explainer:
     exhausted_situation_reset: "sein Nutzungslimit wird in {window} zurückgesetzt. Senden Sie danach /retry oder wechseln Sie das Modell mit /model."
     exhausted_situation_unavailable: "er scheint vorübergehend nicht verfügbar zu sein. Warten Sie eine Minute und senden Sie /retry oder wechseln Sie das Modell mit /model."
     exhausted: "{lead} — {situation} Um das künftig zu vermeiden, fügen Sie mit `hermes fallback add` einen Ausweichanbieter hinzu.\n\nMeldung des Anbieters: {summary}"
+    stream_lifetime_exhausted: "Bei allen {attempts} Versuchen lief die Antwort noch, als agent.stream_max_lifetime ({cap}s) den Stream beendete. Erhöhen Sie agent.stream_max_lifetime oder setzen Sie den Wert auf 0, um die Grenze abzuschalten, wenn dieses Modell tatsächlich so lange streamt."
     nonretryable:
       model_not_found: "Das Modell '{model}' ist bei {label} nicht verfügbar. Wählen Sie mit /model ein anderes Modell (oder im Terminal mit `hermes model`).{prefix_hint}"
       format_error: "{label} hat diese Anfrage als fehlerhaft abgelehnt, daher hat das Modell nicht geantwortet. Starten Sie mit /new eine saubere Sitzung oder wechseln Sie das Modell mit /model; falls es weiterhin passiert, führen Sie `hermes doctor` aus."

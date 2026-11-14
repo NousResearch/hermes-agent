@@ -1727,7 +1727,7 @@ _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 # ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
+    "zcat", "tac", "view", "batcat", "grep", "awk", "sed", "get-content",
 })
 _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",

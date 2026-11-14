@@ -40,6 +40,13 @@ class TestCredentialStoreReads:
         assert self.WEAK not in read
         assert self.WEAK not in redact_terminal_output(text, f"cat {path}", force=True)
 
+    def test_powershell_get_content_masks_netrc_password(self):
+        # PowerShell's canonical file reader must use the same credential-file policy as cat.
+        text = f"machine api.example.com login bob password {self.WEAK}\n"
+        output = redact_terminal_output(text, r"Get-Content -Path ~\_netrc", force=True)
+        assert "machine api.example.com login bob password" in output
+        assert self.WEAK not in output
+
     @pytest.mark.parametrize("path, body", [
         ("~/.netrc", 'machine h login bob password "a b {pw}"\n'),
         ("~/_netrc", "machine h login bob password {pw}\n"),

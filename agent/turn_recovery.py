@@ -1931,12 +1931,25 @@ def route_classified_error(
         or classified.reason == FailoverReason.timeout
     ):
         try:
-            from agent.vertex_adapter import record_vertex_regional_429
+            from agent.vertex_adapter import (
+                GLOBAL_STICKY_EPOCH_MIN_TOKENS,
+                record_vertex_regional_429,
+            )
 
+            _cc_tr = getattr(agent, "context_compressor", None)
+            _tr_prompt_tok = (
+                int(getattr(_cc_tr, "last_prompt_tokens", 0) or 0)
+                if _cc_tr is not None
+                else 0
+            )
+            _preserve_deep_ew2_cache = (
+                _tr_prompt_tok >= GLOBAL_STICKY_EPOCH_MIN_TOKENS and retry_count < 2
+            )
             _v_sid = (
                 None
                 if (
-                    getattr(agent, "_write_origin", None) == "background_review"
+                    _preserve_deep_ew2_cache
+                    or getattr(agent, "_write_origin", None) == "background_review"
                     or getattr(agent, "_memory_write_origin", None) == "background_review"
                     or getattr(agent, "_turn_origin", None) == "background_review"
                 )

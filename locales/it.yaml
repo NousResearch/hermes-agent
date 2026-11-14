@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ Modalità YOLO **OFF** per questa sessione — i comandi pericolosi richiederanno approvazione."
     enabled: "⚡ Modalità YOLO **ON** per questa sessione — tutti i comandi auto-approvati. Usa con cautela."
   shared:
+    fallback_model_suffix: " — fallback per `{primary}`"
     session_db_unavailable: "Database delle sessioni non disponibile."
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"
     session_not_found: "Sessione non trovata nel database."
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "Generazione di AGENTS.md da una scansione del progetto…"
   moa:
     prepare_failed: "Impossibile preparare il turno MoA."
+    managed_session: "/moa non è disponibile in questa sessione: le sessioni in modalità provvisoria, senza configurazione, kanban e con worker gestito eseguono ogni turno sul proprio modello. Invia il prompt senza /moa."
   quick_command:
     no_output: "Il comando non ha restituito output."
     timed_out: "Comando rapido scaduto (30s)."
@@ -1252,6 +1254,11 @@ platform:
       affirm: "✓ Sì"
       negate: "✗ No"
       other: "✏️ Altro (digita)"
+      multi_hint: "Seleziona una o più opzioni, poi tocca Invia."
+      send: "✅ Invia"
+      selected_count: "Selezionate: {count}"
+      select_one: "Seleziona prima almeno un'opzione."
+      toggle_failed: "Impossibile aggiornare la selezione: tocca di nuovo."
       expired_toast: "⚠️ Questa richiesta è scaduta — usa /retry."
       expired_body: "⚠️ Questa domanda è scaduta o la sessione è stata reimpostata — usa /retry."
       type_answer: "✏️ Digita la tua risposta nella chat."

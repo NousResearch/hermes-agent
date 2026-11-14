@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
     enabled: "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
   shared:
+    fallback_model_suffix: " — 대체 모델, 기본: `{primary}`"
     session_db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found: "데이터베이스에서 세션을 찾을 수 없습니다."
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "프로젝트 스캔 결과로 AGENTS.md를 생성하고 있어요…"
   moa:
     prepare_failed: "MoA 턴을 준비하지 못했어요."
+    managed_session: "이 세션에서는 /moa를 사용할 수 없습니다. 안전 모드, 설정 없음, kanban, 관리형 워커 세션은 모든 턴을 자체 모델로 실행합니다. /moa 없이 프롬프트를 보내세요."
   quick_command:
     no_output: "명령이 출력을 반환하지 않았어요."
     timed_out: "빠른 명령 시간 초과 (30초)."
@@ -1252,6 +1254,11 @@ platform:
       affirm: "✓ 예"
       negate: "✗ 아니요"
       other: "✏️ 기타 (직접 입력)"
+      multi_hint: "하나 이상 선택한 다음 보내기를 누르세요."
+      send: "✅ 보내기"
+      selected_count: "선택됨: {count}"
+      select_one: "먼저 옵션을 하나 이상 선택하세요."
+      toggle_failed: "선택을 업데이트하지 못했습니다. 다시 눌러 주세요."
       expired_toast: "⚠️ 이 프롬프트가 만료되었어요 — /retry를 실행해 주세요."
       expired_body: "⚠️ 이 질문이 만료되었거나 세션이 초기화되었어요 — /retry를 실행해 주세요."
       type_answer: "✏️ 채팅에 답변을 입력해 주세요."

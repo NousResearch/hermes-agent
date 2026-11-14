@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"
     enabled: "⚡ このセッションの YOLO モードは **ON** — すべてのコマンドが自動承認されます。注意して使用してください。"
   shared:
+    fallback_model_suffix: " — 代替モデル、本来は `{primary}`"
     session_db_unavailable: "セッションデータベースが利用できません。"
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found: "データベースにセッションが見つかりません。"
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "プロジェクトスキャンから AGENTS.md を生成しています…"
   moa:
     prepare_failed: "MoA ターンの準備に失敗しました。"
+    managed_session: "このセッションでは /moa を使用できません。セーフモード、設定なし、kanban、マネージドワーカーのセッションは、すべてのターンを独自のモデルで実行します。/moa を付けずにプロンプトを送信してください。"
   quick_command:
     no_output: "コマンドは出力を返しませんでした。"
     timed_out: "クイックコマンドがタイムアウトしました (30 秒)。"
@@ -1252,6 +1254,11 @@ platform:
       affirm: "✓ はい"
       negate: "✗ いいえ"
       other: "✏️ その他（回答を入力）"
+      multi_hint: "1つ以上選んでから「送信」をタップしてください。"
+      send: "✅ 送信"
+      selected_count: "選択中: {count}"
+      select_one: "まず1つ以上選んでください。"
+      toggle_failed: "選択を更新できませんでした。もう一度タップしてください。"
       expired_toast: "⚠️ このプロンプトの有効期限が切れました — /retry してください。"
       expired_body: "⚠️ この質問は有効期限が切れたか、セッションがリセットされました — /retry してください。"
       type_answer: "✏️ チャットに回答を入力してください。"

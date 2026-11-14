@@ -116,12 +116,14 @@ def _hermes_exempt_homes() -> tuple[str, ...]:
     """Realpaths of the Hermes home tree(s) the protected-instruction gate must stay out of:
     the ACTIVE profile's home, plus the Hermes ROOT when that home is a named profile
     (``<root>/profiles/<name>``). Exempting only the profile dir left the root's DIRECT files
-    (LEDGER.md / MEMORY.md / SOUL.md / AGENTS.md ...) to the ``.hermes`` component rule, which
+    (LEDGER.md / MEMORY.md / USER.md ...) to the ``.hermes`` component rule, which
     gated them like a project-local ``<repo>/.hermes/config.yaml`` — fail-closed headless
     (#110630). They are the agent's own store, governed by their own guards, exactly like
     ``~/.hermes`` under the default profile. The root is added only when the shape really is a
     named profile (``named_profile_home``), so a coincidental ``profiles/`` dir elsewhere never
-    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone."""
+    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone.
+    The exemption only skips the ``.hermes`` component rule: instruction files (SOUL.md,
+    AGENTS.md, ...) and ``extra_patterns`` are still gated inside these homes (#92146)."""
     home = _get_real_hermes_home()
     if not home:
         return ()
@@ -250,21 +252,25 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     except (OSError, ValueError, RuntimeError):
         resolved = normalized if hosted else os.path.realpath(normalized)
 
-    # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
-    # Must run before the ``.hermes`` component rule, which would match the home.
-    # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
-    # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
-    for real_home in _hermes_exempt_homes():
-        if resolved == real_home or resolved.startswith(real_home + os.sep):
-            return None
-
+    # Basenames and operator patterns gate EVERYWHERE, the Hermes home included:
+    # the live SOUL.md / AGENTS.md and cron ``scripts/`` there steer the agent and
+    # no other file-tool guard covers them (#92146).
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)
         base_lower = base.lower()
         if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
                 fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
             return base
+
+    # The ``.hermes`` component rule below targets PROJECT-LOCAL config, and the home
+    # itself is usually named ``.hermes``; without this every state/cache/session write
+    # there would prompt. ``_hermes_exempt_homes`` also covers the ROOT when the active
+    # home is a named profile (#110630).
+    for real_home in _hermes_exempt_homes():
+        if resolved == real_home or resolved.startswith(real_home + os.sep):
+            return None
+
+    for candidate in (normalized, resolved):
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.

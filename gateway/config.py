@@ -856,14 +856,14 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
     ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
     allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
-    from gateway.platforms._shared import gate_config_version, yaml_env_refresh
+    from gateway.platforms._shared import gate_config_version, yaml_env_transaction
 
     _home = get_hermes_home()
     version = gate_config_version()
     gw_data = config_loader.load_legacy_gateway_json(_home)
     # One transaction through typed construction, overrides and validation: the runner's authorization
     # reads the bridged env, so a load that fails after the YAML overlay must not leave its writes.
-    with yaml_env_refresh():
+    with yaml_env_transaction():
         config = _load_gateway_config_layers(_home, gw_data, strict)
     for platform_config in config.platforms.values():
         platform_config.loaded_version = version

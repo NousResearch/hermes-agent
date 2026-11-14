@@ -782,12 +782,20 @@ def _unstage_refused_images(session) -> int:
 
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
-    """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    """Under ``history_lock``: refuse watch-child races / malformed truncation / lost ownership, apply
+    the cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``; ``err`` is the
+    ownership refusal itself (a str) when an idle-released lease cannot be re-claimed."""
     fields = {}
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        # The ownership check above ran before this lock: the idle reaper (which releases under it) may have
+        # freed the lease since, and another surface claimed and extended the transcript. Re-claim here,
+        # before the cut and the turn's writes; a refusal (an ActiveSessionRefusal str) writes nothing.
+        try:
+            _require_transcript_owner(session)
+        except SessionNotOwned as exc:
+            return exc.refusal, fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
@@ -804,12 +812,25 @@ def _lock_in_submit_turn(
             if err is not None:
                 return err, {}
         session["running"] = True
+        session.pop("_notif_turn_claim", None)  # a stale dispatcher claim never releases this turn
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
+
+
+def _claim_submit_turn(
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    internal_hosted_submit):
+    """``_lock_in_submit_turn``, with an ownership refusal answered like the precheck's (outside history_lock:
+    the ledger-owner forward and image unstaging take it)."""
+    err, fields = _lock_in_submit_turn(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    if isinstance(err, str):  # the idle reaper released the lease after the precheck; nothing was written
+        return _slot_refusal(rid, sid, session, text, params, err, internal_hosted_submit), {}
+    return err, fields
 
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
@@ -915,8 +936,9 @@ def _(rid, params: dict) -> dict:
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    err, survivor_fields = _claim_submit_turn(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        internal_hosted_submit)
     if err is not None:
         return err
     if turn_isolation:

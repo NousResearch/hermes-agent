@@ -272,6 +272,11 @@ def _reap_idle_sessions() -> None:
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
     _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
+    try:
+        if released := _release_idle_session_leases(now):
+            logger.info("Released %d idle Desktop active-session lease(s)", released)
+    except Exception:
+        logger.debug("idle lease release failed", exc_info=True)
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
     # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
@@ -312,6 +317,54 @@ def _repair_missing_ws_orphan_reaps() -> None:
         ]
         for sid in missing:
             _schedule_ws_orphan_reap(sid)
+
+
+# An idle Desktop record keeps its runtime (warm tab reopen) but not its active-session lease. Desktop's tab
+# close sends no RPC and the app's live socket exempts the record from TTL/LRU reaping, while
+# _own_live_lease_ids vouches for every resident record, so a lease claimed on turn 1 fenced Telegram, the
+# dashboard and message_agent out of that chat until the app quit (#146735). The next turn re-claims it
+# through _admit_prompt_turn; a surface that took the chat meanwhile then refuses it, as exclusivity requires.
+_IDLE_LEASE_RELEASE_S = 600.0
+
+
+def _session_lease_is_idle(sid: str, session: dict, now: float) -> bool:
+    """A liveness-tracked (Desktop) lease on a record with no turn, build, input wait or delegation in flight,
+    untouched for ``_IDLE_LEASE_RELEASE_S``. A borrowed compute-host token (``enabled=False``) is not ours."""
+    lease = session.get("active_session_lease")
+    if lease is None or not getattr(lease, "track_liveness", False) or not getattr(lease, "enabled", True):
+        return False
+    if now - float(session.get("last_active") or 0.0) <= _IDLE_LEASE_RELEASE_S:
+        return False
+    if session.get("running") or session.get("_compute_host_turn_id") or _session_holds_transcript_claim(session, now):
+        return False
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set():
+        return False
+    return not (_session_pending_kind(sid) or _session_has_active_delegations(sid, session)
+                or _session_owns_live_wakeup_schedule(session) or _session_owns_pending_process_notification(session))
+
+
+def _release_idle_session_leases(now: float | None = None) -> int:
+    """Release the active-session lease of every idle resident Desktop record; returns the count."""
+    now = time.time() if now is None else now
+    with _sessions_lock:
+        candidates = [(sid, s) for sid, s in _sessions.items() if s.get("active_session_lease") is not None]
+    released = 0
+    for sid, session in candidates:
+        if not _session_lease_is_idle(sid, session, now):
+            continue
+        # Turns mark ``running`` and off-turn writers refresh ``last_active`` / hold a transcript claim under
+        # history_lock: re-evaluate the WHOLE predicate there, or a writer that passed its ownership check after
+        # the unlocked probe above loses the lease mid-write. ``_lease_idle_released`` is set under the same lock:
+        # a submit that checked the lease before this release, and every rewind, refuses to write the transcript
+        # until the lease is re-claimed.
+        with session.get("history_lock") or contextlib.nullcontext():
+            if session.get("_finalized") or not _session_lease_is_idle(sid, session, now):
+                continue
+            if _release_active_session_slot(session):
+                session["_lease_idle_released"] = sid  # the writer identity a re-claim must present
+                released += 1
+    return released
 
 
 def _reclaim_orphaned_leases() -> None:

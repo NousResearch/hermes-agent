@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
     enabled: "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
   shared:
+    fallback_model_suffix: " — cúltaca do `{primary}`"
     session_db_unavailable: "Níl bunachar sonraí na seisiún ar fáil."
     session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"
     session_not_found: "Seisiún gan a aimsiú sa bhunachar sonraí."
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "Ag giniúint AGENTS.md ó scanadh tionscadail…"
   moa:
     prepare_failed: "Theip ar sheal MoA a ullmhú."
+    managed_session: "Níl /moa ar fáil sa seisiún seo: ritheann seisiúin mhód sábháilte, gan chumraíocht, kanban agus oibrí bainistithe gach seal ar a samhail féin. Seol an leid gan /moa."
   quick_command:
     no_output: "Níor chuir an t-ordú aon aschur ar ais."
     timed_out: "Chuaigh an mear-ordú thar am (30s)."
@@ -1252,6 +1254,11 @@ platform:
       affirm: "✓ Tá"
       negate: "✗ Níl"
       other: "✏️ Eile (clóscríobh freagra)"
+      multi_hint: "Roghnaigh ceann amháin nó níos mó, ansin tapáil Seol."
+      send: "✅ Seol"
+      selected_count: "Roghnaithe: {count}"
+      select_one: "Roghnaigh rogha amháin ar a laghad ar dtús."
+      toggle_failed: "Níorbh fhéidir an rogha a nuashonrú — tapáil arís."
       expired_toast: "⚠️ Tá an leid seo imithe in éag — rith /retry le do thoil."
       expired_body: "⚠️ Tá an cheist seo imithe in éag nó athshocraíodh an seisiún — rith /retry le do thoil."
       type_answer: "✏️ Clóscríobh do fhreagra sa chomhrá."

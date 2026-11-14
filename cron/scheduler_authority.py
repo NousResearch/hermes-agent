@@ -73,14 +73,19 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     attempted = journal.exists()
     owner = owner_for_home(get_hermes_home())
 
-    def save():
+    def write_journal():
         root.mkdir(parents=True, exist_ok=True)
         atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+
+    async def save():
+        # ``observe`` runs on the owner loop when this process owns the profile: the fsynced journal
+        # write (file and directory) waits in a worker, and still completes before the next step.
+        await asyncio.to_thread(write_journal)
 
     async def observe(call):
         nonlocal attempted
         attempted = True
-        save()
+        await save()
         try:
             receipt = await call('submit', params)
         except Exception as exc:
@@ -94,7 +99,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                     result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error]
                     record['refusal'] = result
                     record['job'] = dict(job)
-                    save()
+                    await save()
                     return tuple(result)
                 if state['status'] not in {'queued', 'started', 'terminal'}:
                     raise
@@ -103,7 +108,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             else:
                 raise
         record['receipt'] = receipt
-        save()
+        await save()
         delay, progress = .1, None
         while True:
             if cancel_event is not None and cancel_event.is_set():

@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."
     enabled: "⚡ YOLO-modus **AAN** vir hierdie sessie — alle opdragte word outomaties goedgekeur. Gebruik versigtig."
   shared:
+    fallback_model_suffix: " — terugval vir `{primary}`"
     session_db_unavailable: "Sessie-databasis is nie beskikbaar nie."
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found: "Sessie nie in databasis gevind nie."
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "AGENTS.md word vanaf 'n projekskandering gegenereer…"
   moa:
     prepare_failed: "Kon nie MoA-beurt voorberei nie."
+    managed_session: "/moa is nie in hierdie sessie beskikbaar nie: veiligemodus-, konfigurasievrye, kanban- en bestuurde-werker-sessies voer elke beurt op hul eie model uit. Stuur die opdrag sonder /moa."
   quick_command:
     no_output: "Opdrag het geen uitvoer teruggegee nie."
     timed_out: "Vinnige opdrag het uitgetel (30s)."
@@ -1252,6 +1254,11 @@ platform:
       affirm: "✓ Ja"
       negate: "✗ Nee"
       other: "✏️ Ander (tik antwoord)"
+      multi_hint: "Kies een of meer, tik dan Stuur."
+      send: "✅ Stuur"
+      selected_count: "Gekies: {count}"
+      select_one: "Kies eers ten minste een opsie."
+      toggle_failed: "Kon nie die keuse bywerk nie — tik weer."
       expired_toast: "⚠️ Hierdie prompt het verval — gebruik asseblief /retry."
       expired_body: "⚠️ Hierdie vraag het verval of die sessie is herstel — gebruik asseblief /retry."
       type_answer: "✏️ Tik jou antwoord in die klets."

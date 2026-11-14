@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
@@ -126,8 +127,15 @@ def reconcile_profile_gateways(
     fold = fold_named_slot_intent(
         default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
     folded, default_should_start = list(fold.folded), fold.root_should_start
+    # A foreground `gateway run --no-supervise` CMD IS the container's one gateway; booting the
+    # s6 root slot from persisted intent as well puts two pollers on one bot token (#152152).
+    # A standalone profile's foreground gateway serves only that profile, so the root slot stays.
+    foreground = _foreground_gateway_profile(
+        tuple(container_argv) if container_argv is not None else _read_container_argv(), hermes_home)
+    if foreground is not None and foreground not in standalone:
+        default_should_start = False
     if folded and default_prior_state not in _AUTOSTART_STATES:
-        log.warning("%s", boot_notice(folded))
+        log.warning("%s", boot_notice(folded, foreground=not default_should_start))
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
         _register_service(scandir, "default", start=default_should_start)
@@ -136,7 +144,8 @@ def reconcile_profile_gateways(
 
     for name, entry, prior_state in named:
         # Registered down unless standalone: any other started named slot IS a second gateway on this host.
-        should_start = name in standalone and prior_state in _AUTOSTART_STATES
+        # ...and a standalone profile the CMD already serves in the foreground stays down too.
+        should_start = name in standalone and prior_state in _AUTOSTART_STATES and name != foreground
         if not dry_run:
             _cleanup_stale_runtime_files(entry)
             _register_service(scandir, name, start=should_start)
@@ -147,11 +156,15 @@ def reconcile_profile_gateways(
     return actions
 
 
-def boot_notice(folded: Sequence[str]) -> str:
-    """One line naming the profiles whose autostart intent the root slot took over."""
+def boot_notice(folded: Sequence[str], *, foreground: bool = False) -> str:
+    """One line naming the profiles whose autostart intent the root slot took over, or, when the
+    container CMD is itself the foreground gateway, that it serves them and the root slot stays down."""
+    served_by = ("the foreground gateway (the container CMD) serves them, so the ROOT slot (gateway-default) "
+                 "stays down" if foreground else
+                 "the ROOT slot (gateway-default) was started instead and multiplexes them")
     return ("reconcile: profile gateway(s) " + ", ".join(sorted(folded)) +
-            " asked to autostart; one gateway per container serves every non-standalone profile, so the ROOT "
-            "slot (gateway-default) was started instead and multiplexes them.")
+            " asked to autostart; one gateway per container serves every non-standalone profile, so " +
+            served_by + ".")
 
 
 def _maybe_migrate_legacy_gateway_run_state(
@@ -220,15 +233,62 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
         args = args[1:]
     if args and Path(args[0]).name == "hermes":  # the wrapper re-execs `hermes <subcommand>`
         args = args[1:]
+    return _strip_python_launcher(args)
+
+
+_PYTHON_RE = re.compile(r"python(\d+(\.\d+)*)?(\.exe)?")
+_PYTHON_OPERAND_FLAGS = frozenset({"-X", "-W"})
+
+
+def _strip_python_launcher(args: list[str]) -> list[str]:
+    """Drop a ``python [opts] -m hermes_cli.main`` / ``python [opts] .../hermes_cli/main.py``
+    launcher: main-wrapper.sh execs an executable CMD as-is, and that process is the same CLI."""
+    if not args or not _PYTHON_RE.fullmatch(Path(args[0]).name):
+        return args
+    i = 1
+    while i < len(args) and args[i].startswith("-") and args[i] != "-m":
+        i += 2 if args[i] in _PYTHON_OPERAND_FLAGS else 1
+    if args[i:i + 2] == ["-m", "hermes_cli.main"]:
+        return args[i + 2:]
+    if i < len(args) and args[i].replace("\\", "/").endswith("hermes_cli/main.py"):
+        return args[i + 1:]
     return args
 
 
 def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     """True for Docker commands equivalent to `gateway run`."""
+    from hermes_cli._parser import gateway_run_no_supervise
     args = _strip_container_argv_prefix(argv)
-    if "--no-supervise" in args:
+    if gateway_run_no_supervise(args):
         return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
+
+
+def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str | None:
+    """The profile a container CMD's own foreground gateway serves, or None when the CMD runs no
+    gateway outside s6. Foreground means ``gateway run`` with ``--no-supervise`` or
+    HERMES_GATEWAY_NO_SUPERVISE, parsed as the CLI does: the profile is ``-p``/``--profile``
+    wherever it sits, else the sticky ``active_profile`` the unsupervised run follows (#22502)."""
+    import shlex
+
+    from gateway.status import looks_like_gateway_command_line
+    from hermes_cli._parser import gateway_run_no_supervise, scan_profile_flag_quietly
+    args = _strip_container_argv_prefix(argv)
+    if not looks_like_gateway_command_line(shlex.join(["hermes", *args])):
+        return None
+    scanned = scan_profile_flag_quietly(args)
+    if scanned is None:  # an invalid -p: the CMD exits 2 itself and runs no gateway
+        return None
+    profile, consumed, index = scanned
+    if index is not None:  # stripped before argparse, as main._apply_profile_override does
+        args = args[:index] + args[index + consumed:]
+    # Bare `gateway` also runs, but only `gateway run` takes `--no-supervise`.
+    if not gateway_run_no_supervise(args) and os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() not in ("1", "true", "yes"):
+        return None
+    if profile is not None:
+        return profile
+    from hermes_cli.profiles import get_active_profile
+    return get_active_profile(hermes_home)
 
 
 def _is_dashboard_container(argv: Sequence[str]) -> bool:
@@ -368,7 +428,7 @@ def main() -> int:
     actions = reconcile_profile_gateways(hermes_home=hermes_home, scandir=scandir)
     folded = [a.profile for a in actions if a.profile != "default" and a.folded_into_root]
     if folded:
-        print(boot_notice(folded))
+        print(boot_notice(folded, foreground=actions[0].action != "started"))
     for a in actions:
         print(f"reconcile: profile={a.profile} prior_state={a.prior_state} action={a.action}")
     return 0

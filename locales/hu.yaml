@@ -607,6 +607,7 @@ gateway:
     disabled: "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
     enabled: "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
   shared:
+    fallback_model_suffix: " — tartalék ehhez: `{primary}`"
     session_db_unavailable: "A munkamenet-adatbázis nem érhető el."
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found: "A munkamenet nem található az adatbázisban."
@@ -818,6 +819,7 @@ gateway:
     ack_generate: "AGENTS.md létrehozása a projekt átvizsgálása alapján…"
   moa:
     prepare_failed: "Nem sikerült előkészíteni a MoA kört."
+    managed_session: "A /moa nem érhető el ebben a munkamenetben: a csökkentett módú, konfiguráció nélküli, kanban és felügyelt workeres munkamenetek minden kört a saját modelljükön futtatnak. Küldd el a promptot /moa nélkül."
   quick_command:
     no_output: "A parancs nem adott kimenetet."
     timed_out: "A gyorsparancs időtúllépés miatt leállt (30 s)."
@@ -1269,6 +1271,11 @@ platform:
       affirm: "✓ Igen"
       negate: "✗ Nem"
       other: "✏️ Egyéb (írd be a választ)"
+      multi_hint: "Válassz egyet vagy többet, majd koppints a Küldésre."
+      send: "✅ Küldés"
+      selected_count: "Kiválasztva: {count}"
+      select_one: "Előbb válassz legalább egy lehetőséget."
+      toggle_failed: "Nem sikerült frissíteni a kijelölést — koppints újra."
       expired_toast: "⚠️ Ez a kérdés lejárt — kérd újra: /retry."
       expired_body: "⚠️ Ez a kérdés lejárt vagy a munkamenet alaphelyzetbe állt — kérd újra: /retry."
       type_answer: "✏️ Írd be a választ a csevegésbe."

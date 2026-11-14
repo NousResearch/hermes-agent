@@ -608,6 +608,7 @@ gateway:
     disabled: "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
     enabled: "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
   shared:
+    fallback_model_suffix: " — fallback for `{primary}`"
     session_db_unavailable: "Session database not available."
     session_db_unavailable_prefix: "Session database not available"
     session_not_found: "Session not found in database."
@@ -828,6 +829,7 @@ gateway:
 
   moa:
     prepare_failed: "Failed to prepare MoA turn."
+    managed_session: "/moa isn't available in this session: safe-mode, config-free, kanban and managed-worker sessions run every turn on their own model. Send the prompt without /moa."
 
   quick_command:
     no_output: "Command returned no output."
@@ -1307,6 +1309,11 @@ platform:
       affirm: "✓ Yes"
       negate: "✗ No"
       other: "✏️ Other (type answer)"
+      multi_hint: "Select one or more, then tap Send."
+      send: "✅ Send"
+      selected_count: "Selected: {count}"
+      select_one: "Select at least one option first."
+      toggle_failed: "Couldn't update the selection — tap again."
       expired_toast: "⚠️ This prompt expired — please /retry."
       expired_body: "⚠️ This question expired or the session reset — please /retry."
       type_answer: "✏️ Type your answer in the chat."

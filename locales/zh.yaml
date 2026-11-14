@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
     enabled: "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
   shared:
+    fallback_model_suffix: " — 备用，原为 `{primary}`"
     session_db_unavailable: "会话数据库不可用。"
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found: "数据库中未找到该会话。"
@@ -808,6 +809,7 @@ gateway:
     ack_generate: "正在根据项目扫描生成 AGENTS.md…"
   moa:
     prepare_failed: "准备 MoA 回合失败。"
+    managed_session: "此会话无法使用 /moa：安全模式、无配置、kanban 和托管 worker 会话的每一轮都在自身模型上运行。请直接发送提示，不要加 /moa。"
   quick_command:
     no_output: "命令没有返回任何输出。"
     timed_out: "快捷命令超时（30 秒）。"
@@ -1252,6 +1254,11 @@ platform:
       affirm: "✓ 是"
       negate: "✗ 否"
       other: "✏️ 其他（输入回答）"
+      multi_hint: "选择一个或多个选项，然后点击发送。"
+      send: "✅ 发送"
+      selected_count: "已选择：{count}"
+      select_one: "请先至少选择一个选项。"
+      toggle_failed: "无法更新选择，请再点一次。"
       expired_toast: "⚠️ 此提示已过期 — 请使用 /retry。"
       expired_body: "⚠️ 此问题已过期或会话已重置 — 请使用 /retry。"
       type_answer: "✏️ 请在聊天中输入你的回答。"

@@ -677,6 +677,7 @@ def _is_b64_pem_key(blob: str) -> bool:
 _PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
 # A pure-hex line is a digest in docs, not key material: a base64 body line is never all hex.
 _PEM_BODY_LINE_RE = re.compile(r"[ \t]*(?![0-9A-Fa-f]+[ \t]*$)[A-Za-z0-9+/=]{16,}[ \t]*")
+_PEM_TRAILER_RE = re.compile(r"[ \t]*(?:[A-Za-z0-9+/]{1,15}={0,2}|==?)[ \t]*")  # ecdsa can end on a bare ``==``
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -1554,9 +1555,14 @@ def _redact_partial_private_keys(text: str) -> str:
             continue
         step = 1 if m.group(1) == "BEGIN" else -1
         j = i + step
+        if step < 0 and j > 0 and _PEM_TRAILER_RE.fullmatch(lines[j].rstrip("\r")) and _PEM_BODY_LINE_RE.fullmatch(lines[j - 1].rstrip("\r")):
+            drop.add(j)
+            j -= 1  # a key's last body line can be short: ed25519 with a 30-35 char comment ends on ``QFBgc=``
         while 0 <= j < len(lines) and j not in drop and _PEM_BODY_LINE_RE.fullmatch(lines[j].rstrip("\r")):
             drop.add(j)
             j += step
+        if step > 0 and i + 1 < j < len(lines) and _PEM_TRAILER_RE.fullmatch(lines[j].rstrip("\r")):
+            drop.add(j)
         if j != i + step:
             lines[i] = "[REDACTED PRIVATE KEY]"
     if not drop:
@@ -1634,6 +1640,9 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file
 
+    # Key blocks first: a body line holding a token prefix (``gAAAA``) would otherwise be masked into
+    # ``gAAAAh...Y2Nj`` and end the partial-key run there, leaving the lines past it visible.
+    text = _redact_private_key_blocks(text)
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
     if _has_known_prefix_substring(text):
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -1655,7 +1664,6 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
     # Flags and connection-string keys carry a credential in command text, so they are not
     # gated on code_file: the shape (``--password=`` / ``;AccountKey=``) is unambiguous, and
     # the surfaces that leaked them (approval cards, chat status) run this pass anyway.
-    text = _redact_private_key_blocks(text)
     text = _redact_cli_secrets(text, _mask_token_nonreusable if file_read else None)
 
     if force and "=" in text:

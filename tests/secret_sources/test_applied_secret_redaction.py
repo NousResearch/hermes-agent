@@ -175,6 +175,27 @@ def test_partial_private_key_print_masks_the_body_next_to_a_lone_armor_line():
     assert digest in redact_sensitive_text(f"{lines[0]}\n{digest}\n", force=True)
 
 
+@pytest.mark.parametrize("trailer", ["QFBgc=", "=="])
+@pytest.mark.parametrize("part", ["tail", "head"])
+def test_partial_print_of_a_key_ending_on_a_short_body_line_masks_it(part, trailer):
+    # ssh-keygen -t ed25519 with a 30-35 char comment ends its body on a 6-char line; ecdsa can end on ``==``.
+    lines = SSH_KEY.splitlines()
+    lines.insert(-1, trailer)
+    shown = lines[-5:] if part == "tail" else lines[:-1]  # tail -n 5, head -n -1
+    redacted = redact_sensitive_text("\n".join(shown) + "\n", force=True)
+    assert not [b for b in [*SSH_BODY, trailer] if b in redacted.splitlines()]
+    for kept in (f"key file:\ndone\n{lines[-1]}\n", f"{lines[0]}\nnote\n"):  # no body run: nothing to mask
+        assert redact_sensitive_text(kept, force=True) == kept
+
+
+
+def test_partial_print_masks_body_lines_past_one_that_holds_a_token_prefix():
+    # A real ecdsa body line can start ``gAAAA`` (the Codex-token prefix): masking it first ended the run.
+    lines = SSH_KEY.splitlines()
+    lines[-2] = "gAAAA" + "Y2Nj" * 14 + "AQI="  # shape of a real ecdsa line with a 53-char comment
+    redacted = redact_sensitive_text("\n".join(lines[-5:]) + "\n", force=True)
+    assert not [b for b in lines[1:-1] if b[8:16] in redacted]
+
 
 @pytest.mark.parametrize("indent", [None, 2], ids=["compact", "pretty"])
 def test_service_account_json_key_lines_never_leak_once_decoded(tmp_path, indent):

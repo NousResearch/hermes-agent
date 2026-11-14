@@ -118,6 +118,7 @@ def finish_text_response(
     stop gates accept it."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
+        _LEAKED_TOOLCALL_NUDGE_CONTENT,
     )
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
@@ -329,6 +330,43 @@ def finish_text_response(
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
 
+    # A tool call leaked as plain text (local OpenAI-compatible servers — LM Studio, Ollama,
+    # vLLM, Strata): the model wrote the call into its content instead of emitting a
+    # structured tool_calls entry, so this arrives as finish_reason="stop" and the turn would
+    # end "complete" with nothing executed — silently. Detection is deliberately narrow (the
+    # Harmony ``to=…`` form and shell JSON with an action lead-in, both handled by
+    # ``_leaked_tool_call_text``): a bare code block is often a legitimate answer and must
+    # never be re-prompted away.
+    if (
+        finish_reason == "stop"
+        and not getattr(assistant_message, "tool_calls", None)
+        and getattr(agent, "_leaked_toolcall_retries", 0) < 3
+    ):
+        from agent.codex_responses_adapter import _leaked_tool_call_text
+        if _leaked_tool_call_text(final_response):
+            agent._leaked_toolcall_retries = getattr(agent, "_leaked_toolcall_retries", 0) + 1
+            logger.warning(
+                "Tool call leaked as plain text (finish_reason=stop with no tool_calls) — "
+                "re-prompting to emit the call (retry %d/3, model=%s provider=%s)",
+                agent._leaked_toolcall_retries, agent.model, agent.provider,
+            )
+            agent._emit_diagnostic_status(
+                "↻ Model wrote a tool call as text — re-prompting "
+                f"({agent._leaked_toolcall_retries}/3)"
+            )
+            # Same ephemeral flag as the dropped-tool-call path: both halves of the pair are
+            # scaffolding, stripped before the durable transcript write.
+            final_msg["_dropped_toolcall_nudge"] = True
+            append_message(messages, final_msg)
+            append_message(messages, {
+                "role": "user",
+                "content": _LEAKED_TOOLCALL_NUDGE_CONTENT,
+                "_dropped_toolcall_nudge": True,
+            })
+            agent._session_messages = messages
+            final_response = None
+            return _verdict("continue")
+
     # Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
     if (
@@ -362,6 +400,7 @@ def finish_text_response(
 
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
+    agent._leaked_toolcall_retries = 0
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.

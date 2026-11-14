@@ -1,0 +1,21 @@
+name: code-assurance-engine
+repo: https://github.com/Sahil-SS9/code-assurance-engine
+sha: 4a31218d6227c03d85f88e386cc5ad4632c27413
+description: "Change-assurance engine: evaluates an immutable repository candidate against an explicit, reviewer-approved check contract and returns machine-readable evidence, findings and unverified gaps, so a green result has a defined scope. Disclosure — 6 tools plus a `hermes assure` CLI and an `/assure` slash command; `assure_inspect` reads the candidate repository read-only with git and refuses option-like base/head refs; the candidate is frozen and identified by content before the contract is agreed; `assure_run` is the sole repository-code-executing operation and refuses unless the assessment is APPROVED and its venue gates pass; the `--owner-keys` file is a path the caller supplies, so owner approval is only as strong as control of that path and of `/assure`; reports are private, local and render without external assets; no third-party network calls, no stored credentials, no telemetry and no self-updater."
+maintainer: Sahil-SS9
+tier: community
+category: tools
+docs_url: https://github.com/Sahil-SS9/code-assurance-engine
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - assure_inspect
+    - assure_plan_checks
+    - assure_status
+    - assure_verify
+    - assure_report
+    - assure_run
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

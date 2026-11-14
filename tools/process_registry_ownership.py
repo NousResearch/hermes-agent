@@ -42,6 +42,28 @@ class ProcessOwnershipMixin:
             proc = spawn_owned(argv, purpose="terminal-background", **popen_kwargs)
             session._owned_pgid = proc.pid
             return proc
+        # A not-owned job must outlive this holder (#41225 persist_on_release, gateway checkpoint
+        # re-adoption, managed-worker handover). POSIX gets that from start_new_session below; on
+        # Windows the holder's layer-3 kill-on-close job would reap it the moment the holder exits,
+        # so the hiding flags upgrade to detaching ones — CREATE_BREAKAWAY_FROM_JOB leaves the job,
+        # which keeps BREAKAWAY_OK for exactly this. An outer job that forbids breakaway answers
+        # OSError; retry once without the bit, like the Windows restart watcher.
+        from hermes_cli._subprocess_compat import (
+            IS_WINDOWS, windows_detach_flags, windows_detach_flags_without_breakaway,
+        )
+
+        flags = popen_kwargs.pop("creationflags", 0)
+        if IS_WINDOWS:
+            try:
+                # noqa: subprocess-stdin — a forwarder: spawn_local passes stdin=DEVNULL in popen_kwargs
+                return subprocess.Popen(  # detached-spawn: ok — see _owns_job
+                    argv, start_new_session=True,
+                    creationflags=flags | windows_detach_flags(), **popen_kwargs)
+            except OSError:
+                flags |= windows_detach_flags_without_breakaway()
+                # noqa: subprocess-stdin — a forwarder: spawn_local passes stdin=DEVNULL in popen_kwargs
+                return subprocess.Popen(  # detached-spawn: ok — see _owns_job
+                    argv, start_new_session=True, creationflags=flags, **popen_kwargs)
         # noqa: subprocess-stdin — a forwarder: spawn_local passes stdin=DEVNULL in popen_kwargs
         return subprocess.Popen(argv, start_new_session=True, **popen_kwargs)  # detached-spawn: ok — see _owns_job
 

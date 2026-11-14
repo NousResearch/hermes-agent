@@ -1444,10 +1444,19 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 finally:
                     self._client = None
                     self._ready_event.clear()
+            # discord.py omits the presence field from IDENTIFY unless a status is passed, and
+            # Discord renders a presence-less session as offline even while it is connected.
+            try:
+                from discord import Status as _DiscordStatus
+
+                _presence_status = _DiscordStatus.online
+            except Exception:
+                _presence_status = None
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
+                status=_presence_status,
                 **proxy_kwargs_for_bot(proxy_url),
             )
             # Fresh connection, fresh dispatch-side silence window: the previous client's last
@@ -1461,6 +1470,15 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
+                # Belt and braces on presence: discord.py only puts a presence block in IDENTIFY
+                # when a status was passed at construction, and a missing block makes Discord
+                # render the bot as offline. Re-assert it as an explicit op-3 once READY lands.
+                try:
+                    import discord as _discord_presence
+
+                    await adapter_self._client.change_presence(status=_discord_presence.Status.online)
+                except Exception:
+                    logger.debug("[%s] Presence update failed", adapter_self.name, exc_info=True)
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(

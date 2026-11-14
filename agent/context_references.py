@@ -500,7 +500,12 @@ async def _fetch_url_content(url: str, *, url_fetcher: UrlFetcher = None) -> str
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
     docs = json.loads(await web_extract_tool([url], format="markdown")).get("results", [])
-    return str(docs[0].get("content") or docs[0].get("raw_content") or "").strip() if docs else ""
+    if not docs:
+        return ""
+    page = docs[0]
+    if page.get("blocked_by_policy"):
+        raise ValueError(page.get("error") or "Blocked by website policy")
+    return str(page.get("content") or page.get("raw_content") or "").strip()
 
 
 def _is_under(path: Path, root: Path) -> bool:

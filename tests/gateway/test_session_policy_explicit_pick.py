@@ -59,6 +59,14 @@ def test_a_builtin_named_plugin_key_stays_when_picked(tmp_path, builtin_named_pl
     assert _toolsets(tmp_path, builtin_named_plugin_keys, ['session_search', 'delegation']) == {'session_search', 'delegation'}
 
 
+@pytest.mark.parametrize('pick', ['hermes-api-server', 'hermes-webhook'])
+def test_a_composite_keeps_a_builtin_that_a_server_is_named_like(tmp_path, pick):
+    # Both composites expand into built-in names; this MCP server is also called ``web``, and the pick needs web.
+    cfg = {'platform_toolsets': {'cli': ['hermes-cli']}, 'mcp_servers': {'web': {'command': str(tmp_path / 'absent')}}}
+    assert 'web' in _toolsets(tmp_path, cfg, [pick])
+    assert _toolsets(tmp_path, cfg, ['session_search']) == {'session_search'}
+
+
 def test_a_pick_covering_a_builtin_named_plugin_key_keeps_it(tmp_path, builtin_named_plugin_keys):
     # ``coding`` already holds delegate_task, so the ``delegation`` key adds nothing the pick did not grant.
     assert _toolsets(tmp_path, builtin_named_plugin_keys, ['coding']) == {'coding', 'delegation'}

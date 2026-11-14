@@ -700,9 +700,14 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
-        from toolsets import resolve_toolset
+        from toolsets import TOOLSETS, resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
-        enabled -= _unnamed_extension_toolsets(explicit, requested, config)
+        dropped = _unnamed_extension_toolsets(explicit, requested, config) & enabled
+        enabled -= dropped
+        # ``hermes-api-server`` expands into built-in names; keep one an MCP server or plugin shares (``web``) when
+        # the pick needs its built-in tools, as naming it would, instead of refusing the pick.
+        missing = requested - {t for name in enabled for t in resolve_toolset(name)}
+        enabled |= {n for n in dropped & set(TOOLSETS) if missing & set(resolve_toolset(n, include_registry=False))}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")

@@ -530,7 +530,7 @@ class CoordinationRepository(SubagentLedger, Protocol):
         ...
 
     def prune_delegation_ledger(self) -> None:
-        """Delete delivered rows not updated for :data:`DELEGATION_RETENTION_SECONDS`, then cap terminal rows at :data:`DELEGATION_MAX_RETAINED_TERMINAL` (delivered, then oldest first) and terminal pending rows at :data:`DELEGATION_MAX_DURABLE_PENDING` (oldest first), in one write."""
+        """Delete delivered rows not updated for :data:`DELEGATION_RETENTION_SECONDS`, then cap terminal rows at :data:`DELEGATION_MAX_RETAINED_TERMINAL` (delivered, then oldest first) and terminal pending rows at :data:`DELEGATION_MAX_DURABLE_PENDING` (oldest first), in one write. A unit still owed a resume (the ``unit_id`` of a ``resumable`` or ``expired`` subagent record owed its report) is neither deleted by the retention nor counted or deleted by the terminal cap, because its child's give-up is routed through it; the pending cap counts and deletes it like any row."""
         ...
 
     def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float, event: JsonValue, result: JsonValue, delivery: Literal["pending", "delivered"] = "pending") -> None:

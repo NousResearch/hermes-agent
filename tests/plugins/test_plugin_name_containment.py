@@ -7,9 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import plugins.context_engine as context_engine
-import plugins.cron_providers as cron_providers
-import plugins.memory as memory
+from plugins import context_engine, cron_providers, memory
 
 _KINDS = [
     (memory, "find_provider_dir", "_MEMORY_PLUGINS_DIR", "MemoryProvider\ndef register(ctx): pass\n"),
@@ -90,3 +88,6 @@ def test_user_dir_symlink_into_the_bundled_root_is_not_bundled(tmp_path):
     link.symlink_to(bundled, target_is_directory=True)
     assert plugin_loader.is_direct_child(bundled, root)
     assert not plugin_loader.is_direct_child(link, root)
+    escape = root / "escape"  # spelled as a child, resolves outside the root
+    escape.symlink_to(link.parent, target_is_directory=True)
+    assert not plugin_loader.is_direct_child(escape, root)

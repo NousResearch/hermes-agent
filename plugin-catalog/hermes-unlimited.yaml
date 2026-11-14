@@ -1,22 +1,27 @@
 name: hermes-unlimited
 repo: https://github.com/rrglab/hermes-unlimited
-sha: b535550cdfabd170344c9968d9802743e322dc0f
-description: "AI-native company operating tools with scoped Hermes Kanban tasks, missions, memory and economic evaluation. Disclosure — Uses the local Hermes Kanban CLI, configured SQLite storage and a loopback JustYou validator. Consent-gated feedback hooks record aggregate local usage data only; publication is separately opt-in. External model work requires an explicitly host-provisioned, authorized worker and independent verifier. No live payment settlement or independently verified customer fulfillment."
+sha: ef0ce2138a3abd5396b12782fde950d307c843ba
+description: "AI-native company operating tools with scoped Hermes Kanban, mission planning, memory, economics and read-only tool-to-agent discovery. Disclosure — Uses configured local Hermes CLI, per-tenant SQLite storage and loopback JustYou validation. Three feedback hooks collect local aggregate usage only with explicit, unexpired consent; publishing is separately opt-in. Host-dependent execution and connection tools are hidden unless trusted host capabilities are available; Socratic Council refuses if no real model seats are configured. No live payment settlement or independently verified customer fulfillment."
 maintainer: rrglab
 tier: community
 category: platform
 requires_hermes: ">=0.21.5"
-version: "0.1.0-alpha.6"
+version: "0.1.0-alpha.8"
 title: "Hermes Unlimited"
 readme: true
 known_issues:
-  - "Requires configured JustYou validator, signed Ed25519 profile bindings and isolated tenant boards."
+  - "Requires configured JustYou validator, signed Ed25519 profile bindings, isolated tenant boards and an explicitly configured provider/tenant database."
   - "No live payment settlement or independently attested customer fulfillment."
-  - "Four host-dependent tools are hidden unless their host capabilities are available; Socratic Council refuses without a real panel."
-  - "Three feedback hooks are registered; local observations require explicit unexpired consent and do not independently verify customer outcomes."
+  - "Host-dependent mission, company-cycle, service-factory and connection-management capabilities are gated by check_fn; a default Hermes host lacks those custom callbacks."
+  - "Tool-to-agent discovery generates unprivileged drafts and schema fingerprints only; it does not execute junior agents, choose models or connect accounts."
+  - "Socratic Council needs five configured real Hermes model seats and refuses when unavailable; it grants no execution authority."
+  - "Feedback events are profile-scoped, require explicit unexpired consent and do not independently verify customer outcomes."
 capabilities:
   provides_tools:
     - hermes_unlimited_status
+    - unlimited_adapter_discover
+    - unlimited_junior_discovery
+    - unlimited_adapter_chat_post
     - unlimited_company_task
     - unlimited_company_result
     - unlimited_company_create

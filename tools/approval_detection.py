@@ -466,7 +466,7 @@ _GIT_PUSH_ARG_START = r'''\s["']?'''
 
 DANGEROUS_PATTERNS = [
     # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
-    (r'\brm\s+(-[^\s]*\s+)*(?:[a-z]:)?/', "delete in root path"),
+    (r'\brm\s+(-[^\s]*\s+)*["\']?(?:[a-z]:)?/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run

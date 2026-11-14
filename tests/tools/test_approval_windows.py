@@ -238,6 +238,13 @@ class TestDriveLetterRoots:
         assert detect_dangerous_command(cmd)[2] == "delete in root path", cmd
 
     @pytest.mark.parametrize("cmd", [
+        'rm "X:/PROJECTs/test/test.txt"',
+        "rm -f 'c:/notes.txt'",
+    ])
+    def test_quoted_drive_file_delete_needs_approval(self, cmd):
+        assert detect_dangerous_command(cmd)[2] == "delete in root path", cmd
+
+    @pytest.mark.parametrize("cmd", [
         "rm -rf C:/",
         "rm -rf C:\\",
         "rm -rf c:/*",

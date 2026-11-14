@@ -65,7 +65,7 @@ def _empty_token() -> dict:
             "unmapped": [], "posix_units": []}
 
 
-def arm_pause(*, no_gateway_restart: bool) -> dict | None:
+def arm_pause(*, no_gateway_restart: bool, force: bool = False) -> dict | None:
     """Arm this run's pause (no stop yet) and adopt any set a killed update left paused.
 
     ``None`` on Windows (its own pause) and with ``--no-gateway-restart`` (the user manages
@@ -84,6 +84,8 @@ def arm_pause(*, no_gateway_restart: bool) -> dict | None:
             token["platform"] = "posix"
     except Exception as exc:  # health: allow BLE001 -- an unreadable record must not block the update; recovery retries it
         print(f"  ⚠ Could not adopt gateways an earlier update paused: {exc}")
+    if force:
+        token["force"] = True  # ``hermes update --force``: stop at once, no drain (update_cmd_force_stop)
     _RUN = token
     return token
 
@@ -465,6 +467,9 @@ def _stop_gateways(token: dict, entries: list[dict]) -> None:
     survivor gets its supervisor's stop and a bare one SIGKILL, as the restart path escalates."""
     from hermes_cli import update_pause_record as pause_record
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    if token.get("force"):
+        from hermes_cli.update_cmd_force_stop import force_stop_gateways
+        return force_stop_gateways(token, entries)
     budget, waiting = _drain_budget(), []
     for entry in entries:
         pause_record.mark_stop_sent(token, entry["pid"])  # before the request: see _ask_to_drain

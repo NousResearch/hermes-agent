@@ -63,6 +63,7 @@ import {
   $hiddenTreePanes,
   $narrowViewport,
   $newSessionTabAction,
+  $newSessionTabRedirect,
   $panesWithCloser,
   $treeDragging,
   $treePaneEpochs,
@@ -488,7 +489,21 @@ export function TreeGroup({
   const newTab =
     ownNewTab(activeId) ??
     (shown.some(isSessionStripPane) && newSessionTabAction
-      ? { label: t.zones.newSessionTab, onSelect: newSessionTabAction }
+      ? {
+          label: t.zones.newSessionTab,
+          onSelect: () => {
+            // A tiling plugin may open the new chat as its own tile beside this
+            // zone instead; it names the zone by its active chat pane.
+            const anchor = isSessionStripPane(activeId) ? activeId : shown.find(isSessionStripPane)
+            const redirect = $newSessionTabRedirect.get()
+
+            if (anchor && redirect?.(anchor)) {
+              return
+            }
+
+            newSessionTabAction()
+          }
+        }
       : null) ??
     shown.map(ownNewTab).find(Boolean) ??
     null

@@ -322,6 +322,30 @@ export function claimFloatingComposer(id: string) {
   }
 }
 
+/** Hand the floating composer to the surface rendering `target` (`'main'` or
+ *  `'tile:<id>'`) and make its split the active zone. A programmatic focus
+ *  request (the plugin SDK's `host.composer.focus`) needs this first: without
+ *  it the focus lands, trackFocus redirects it to the surface the pointer last
+ *  chose, and the caret never moves. False when no mounted surface renders it. */
+export function claimFloatingComposerForTarget(target: string): boolean {
+  const id = [...surfaces].find(([, surface]) => surface.target === target)?.[0]
+
+  if (!id) {
+    return false
+  }
+
+  claimFloatingComposer(id)
+  const owner = $floatingComposerOwner.get()
+
+  if (owner?.id !== id) {
+    return false
+  }
+
+  noteActiveTreeGroup(owner.groupId)
+
+  return true
+}
+
 /** Keep the microphone's stop controls and hotkey on its real owner. */
 export function pinFloatingComposerCapture(id: string): () => void {
   captureOwners.add(id)

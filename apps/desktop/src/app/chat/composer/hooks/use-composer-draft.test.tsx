@@ -21,7 +21,7 @@ import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
-import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerTarget, getActiveComposer, markActiveComposer, requestComposerFocus } from '../focus'
 import { caretOffsetInEditor, composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
@@ -572,6 +572,58 @@ describe('useComposerDraft — same-draft scope rekey preserves only the focused
     expect(composerPlainText(editor)).toBe('alpha beta\ngamma')
     expect(caretOffsetInEditor(editor)).toBe(composerPlainText(editor).length)
   })
+
+  function focusAt(editor: HTMLElement, start: number, end = start) {
+    editor.focus()
+    const range = document.createRange()
+
+    range.setStart(editor.firstChild!, start)
+    range.setEnd(editor.firstChild!, end)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    markActiveComposer('main')
+  }
+
+  // requestComposerFocus defers a plain request one macrotask; the hook then
+  // follows focusComposerInput's frame + macrotask retries.
+  const settle = () => act(() => new Promise(resolve => window.setTimeout(resolve, 30)))
+
+  it("a `caret: 'end'` focus request lands a collapsed caret after the draft", async () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    focusAt(editor, 0)
+    requestComposerFocus('main', { caret: 'end' })
+    await settle()
+
+    expect(document.activeElement).toBe(editor)
+    expect(caretOffsetInEditor(editor)).toBe('alpha beta'.length)
+  })
+
+  it('a plain focus request leaves the caret where it is', async () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    focusAt(editor, 3)
+    requestComposerFocus('main')
+    await settle()
+
+    expect(caretOffsetInEditor(editor)).toBe(3)
+  })
+
+  it("a `caret: 'end'` focus request never collapses a range the user selected", async () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    focusAt(editor, 0, 5)
+    requestComposerFocus('main', { caret: 'end' })
+    await settle()
+
+    expect(window.getSelection()?.toString()).toBe('alpha')
+  })
 })
 
 describe('useComposerDraft — a closing composer hands the focus-bus key back', () => {
@@ -685,7 +737,9 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
 
       return (
         <>
-          <div ref={element => element?.focus()} role="tab" tabIndex={0}>Session tab</div>
+          <div ref={element => element?.focus()} role="tab" tabIndex={0}>
+            Session tab
+          </div>
           <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} role="textbox" tabIndex={0} />
         </>
       )

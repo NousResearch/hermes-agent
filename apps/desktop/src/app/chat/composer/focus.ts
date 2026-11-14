@@ -28,6 +28,9 @@ export interface FocusDetail {
   target: ComposerTarget
   /** Append after focus (type-to-focus / soft `/`). */
   typeChar?: string
+  /** `'end'` = once focus settles, move a collapsed caret to the end of the
+   *  draft (a non-collapsed selection is the user's and is left alone). */
+  caret?: 'end'
 }
 
 interface InsertDetail {
@@ -264,9 +267,9 @@ export const getActiveComposer = (): ComposerTarget => resolveActive()
 
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
-  { typeChar }: { typeChar?: string } = {}
+  { caret, typeChar }: { caret?: 'end'; typeChar?: string } = {}
 ) => {
-  const detail = { target: resolve(target), typeChar }
+  const detail: FocusDetail = { caret, target: resolve(target), typeChar }
   const owner = $floatingComposerOwner.get()
 
   // A first character must land before subsequent native input events, not

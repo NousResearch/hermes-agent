@@ -160,6 +160,25 @@ describe('openSession', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it('tab docks a new tile on the requested edge of the requested pane', () => {
+    focusOpenSession.mockReturnValue(null)
+    openSession('s1', navigate, 'tab', undefined, { pane: 'session-tile:s0', pos: 'bottom' })
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'bottom', 'session-tile:s0')
+  })
+
+  it('tab ignores a dock for a session already on screen', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'tab', undefined, { pane: 'workspace', pos: 'right' })
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('threads a dock into a Bot-scoped tile', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
+    focusOpenSession.mockReturnValue(null)
+    openSession('s1', navigate, 'tab', scope, { pane: 'workspace', pos: 'left' })
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'left', 'workspace', undefined, scope)
+  })
+
   it('threads an exact Bot owner into a new session tile', () => {
     const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
     focusOpenSession.mockReturnValue(null)

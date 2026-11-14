@@ -25,7 +25,8 @@ import {
   frontMainIfSelected,
   openSessionTile,
   reuseBlankDraftTile,
-  setSessionTileWorkspaceScope
+  setSessionTileWorkspaceScope,
+  type TileDock
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -107,6 +108,14 @@ export function openSessionFromPicker(
   openSession(storedSessionId, navigate, resolved, workspaceScope)
 }
 
+/** Where a NEW session tile lands on a `tab` open: split `pane` on `pos`, or
+ *  stack into it with `center`. Ignored when the session is already on screen
+ *  (it is focused instead). */
+export interface OpenSessionTileDock {
+  pane?: string
+  pos: TileDock
+}
+
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
@@ -115,7 +124,8 @@ export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
   intent: OpenSessionIntent = 'in-place',
-  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
+  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' },
+  tileDock?: OpenSessionTileDock
 ): void {
   if (!storedSessionId) {
     return
@@ -199,7 +209,9 @@ export function openSession(
     }
 
     if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+      openSessionTile(storedSessionId, tileDock?.pos ?? 'center', tileDock?.pane, undefined, botWorkspaceScope)
+    } else if (tileDock) {
+      openSessionTile(storedSessionId, tileDock.pos, tileDock.pane)
     } else {
       openSessionTile(storedSessionId, 'center')
     }

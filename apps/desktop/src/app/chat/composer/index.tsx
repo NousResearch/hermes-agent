@@ -1,14 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import {
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef
-} from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
@@ -28,7 +20,14 @@ import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
-import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
+import {
+  browseBackward,
+  browsedEntry,
+  browseForward,
+  deriveUserHistory,
+  isBrowsingHistory,
+  resetBrowseState
+} from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
@@ -93,6 +92,7 @@ import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
+  caretOnEdgeLine,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
@@ -897,7 +897,37 @@ export function ChatBar({
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
     // place) then sent-message history. The history ring is derived from live
-    // session messages each press — single source of truth, no mirror.
+    // session messages each press — single source of truth, no mirror. Only
+    // from the edge line, though: inside multi-line text (a recalled message
+    // included) the arrows move the caret, like any text box.
+    if (
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+      (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey)
+    ) {
+      return
+    }
+
+    if (
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+      editorRef.current &&
+      !caretOnEdgeLine(editorRef.current, event.key === 'ArrowUp' ? 'first' : 'last')
+    ) {
+      return
+    }
+
+    // A recalled message the user has edited is a draft now: stop browsing so
+    // the arrows can't swap the edits out for another history entry.
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !queueEdit && isBrowsingHistory(sessionId)) {
+      const recalled = browsedEntry(sessionId, deriveUserHistory(scope.$messages.get(), chatMessageText))
+      const live = liveComposerDraft(editorRef.current, draftRef.current)
+
+      if (recalled === null || live.replace(/\s+$/, '') !== recalled) {
+        resetBrowseState(sessionId)
+
+        return
+      }
+    }
+
     if (event.key === 'ArrowUp') {
       // Decide from the live editor: the mirror is a frame behind typing or a
       // paste, and this branch can replace what the user just wrote.
@@ -1454,7 +1484,8 @@ export function ChatBar({
                   // track past the surface — and every `w-full` child (the fade,
                   // the input/controls row) laid out against that phantom width
                   // and got clipped by overflow-hidden, send button first.
-                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit]', composerSurfaceRing,
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit]',
+                  composerSurfaceRing,
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1555,7 +1586,12 @@ export function ChatBarFallback() {
       )}
       data-slot="composer-root"
     >
-      <div className={cn('composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit]', composerSurfaceRing)}>
+      <div
+        className={cn(
+          'composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit]',
+          composerSurfaceRing
+        )}
+      >
         <div aria-hidden className={composerInputBacking} />
       </div>
     </div>

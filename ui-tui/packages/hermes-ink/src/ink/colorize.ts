@@ -80,14 +80,21 @@ export function richEightBitColorNumber(red: number, green: number, blue: number
  * Users who HAVE set `terminal-overrides ,*:Tc` get a technically-unnecessary
  * downgrade, but the visual difference is imperceptible. Querying
  * `tmux show -gv terminal-overrides` to detect this would add a subprocess on
- * startup — not worth it.
+ * startup — not worth it. `HERMES_TUI_TRUECOLOR=1` is the explicit opt-in for
+ * users who have configured tmux to pass RGB through.
  *
  * $TMUX is a pty-lifecycle env var set by tmux itself; it never comes from
  * globalSettings.env, so reading it here is correct. chalk is a singleton, so
  * this clamps ALL truecolor output (fg+bg+hex) across the entire app.
  */
+export function shouldClampChalkLevelForTmux(env: NodeJS.ProcessEnv = process.env, level = chalk.level): boolean {
+  const truecolorOverride = !('NO_COLOR' in env) && /^(?:1|true|yes|on)$/i.test((env.HERMES_TUI_TRUECOLOR ?? '').trim())
+
+  return Boolean(env.TMUX) && !truecolorOverride && level > 2
+}
+
 function clampChalkLevelForTmux(): boolean {
-  if (process.env.TMUX && chalk.level > 2) {
+  if (shouldClampChalkLevelForTmux()) {
     chalk.level = 2
 
     return true

@@ -450,6 +450,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if pin_error := _signature_pin_error(name, route):
             logger.warning("%s Dynamic route skipped.", pin_error)
             return False
+        deliver = route.get("deliver", "log")
+        if not isinstance(deliver, str) or (deliver not in {"log", "github_comment"} and not _is_known_platform(deliver)):
+            logger.warning("[webhook] Dynamic route '%s' skipped: unknown delivery target %r. Fix it with: "
+                           "hermes webhook subscribe %s --deliver telegram --deliver-chat-id <CHAT_ID>",
+                           name, deliver, name)
+            return False
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
             validate_coalesce_config(name, route)

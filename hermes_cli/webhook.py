@@ -189,10 +189,31 @@ def _route_signature(args, existing: dict, is_update: bool) -> dict:
     return {"signature": existing["signature"]} if "signature" in existing else {}
 
 
+def _is_known_delivery_target(target: str) -> bool:
+    """Whether the gateway can dispatch ``target``; plugin platforms register only after discovery."""
+    from gateway.platforms.webhook import _is_known_platform
+
+    if target in {"log", "github_comment"} or _is_known_platform(target):
+        return True
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()
+    return _is_known_platform(target)
+
+
+def _subscribe_input_error(name: str, deliver: str) -> str | None:
+    if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
+        return f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores."
+    if not _is_known_delivery_target(deliver):
+        return (f"Error: Unknown delivery target '{deliver}'. Use a platform name such as 'telegram'; "
+                "pass its chat ID separately with --deliver-chat-id.")
+    return None
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
-    if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
-        print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
+    if error := _subscribe_input_error(name, args.deliver or "log"):
+        print(error)
         return 1
 
     subs = _load_subscriptions()
@@ -324,6 +345,9 @@ def _cmd_list(args):
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
+        invalid_delivery = not _is_known_delivery_target(deliver)
+        if invalid_delivery:
+            deliver = f"{deliver} (INVALID)"
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
         if route.get("cron_job"):
@@ -337,6 +361,8 @@ def _cmd_list(args):
         print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if invalid_delivery:
+            print(f"    Fix:     hermes webhook subscribe {name} --deliver telegram --deliver-chat-id <CHAT_ID>")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()

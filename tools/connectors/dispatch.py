@@ -45,6 +45,8 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
             break
         # Each entry is its own call: its own policy, middleware, hooks and call id (``<id>#<position>``),
         # so observers never fold an entry into the wrapper or into a sibling entry.
+        # Entry observers and transforms belong here, even when the outer
+        # executor suppresses the wrapper's inner post_tool_call.
         entry_ids = replace(ids, tool_call_id=f"{ids.tool_call_id}#{plan.position}") if ids.tool_call_id else ids
         with suppress_post_tool_call_hook(False):
             payload = handle_function_call(

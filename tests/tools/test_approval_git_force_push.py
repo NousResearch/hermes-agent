@@ -59,6 +59,10 @@ class TestGitForcePushDetected:
         "git push origin main '&' -f",
         "git push \"--force\" origin main",
         "git push -fo ci.skip origin main",
+        # an escaped `;`/`&`/`|` is literal text inside its word, not a command separator.
+        "git push -o ci\\;skip -f origin main",
+        "git push -o a\\|b --force origin main",
+        "git push origin main \\& -f",
     ])
     def test_force_push_forms_are_dangerous(self, command):
         dangerous, _key, description = detect_dangerous_command(command)
@@ -98,6 +102,7 @@ class TestGitForcePushScope:
         "git push -q 2>&1 | grep -f patterns.txt",
         "git push origin main >| log; pkill -f stale-watcher",
         "git push -o 'a;b' origin main && grep -f patterns.txt",
+        "git push -o a\\;b origin main && grep -f patterns.txt",
     ])
     def test_a_later_command_flag_is_not_a_force_push(self, command):
         dangerous, _key, description = detect_dangerous_command(command)

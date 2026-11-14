@@ -1766,6 +1766,11 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
+    # An escaped separator is literal text inside its word (`git push -o ci\;skip -f`), but
+    # normalization strips the backslash and leaves a real `;` that ends a segment-bounded match.
+    joined = re.sub(r'\\(.)', lambda m: '_' if m.group(1) in ';&|' else m.group(0), command)
+    if joined != command and fresh(variant := _normalize_command_for_detection(_mask_quoted_newlines(joined))):
+        yield variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc

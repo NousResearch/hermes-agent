@@ -1571,6 +1571,8 @@ export {
   type ComposerContextMenuContext,
   type ComposerContextMenuItem,
   type ComposerContextMenuProvider,
+  type ComposerDictationTake,
+  type ComposerDictationTranscriber,
   type ComposerMiddleware,
   type ComposerModelPillContext,
   type ComposerModelPillProvider

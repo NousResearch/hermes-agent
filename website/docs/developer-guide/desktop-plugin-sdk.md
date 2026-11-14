@@ -248,6 +248,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Dictation | `COMPOSER_AREAS.dictationTranscriber` (`'composer.dictationTranscriber'`) | `data: ComposerDictationTranscriber` — transcribe the composer's dictation yourself, in front of the app's own path ([Dictation transcribers](#dictation-transcribers)) |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
@@ -563,6 +564,38 @@ label or an `onSelect` function contributes nothing and leaves every other row
 standing; a throwing `onSelect` is logged, not raised. Rows registered through
 `ctx.register` disappear when the plugin unloads or is disabled — including
 from a menu that is open at the time.
+
+### Dictation transcribers — your own speech-to-text for the mic button {#dictation-transcribers}
+
+`COMPOSER_AREAS.dictationTranscriber` lets a plugin transcribe the composer's dictation
+itself — an on-device model, an offline engine — in front of the app's own path
+(the profile's speech-to-text provider, else the backend). The take is decided
+when the mic opens: `claims()` is asked once, synchronously, and the first
+provider (registry order) that answers `true` owns that take. A claimed take
+opens no live provider stream and takes no backend STT warm-up, so its audio
+reaches your `transcribe` only. Voice conversation turns never ask.
+
+```javascript
+import { COMPOSER_AREAS } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'on-device',
+  area: COMPOSER_AREAS.dictationTranscriber,
+  data: {
+    // Only when the local model is ready right now; false keeps the app's path.
+    claims: () => model.ready,
+    // The transcript ('' = nothing said), or null when this take could not be
+    // transcribed: the composer warns, inserts nothing, and sends the audio
+    // nowhere. take.relay() sends the same audio down the app's own path, on
+    // the recording's owner — call it only when the user asks.
+    transcribe: async (audio, take) => model.transcribe(audio)
+  }
+})
+```
+
+A provider whose `claims` throws, or that lacks `claims`/`transcribe`, is
+treated as declining. A rejected `transcribe` is reported like any other
+transcription failure.
 
 #### Spell-check dictionary — `host.spellcheck`
 

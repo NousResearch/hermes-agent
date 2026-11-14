@@ -77,9 +77,21 @@ def _runs_the_backup(agent: Any, failure: PrimaryAuthFailure) -> bool:
     running = str(getattr(agent, "provider", "") or "").strip().lower()
     if failure.backup and running and running != failure.backup.strip().lower():
         return False
-    running_url = normalize_route_base_url(getattr(agent, "base_url", "") or "")
+    running_url = normalize_route_base_url(_agent_route_url(agent))
     backup_url = normalize_route_base_url(failure.backup_base_url)
     return not (running_url and backup_url and running_url != backup_url)
+
+
+def _agent_route_url(agent: Any) -> str:
+    """The endpoint ``agent`` sends to, query included: AIAgent moves a base_url's query (Azure's
+    ``?api-version=``) into the client's ``default_query`` and keeps the query-free URL on ``base_url``."""
+    from urllib.parse import urlencode
+
+    url = str(getattr(agent, "base_url", "") or "")
+    query = (getattr(agent, "_client_kwargs", None) or {}).get("default_query")
+    if url and isinstance(query, dict) and query and "?" not in url:
+        return f"{url}?{urlencode(query)}"
+    return url
 
 
 # The failure found while resolving this turn's route. A context variable, not a runner attribute: the

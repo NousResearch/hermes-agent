@@ -837,7 +837,7 @@ async def _managed_file_response(
             content_disposition_type=content_disposition_type,
             headers={"X-Content-Type-Options": "nosniff"} if media_only else None,
         )
-    _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(request, path)
+    _policy, target, _display_path, max_bytes, mime_type = await asyncio.to_thread(_managed_readable_file, request, path)
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
     if not media_only:
@@ -1074,7 +1074,7 @@ async def upload_managed_file_stream(
 ):
     """Chunked multipart upload: constant memory and no base64 inflation, unlike
     the JSON data-URL endpoint that trips proxy body-size limits on large archives."""
-    policy, target, display_path = _managed_write_target(path, request, overwrite)
+    policy, target, display_path = await asyncio.to_thread(_managed_write_target, path, request, overwrite)
     with _io_errors("File is not writable", "Could not create parent directory"):
         target.parent.mkdir(parents=True, exist_ok=True)
     await stream_upload_to_path(

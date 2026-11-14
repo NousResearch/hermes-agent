@@ -1811,7 +1811,7 @@ def redact_for_egress(text: str) -> str:
         text = redact_sensitive_text(text, force=True)
     except Exception:
         return REDACTION_UNAVAILABLE
-    if "earer" in text:
+    if "earer" in text.lower():  # IGNORECASE regex; the gate must fold case too (#108807)
         text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
     return text
 

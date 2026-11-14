@@ -2050,6 +2050,51 @@ def _run_agent_with_watchdog(
     return result
 
 
+def _cron_turn_user_message(messages) -> object | None:
+    """Return this turn's user content, if the result retained it.
+
+    The degenerate-final predicate needs the user's script to distinguish a
+    fragment from a legitimate terse non-Latin answer.  Missing transcript
+    metadata deliberately returns ``None`` so the cron boundary fails open.
+    """
+    if not isinstance(messages, list):
+        return None
+    from agent.context_compressor import ContextCompressor
+
+    # Recovery nudges are user-role rows too; judging script against one would reject a valid
+    # non-Latin answer ("Готово") that followed it.
+    for message in reversed(messages):
+        if (isinstance(message, dict) and message.get("role") == "user"
+                and not ContextCompressor._is_synthetic_compression_user_turn(message)):
+            return message.get("content")
+    return None
+
+
+def _is_degenerate_stop_completion(result: dict, final_response: str) -> bool:
+    """Whether a ``finish_reason=stop`` response carries no usable content (#118367).
+
+    The agent loop re-prompts these shapes a bounded number of times; this is the delivery-side
+    backstop for when the model keeps producing them. Deliberately not a length limit: "Done",
+    "No new items.", "✅", ``[SILENT]`` and ``{}`` are real cron answers. Only the shared
+    fragment and ``🔍 **`` stub predicates and a bare progress note ("I am now
+    compiling the complete answer.") qualify, and only with stop metadata and the originating user
+    message available; otherwise it fails open.
+    """
+    if result.get("turn_exit_reason") != "text_response(finish_reason=stop)":
+        return False
+    user_message = _cron_turn_user_message(result.get("messages"))
+    if not user_message:
+        return False
+
+    from agent.agent_runtime_helpers_final_shape import (
+        looks_like_degenerate_final, looks_like_markdown_stub, post_work_narration_intent,
+    )
+
+    return (looks_like_markdown_stub(final_response)
+            or looks_like_degenerate_final(final_response, user_message=user_message)
+            or post_work_narration_intent(final_response))
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -2064,6 +2109,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    if _is_degenerate_stop_completion(result, final_response_text):
+        raise RuntimeError(f"agent returned a degenerate stop completion with no usable content: {final_response_text[:60]!r}")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

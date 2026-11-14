@@ -7,18 +7,28 @@ extends the "you announced an action but called no tool — keep going" nudge to
 every api_mode and relaxes the codebase/workspace requirement so general
 autonomous workflows ("I'll run a health check on the server") are caught.
 
+Also covers the #74604 progress-narration stall: present-progressive narration
+("I am now compiling the complete answer.") must continue the turn both before
+any tool work (the ack detector) and AFTER real tool work, where the
+``post_work_narration_intent`` guard in ``agent.turn_final_response`` fires —
+exercised end-to-end through ``run_conversation`` with a mocked client.
+
 These are invariant assertions about how the mode string and the detector
 gates relate, not snapshots of the marker lists.
 """
 
 from types import SimpleNamespace
 from typing import Union
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
     looks_like_codex_intermediate_ack,
 )
+from agent.agent_runtime_helpers_final_shape import post_work_narration_intent
+from agent.conversation_loop import _NARRATION_FINAL_NUDGE
 from providers.base import ProviderProfile
 
 # An ACP agent whose binary is ``copilot``: the "on <X> via acpx" cue names only external_process profiles.
@@ -260,6 +270,187 @@ def test_pronounless_action_guardrails_reject_questions_and_finals():
 
 # ── detector: guardrails that hold regardless of workspace ───────────────────
 
+
+# ── detector: progress narration patterns (issue #74604) ────────────────────
+
+
+@pytest.mark.parametrize("text", [
+    "I am now compiling the complete answer.",
+    "[PROCESSING...] I am now compiling the complete answer.",
+    "I'm currently generating the report.",
+    "I’m now putting together the final summary…",
+    "I am currently drafting the response",
+])
+def test_progress_narration_is_detected(text):
+    assert post_work_narration_intent(text)
+
+
+@pytest.mark.parametrize("text", [
+    # Legitimately short finals (the cron "nothing to report" shape included).
+    "No new items.", "Done. The file has been updated.", "42", "✅", "[SILENT]",
+    "The server is healthy. All services are running normally.",
+    # First-person present tense that IS the answer, or carries one.
+    "I'm currently building on the free tier, so the limits are 100 req/min.",
+    "I am now compiling the complete answer. Root cause: a missing index on users.",
+    "I am currently writing this from memory: the flag is --force.",
+    # Complete outputs of rewrite/translation tasks: the object is not the reply itself.
+    "I am currently building a house.", "I'm now writing a novel", "I am now preparing dinner.",
+    # Future-tense announcements belong to the stall/ack guards, not this one.
+    "I'll compile the complete answer.",
+    "",
+])
+def test_answers_are_not_progress_narration(text):
+    assert not post_work_narration_intent(text)
+
+
+# ── #74604 end-to-end: the REAL loop continues a narrated stop ──────────────
+# (mirrors test_degenerate_final_recovery.py: a real AIAgent with a mocked
+# OpenAI client; the re-prompt must come from the actual loop wiring, not a
+# hand-copied decision — an inline reimplementation stays green even if the
+# loop never calls the detector, and it was a real-loop run that exposed the
+# post-tool-work silence the pre-tool-work-only detector had).
+
+
+@pytest.fixture()
+def loop_agent():
+    """AIAgent with a mocked OpenAI client (mirrors test_degenerate_final_recovery)."""
+    from run_agent import AIAgent
+    from tests.agent.test_run_agent import _make_tool_defs
+    with (
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        # Default config on purpose: chat_completions leaves intent_ack_continuation "off",
+        # which is the transport #74604 was reported on; the narration guard must still fire.
+        return agent
+
+
+def _run(agent, stages):
+    agent.client.chat.completions.create.side_effect = stages
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch("model_tools.handle_function_call", return_value="ok"),
+    ):
+        return agent.run_conversation("analyze the dataset")
+
+
+def _tool_round(call_id):
+    from tests.agent.test_run_agent import _mock_response, _mock_tool_call
+    return _mock_response(
+        content="", finish_reason="tool_calls",
+        tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id=call_id)],
+    )
+
+
+def _final(text):
+    from tests.agent.test_run_agent import _mock_response
+    return _mock_response(content=text, finish_reason="stop")
+
+
+def _user_rows_sent(agent, call_index):
+    kwargs = agent.client.chat.completions.create.call_args_list[call_index].kwargs
+    return [m["content"] for m in kwargs["messages"] if m.get("role") == "user"]
+
+
+NARRATION = "I am now compiling the complete answer."
+
+
+def test_loop_continues_narrated_stop_before_tool_work(loop_agent):
+    """#74604 pre-tool-work shape: the model answers with the progress narration
+    alone (no tool call) and the REAL loop must re-prompt instead of exiting."""
+    result = _run(loop_agent, [
+        _final(NARRATION),
+        _final("The full analysis shows three defects."),
+    ])
+
+    assert loop_agent.client.chat.completions.create.call_count == 2, (
+        "A narrated stop must trigger a continuation (second API call), not end the turn."
+    )
+    assert _user_rows_sent(loop_agent, 1)[-1] == _NARRATION_FINAL_NUDGE
+    assert "The full analysis" in result["final_response"]
+
+
+def test_loop_continues_narrated_stop_after_tool_work(loop_agent):
+    """#74604's reported shape: ~35 tool calls, then the narration, then stop.
+    The ack detector is gated off once tool rows exist, so this can only pass
+    through the post-work narration guard — a regression here means the loop
+    delivered the narration as the final answer."""
+    result = _run(loop_agent, [
+        _tool_round(f"call_{n:02d}") for n in range(35)
+    ] + [
+        _final(NARRATION),
+        _final("The compiled analysis: root cause is a missing index."),
+    ])
+
+    assert loop_agent.client.chat.completions.create.call_count == 37, (
+        "A post-work narrated stop must trigger a continuation, not end the turn "
+        "with the narration as the answer."
+    )
+    assert _user_rows_sent(loop_agent, 36)[-1] == _NARRATION_FINAL_NUDGE
+    assert "root cause is a missing index" in result["final_response"]
+
+
+def test_loop_narration_path_is_bounded_and_terminates(loop_agent):
+    """A model that keeps narrating instead of delivering is re-prompted at most twice (the
+    shared per-turn continuation cap); the third narration ends the turn, never a loop."""
+    result = _run(loop_agent, [
+        _tool_round("call_1"),
+        _final(NARRATION),
+        _final("I'm currently generating the report."),
+        _final("I am now finalizing the answer."),
+    ])
+
+    assert loop_agent.client.chat.completions.create.call_count == 4
+    assert result["final_response"] == "I am now finalizing the answer."
+
+
+def test_loop_concise_answer_after_tool_work_remains_terminal(loop_agent):
+    """The guardrail: a real concise answer after tool work stays terminal — the
+    post-work narration guard must not re-prompt completed answers."""
+    result = _run(loop_agent, [
+        _tool_round("call_1"),
+        _final("The dataset has 3 defects; details above."),
+    ])
+
+    assert loop_agent.client.chat.completions.create.call_count == 2
+    assert "3 defects" in result["final_response"]
+
+
+def test_loop_short_no_tool_answer_remains_terminal(loop_agent):
+    """A cron-style "nothing to report" answer is delivered on the first call."""
+    result = _run(loop_agent, [_final("No new items.")])
+
+    assert loop_agent.client.chat.completions.create.call_count == 1
+    assert result["final_response"] == "No new items."
+
+
+def test_loop_narration_ignored_when_stall_guards_disabled(loop_agent):
+    """agent.stall_guards: false turns the narration guard off — the narrated
+    stop is delivered as-is (a config escape hatch for false positives)."""
+    loop_agent._stall_guards = False
+    result = _run(loop_agent, [
+        _tool_round("call_1"),
+        _final(NARRATION),
+    ])
+
+    assert loop_agent.client.chat.completions.create.call_count == 2
+    assert result["final_response"] == NARRATION
 
 
 

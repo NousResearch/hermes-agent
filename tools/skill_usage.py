@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from pm.filesystem import is_junction
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 from utils import atomic_write_text
 
@@ -655,6 +656,15 @@ def archive_skill(skill_name: str) -> tuple[bool, str]:
         return False, f"skill '{skill_name}' not found"
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
+    if Path(skill_name).name != skill_name or skill_name in (".", ".."):
+        # The archive path is built from the frontmatter name: a "../x" name would land outside .archive/.
+        return False, f"skill name '{skill_name}' is not a plain name; refusing to archive"
+    # Reached through a symlinked parent, the rename would move the real directory (or, for a linked skill dir,
+    # the link entry) out of its owner's tree. A linked skill dir is fine only when its link lives in our tree;
+    # a Windows junction is such a link, but is_symlink() does not report it.
+    anchor = skill_dir.parent if skill_dir.is_symlink() or is_junction(skill_dir) else skill_dir
+    if not anchor.resolve().is_relative_to(_skills_dir().resolve()):
+        return False, f"skill '{skill_name}' resolves outside {_skills_dir()}; refusing to move it"
     # Flatten under the skill NAME, not the directory name: `mlops/training/accelerate` is the skill
     # `huggingface-accelerate`, and restore/list/purge all key on the name.
     dest = _archive_dir() / skill_name

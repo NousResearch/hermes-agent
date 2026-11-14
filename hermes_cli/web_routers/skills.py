@@ -18,8 +18,8 @@ from hermes_cli.web_models import (
     SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillLock, SkillToggle,
     SkillUninstallRequest, SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
-    _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
-    spawn_profile_action)
+    _profile_scope, config_write_scope, destructive_profile, http_failure, log as _log, require,
+    scoped_to_thread, spawn_profile_action)
 
 hub_router = APIRouter()
 router = APIRouter()
@@ -495,3 +495,23 @@ async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] 
         raise HTTPException(status_code=status, detail=err)
     _clear_skills_prompt_cache()
     return result
+
+
+@router.delete("/api/skills")
+async def delete_skill(name: str, profile: Optional[str] = None):
+    """Archive a skill from the dashboard Skills page.
+
+    Same backend as the Desktop Capabilities "Archive" action and ``hermes journey``
+    (``agent.learning_mutations.archive_user_skill``): the skill moves to ``skills/.archive/``
+    (``hermes curator restore <name>`` brings it back). The policy is enforced here, not
+    only by the UI's provenance gate: hub, bundled, protected and external-dir skills
+    and pinned skills are refused, and only the requested profile's skills dir is touched.
+    """
+    from agent.learning_mutations import archive_user_skill
+
+    profile = destructive_profile(profile, "DELETE /api/skills")
+    res = await scoped_to_thread(profile, lambda: archive_user_skill(name))
+    if not res.get("ok"):
+        msg = res.get("message") or "Failed to archive skill."
+        raise HTTPException(status_code=404 if "not found" in msg else 409, detail=msg)
+    return res

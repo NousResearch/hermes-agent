@@ -19,7 +19,7 @@ PAYLOAD = "/Users/runner/apps/Hermes Agent.app/Contents/Resources/agent-payload"
 GATEWAY = f"{PAYLOAD}/tools/python-3.14/bin/python3 -m hermes_cli.main --profile default gateway run --quiet"
 
 # ps, lsof and curl read a process table: one "pid|etime|args|port|first poll it listens on|healthy" per line.
-FAKE_PS = r"""#!/bin/bash
+FAKE_PS = r"""#!/usr/bin/env bash
 table="$FAKE_TABLE"
 if [ "$1" = "-o" ]; then
   awk -F'|' -v p="$4" '$1 == p { print $2 }' "$table"
@@ -27,14 +27,14 @@ else
   awk -F'|' '{ printf "%6s %11s %s\n", $1, $2, $3 }' "$table"
 fi
 """
-FAKE_LSOF = r"""#!/bin/bash
+FAKE_LSOF = r"""#!/usr/bin/env bash
 pid=""
 while [ $# -gt 0 ]; do [ "$1" = "-p" ] && pid="$2"; shift; done
 echo x >> "$FAKE_POLLS.$pid"
 polls=$(wc -l < "$FAKE_POLLS.$pid")
 awk -F'|' -v p="$pid" -v n="$polls" '$1 == p && $4 != "" && n >= $5 { print "p" p; print "f9"; print "n127.0.0.1:" $4 }' "$FAKE_TABLE"
 """
-FAKE_CURL = r"""#!/bin/bash
+FAKE_CURL = r"""#!/usr/bin/env bash
 out="" url=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac

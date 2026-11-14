@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Wait for the relaunched app's backend after a Squirrel.Mac update and save its /api/health.
 # usage: mac-backend-health.sh --payload <agent-payload dir> --newer-than <app pid> --timeout <s> --out <file>
 # Prints the backend's port. Processes are found by executable path, not parentage: the

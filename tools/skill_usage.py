@@ -367,17 +367,20 @@ def _report_row(name: str, raw: Any, **extra: Any) -> dict[str, Any]:
 
 
 def _load_usage_strict() -> dict[str, dict[str, Any]]:
-    """The map, raising on an UNREADABLE sidecar (a missing file is still {}); non-dict values dropped."""
+    """The map, raising on an UNREADABLE sidecar (a missing file is still {}); non-dict values dropped.
+    A top-level value that is not an object is damage too, not "no records"."""
     path = _usage_file()
     data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
-    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} holds a JSON {type(data).__name__}, not an object")
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)}
 
 
 def load_usage() -> dict[str, dict[str, Any]]:
     """The whole .usage.json map (non-dict values dropped); {} on missing/corrupt."""
     try:
         return _load_usage_strict()
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:  # json.JSONDecodeError subclasses ValueError
         logger.debug("Failed to read %s: %s", _usage_file(), e)
         return {}
 
@@ -401,12 +404,13 @@ def get_record(skill_name: str) -> dict[str, Any]:
 def _locked_update(skill_name: str, op: Callable[[dict[str, dict[str, Any]]], tuple[Any, bool]], fail_log: str,
                    guard: Optional[Callable[[], bool]] = None) -> Any:
     """*op(data) -> (result, dirty)* under the file lock, saving only when dirty; *guard* runs before locking.
-    None when the guard failed, the save did not land, or anything raised (DEBUG-logged via *fail_log*)."""
+    None when the guard failed, the save did not land, or anything raised (DEBUG-logged via *fail_log*).
+    The read is strict: saving over a damaged record would erase the user's locks with it (#147986)."""
     try:
         if guard is not None and not guard():
             return None
         with _usage_file_lock():
-            data = load_usage()
+            data = _load_usage_strict()
             result, dirty = op(data)
             return None if dirty and not save_usage(data) else result
     except Exception as e:
@@ -417,7 +421,7 @@ def _locked_update(skill_name: str, op: Callable[[dict[str, dict[str, Any]]], tu
 def seed_record_if_missing(skill_name: str) -> None:
     """Baseline record for a curation-eligible skill so its inactivity clock starts at first sight, not epoch."""
     if skill_name and is_curation_eligible(skill_name):
-        # load_usage() already dropped non-dict values, so "missing" == key absent; dirty only when inserted.
+        # The load already dropped non-dict values, so "missing" == key absent; dirty only when inserted.
         def _seed(data):
             return None, skill_name not in data and data.setdefault(skill_name, {**_empty_record(), "first_seen_at": _now_iso()}) is not None
         _locked_update(skill_name, _seed, "skill_usage.seed_record_if_missing(%s) failed: %s")
@@ -594,12 +598,7 @@ def is_locked(skill_name: str) -> bool:
     """``locked`` flag of *skill_name*. Strict on purpose: a corrupt or unreadable sidecar RAISES
     instead of reading as "unlocked" (``load_usage`` returns {} there), so the write guard can fail
     closed rather than silently relax a lock the user set."""
-    path = _usage_file()
-    if not path.exists():
-        return False
-    data = json.loads(path.read_text(encoding="utf-8-sig"))
-    rec = data.get(skill_name) if isinstance(data, dict) else None
-    return bool(rec.get("locked")) if isinstance(rec, dict) else False
+    return bool(_load_usage_strict().get(skill_name, {}).get("locked"))
 
 
 def locked_skill_names(strict: bool = False) -> list[str]:

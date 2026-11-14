@@ -91,10 +91,11 @@ def test_lock_resolves_by_display_name_as_well_as_directory(locked_home):
     assert not is_locked_skill("free-skill")
 
 
-@pytest.fixture
-def unreadable_record(locked_home):
-    """The sidecar ``locked_home`` just wrote, damaged without deleting it (#147986)."""
-    (locked_home / "skills/.usage.json").write_text('{"locked-skill": ', encoding="utf-8")
+@pytest.fixture(params=['{"locked-skill": ', "[]", "null", '"x"'], ids=["truncated", "list", "null", "string"])
+def unreadable_record(locked_home, request):
+    """The sidecar ``locked_home`` just wrote, damaged without deleting it (#147986). A record that
+    parses but is not an object is damage as well: it cannot say which skills are locked."""
+    (locked_home / "skills/.usage.json").write_text(request.param, encoding="utf-8")
     return locked_home
 
 
@@ -148,3 +149,22 @@ def test_a_readable_record_with_nothing_locked_stays_writable(locked_home):
     record = locked_home / "skills/.usage.json"
     assert path_refusal([str(record)]) is None
     assert command_refusal(f"echo x > {record}", str(locked_home)) is None
+
+
+def test_usage_bumps_never_save_over_a_damaged_lock_record(unreadable_record):
+    """Telemetry on a damaged record is dropped instead of rewriting it from {}, which would erase
+    every lock and turn the fail-closed refusal into "nothing is locked" on the next skill_view."""
+    from tools import skill_usage
+    from tools.skill_lock import command_refusal, path_refusal
+
+    home = unreadable_record
+    record = home / "skills/.usage.json"
+    before = record.read_bytes()
+    skill_usage.bump_view("free-skill")
+    skill_usage.bump_use("free-skill")
+    skill_usage.bump_patch("free-skill")
+    skill_usage.forget("free-skill")
+    assert record.read_bytes() == before
+    locked_md = home / "skills/ops/locked-skill/SKILL.md"
+    assert "cannot be read" in (path_refusal([str(locked_md)]) or "")
+    assert "cannot be read" in (command_refusal(f"echo x > {locked_md}", str(home)) or "")

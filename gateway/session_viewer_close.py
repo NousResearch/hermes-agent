@@ -146,14 +146,19 @@ def cancel_persisted_close(authority, session_id):
     forget_persisted_close(authority, session_id, record)
 
 
+def persisted_closes(authority):
+    """Blocking snapshot only; installation and deletion belong to the owner loop."""
+    with authority.db._read_ctx() as conn:
+        return dict(conn.execute('SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)))
+
+
 def rearm_persisted_closes(authority):
     """Boot/serve recovery, after the local sessions are restored: every stored close whose session
     is mounted with no viewer goes back to ``pending_closes``. The caller schedules the drain, whose
     idle point (after any queued turn; never past an ``unknown`` one) completes it. Returns the ids."""
-    with authority.db._read_ctx() as conn:
-        stored = conn.execute('SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)).fetchall()
+    stored = persisted_closes(authority)
     armed = []
-    for key, record in stored:
+    for key, record in stored.items():
         session_id = key[len(CLOSE_PREFIX):]
         live = authority.sessions.get(session_id)
         if live is None or is_history_mount(live):
@@ -255,11 +260,16 @@ def arm_startup_orphan_closes(authority, session_ids):
     that reattaches keeps it open; a fired close still waits for the queued input to settle.
     An idle classic CLI only redials on its next call, so a session idle less than the legacy
     sweep's TTL waits out the rest of it, as that sweep did, before its grace starts to count."""
-    grace = orphan_close_grace(authority, startup=True)
-    for session_id in session_ids:
-        if grace and session_id not in authority.pending_closes and orphan_candidate(authority, session_id):
-            delay = max(grace, STARTUP_IDLE_S - _idle_s(authority, session_id))
+    for session_id, delay in startup_orphan_delays(authority, session_ids).items():
+        if session_id not in authority.pending_closes:
             arm_orphan_close(authority, session_id, 'startup_orphan_reap', delay)
+
+
+def startup_orphan_delays(authority, session_ids):
+    """Blocking config/candidate/idle reads, without touching any live timer or session."""
+    grace = orphan_close_grace(authority, startup=True)
+    return {sid: max(grace, STARTUP_IDLE_S - _idle_s(authority, sid))
+            for sid in session_ids if grace and orphan_candidate(authority, sid)}
 
 
 def cancel_orphan_close(authority, session_id):

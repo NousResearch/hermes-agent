@@ -44,9 +44,9 @@ async def adopt_before_restore(authority, sid, *, tracked=True):
     """Commit *sid*'s due catch-up in a worker, so the restore that follows only reads.
 
     ``tracked=False``: an authority still being built, not yet published for retirement to join."""
-    receipt = _due(authority, sid)
+    receipt = await asyncio.to_thread(_due, authority, sid)
     if receipt is None:
-        return
+        return True
     write = partial(_adopt, authority, sid, receipt)
     try:
         if tracked:
@@ -56,13 +56,15 @@ async def adopt_before_restore(authority, sid, *, tracked=True):
             await asyncio.to_thread(write)
     except RuntimeStoreError as exc:  # the restore that follows refuses the receipt and logs it
         logger.warning('Local session %s compression catch-up failed: %s', sid, exc.reason)
+        return False
+    return True
 
 
-async def adopt_local_compressions(authority):
+async def adopt_local_compressions(authority, *, tracked=False):
     """Boot and hot-profile recovery: every receipt's due catch-up, before ``recover_local_sessions``."""
     from gateway.session_local_recovery import local_receipt_ids
-    for sid in local_receipt_ids(authority):
-        await adopt_before_restore(authority, sid, tracked=False)
+    for sid in await asyncio.to_thread(local_receipt_ids, authority):
+        await adopt_before_restore(authority, sid, tracked=tracked)
 
 
 def schedule_adoption(authority, sid, receipt):

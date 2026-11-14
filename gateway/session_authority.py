@@ -94,6 +94,7 @@ class LiveSession:
     retire_timer: object = None
     # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
     detaching: int = 0
+    viewer_revision: int = 0  # an attach invalidates startup's prepared close, even after a live handoff
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -377,6 +378,7 @@ class SessionAuthority:
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
+            live.viewer_revision += 1
             self.pending_closes.pop(ref.session_id, None)
             from gateway.session_viewer_close import cancel_orphan_close
             cancel_orphan_close(self, ref.session_id)
@@ -1474,10 +1476,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_bot import release_superseded_bot_chat_at_boot
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
-    # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
-    # authority is published, so the recovery below only reads.
-    from gateway.session_local_adoption import adopt_local_compressions
-    await adopt_local_compressions(authority)
+    # Prepare while private; publish and register in one loop step, with no intervening await.
+    from gateway.session_local_startup import recover_local_sessions_async
+    await recover_local_sessions_async(authority, initial=True)
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner
@@ -1492,6 +1493,4 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epochs[db_key] = epoch
     from gateway.session_detached import watch_routes
     watch_routes(runner, store)
-    from gateway.session_local_recovery import recover_local_sessions
-    recover_local_sessions(authority)
     return authority

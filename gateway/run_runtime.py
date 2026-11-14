@@ -454,7 +454,7 @@ async def serve_profile_runtime(runner, name, home):
     queued native rows are recovered once its adapters connect (``recover_served_native_rows``)."""
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
-    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_local_startup import recover_local_sessions_async
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
@@ -473,7 +473,7 @@ async def serve_profile_runtime(runner, name, home):
         with owner_scope(authority):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions_async(authority, schedule=True)
             await recover_webhook_finalizations(authority)
             _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
@@ -660,21 +660,44 @@ async def recover_gateway_native_sessions(runner):
         return {}
     from gateway.session_hosted_service import ensure_hosted_service
     await ensure_hosted_service(runner)
-    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_local_startup import recover_local_sessions_async
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     results = {}
     for authority in authorities:
         with owner_scope(authority):
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions_async(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         results.update(await recover_profile_native_sessions(runner, authority))
     return results
 
 
+def _native_recovery_bindings(runner, authority):
+    """An authority's queued rows and the live routes that can carry them.
+
+    A store read per profile: the admission scan, the route list, one lineage walk per route
+    (``logical_owner``) and the newest native admission that names the route's verified receiving
+    bot (``recovered_native_source``). It runs in a worker thread -- a large or slow profile store
+    must not park the loop past the startup watchdog, whose exit 75 restarts into the same pass
+    (#148023). Only reads happen here; the sources it restores are fresh copies, and the adapter
+    egress caches are primed on the loop (``_prime_recovered_egress``).
+    """
+    from gateway.session_authorities import owner_scope
+    from gateway.session_native_recovery_routes import recovered_native_source
+    with owner_scope(authority):
+        pending = {row['target_session_id'] for row in authority.db._read_all(
+            "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
+        bindings = [(owner, origin, runner._adapter_for_source(origin))
+                    for entry in runner.session_store.list_sessions() if entry.origin is not None
+                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending
+                    for origin in [recovered_native_source(runner, authority, entry, owner)]]
+    return pending, bindings
+
+
 def _prime_recovered_egress(bindings):
     """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
     only on live inbound, so after a restart a recovered turn's reply would leave without the
-    scope/user discriminators the connector requires (or on the primary's platform) and be declined."""
+    scope/user discriminators the connector requires (or on the primary's platform) and be declined.
+    Adapter state: called on the owner loop, never from the binding worker."""
     from gateway.platforms.event import MessageEvent
     for _sid, origin, adapter in bindings:
         prime = getattr(adapter, 'prime_routing_cache', None)
@@ -686,17 +709,13 @@ def _prime_recovered_egress(bindings):
 async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
     from gateway.session_authorities import owner_scope
-    from gateway.session_native_recovery_routes import recovered_native_source
+    pending, bindings = await asyncio.to_thread(_native_recovery_bindings, runner, authority)
+    from gateway.session_detached import recover_detached_sessions
+    # Recovery still performs per-session validation reads; egress priming, live-session
+    # publication and task creation stay on the owner loop, under the same scope as the scan.
     with owner_scope(authority):
-        pending = {row['target_session_id'] for row in authority.db._read_all(
-            "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-        bindings = [(owner, origin, runner._adapter_for_source(origin))
-                    for entry in runner.session_store.list_sessions() if entry.origin is not None
-                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending
-                    for origin in [recovered_native_source(runner, authority, entry, owner)]]
         _prime_recovered_egress(bindings)
         outcome = await authority.recover_native_sessions(bindings)
-        from gateway.session_detached import recover_detached_sessions
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)

@@ -170,21 +170,24 @@ def _stray_route_target(authority, receipt, session_id):
     return True
 
 
-def restore_local_session(authority, sid):
-    from gateway.session_authority import LiveSession
-    from gateway.session_local import LocalSessionAdapter
+def prepare_local_session(authority, sid, *, catch_up=True):
+    """Blocking receipt validation, with no live-session publication.
+
+    Startup uses ``catch_up=False``: any intervening compression is handed back to the
+    coordinator, never adopted as an untracked write merely because this is a worker.
+    """
     from gateway.session_policy import restore_policy
     try:
         # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
         receipt, source, route, entry = owned_receipt(authority, sid)
-        chat_id, store = source.chat_id, authority.runner.session_store
-        adopted = _with_untracked_compression(authority, sid, receipt)
+        adopted = _with_untracked_compression(authority, sid, receipt) if catch_up else receipt
         policy = restore_policy(adopted['policy'])
         if adopted is not receipt:  # re-read after a catch-up: check the copy that will be served
             receipt, entry = adopted, _checked_entry(authority, adopted, source, route)
-        target = entry.session_id
-        from hermes_state_local_lineage import validate_local_lineage
+        from hermes_state_local_lineage import adoptable_compression, validate_local_lineage
         with authority.db._read_ctx() as conn:
+            if not catch_up and adoptable_compression(conn, receipt) is not None:
+                raise _CatchUpPending('storage_unavailable')
             validate_local_lineage(conn, receipt)
     except _CatchUpPending:
         raise
@@ -194,6 +197,20 @@ def restore_local_session(authority, sid):
         if isinstance(exc, RuntimeStoreError):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
+    return receipt, source, route, entry, policy
+
+
+def restore_local_session(authority, sid):
+    prepared = prepare_local_session(authority, sid)
+    return publish_local_session(authority, sid, prepared)
+
+
+def publish_local_session(authority, sid, prepared, *, route_proof=None):
+    """Publish on the owner loop. Startup supplies a locked, read-only route proof."""
+    from gateway.session_authority import LiveSession
+    from gateway.session_local import LocalSessionAdapter
+    receipt, source, route, entry, policy = prepared
+    chat_id, target, store = source.chat_id, entry.session_id, authority.runner.session_store
     adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
@@ -201,11 +218,13 @@ def restore_local_session(authority, sid):
     from gateway.session_history_mount import is_history_mount
     if live is None or is_history_mount(live):
         source = adapter.kept_source(source)
-        with store._lock:
-            store._ensure_loaded_locked()
+        with store._lock if route_proof is None else contextlib.nullcontext():
+            if route_proof is None:
+                store._ensure_loaded_locked()
             current = store._entries.get(route)
             if current is not None and current.session_id != target:
-                if not _stray_route_target(authority, receipt, current.session_id):
+                if not (_stray_route_target(authority, receipt, current.session_id)
+                        if route_proof is None else route_proof[1]):
                     raise RuntimeStoreError('admission_conflict')
                 current = None
             # The receipt is the creation copy; a persisted entry for the same target keeps the
@@ -231,15 +250,16 @@ def restore_local_session(authority, sid):
     elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):
         pass  # every claim of a live session lands here: no write, so no wait on the store lock
     else:
-        with store._lock:
-            current = store._entry_locked(route)
+        with store._lock if route_proof is None else contextlib.nullcontext():
+            current = store._entry_locked(route) if route_proof is None else store._entries.get(route)
             if current is None:
                 # A route the loaded store cannot see (an older release's scope, a pruned row) is the
                 # receipt's to rebuild, as on a cold restore: refusing wedges every claim until a restart.
                 entry.origin = source
                 store._entries[route] = entry
             elif (current.session_id not in receipt.get('lineage', [sid])
-                    and not _stray_route_target(authority, receipt, current.session_id)):
+                    and not (_stray_route_target(authority, receipt, current.session_id)
+                             if route_proof is None else route_proof[1])):
                 raise RuntimeStoreError('admission_conflict')
             else:
                 current.session_id = target

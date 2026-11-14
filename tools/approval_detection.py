@@ -253,7 +253,12 @@ _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 # as the user, not the shell.
 _PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
 _PIPE_SHELL_TOKEN_RE = (
-    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
+    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)`]|$)"
+)
+# A stdin-reading interpreter with no script argument (or `-`) runs the piped text as code;
+# `python3 -m json.tool` / `node script.js` name their own program and stay out.
+_PIPE_INTERPRETER_TOKEN_RE = (
+    rf"{_PIPE_PATH_PREFIX_RE}(?:python[0-9.]*|node|perl|ruby|php)(?:\.exe)?(?:\s++-)?(?=\s*+(?:[;&|)`}}]|$))"
 )
 # Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
 # must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.
@@ -261,7 +266,11 @@ _PIPE_LOOKUP_ONLY_RE = re.compile(
     rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-(?-i:[^\W\dugUCDhpRrtT])*l|--list))\b",
     re.IGNORECASE,
 )
-_PIPE_SINK_RE = re.compile(rf"(?:\|&?\s*|>\(\s*){_PIPE_WRAPPERS_RE}{_PIPE_SHELL_TOKEN_RE}", re.IGNORECASE)
+# `| (bash)` / `| { bash; }`: a subshell or group opener in front of the sink still feeds it stdin.
+_PIPE_SINK_RE = re.compile(
+    rf"(?:\|&?\s*|>\(\s*)(?:[({{]\s*+)*+{_PIPE_WRAPPERS_RE}(?:{_PIPE_SHELL_TOKEN_RE}|{_PIPE_INTERPRETER_TOKEN_RE})",
+    re.IGNORECASE,
+)
 _PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
 _PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
 # The widened sink skips `||` (an or-list, not a pipe); main's raw sink keeps the old operator.
@@ -671,7 +680,14 @@ DANGEROUS_PATTERNS = [
     (rf'(?<![\w.-])(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
-    (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    (r'(?:\beval\b|\bsource\b|\.)\s*["\']?(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Same-command download-then-run: the fetch writes FILE (-o/-O/--output/>), a later command in
+    # the same string runs that FILE (via a shell, source/., or directly). Cross-call download then
+    # exec is out of reach of a stateless detector.
+    (r'\b(?:curl|wget)\b[^\n;&|]*?(?:\s-[a-z]*o\s*|\s--output(?:-document)?(?:=|\s+)|>\s*)'
+     r'(?P<dl>[^\s;&|<>\'"`()]+)[^\n]*?(?:;|&&|\|\||\n)\s*(?:sudo\s+)?'
+     rf'(?:(?:{_SHELL_NAMES_RE})\s+(?:-\S+\s+)*|(?:source|\.)\s+)?(?:\./)?(?P=dl)(?=[\s;&|)`]|$)',
+     "execute a just-downloaded file"),
     # Reverse shells (parity with Skills Guard's network rows). Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in
     # _DevSocketRedirectMatcher, which dequotes the redirect operand; nc/socat are command-position anchored; a glued `<`/`>` redirect still ends the command word.
     (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
@@ -1431,6 +1447,12 @@ def _strip_shell_word_syntax(word: str) -> str:
     )
 
 
+# A brace word in COMMAND position expands to its comma-separated alternatives as separate words:
+# `{rm,-rf,/}` runs as `rm -rf /`. Argument-position braces (`find / -{delete,print}`) never reach
+# this deobfuscator, so the dynamic-word rules keyed on them still fire. No quotes/$/nesting.
+_BRACE_ALTERNATION_RE = re.compile(r"\{([A-Za-z0-9_./:%@+=^-]+(?:,[A-Za-z0-9_./:%@+=^-]+)+)\}")
+
+
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
@@ -1439,6 +1461,8 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 
 def _deobfuscate_shell_word(word: str) -> str:
+    if brace := _BRACE_ALTERNATION_RE.fullmatch(word):
+        return brace.group(1).replace(",", " ")
     for _ in range(2):
         previous = word
         word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))

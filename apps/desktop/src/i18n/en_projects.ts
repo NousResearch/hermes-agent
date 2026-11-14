@@ -35,6 +35,7 @@ export const enProjects: Translations['sidebar']['projects'] = {
   moveNoFolder: 'That project has no folder to move into',
   moveBusy: 'Stop the running turn, then move the chat',
   moveNoProjects: 'No other projects',
+  moveCreateNew: 'New project…',
   reveal: 'Reveal in folder',
   copyPath: 'Copy path',
   removeFromSidebar: 'Hide from sidebar',

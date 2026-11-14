@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarAgentsGrouped, setSidebarAgentsGrouped, setSidebarShowAllSessions } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import { deferred } from '@/test/deferred'
@@ -95,6 +95,13 @@ const getHermesConfig = vi.mocked(hermes.getHermesConfig)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
+// $sidebarShowAllSessions is a persistent atom: leaving it flipped would make
+// every later test in this file ask the backend for the expanded tree window
+// instead of the default three-row payload.
+afterEach(() => {
+  setSidebarShowAllSessions(false)
+})
+
 describe('project scope', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -155,11 +162,34 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
+    // Upstream replaced the flat PROJECT_TREE_PREVIEW_LIMIT constant with
+    // projectTreePreviewLimit(): the normal tree keeps the three-row payload,
+    // and only the expanded sidebar asks for the complete window. The
+    // profile normalization is the invariant under test here.
     expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
     expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'
     })
+  })
+
+  it('asks for the complete tree window when the sidebar expands all sessions', async () => {
+    const request = vi.fn(async () => ({ active_id: null, projects: [], scoped_session_ids: [] }))
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('  coder  ')
+
+    // The move-to-project work (PR #86000) needs the tree to carry enough
+    // entries to move a session into. Upstream expresses that as the expanded
+    // window rather than a permanently larger default, so assert both ends of
+    // the contract: the default stays at three rows and the expanded sidebar
+    // asks for the whole window.
+    setSidebarShowAllSessions(true)
+
+    await refreshProjectTree()
+
+    expect(request).toHaveBeenCalledWith('projects.tree', { preview_limit: 2000, profile: 'coder' })
   })
 
   it('keeps unchanged project nodes by reference across tree refreshes (#77591)', async () => {

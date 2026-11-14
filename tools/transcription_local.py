@@ -170,8 +170,38 @@ def _hub_cache_miss_error() -> type:
     return LocalEntryNotFoundError
 
 
+def _configure_huggingface_timeouts() -> None:
+    """Bound Hub metadata/download waits for local Whisper model resolution."""
+    timeout_defaults = {
+        "HF_HUB_ETAG_TIMEOUT": 8,
+        "HF_HUB_DOWNLOAD_TIMEOUT": 45,
+    }
+    configured: dict[str, int] = {}
+    for env_name, default in timeout_defaults.items():
+        raw = os.environ.get(env_name, "").strip()
+        try:
+            seconds = int(raw) if raw else default
+        except ValueError:
+            seconds = default
+        if seconds < 1:
+            seconds = default
+        os.environ[env_name] = str(seconds)
+        configured[env_name] = seconds
+
+    # faster-whisper or another tool may have imported the Hub before STT is
+    # called, so update its live constants as well as setting the environment.
+    try:
+        from huggingface_hub import constants as hub_constants
+    except ImportError:
+        return
+    for name, seconds in configured.items():
+        if hasattr(hub_constants, name):
+            setattr(hub_constants, name, seconds)
+
+
 def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
     """Use a cached model without contacting the Hub, downloading only on a cache miss."""
+    _configure_huggingface_timeouts()
     from faster_whisper import WhisperModel
 
     kwargs = {"device": device, "compute_type": compute_type}
@@ -213,8 +243,14 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     if force_cpu:
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-                    "(int8) to avoid native device autodetection crashes")
-        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
+                    "to avoid native device autodetection crashes")
+        configured_compute_type = compute_type.strip() if isinstance(compute_type, str) else "auto"
+        cpu_compute_type = (
+            configured_compute_type
+            if configured_compute_type and configured_compute_type.lower() != "auto"
+            else "int8"
+        )
+        return _create_whisper_model(model_name, device="cpu", compute_type=cpu_compute_type)
     try:
         return _create_whisper_model(model_name, device=device, compute_type=compute_type)
     except Exception as exc:

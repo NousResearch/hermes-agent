@@ -398,3 +398,86 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     assert snapshot is not None
     assert refresh_hints == ["pool-B-revoked"]
     assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]
+
+
+@pytest.mark.parametrize("alias", [
+    "kimi", "kimi-coding", "moonshot", "kimi-for-coding",
+    "kimi-coding-cn", "kimi-cn", "moonshot-cn",
+])
+@pytest.mark.parametrize("used", [1, 130])
+@pytest.mark.parametrize(
+    ("base_url", "expect_snapshot"),
+    [
+        ("https://api.kimi.com/coding", True),
+        ("https://api.kimi.com/coding/v1/", True),
+        ("https://API.KIMI.COM:443/coding/", True),
+        ("https://api.moonshot.ai/v1", False),
+        ("https://api.moonshot.cn/v1", False),
+        ("https://proxy.example/coding", False),
+        ("http://api.kimi.com/coding", False),
+        ("https://api.kimi.com:8443/coding", False),
+        ("https://api.kimi.com.example/coding", False),
+        ("https://api.kimi.com/coding-extra", False),
+        ("https://api.kimi.com/CODING", False),
+        ("https://api.kimi.com/coding?route=legacy", False),
+        ("https://api.kimi.com/coding#legacy", False),
+        ("https://user@api.kimi.com/coding", False),
+        ("https://api.kimi.com:invalid/coding", False),
+        ("https://[api.kimi.com/coding", False),
+    ],
+)
+def test_moonshot_alias_fetches_only_coding_plan_quota(
+    monkeypatch, alias, used, base_url, expect_snapshot
+):
+    """The alias selects credentials; the resolved endpoint selects the product."""
+    from hermes_constants import get_hermes_home
+
+    payload = {
+        "user": {"membership": {"level": "LEVEL_ADVANCED"}},
+        "usage": {"limit": "100", "used": str(used), "resetTime": "2030-01-01T00:00:00Z"},
+        "limits": [{
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {"limit": "100", "used": "3"},
+        }],
+        "parallel": {"limit": "30"},
+    }
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "providers:\n"
+        f"  {alias}:\n"
+        "    name: Moonshot saved runtime\n"
+        f"    api: {base_url}\n"
+        "    api_key: synthetic-test-key\n",
+        encoding="utf-8",
+    )
+
+    # Canonical provider IDs use the native explicit credential path; the
+    # picker aliases above exercise their saved named-provider records.
+    explicit = {"base_url": base_url, "api_key": "synthetic-test-key"} if alias in {"kimi-coding", "kimi-coding-cn"} else {}
+    snapshot = account_usage.fetch_account_usage(alias, **explicit)
+
+    if expect_snapshot:
+        assert snapshot is not None
+        expected_provider = "kimi-coding-cn" if alias in {"kimi-coding-cn", "kimi-cn", "moonshot-cn"} else "kimi-coding"
+        assert snapshot.provider == expected_provider
+        assert snapshot.plan == "Level Advanced"
+        assert [window.label for window in snapshot.windows] == ["Weekly", "5-hour"]
+        assert [window.used_percent for window in snapshot.windows] == [float(used), 3.0]
+        assert snapshot.windows[0].reset_at is not None
+        assert snapshot.windows[0].reset_at.isoformat() == "2030-01-01T00:00:00+00:00"
+        assert snapshot.details == ("Parallel requests: 30 max",)
+        assert len(calls) == 1
+        assert httpx.URL(calls[0]["url"]) == httpx.URL("https://api.kimi.com/coding/v1/usages")
+        assert calls[0]["headers"]["Authorization"] == "Bearer synthetic-test-key"
+        if used > 100:
+            assert any("0% remaining (130% used)" in line for line in account_usage.render_account_usage_lines(snapshot))
+    else:
+        assert snapshot is None
+        assert calls == []

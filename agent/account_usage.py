@@ -5,6 +5,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
@@ -14,6 +15,7 @@ from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime
 from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_time import safe_strftime
+from utils import is_kimi_coding_base_url
 
 from agent.usage_gauges import BP_FULL
 
@@ -871,6 +873,191 @@ def _fetch_anthropic_account_usage(
     return _snapshot("anthropic", "oauth_usage_api", windows, details)
 
 
+# All provider spellings that may resolve to a Kimi runtime. The CN set keeps
+# its own snapshot label; the actual Coding Plan gate is the resolved base URL
+# (utils.is_kimi_coding_base_url), not the alias.
+_KIMI_PROVIDER_ALIASES = frozenset({
+    "kimi",
+    "kimi-coding",
+    "kimi-for-coding",
+    "kimi-coding-cn",
+    "moonshot",
+    "kimi-cn",
+    "moonshot-cn",
+})
+_KIMI_CN_PROVIDER_ALIASES = frozenset({"kimi-coding-cn", "kimi-cn", "moonshot-cn"})
+
+
+def _kimi_provider_label(alias: str) -> str:
+    return "kimi-coding-cn" if alias in _KIMI_CN_PROVIDER_ALIASES else "kimi-coding"
+
+
+def _kimi_usages_url(base_url: str) -> str:
+    """Resolve the Kimi Code ``/usages`` endpoint from a chat base URL.
+
+    The quota endpoint lives next to the chat routes: ``/coding/v1/usages``.
+    Accepts a base URL with or without the trailing ``/v1`` so both the
+    canonical ``https://api.kimi.com/coding`` config value and the
+    ``.../coding/v1`` variant used by some resolvers work.
+    """
+    normalized = base_url.strip().rstrip("/")
+    return normalized.removesuffix("/v1") + "/v1/usages"
+
+
+def _kimi_window_label(window: Any) -> str:
+    """Human label for a Kimi ``limits[]`` rolling window (e.g. 300 minutes)."""
+    w = window if isinstance(window, dict) else {}
+    duration = w.get("duration")
+    unit = str(w.get("timeUnit") or "").strip().upper()
+    try:
+        n = float(duration)
+    except (TypeError, ValueError):
+        return "Rolling window"
+    if not math.isfinite(n) or n <= 0:
+        return "Rolling window"
+    if (unit, n) in {("TIME_UNIT_MINUTE", 10080), ("TIME_UNIT_HOUR", 168),
+                     ("TIME_UNIT_DAY", 7), ("TIME_UNIT_WEEK", 1)}:
+        return "Weekly"
+    if unit == "TIME_UNIT_MINUTE":
+        if n % 60 == 0:
+            hours = int(n // 60)
+            return f"{hours}-hour" if hours != 1 else "Hourly"
+        return f"{int(n)}-minute"
+    if unit == "TIME_UNIT_HOUR":
+        return f"{int(n)}-hour"
+    if unit == "TIME_UNIT_DAY":
+        return f"{int(n)}-day"
+    return "Rolling window"
+
+
+def _kimi_number(value: Any) -> Optional[float]:
+    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _percent_from_counts(detail: Any) -> Optional[float]:
+    """Compute used_percent from a {limit, used, remaining} quota object.
+
+    Deliberately preserve values above 100: an over-quota response is useful
+    provider data. The renderer floors the remaining percentage at zero while
+    continuing to show the actual used percentage.
+    """
+    if not isinstance(detail, dict):
+        return None
+    limit = _kimi_number(detail.get("limit"))
+    if limit is None or limit <= 0:
+        return None
+    used = _kimi_number(detail.get("used"))
+    # Protobuf JSON omits zero counters. Derive only an absent used field;
+    # an explicit zero must win even if remaining disagrees.
+    if "used" not in detail:
+        remaining = _kimi_number(detail.get("remaining"))
+        used = limit - remaining if remaining is not None else None
+    if used is None or used < 0:
+        return None
+    return used / limit * 100.0
+
+
+_KIMI_USAGE_POOLS = (
+    ("limit_7d", "Weekly"),
+    ("limit_5h", "5-hour"),
+    ("limit_month_total", "Monthly total"),
+    ("limit_month_code", "Monthly coding"),
+)
+
+
+def _kimi_quota_windows(payload: dict) -> list[AccountUsageWindow]:
+    pools = payload.get("usages")
+    pools = pools if isinstance(pools, dict) else {}
+    # The ratio pools retain precision lost by integer counts. A reported
+    # pool owns its window, even if malformed; never substitute stale counts.
+    reported = {label for key, label in _KIMI_USAGE_POOLS if key in pools}
+    windows: list[AccountUsageWindow] = []
+    for key, label in _KIMI_USAGE_POOLS:
+        pool = pools.get(key)
+        if not isinstance(pool, dict):
+            continue
+        ratio = _kimi_number(pool.get("used_ratio"))
+        if ratio is not None and 0 <= ratio <= 1:
+            windows.append(AccountUsageWindow(
+                label=label, used_percent=ratio * 100, reset_at=_parse_dt(pool.get("reset_time")),
+            ))
+    count_rows = [("Weekly", payload.get("usage"))]
+    rolling = payload.get("limits")
+    if isinstance(rolling, list):
+        count_rows.extend((_kimi_window_label(entry.get("window")), entry.get("detail"))
+                          for entry in rolling if isinstance(entry, dict))
+    for label, detail in count_rows:
+        if label in reported or not isinstance(detail, dict):
+            continue
+        percent = _percent_from_counts(detail)
+        if percent is not None:
+            windows.append(AccountUsageWindow(
+                label=label, used_percent=percent, reset_at=_parse_dt(detail.get("resetTime")),
+            ))
+    return windows
+
+
+def _fetch_kimi_account_usage(
+    provider: str,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch Kimi Code (Coding Plan) quota from ``/coding/v1/usages``.
+
+    ``provider`` is the caller's original alias (``kimi``, ``moonshot``,
+    ``kimi-coding-cn``, …). Resolution happens under that alias — the same
+    name the runtime credential records are keyed on — and the Coding Plan
+    gate is the *resolved* base URL, mirroring ``resolve_billing_route``.
+    Legacy ``api.moonshot.ai/v1`` and custom routes return no snapshot.
+
+    Ratio pools take precedence per window; older count-only responses remain
+    supported. Some accounts omit the top-level weekly ``usage`` entirely::
+
+        {
+          "user": {"membership": {"level": "LEVEL_ADVANCED"}, ...},
+          "usage": {"limit": "100", "used": "1", "remaining": "99",
+                    "resetTime": "..."},          # weekly quota (percent)
+          "limits": [{"window": {"duration": 300,
+                                 "timeUnit": "TIME_UNIT_MINUTE"},
+                      "detail": {"limit": "100", "used": "3", ...}}],
+          "usages": {"limit_7d": {"used_ratio": 0.0543, "reset_time": "..."},
+                     "limit_5h": {"used_ratio": 0, "reset_time": "..."},
+                     "limit_month_total": {"used_ratio": "0.25", ...},
+                     "limit_month_code": {"used_ratio": "0.1", ...}},
+          "parallel": {"limit": "30"}
+        }
+    """
+    runtime = resolve_runtime_provider(
+        requested=provider,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    runtime_base_url = str(runtime.get("base_url", "") or "").strip()
+    if not token or not is_kimi_coding_base_url(runtime_base_url):
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    payload = _get_json(_kimi_usages_url(runtime_base_url), headers, timeout=15.0)
+    windows = _kimi_quota_windows(payload)
+    details: list[str] = []
+    parallel = (payload.get("parallel") or {}).get("limit")
+    try:
+        if parallel is not None and int(parallel) > 0:
+            details.append(f"Parallel requests: {int(parallel)} max")
+    except (TypeError, ValueError):
+        pass
+    plan = _title_case_slug(
+        ((payload.get("user") or {}).get("membership") or {}).get("level")
+    )
+    return _snapshot(_kimi_provider_label(provider), "usage_api", windows, details, plan=plan)
+
+
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(requested="openrouter", explicit_base_url=base_url, explicit_api_key=api_key)
     token = str(runtime.get("api_key", "") or "").strip()
@@ -911,6 +1098,10 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    # Resolve under the caller's own alias — runtime credential records for
+    # legacy `moonshot`/`moonshot-cn` users are keyed on that name, and
+    # resolving under a substituted `kimi-coding` would silently miss them.
+    **{alias: partial(_fetch_kimi_account_usage, alias) for alias in _KIMI_PROVIDER_ALIASES},
 }
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by

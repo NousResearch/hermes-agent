@@ -41,6 +41,12 @@ from hermes_constants import get_hermes_home
 from hermes_cli._startup_fast import project_root_str
 
 
+# Platforms whose agent runs exactly ONE turn. The post-turn recall warm-up exists to feed the next turn,
+# so on these it buys a full recall (a local backend pays ~60 s for it) nobody consumes — cron/scheduler.py
+# builds its agent with platform="cron" (#152517). The turn itself is still synced: writes stay the provider's call.
+_SINGLE_TURN_PLATFORMS = frozenset({"cron"})
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """cwd to stamp on a new session row (``hermes -c`` / ``--resume``), or None.
 
@@ -910,7 +916,8 @@ class AIAgent(
         conversational truth — mirroring it into an external memory backend pollutes future recall with
         state the user never saw completed. The prefetch is gated on the same flag: the user's next message
         is almost certainly a retry of the same intent, and a prefetch keyed on the interrupted turn would
-        fire against stale context. See #15218.
+        fire against stale context. See #15218. A single-turn surface (cron) syncs the turn but queues no
+        prefetch: the warm-up would feed a next turn that never comes (#152517).
         """
         if interrupted or not (self._memory_manager and final_response and original_user_message):
             return
@@ -926,8 +933,10 @@ class AIAgent(
             if turn_author is not None:
                 sync_kwargs["turn_author"] = turn_author
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
-            # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
-            if not is_trivial_prompt(user_text):
+            # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts,
+            # and don't warm a next turn a single-turn run (cron) never has (#152517).
+            one_shot = (getattr(self, "platform", None) or "") in _SINGLE_TURN_PLATFORMS
+            if not is_trivial_prompt(user_text) and not one_shot:
                 self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
         except Exception:
             pass

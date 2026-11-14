@@ -333,6 +333,9 @@ class TestDriveLetterRoots:
         "rm -rf -- C:/ -Include x",
         "rm -r C:/* -- -Include x",
         "rm -r C:/ # -Include *.tmp",
+        # The -Include belongs to the outer command, not to the rm inside the substitution.
+        "echo $(rm -rf C:/) -Include x",
+        "ls $(rm -rf C:/*) -Include *.tmp",
     ])
     def test_rm_alias_with_wildcard_or_non_include_stays_hardline(self, cmd):
         assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd

@@ -139,8 +139,9 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
-# not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`.
-_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\n;&|#"\'`]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
+# not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
+# and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
+_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -153,6 +154,8 @@ HARDLINE_PATTERNS = [
     # Drive-letter root (`C:/`, `c:/*`; `C:\` reaches here as `C:/` via the Windows-path variant): same floor as "/".
     # A quoted bare `"C:"` counts only when the next quoted/bare segment starts the root slash (`"C:"'/'`).
     # PowerShell's `rm` alias with a literal narrowing `-Include` (`rm -r C:/* -Include *.tmp`) deletes only matches.
+    # Caveat: Hermes runs the bare command through bash, where GNU rm rejects `-Include` unless POSIXLY_CORRECT is
+    # set; then getopt stops at the root operand and `-Include` is a file name, so that delete only prompts.
     (_CMDPOS + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(-[^\s]*\s+)*' + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*|[a-z]:(?=["\']["\']?/)'),
      "recursive delete of drive root"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),

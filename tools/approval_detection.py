@@ -510,9 +510,13 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
-    # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
-    # silently allow DELETE without WHERE.
-    (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
+    # Only a WHERE in the DELETE's own statement text clears it: the lookahead stops at a newline
+    # (under DOTALL a WHERE on the *next* line would otherwise count), a statement or shell
+    # separator (; & |), a comment start (-- /* #), and any quote or dollar-quote opener, so a
+    # WHERE inside a comment, literal, identifier, later statement or later shell command cannot.
+    # Bare $VAR / ${VAR} stay transparent so templated table names still clear.
+    (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#\'"`$]|\$(?![A-Za-z_0-9]*\$)))*\bWHERE\b)',
+     "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),

@@ -64,6 +64,9 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        # (monotonic time, exception, scope a 403 insufficient_scope challenged for or None) of the last failed
+        # auth flow; consumed by take_call_auth_failure.
+        self._hermes_auth_failure: Optional[tuple[float, BaseException, Optional[str]]] = None
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -256,7 +259,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         # Regression from PR #11383 caught by tests/tools/test_mcp_oauth_bidirectional.py.
         inner = super().async_auth_flow(request)
         resource_lock_released = retry_after_concurrent_auth = False
-        sent_access_token = None
+        sent_access_token = step_up_scope = None
         try:
             outgoing = await inner.__anext__()
             while True:
@@ -286,19 +289,32 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     await inner.aclose()
                     retry_after_concurrent_auth = True
                     break
+                if outgoing is request and getattr(incoming, "status_code", None) == 403:
+                    from mcp.client.auth.utils import extract_field_from_www_auth, extract_scope_from_www_auth
+                    if extract_field_from_www_auth(incoming, "error") == "insufficient_scope":
+                        step_up_scope = extract_scope_from_www_auth(incoming) or ""
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
                 outgoing = await inner.asend(incoming)
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
+        except Exception as exc:
+            # Raised inside the transport's request task, this tears the session down and the pending
+            # tools/call only sees "Connection closed"; the tool handler reads it back from here.
+            self._hermes_auth_failure = (time.monotonic(), exc, step_up_scope)
+            raise
         finally:
-            if resource_lock_released:
-                # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
-                # flow mid-request; shield only this local bookkeeping.
-                import anyio
-                with anyio.CancelScope(shield=True):
+            import anyio
+            with anyio.CancelScope(shield=True):
+                if resource_lock_released:
+                    # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
+                    # flow mid-request; shield only this local bookkeeping.
                     await self.context.lock.acquire()
+                # HTTPX closes this flow (GeneratorExit) when sending a yielded request fails, e.g. a
+                # token endpoint timing out. Close the inner flow now, not at GC: its finally releases
+                # the refresh fence that every other process sharing the token file waits on.
+                await inner.aclose()
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()
@@ -429,6 +445,17 @@ class MCPOAuthManager:
             entry.pending_401.pop(key, None)
         if not pending.done():
             pending.set_result(can_refresh)
+
+    def take_call_auth_failure(self, server_name: str, since: float) -> Optional[tuple]:
+        """``(exception, step_up_scope)`` of the auth flow that failed for *server_name* at or after *since*
+        (``time.monotonic()``), consumed so one failure explains one call; else None."""
+        entry = self._entries.get(self._key(server_name))
+        provider = entry.provider if entry is not None else None
+        failure = getattr(provider, "_hermes_auth_failure", None)
+        if failure is None or failure[0] < since:
+            return None
+        provider._hermes_auth_failure = None
+        return failure[1:]
 
     async def handle_401(self, server_name: str, failed_access_token: Optional[str] = None) -> bool:
         """Handle a 401 from a tool call. True: a (possibly new) token is available — reconnect and retry. False: no

@@ -24,6 +24,8 @@ _ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
 # Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
 _ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
 _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
+# Per-phase (connect incl. TLS, read, write, pool) bound on every OAuth request the auth flow sends.
+OAUTH_REQUEST_TIMEOUT_SECONDS = 20.0
 
 
 def _default_auth_request_user_agent() -> str:
@@ -271,6 +273,13 @@ class HermesProviderMixin:
                         raise
                     if out is not request:
                         stamp_default_user_agent(out)
+                        # httpx applies the client's timeout only to the request handed to send(), so
+                        # every OAuth request this flow yields (discovery, registration, token, refresh)
+                        # went out with none: a token endpoint that accepts TCP and never finishes TLS
+                        # hung the flow, and every request queued behind its lock, until the caller's
+                        # outer budget ran out.
+                        out.extensions.setdefault("timeout", dict.fromkeys(
+                            ("connect", "read", "write", "pool"), OAUTH_REQUEST_TIMEOUT_SECONDS))
                     # Full bidirectional delegation: the SDK drives this flow with
                     # asend(response), so `async for` would swallow the response and
                     # feed the inner generator None. Async generators have no

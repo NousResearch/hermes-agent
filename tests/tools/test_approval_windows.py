@@ -271,6 +271,40 @@ class TestDriveLetterRoots:
     def test_drive_subdirectory_or_prose_is_not_hardline(self, cmd):
         assert detect_hardline_command(cmd) == (False, None), cmd
 
+    @pytest.mark.parametrize("cmd, rule", [
+        # Quoted root-collapse segments glued after a quoted root still name the root.
+        ("rm -rf \"$HOME\"'/'", "recursive delete of home directory"),
+        ("rm -rf '/root'\"/\"", "recursive delete of system directory"),
+        ("rm -rf \"C:\"'/'", "recursive delete of drive root"),
+        ("rm -rf \"C:/\"'./'\"..\"", "recursive delete of drive root"),
+        ("rm -rf \"/\"'/'", "recursive delete of root filesystem"),
+        ("rm -rf \"/\"'./'\"/\"'/'*", "recursive delete of root filesystem"),
+    ])
+    def test_quoted_root_collapse_segments_stay_hardline(self, monkeypatch, cmd, rule):
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(cmd) == (True, rule), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf \"$HOME\"'/build'",
+        "rm -rf \"C:\"'/build'",
+        "rm -rf \"C:\"",
+        # A quoted `*` is a literal file name, not a glob.
+        'rm -rf "$HOME"/"*"',
+        "rm -rf \"/\"'*'",
+    ])
+    def test_quoted_subdirectory_segments_are_not_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf \"/\"" + "'/'" * 1300 + "x",
+        "rm -rf \"/\"" + "'./" * 1300 + "x",
+        "rm -rf \"C:\"" + "\"/." * 1300 + "x",
+    ])
+    def test_quoted_collapse_tail_scans_in_linear_time(self, cmd):
+        start = time.perf_counter()
+        assert detect_hardline_command(cmd) == (False, None)
+        assert time.perf_counter() - start < 2, cmd[:30]
+
     def test_pre_drive_letter_root_approval_key_still_matches(self, monkeypatch):
         """An "always" saved under the old regex-derived key keeps approving `rm /tmp/file`."""
         monkeypatch.setattr(approval, "_permanent_approved", set())

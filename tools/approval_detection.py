@@ -117,9 +117,16 @@ _CMDPOS = (
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
 # A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
-# `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root.
+# `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root. The components
+# may be quoted too (`"$HOME"'/'`, `"/"'./'"/"*`), but a quoted `*` is a literal name, not a glob.
+# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear.
+_RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*+(?:\.\.?)?'
+_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
+                          r'(?:\.\.?)?\**+(?=\s|$|[)`;|&])')
+
+
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
-    return rf'(?:["\'](?:{path_alt})["\'](?:(?:\.\.?)?/)*(?:\.\.?)?\**(?=\s|$|[)`;|&])|(?:{path_alt}){tail})'
+    return rf'(?:["\'](?:{path_alt})["\']{_RM_ROOT_COLLAPSE_TAIL}|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.
@@ -140,7 +147,9 @@ HARDLINE_PATTERNS = [
     # DANGEROUS rules. The "/ \*" alt covers `rm -rf / *` (two args: "/" plus the glob).
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     # Drive-letter root (`C:/`, `c:/*`; `C:\` reaches here as `C:/` via the Windows-path variant): same floor as "/".
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*'), "recursive delete of drive root"),
+    # A quoted bare `"C:"` counts only when the next quoted/bare segment starts the root slash (`"C:"'/'`).
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*|[a-z]:(?=["\']["\']?/)'),
+     "recursive delete of drive root"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose

@@ -352,7 +352,7 @@ class CronJobCreate(BaseModel):
     # Missed-run policy: true runs one catch-up, false skips; omitted follows the default.
     catch_up: Optional[StrictBool] = None
     # Header/footer wrapping: None inherits cron.wrap_response; a bool overrides it per job.
-    wrap_response: Optional[bool] = None
+    wrap_response: Optional[StrictBool] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict

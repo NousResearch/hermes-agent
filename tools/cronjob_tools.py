@@ -1087,7 +1087,7 @@ def cronjob(
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str | list[str]] = None,
     catch_up: Optional[bool] = None,
-    wrap_response: Optional[bool] = None,
+    wrap_response: Optional[bool | str] = None,  # bool, or the tool's on / off / inherit
     task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,

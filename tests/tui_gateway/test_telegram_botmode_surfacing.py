@@ -35,9 +35,9 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 
 
-def _make_source(chat_id="123", thread_id="2", user_id="123"):
+def _make_source(chat_id="123", thread_id="2", user_id="123", chat_type="dm"):
     return SessionSource(
-        platform=Platform.TELEGRAM, chat_id=str(chat_id), chat_type="dm",
+        platform=Platform.TELEGRAM, chat_id=str(chat_id), chat_type=chat_type,
         user_id=str(user_id), thread_id=str(thread_id),
     )
 
@@ -153,17 +153,19 @@ def test_profiles_roster_reports_telegram_as_last_session(tmp_path):
 
 
 def test_gateway_origin_scoping_still_blocks_cross_topic_and_cross_user():
-    """Guard rails the fix must not break: different thread_id is a different
-    session even with the same chat_id, and a persisted row only proves its
-    own lane (IDOR scoping preserved)."""
+    """Guard rails the fix must not break: a group thread is a different session
+    even with the same chat_id, and a persisted row only proves its own lane
+    (IDOR scoping preserved). Topic lanes of one PRIVATE chat are the same
+    person's DM and may share /resume by design (#57821)."""
     from gateway.slash_commands_session import GatewaySessionCommandsMixin as Mixin
 
     cur = _make_source(thread_id="2")
     same_thread = _make_source(thread_id="2")
-    other_thread = _make_source(thread_id="3")
+    group_thread = _make_source(chat_id="-100", thread_id="2", chat_type="group")
+    other_group_thread = _make_source(chat_id="-100", thread_id="3", chat_type="group")
     other_user = _make_source(thread_id="2", user_id="999", chat_id="999")
 
     assert Mixin._same_origin_chat(Mixin, cur, same_thread) is True
-    assert Mixin._same_origin_chat(Mixin, cur, other_thread) is False
+    assert Mixin._same_origin_chat(Mixin, group_thread, other_group_thread) is False
     assert Mixin._same_origin_chat(Mixin, cur, other_user) is False
     assert Mixin._same_origin_chat(Mixin, cur, None) is False

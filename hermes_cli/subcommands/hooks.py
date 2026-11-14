@@ -18,6 +18,16 @@ def build_hooks_parser(subparsers, *, cmd_hooks: Callable) -> None:
         "list", aliases=["ls"],
         help="List configured hooks with matcher, timeout, and consent status")
 
+    _hk_accept = hooks_subparsers.add_parser(
+        "accept",
+        help="Record first-use consent for configured hooks without a TTY prompt")
+    # dest must not be ``command``: the top-level parser stores its own subcommand
+    # name there and a clobbering list would break dispatch.
+    _hk_accept.add_argument(
+        "hook_command", nargs="*", default=None, metavar="command",
+        help="Only approve configured hook(s) with this exact command string "
+            "(default: every not-yet-allowlisted configured hook)")
+
     _hk_test = hooks_subparsers.add_parser(
         "test", help="Fire every hook matching <event> against a synthetic payload")
     _hk_test.add_argument(

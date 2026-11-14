@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Действующая модель (тарифицируется за запуск): {provider}:{model}"
     info_endpoint: "◆ Конечная точка: {url}"
     context_source_config: "из конфигурации"
-    context_source_default: "по умолчанию — задайте model.context_length в конфигурации, чтобы переопределить"
+    context_source_default: "резервное значение, не обнаруженный лимит — задайте model.context_length в конфигурации для переопределения"
     context_source_detected: "определено автоматически"
   proxy:
     requires_aiohttp: "⚠️ Для режима прокси нужен aiohttp. Выполните: {hint}"

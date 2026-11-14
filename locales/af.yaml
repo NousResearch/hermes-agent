@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Handelende model (gefaktureer vir die lopie): {provider}:{model}"
     info_endpoint: "◆ Eindpunt: {url}"
     context_source_config: "konfigurasie"
-    context_source_default: "verstek — stel model.context_length in die konfigurasie om te oorskryf"
+    context_source_default: "terugvalwaarde, nie ’n bespeurde limiet nie — stel model.context_length in die konfigurasie om dit te oorskryf"
     context_source_detected: "bespeur"
   proxy:
     requires_aiohttp: "⚠️ Instaanmodus vereis aiohttp. Voer uit: {hint}"

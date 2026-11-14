@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ 실행 모델 (이 실행의 비용이 청구되는 모델): {provider}:{model}"
     info_endpoint: "◆ 엔드포인트: {url}"
     context_source_config: "설정"
-    context_source_default: "기본값 — 바꾸려면 설정에서 model.context_length를 지정하세요"
+    context_source_default: "감지된 한도가 아닌 대체 값 — 변경하려면 설정에서 model.context_length를 지정하세요"
     context_source_detected: "자동 감지"
   proxy:
     requires_aiohttp: "⚠️ 프록시 모드에는 aiohttp가 필요해요. 실행: {hint}"

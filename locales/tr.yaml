@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Etkin model (çalıştırma için faturalandırılan): {provider}:{model}"
     info_endpoint: "◆ Uç nokta: {url}"
     context_source_config: "yapılandırma"
-    context_source_default: "varsayılan — geçersiz kılmak için yapılandırmada model.context_length ayarlayın"
+    context_source_default: "yedek değer, algılanmış bir sınır değil — değiştirmek için yapılandırmada model.context_length ayarlayın"
     context_source_detected: "algılandı"
   proxy:
     requires_aiohttp: "⚠️ Proxy modu aiohttp gerektirir. Çalıştırın: {hint}"

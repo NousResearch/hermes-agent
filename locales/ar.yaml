@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ النموذج الفعلي (المحاسَب عليه في هذا التشغيل): {provider}:{model}"
     info_endpoint: "◆ نقطة النهاية: {url}"
     context_source_config: "الإعدادات"
-    context_source_default: "افتراضي — اضبط model.context_length في الإعدادات لتجاوزه"
+    context_source_default: "قيمة احتياطية وليست حدًا مكتشفًا — اضبط model.context_length في الإعدادات لتجاوزها"
     context_source_detected: "مُكتشَف"
   proxy:
     requires_aiohttp: "⚠️ يتطلب وضع وكيل الشبكة (proxy) حزمة aiohttp. شغّل: {hint}"

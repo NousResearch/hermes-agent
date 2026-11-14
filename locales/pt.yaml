@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Modelo em ação (cobrado pela execução): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
     context_source_config: "configuração"
-    context_source_default: "padrão — defina model.context_length na configuração para substituir"
+    context_source_default: "valor de reserva, não um limite detectado — defina model.context_length na configuração para substituí-lo"
     context_source_detected: "detectado"
   proxy:
     requires_aiohttp: "⚠️ O modo proxy requer aiohttp. Execute: {hint}"

@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Samhail ghníomhach (billeáilte don rith): {provider}:{model}"
     info_endpoint: "◆ Críochphointe: {url}"
     context_source_config: "cumraíocht"
-    context_source_default: "réamhshocrú — socraigh model.context_length sa chumraíocht chun é a shárú"
+    context_source_default: "luach cúltaca, ní teorainn bhraite — socraigh model.context_length sa chumraíocht chun é a shárú"
     context_source_detected: "braite"
   proxy:
     requires_aiohttp: "⚠️ Teastaíonn aiohttp le mód seachfhreastalaí. Rith: {hint}"

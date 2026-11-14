@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ 實際執行模型（本次執行的計費對象）：{provider}:{model}"
     info_endpoint: "◆ 端點：{url}"
     context_source_config: "設定"
-    context_source_default: "預設 — 可在設定中指定 model.context_length 加以覆寫"
+    context_source_default: "備用值，並非偵測到的上限——如需覆寫，請在設定中指定 model.context_length"
     context_source_detected: "自動偵測"
   proxy:
     requires_aiohttp: "⚠️ Proxy 模式需要 aiohttp。請執行：{hint}"

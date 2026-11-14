@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Aktives Modell (für den Lauf abgerechnet): {provider}:{model}"
     info_endpoint: "◆ Endpunkt: {url}"
     context_source_config: "aus der Konfiguration"
-    context_source_default: "Standard — zum Überschreiben model.context_length in der Konfiguration setzen"
+    context_source_default: "Ersatzwert, kein erkannter Grenzwert — zum Überschreiben model.context_length in der Konfiguration setzen"
     context_source_detected: "automatisch erkannt"
   proxy:
     requires_aiohttp: "⚠️ Der Proxy-Modus benötigt aiohttp. Führen Sie aus: {hint}"

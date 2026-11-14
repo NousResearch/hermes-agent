@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ 実行モデル (この実行の請求対象): {provider}:{model}"
     info_endpoint: "◆ エンドポイント: {url}"
     context_source_config: "設定"
-    context_source_default: "デフォルト — 上書きするには設定で model.context_length を指定"
+    context_source_default: "検出された上限ではなく代替値 — 変更するには設定で model.context_length を指定してください"
     context_source_detected: "自動検出"
   proxy:
     requires_aiohttp: "⚠️ プロキシモードには aiohttp が必要です。実行してください: {hint}"

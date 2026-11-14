@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ 实际执行模型（本次运行计费）：{provider}:{model}"
     info_endpoint: "◆ 端点：{url}"
     context_source_config: "配置"
-    context_source_default: "默认值——如需覆盖，请在配置中设置 model.context_length"
+    context_source_default: "备用值，并非检测到的上限——如需覆盖，请在配置中设置 model.context_length"
     context_source_detected: "自动检测"
   proxy:
     requires_aiohttp: "⚠️ 代理模式需要 aiohttp。请运行：{hint}"

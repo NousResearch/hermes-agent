@@ -82,7 +82,7 @@ async def resolve_clarify(adapter, state, option_id, chat_id, ack_meta) -> None:
     clarify_id = str(state.get("clarify_id") or "")
     if option_id == "other":
         mark_awaiting_text(clarify_id)
-        adapter._send_lifecycle_ack(chat_id, t("platform.relay.clarify.type_answer"), ack_meta)
+        adapter._send_lifecycle_ack(chat_id, t("platform.relay.clarify_type_answer"), ack_meta)
         return
     choices = state.get("choices") or []
     try:

@@ -879,7 +879,7 @@ gateway:
     info_acting_model: "◆ Acting model (billed for the run): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
     context_source_config: "config"
-    context_source_default: "default — set model.context_length in config to override"
+    context_source_default: "fallback, not a detected limit — set model.context_length in config to override"
     context_source_detected: "detected"
 
   proxy:

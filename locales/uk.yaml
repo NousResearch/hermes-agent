@@ -858,7 +858,7 @@ gateway:
     info_acting_model: "◆ Робоча модель (оплачується за цей запуск): {provider}:{model}"
     info_endpoint: "◆ Кінцева точка: {url}"
     context_source_config: "з конфігурації"
-    context_source_default: "типово — задайте model.context_length у конфігурації, щоб перевизначити"
+    context_source_default: "резервне значення, не виявлений ліміт — задайте model.context_length у конфігурації для перевизначення"
     context_source_detected: "визначено автоматично"
   proxy:
     requires_aiohttp: "⚠️ Режим проксі потребує aiohttp. Виконайте: {hint}"

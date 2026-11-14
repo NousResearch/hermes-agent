@@ -870,7 +870,7 @@ gateway:
     info_acting_model: "◆ Végrehajtó modell (a futást ez alapján számlázzák): {provider}:{model}"
     info_endpoint: "◆ Végpont: {url}"
     context_source_config: "konfiguráció"
-    context_source_default: "alapértelmezett — felülíráshoz állítsd be a model.context_length értéket a konfigurációban"
+    context_source_default: "tartalékérték, nem észlelt korlát — felülíráshoz állítsd be a model.context_length értéket a konfigurációban"
     context_source_detected: "észlelt"
   proxy:
     requires_aiohttp: "⚠️ A proxy módhoz aiohttp szükséges. Futtasd: {hint}"

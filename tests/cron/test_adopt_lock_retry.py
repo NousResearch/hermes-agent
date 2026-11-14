@@ -12,12 +12,17 @@ These tests pin:
 2. ``rowcount == 0`` (another winner, or the claim is gone) returns ``None``
    without retrying.
 3. Non-contention errors (e.g. ``no such table``) surface immediately.
-4. The budget is the handoff grace still left when adoption starts, measured from
-   ``handoff_started_at`` — not a fixed attempt count (#145590 review finding).
+4. The budget is the handoff grace still left when the first contention is seen,
+   measured from ``handoff_started_at`` — not a fixed attempt count (#145590
+   review finding).
 5. A late attempt stamps its own ``started_at`` instead of reusing one taken
    before the backoff.
 6. Real SQLite writer contention (a second connection holding ``BEGIN IMMEDIATE``)
    is survived, not only the faked control flow.
+7. The deadline anchor is read lazily: an uncontended adoption never opens the
+   anchor connection, a contended one opens it exactly once (#145590 review).
+8. Each backoff step is drawn with equal jitter instead of one shared schedule,
+   so a batch-fire cohort cannot retire in lockstep (#145590 review).
 """
 
 import logging
@@ -67,6 +72,7 @@ class _CallLog(list):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.anchor_opens = []
 
 
 def _patch(monkeypatch, script, fetch_row=(("id", "x"),), anchor_age=0.0):
@@ -98,7 +104,12 @@ def _patch(monkeypatch, script, fetch_row=(("id", "x"),), anchor_age=0.0):
             pass
 
     monkeypatch.setattr(ex, "_transaction", fake_transaction)
-    monkeypatch.setattr(ex, "_connect", lambda: _Anchor())
+
+    def fake_connect():
+        conns.anchor_opens.append(1)
+        return _Anchor()
+
+    monkeypatch.setattr(ex, "_connect", fake_connect)
     monkeypatch.setattr(ex, "_emit_execution_state", lambda *a, **k: None)
     sleeps = []
     monkeypatch.setattr(ex.time, "sleep", lambda s: sleeps.append(s))
@@ -112,7 +123,10 @@ def test_adopt_retries_transient_lock_and_succeeds(monkeypatch):
     rec = ex.adopt_claimed_execution("deadbeef")
     assert rec is not None, "adopt must still succeed after transient lock contention"
     assert len(conns) == 3, "3 attempts (2x locked, 1x success)"
-    assert sleeps == [0.5, 1.0], "backoff 0.5 s then 1.0 s"
+    assert len(sleeps) == 2, "one sleep per failed attempt"
+    assert 0.25 <= sleeps[0] <= 0.5, "equal jitter around the 0.5 s first step"
+    assert 0.5 <= sleeps[1] <= 1.0, "equal jitter around the doubled second step"
+    assert conns.anchor_opens == [1], "the anchor is read once, on first contention"
 
 
 def test_adopt_lost_race_returns_none_without_retry(monkeypatch):
@@ -121,6 +135,7 @@ def test_adopt_lost_race_returns_none_without_retry(monkeypatch):
     assert ex.adopt_claimed_execution("deadbeef") is None
     assert len(conns) == 1, "rowcount 0 = another winner, no retry"
     assert sleeps == []
+    assert conns.anchor_opens == [], "no contention = no anchor read"
 
 
 def test_adopt_non_contention_error_raises_immediately(monkeypatch):
@@ -178,9 +193,49 @@ def test_adopt_overruns_a_spent_grace_loudly(monkeypatch, caplog):
         with pytest.raises(sqlite3.OperationalError, match="database is locked"):
             ex.adopt_claimed_execution("deadbeef")
     assert len(conns) == ex._ADOPT_RETRY_ATTEMPTS_MAX, "bounded by the attempt backstop"
-    assert sleeps[0] == 0.5 and max(sleeps) == 2.0, "backoff capped at 2.0 s"
+    assert len(sleeps) == ex._ADOPT_RETRY_ATTEMPTS_MAX - 1
+    assert 0.25 <= sleeps[0] <= 0.5, "the first step is jittered, not fixed"
+    assert max(sleeps) <= ex._ADOPT_LOCK_RETRY_SLEEP_MAX, "backoff capped at 2.0 s"
+    deterministic = [
+        min(0.5 * (2**i), ex._ADOPT_LOCK_RETRY_SLEEP_MAX) for i in range(len(sleeps))
+    ]
+    assert sleeps != deterministic, "no cohort can share one retirement schedule"
     warned = [r for r in caplog.records if "past the handoff grace" in r.getMessage()]
     assert len(warned) == 1, "the overrun is reported once, not per attempt"
+
+
+def test_uncontended_adoption_never_opens_the_anchor_connection(monkeypatch):
+    """#145590 review: the anchor read costs a connection plus the schema-init DDL
+    stack, and the uncontended path — never in trouble — must not pay for it."""
+    script = [_FakeCursor(1), _FakeCursor(0, {"id": "x"})]
+    conns, _sleeps = _patch(monkeypatch, script)
+    monkeypatch.setattr(
+        ex, "_connect", lambda: pytest.fail("the anchor was read without contention")
+    )
+    rec = ex.adopt_claimed_execution("deadbeef")
+    assert rec is not None
+    assert len(conns) == 1
+
+
+def test_backoff_is_drawn_per_attempt_not_a_shared_schedule(monkeypatch):
+    """#145590 review: equal jitter around each step (the shape
+    ``hermes_state._sleep_before_write_retry`` uses), and the drawn value — not the
+    schedule's cap — is what actually gets slept."""
+    draws = []
+
+    def fake_uniform(lo, hi):
+        draws.append((lo, hi))
+        return lo  # pinned: the earliest instant the jitter allows
+
+    monkeypatch.setattr(ex.random, "uniform", fake_uniform)
+    locked = sqlite3.OperationalError("database is locked")
+    script = [locked, locked, _FakeCursor(1), _FakeCursor(0, {"id": "x"})]
+    conns, sleeps = _patch(monkeypatch, script)
+    rec = ex.adopt_claimed_execution("deadbeef")
+    assert rec is not None
+    assert draws == [(0.25, 0.5), (0.5, 1.0)], "uniform(step / 2, step) per attempt"
+    assert sleeps == [0.25, 0.5], "the drawn value is what gets slept"
+    assert len(conns) == 3
 
 
 def test_started_at_is_stamped_per_attempt(monkeypatch):

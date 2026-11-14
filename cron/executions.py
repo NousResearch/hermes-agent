@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -268,6 +269,11 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
 # adoption UPDATE after transient writer contention cannot double-adopt: only the
 # row's current owner predicate matches, and a lost race returns rowcount 0.
 _ADOPT_LOCK_RETRY_SLEEP_MAX = 2.0
+# Each step is drawn as equal jitter — ``uniform(step / 2, step)`` — the same shape
+# ``hermes_state._sleep_before_write_retry`` uses for its write retries: a batch-fire
+# cohort that collided once must not retire on one shared schedule and collide again
+# (the 33 ms cluster in #135487). The drawn value is what the budget check below
+# spends, so jitter can never overspend the window either.
 # The retry lives INSIDE the handoff grace the dispatching gateway waits
 # (``deadline = monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS`` in
 # ``scheduler._run_external_cron_worker``), so its budget is the grace still left when
@@ -333,16 +339,20 @@ def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     a batch-fire tick, #135487) is retried with backoff instead of killing
     the dispatch: the fenced UPDATE is idempotent for the owner, and losing the
     race to another process still returns None.  The budget is the handoff grace
-    that is still left when adoption starts, plus a bounded overrun, so the
+    still left when the first contention is seen, plus a bounded overrun, so the
     backoff can neither starve the acknowledgement nor throw the tick away.
     """
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
-    grace_deadline, hard_deadline = _adopt_retry_deadlines(execution_id)
     record = None
     attempt = 0
     overran = False
     blocked = 0.0
+    # Spent lazily on the first ``database is locked``: the anchor needs its own
+    # connection (one open + PRAGMA stack + schema-init DDL), and the uncontended
+    # path — the one that was never in trouble — must not pay for a read whose
+    # result is only used by the retry.
+    deadlines: tuple[float, float] | None = None
     while True:
         # Per attempt, not once before the loop: a late attempt must not stamp a
         # started_at seconds older than the run it describes.
@@ -364,14 +374,18 @@ def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
             break
         except sqlite3.OperationalError as exc:
             blocked = time.monotonic() - started
-            sleep = min(0.5 * (2**attempt), _ADOPT_LOCK_RETRY_SLEEP_MAX)
+            if not _is_lock_contention(exc) or attempt + 1 >= _ADOPT_RETRY_ATTEMPTS_MAX:
+                raise
+            if deadlines is None:
+                deadlines = _adopt_retry_deadlines(execution_id)
+            grace_deadline, hard_deadline = deadlines
             # An attempt is only worth starting if it can still finish inside the
             # window: a busy timeout that would run past it cannot help the run.
-            if (
-                not _is_lock_contention(exc)
-                or attempt + 1 >= _ADOPT_RETRY_ATTEMPTS_MAX
-                or hard_deadline - time.monotonic() <= blocked + sleep
-            ):
+            # The drawn jitter is what that check spends, so a longer sleep simply
+            # retires an attempt the window could not have carried.
+            step = min(0.5 * (2**attempt), _ADOPT_LOCK_RETRY_SLEEP_MAX)
+            sleep = random.uniform(step / 2.0, step)
+            if hard_deadline - time.monotonic() <= blocked + sleep:
                 raise
             if not overran and time.monotonic() > grace_deadline:
                 overran = True

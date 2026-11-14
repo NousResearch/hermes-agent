@@ -682,6 +682,26 @@ once it is live again — when it is resumed, or when new activity compresses it
 into a fresh continuation. A chat you archived yourself (sidebar, API, or
 `hermes sessions archive`) stays archived until you unarchive it.
 
+### Cache Hit and Cost Report
+
+```bash
+hermes sessions cost                 # table of recent sessions
+hermes sessions cost --session 2026  # full breakdown for one session (id or prefix)
+```
+
+Each row shows the cache-hit rate (`cache_read / (input + cache_read + cache_write)`), the
+estimated cost, the estimated cost if the prompt cache had never hit, and the difference. Rows
+under 70% carry a `⚠`: something (a toolset change, compression, a prompt refresh) probably
+invalidated the cached prefix. The counterfactual is an estimate: Hermes stores the session's
+total cost, not a per-token price split, so it assumes cache reads bill at
+`cost.cache_hit_ratio` of the cold input rate (default `0.10`) and attributes cost to input
+tokens by token share. Sessions on a model with no known price show `n/a` instead of `$0`.
+
+```yaml
+cost:
+  cache_hit_ratio: 0.10   # cache-read price / cold input price, in (0, 1]
+```
+
 ### Session Statistics
 
 ```bash

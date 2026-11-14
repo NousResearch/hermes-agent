@@ -425,6 +425,8 @@ class McpServerRuntimeRow(Result):
     status: McpRuntimeStatus
     source: McpServerSource
     plugin: str | None = None
+    # Parked on a rejected OAuth credential (older backends omit it).
+    needs_auth: bool = False
 
 
 class McpServersStatusResult(Result):
@@ -624,6 +626,8 @@ class PluginsAction(WireEnum):
     settings = "settings"
     onboarding = "onboarding"
     presence = "presence"
+    update_all = "update_all"
+    auto_update = "auto_update"
 
 
 class PluginsManageParams(ProfileParams):
@@ -637,7 +641,8 @@ class PluginsManageParams(ProfileParams):
     that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose
     security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
-    ``presence``: ``names`` (catalog names, answered in that order)."""
+    ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;
+    ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -763,7 +768,9 @@ class PluginActivation(Result):
     note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
     apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a
     running process cannot import (installed after it booted, or never); ``missing_in`` names which
-    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them."""
+    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them.
+    ``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a
+    model-provider plugin's updated tree failed to import (the previous version keeps serving)."""
 
     name: str
     key: str
@@ -772,6 +779,7 @@ class PluginActivation(Result):
     deferred: dict[str, list[str]] = Field(default_factory=dict)
     missing_dependencies: list[str] = Field(default_factory=list)
     missing_in: list[PluginRestartTarget] = Field(default_factory=list)
+    load_error: str | None = None
 
 
 class OnboardingCatalogPlugin(Result):
@@ -809,6 +817,27 @@ class PluginScanFinding(Result):
     file: str
     line: int
     description: str
+
+
+class PluginUpdateAllStatus(WireEnum):
+    updated = "updated"
+    current = "current"
+    failed = "failed"
+    needs_review = "needs_review"
+
+
+class PluginUpdateAllRow(Result):
+    """One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the
+    plugin or its scan returned caution; the plugin's own ``update`` walks that review."""
+
+    name: str
+    status: PluginUpdateAllStatus
+    detail: str = ""
+
+
+class PluginUpdateAllSkip(Result):
+    name: str
+    reason: str
 
 
 class PluginsManageResult(Result):
@@ -874,6 +903,14 @@ class PluginsManageResult(Result):
     path: str | None = None
     paired_with_agent: bool | None = None
     unpaired_from: str | None = None
+    # ``update_all`` → one row per plugin it tried, the ones it could not move (with why) and how many
+    # were already current.
+    results: list[PluginUpdateAllRow] | None = None
+    skipped: list[PluginUpdateAllSkip] | None = None
+    current: int | None = None
+    # ``auto_update`` → the profile's ``plugins.auto_apply`` and ``plugins.auto_update_check_hours``.
+    auto_apply: bool | None = None
+    check_hours: float | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

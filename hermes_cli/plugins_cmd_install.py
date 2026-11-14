@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -435,7 +435,7 @@ def _install_plugin_core(
         if len(pins) == 1 and isinstance(pins[0].get("revision"), str):
             requested_revision = _pc()._normalize_exact_revision(pins[0]["revision"])
 
-    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
+    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp, ExitStack() as owner:
         tmp_clone = Path(tmp) / "plugin"
         installed_revision = _clone_at_reviewed_commit(tmp_clone, git_url, requested_revision, inspected_sha, subdir,
                                                        catalog_pin=bool(catalog))
@@ -447,6 +447,9 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        if not allow_removed:  # every install surface lands here, before any dependency is resolved
+            from hermes_cli.plugins_cmd_catalog import raise_if_removed
+            raise_if_removed(identifier, git_url, str(plugin_name), *((catalog["name"],) if catalog else ()))
         link = plugins_dir / str(plugin_name)
         from pm.filesystem import is_junction
         if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
@@ -461,6 +464,11 @@ def _install_plugin_core(
         except ValueError as e:
             raise _pc().PluginOperationError(str(e), failure_class="manifest_invalid") from e
         _check_manifest_version(manifest, plugin_name)
+        # One owner per plugin: an `install --ref` publishing between an unattended updater's hold
+        # check and its publication would be overwritten (the updater holds this lock across both).
+        from hermes_cli.plugins_auto_update import plugin_update_lock
+        owner.enter_context(plugin_update_lock(target))
+        old_metadata = _pc()._read_install_metadata()
         prior = old_metadata.get(plugin_name)
         # `install --force --ref` is the documented way to move a pin, so a reinstall of the same
         # source is an update: it replaces the plugin's code, never the user's state.
@@ -890,7 +898,7 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     try:
         # _set_plugin_enabled serializes per home itself (parallel install-card rows).
         _pc()._set_plugin_enabled(installed_name, enable=True)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, _pc().PluginOperationError) as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None
 

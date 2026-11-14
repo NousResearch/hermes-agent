@@ -34,7 +34,10 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 # Must precede repo-level imports: standalone invocations (e.g. module reload after
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_checkout_root = Path(__file__).resolve().parent.parent
+# Append, never prepend: the checkout must not shadow same-named installed packages.
+if str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
@@ -52,6 +55,7 @@ from agent.delegation_context import (
 from agent.memory_provider import ctx_bound
 from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -1782,15 +1786,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
+                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
 
-                fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
-                if entry.get("base_url"):
-                    fb_kwargs["explicit_base_url"] = entry["base_url"]
-                fb_api_key = resolve_entry_api_key(entry)
-                if fb_api_key:
-                    fb_kwargs["explicit_api_key"] = fb_api_key
-                runtime = resolve_runtime_provider(**fb_kwargs)
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so job sessions record the provider name (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -1814,9 +1812,9 @@ def _load_credential_pool(runtime: dict, job_id: str):
     if not runtime_provider:
         return None
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(runtime_provider)
-        if pool.has_credentials():
+        from agent.custom_entry_pool import load_route_pool
+        pool = load_route_pool(runtime_provider, runtime.get("base_url"), runtime.get("requested_provider"))
+        if pool is not None and pool.has_credentials():
             logger.info(
                 "Job '%s': loaded credential pool for provider %s with %d entries",
                 job_id, runtime_provider, len(pool.entries()))
@@ -3713,7 +3711,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # dependency generation (#122222), and mark it so its own entry runs the PM dependency
     # boot. See cron/scheduler_worker_env.py and cron/worker_bootstrap.py.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = Path(project_root_str())
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
     try:
@@ -4039,7 +4037,7 @@ def _worktree_maintenance_repos() -> list[str]:
 
     # Hermes source checkout (git installs only; wheel installs have no .git).
     with contextlib.suppress(Exception):
-        install_root = Path(__file__).resolve().parent.parent
+        install_root = Path(project_root_str())
         if (install_root / ".git").exists():
             repos.add(str(install_root))
 
@@ -4413,4 +4411,7 @@ if __name__ == "__main__":
         raise SystemExit(
             0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
         )
+    from hermes_agent.compat import install as _install_compat
+
+    _install_compat()
     tick(verbose=True, headless=True)

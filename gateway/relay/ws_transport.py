@@ -46,6 +46,20 @@ _TEARDOWN_AWAIT_TIMEOUT_S = 1.0
 # teardown stay inside the runner's adapter-disconnect budget: blowing it cancels
 # teardown mid-drain and leaves callers blocked on _OUTBOUND_TIMEOUT_S.
 _DISCONNECT_DRAIN_GRACE_S = 5.0
+# Ops whose reader-exit settlement is "possibly delivered" rather than failed:
+# the connector may have posted the attachment before the socket died, and its
+# consumers (send_message, cron) re-send or notify on a definite failure, which
+# would post it twice. Every other op keeps the definite connection-lost result.
+_AMBIGUOUS_ON_READER_EXIT_OPS = frozenset({"send_media"})
+
+
+class _PendingRequest(asyncio.Future):
+    """An outbound request's ack future that remembers the action op it carries,
+    so a reader exit can settle it by kind without a parallel map."""
+
+    def __init__(self, op: str, *, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(loop=loop)
+        self.op = op
 # Private-use close code the connector sends when it rejects/revokes a gateway's
 # WS upgrade auth. Received AFTER a successful handshake it means the per-gateway
 # secret was revoked (opt-out / deprovision) — terminal, no reconnect.
@@ -534,6 +548,13 @@ class WebSocketRelayTransport:
                 settle(fut)
         self._pending.clear()
 
+    @staticmethod
+    def _settle_connection_lost(fut: asyncio.Future[dict[str, Any]]) -> None:
+        result: dict[str, Any] = {"success": False, "error": "relay transport connection lost"}
+        if getattr(fut, "op", None) in _AMBIGUOUS_ON_READER_EXIT_OPS:
+            result["ambiguous"] = True
+        fut.set_result(result)
+
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:
             return self._descriptor
@@ -662,7 +683,9 @@ class WebSocketRelayTransport:
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
         request_id = uuid.uuid4().hex
-        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[dict[str, Any]] = _PendingRequest(
+            str(action.get("op") or ""), loop=asyncio.get_running_loop()
+        )
         self._pending[request_id] = fut
         frame: dict[str, Any] = {"type": "outbound", "requestId": request_id, "action": action}
         # Tag the egress platform with its MATCHING advertised botId only when a
@@ -784,10 +807,9 @@ class WebSocketRelayTransport:
                 self._ws = None
             # The reader is the ONLY thing that resolves pending futures; once it
             # exits every waiter would block the full outbound timeout. Fail them
-            # NOW with the dict shape callers expect (never an exception).
-            self._fail_pending(
-                lambda fut: fut.set_result({"success": False, "error": "relay transport connection lost"})
-            )
+            # NOW with the dict shape callers expect (never an exception); a
+            # send_media one is marked ambiguous (_AMBIGUOUS_ON_READER_EXIT_OPS).
+            self._fail_pending(self._settle_connection_lost)
 
     def _dialer_running(self) -> bool:
         """True while the backoff supervisor or the fresh-token retry is live."""

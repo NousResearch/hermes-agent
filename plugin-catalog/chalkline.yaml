@@ -1,0 +1,45 @@
+name: chalkline
+title: Chalkline — Voice note in. Paperwork out.
+repo: https://github.com/levi-lvjp/chalkline
+sha: "211a2609d784b7898286216ef9521c30483e34c5"
+maintainer: levi-lvjp
+tier: community
+category: automation
+version: "0.1.0"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/levi-lvjp/chalkline/blob/211a2609d784b7898286216ef9521c30483e34c5/README.md
+image: https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/approval.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/pipeline.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/job.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/quote.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/export.png
+readme: true
+description: "A Hermes back office for solo tradespeople: capture enquiries, prepare quote and invoice PDFs, retain receipts and agreed extras, review follow-ups and export an accountant ZIP. Customer sends require payload-bound owner approval, except three template kinds approved once by hash. Disclosure — Takes over WhatsApp on its dedicated profile: every non-owner WhatsApp message skips the agent and is stored (text, plus up to 30 attachments per sender per day at up to 32 MiB each) in the profile's plugin data folder, and Hermes's unofficial Baileys bridge can get the number restricted or banned, so use a dedicated business number. Customer messages go out by running `hermes send` only after the owner approves each payload, except three standing templates (enquiry acknowledgement, appointment reminder, review request) that are approved once by hash and then sent automatically. `/office setup` changes the profile's config.yaml to restrict WhatsApp, Telegram, CLI and cron to Chalkline tools (backup kept as config.yaml.bak) and creates a 15-minute no-agent cron script that sends approved and scheduled messages. Receipt photos are sent to the configured vision model."
+known_issues:
+  - "Cloud deployment and native Desktop activation remain unverified."
+  - "Customer voice notes are stored without automatic transcription."
+capabilities:
+  provides_tools:
+    - office_capture
+    - office_customer
+    - office_quote_draft
+    - office_extra_propose
+    - office_extra_record_agreement
+    - office_schedule
+    - office_complete
+    - office_invoice_draft
+    - office_receipt
+    - office_payment_record
+    - office_query
+    - office_export
+    - office_tick
+  provides_hooks:
+    - pre_gateway_dispatch
+    - post_gateway_admission
+    - pre_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []
+

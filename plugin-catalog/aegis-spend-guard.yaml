@@ -1,0 +1,42 @@
+name: aegis-spend-guard
+repo: https://github.com/georgeonweb3/hermes-aegis-spend-guard
+sha: e4465cb94275f5b2396ef1e20c36bf2f39aafb2e
+title: Aegis Spend Guard
+description: >-
+  Owner-set spend policy for Hermes Agent, enforced in a pre_tool_call hook before any
+  spend executes. The owner configures a per-transaction cap, a daily limit, recipient
+  allow/blocklists, a spend-tool scope and a warn zone (default 80% of a limit). Every
+  tool call that spends money — an explicit amount in its arguments, a fixed per-call
+  price from the owner's paid_tools map, a spend-shaped tool with no readable price, or
+  a spend written into command/script text the agent is about to run (a money literal
+  alongside a payment verb; on by default, the owner can turn the script gate off) —
+  is evaluated by a worst-wins policy engine (BLOCK > WARN > ALLOW across frozen, amount,
+  blocklist, per-transaction cap, daily limit, allowlist and tool-scope checks, the same
+  semantics as the author's Aegis spend-control contract on Base and the tgp-guard
+  pre-flight guard). Over-policy spends are vetoed with the reason; borderline spends
+  return the approve directive and are routed to the owner through Hermes's own
+  human-approval gate — the plugin never approves anything itself. Executed spends are
+  recorded in a per-profile daily ledger held in ctx.state, and a /spendguard slash
+  command gives the owner status plus a persistent freeze/unfreeze kill switch. Two
+  tools (spend_guard_check, spend_guard_status) let the agent dry-run a planned spend
+  and report guard state. Disclosure — no Python dependencies, no network calls, no
+  shell commands, no credentials read or stored, no telemetry; the only writes are the
+  plugin's own ctx.state keys (freeze flag, daily total). Known limit, disclosed in the
+  README: parallel spend calls are each checked against the ledger as it stands before
+  either executes, so a simultaneous burst can overshoot the daily limit by one call.
+maintainer: georgeonweb3
+tier: community
+category: tools
+docs_url: https://github.com/georgeonweb3/hermes-aegis-spend-guard#readme
+requires_hermes: ">=0.23.0"
+version: "1.1.2"
+platforms: []
+capabilities:
+  provides_tools:
+    - spend_guard_check
+    - spend_guard_status
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

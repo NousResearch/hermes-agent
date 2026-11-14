@@ -26,11 +26,14 @@ import tempfile
 import threading
 from pathlib import Path
 
+from pm.filesystem import is_junction
 from utils import rmtree_readonly
 
 logger = logging.getLogger(__name__)
 
 PACKAGE_MARKER = ".hermes-package.json"
+#: A standalone plugin's catalog entry, written by the installer (Electron's ``INSTALL_ORIGIN``).
+INSTALL_ORIGIN = ".hermes-origin.json"
 #: The whole published folder; the loader reads at most a 16 MB ``plugin.js`` from it.
 TREE_MAX_BYTES = 64 * 1024 * 1024
 #: Folders a root-layout half never publishes (Electron's ``ROOT_LAYOUT_SKIP`` matches).
@@ -40,6 +43,12 @@ _GIT_ORIGIN = re.compile(r'\[remote "origin"\][^[]*?url\s*=\s*(\S+)')
 #: Public: ``desktop_plugin_install`` takes it too, so a clone-publish never interleaves with a
 #: reconcile pass copying the same package's folder.
 ROOT_WRITER = threading.Lock()
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink or a Windows junction: Node's ``lstat`` reports both as a link, and Electron's
+    checks of the same folder go by that. ``Path.is_symlink()`` alone misses a junction."""
+    return path.is_symlink() or is_junction(path)
 
 
 def _list_dirs(folder: Path, *, follow_links: bool = False) -> list[str]:
@@ -102,6 +111,16 @@ def _write_marker(folder: Path, marker: dict) -> None:
     (folder / PACKAGE_MARKER).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 
 
+def write_install_origin(folder: Path, origin: dict | None) -> None:
+    """Write a standalone plugin's catalog entry (``catalogName``/``repo``/``sha``), or drop the file
+    when there is none: a repository may ship one to pose as a catalog entry."""
+    # A file already there goes first, so a link of that name is never written through.
+    (folder / INSTALL_ORIGIN).unlink(missing_ok=True)
+    if origin is not None:
+        with (folder / INSTALL_ORIGIN).open("x", encoding="utf-8") as out:
+            out.write(json.dumps(origin, indent=2) + "\n")
+
+
 def _same_file(a: Path, b: Path) -> bool:
     """Same bytes on both paths. A comparison that cannot be made is never a match."""
     try:
@@ -135,13 +154,13 @@ def check_desktop_tree(source: Path, base: Path, *, linked_root: bool = False,
     *linked_root* accepts *source* itself being a link (a dev checkout linked into ``plugins/``);
     every entry inside it is still held to the rule. Folders named in *skip* are left out of the
     copy (:func:`root_layout_ignore`), so they are not walked."""
-    if source.is_symlink() and not linked_root:
+    if _is_link(source) and not linked_root:
         return f"The desktop plugin contains a link ({source.relative_to(base)}); links are not installed."
     total = 0
     for folder, dirs, files in os.walk(source):
         dirs[:] = [n for n in dirs if n not in skip]
         for entry in (Path(folder) / n for n in dirs + files):
-            if entry.is_symlink():
+            if _is_link(entry):
                 return f"The desktop plugin contains a link ({entry.relative_to(base)}); links are not installed."
         total += sum((Path(folder) / n).stat().st_size for n in files)
         if total > TREE_MAX_BYTES:
@@ -149,23 +168,25 @@ def check_desktop_tree(source: Path, base: Path, *, linked_root: bool = False,
     return None
 
 
-def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ignore=None) -> None:
+def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ignore=None,
+                         origin: dict | None = None) -> None:
     """Copy through a staging sibling and rename the finished tree into place, marker included, so a
     failure leaves the old folder or none: never a partial, marker-less one that a later pass would
     take for a hand install. A standalone plugin is published with no marker (``None``): one would
-    claim another package's agent half."""
+    claim another package's agent half. It carries *origin* (its catalog entry) instead, or none."""
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=target.parent))
     staged = staging / target.name
     try:
         shutil.copytree(source_dir, staged, symlinks=True, ignore=ignore)
         if marker is None:
-            # Only an installer writes the marker: one shipped in the repository would claim
-            # another package's agent half (Electron's ``installDesktopPluginFromGit`` drops it too).
+            # Only an installer writes the marker or the origin: one shipped in the repository would
+            # claim another package's agent half, or a catalog entry (Electron drops both too).
             (staged / PACKAGE_MARKER).unlink(missing_ok=True)
+            write_install_origin(staged, origin)
         else:
             _write_marker(staged, marker)
-        if target.is_symlink():
+        if _is_link(target):
             target.unlink()
         elif target.exists():
             rmtree_readonly(target)
@@ -206,11 +227,11 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
 
     target = app_root / name
     existing = read_package_marker(target)
-    linked = package_dir.is_symlink()
+    linked = _is_link(package_dir)
     # A link at ``<app_root>/<name>`` is never a copy this pass may keep or stamp: a marker-less one is
     # the user's own linked plugin, and one carrying a marker is an earlier copy of a linked checkout
     # that kept the link instead of the files (Electron's ``cp`` did), its marker inside the checkout.
-    target_is_link = target.is_symlink()
+    target_is_link = _is_link(target)
     if target_is_link and existing is None:
         return None
     marker = {
@@ -307,7 +328,7 @@ def reconcile_desktop_halves_report(hermes_root: Path, app_root: Path) -> dict:
             folder = app_root / name
             marker = read_package_marker(folder)
             if marker and _source_gone(name, Path(marker["source"]) / "plugin.js"):
-                if folder.is_symlink():
+                if _is_link(folder):
                     folder.unlink(missing_ok=True)
                 else:
                     shutil.rmtree(folder, ignore_errors=True)

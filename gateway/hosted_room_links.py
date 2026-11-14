@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, validate_room_link_url)
+    GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, room_grant_hard_expiry, validate_room_link_url)
 from gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
 
 
@@ -127,7 +127,8 @@ def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...
 
 
 def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
-    hosted_rooms.upsert_room_link_record(db_path, record=link.as_record(), max_links=MAX_LINKS)
+    hosted_rooms.upsert_room_link_record(
+        db_path, record=link.as_record(), max_links=MAX_LINKS, expiry=room_grant_hard_expiry)
     if os.name == "posix":
         with contextlib.suppress(OSError):
             Path(db_path).chmod(0o600)

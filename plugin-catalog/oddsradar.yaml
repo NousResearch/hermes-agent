@@ -1,0 +1,28 @@
+name: oddsradar
+repo: https://github.com/WV629/hermes-oddsradar
+sha: dfafcd59e6d2efeb4fd9cffa832836b1637c07c7
+description: "Polymarket odds in Hermes: search active markets, live odds (CLOB midpoint) with 24h/7d moves, volume and a 7-day sparkline, a persistent per-profile watchlist with move, above and below rules (edge-triggered, 1-pt re-arm, one alert on resolution), and alerts that run as a no-agent cron job, so every check costs zero tokens. Agent tools, an /odds slash command and a hermes oddsradar CLI share one engine. Read-only: no keys, no wallet, no trading. Disclosure — read-only HTTPS GETs to gamma-api.polymarket.com and clob.polymarket.com, only when a tool, /odds, the CLI or the user's cron job runs (10 s timeout, at most 2 retries on 429/5xx; the client refuses any other host). No credentials. Stores the watchlist at <HERMES_HOME>/plugin-data/oddsradar/watchlist.json. Only when the user runs hermes oddsradar cron-script does it write <HERMES_HOME>/scripts/oddsradar-check.py, which runs hermes oddsradar check --quiet as an argv subprocess (no shell, stdin closed, 120 s timeout); the user schedules it with hermes cron create. No hooks, middleware, background threads, telemetry or self-updates."
+maintainer: WV629
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/WV629/hermes-oddsradar/blob/dfafcd59e6d2efeb4fd9cffa832836b1637c07c7/README.md
+version: "0.1.0"
+title: Odds Radar
+image: https://raw.githubusercontent.com/WV629/hermes-oddsradar/dfafcd59e6d2efeb4fd9cffa832836b1637c07c7/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/WV629/hermes-oddsradar/dfafcd59e6d2efeb4fd9cffa832836b1637c07c7/docs/show.png
+  - https://raw.githubusercontent.com/WV629/hermes-oddsradar/dfafcd59e6d2efeb4fd9cffa832836b1637c07c7/docs/watch.png
+  - https://raw.githubusercontent.com/WV629/hermes-oddsradar/dfafcd59e6d2efeb4fd9cffa832836b1637c07c7/docs/alert.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - odds_search
+    - odds_market
+    - odds_watch
+    - odds_check
+    - odds_movers
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -836,7 +836,7 @@ def _verify_structure(conn: sqlite3.Connection, verification: dict[str, Any]) ->
 
 def _verify_fts_indexes(conn: sqlite3.Connection, verification: dict[str, Any]) -> None:
     fts_checks: dict[str, str] = {}
-    for table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
+    for table in ("messages_fts", "messages_fts_trigram"):
         if not _table_columns(conn, table):
             continue
         try:

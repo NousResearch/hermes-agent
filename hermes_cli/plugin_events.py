@@ -29,9 +29,10 @@ has nobody to deliver to: the call is a logged no-op.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,13 @@ _PLUGIN_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 # [A-Za-z0-9_-], so ``../x``, ``a..b``, a leading/trailing dot, slashes and whitespace are refused.
 _EVENT_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
 
+# Set only inside a ``plugins.isolation: host`` process (``hermes_cli/plugin_host_child.py``): sessions
+# live in the gateway process, so a session event crosses the host channel to it.
+_session_event_forwarder: Optional[Callable[[str, str, str, dict], bool]] = None
 
-def plugin_event_name(plugin_id: str, event: str) -> str:
-    """The wire name for one plugin event: ``plugin.<plugin_id>.<event>``.
+
+def plugin_event_name(plugin_id: str, event: str, *, kind: str = "event") -> str:
+    """The wire name for one plugin event (or RPC method, ``kind``): ``plugin.<plugin_id>.<event>``.
 
     Raises ``ValueError`` for an id or event that cannot form one — a silently
     mangled name would strand the desktop half waiting on a name nobody emits.
@@ -57,7 +62,7 @@ def plugin_event_name(plugin_id: str, event: str) -> str:
         raise ValueError(f"invalid plugin id {plugin_id!r}: expected [a-z0-9_-]{{1,64}}")
     if not isinstance(event, str) or len(event) > 128 or not _EVENT_RE.match(event):
         raise ValueError(
-            f"invalid plugin event {event!r}: expected dot-separated segments of [A-Za-z0-9_-] "
+            f"invalid plugin {kind} {event!r}: expected dot-separated segments of [A-Za-z0-9_-] "
             "(the plugin id already namespaces the name)"
         )
     return f"{PLUGIN_EVENT_PREFIX}{plugin_id}.{event}"
@@ -86,3 +91,31 @@ def broadcast_plugin_event(plugin_id: str, event: str, payload: Optional[dict[st
         return
 
     _broadcast_global_event(name, dict(payload or {}))
+
+
+def emit_plugin_session_event(plugin_id: str, session_id: str, event: str,
+                              payload: Optional[dict[str, Any]] = None) -> bool:
+    """Emit ``plugin.<plugin_id>.<event>`` to the viewers of ``session_id`` only, on that session's
+    event stream (so a viewer that reconnects replays it). True when a live viewer took it; False when
+    none did, or when this process holds no session authority with that session.
+
+    Under ``plugins.isolation: host`` the call is forwarded to the gateway process and looked up in the
+    host's profile, sent as the plugin whose code is running in that host request: False, and nothing
+    sent, when ``plugin_id`` is not that loaded plugin's own, when that code is from a load since
+    unloaded (a task left running across a reload), and, usually, from a thread the plugin started (it
+    carries no request the host can attribute). In-process ``plugin_id`` is taken as given, and the session is looked
+    up in the caller's profile scope: from a thread the plugin started (no scope), use
+    ``ctx.emit_to_session``, which knows the plugin's profile.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("plugin session event needs a session_id")
+    if payload is not None and not isinstance(payload, dict):
+        raise TypeError(f"plugin event payload must be a dict or None, got {type(payload).__name__}")
+    name = plugin_event_name(plugin_id, event)
+    # Encoded here, at the caller: a frame the viewer's socket cannot encode would end that connection,
+    # and NaN/Infinity are not JSON (a client's JSON.parse would drop the frame and its replay).
+    body = json.loads(json.dumps(payload or {}, allow_nan=False))
+    if _session_event_forwarder is not None:
+        return bool(_session_event_forwarder(plugin_id, session_id, event, body))
+    from gateway.session_plugin_rpc import publish_session_event
+    return publish_session_event(session_id, name, body)

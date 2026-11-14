@@ -63,13 +63,29 @@ _REMOTE_EXCEPTIONS = {
 _REMOTE_EXCEPTIONS["PluginHostUnsupported"] = PluginHostUnsupported
 
 
+def error_payload(exc: BaseException) -> dict[str, Any]:
+    """The wire form of ``exc``: its class name, plus the nearest class in ``_REMOTE_EXCEPTIONS``
+    (so a ``json.JSONDecodeError`` is still caught by ``except ValueError`` on the other side).
+    ``RuntimeError`` is never a base: ``PluginHostError`` already is one and keeps the class name."""
+    payload: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
+    base = next((c.__name__ for c in type(exc).__mro__
+                 if c.__name__ in _REMOTE_EXCEPTIONS and c is not RuntimeError), None)
+    if base and base != payload["type"]:
+        payload["base"] = base
+    return payload
+
+
 def raise_remote(error: dict[str, Any]) -> None:
-    """Re-raise a remote error, as the builtin type when it is one plugins commonly catch."""
+    """Re-raise a remote error as the builtin type plugins commonly catch; a subclass of one comes
+    back as that base, its own class name kept in the message."""
     type_name = str(error.get("type") or "")
     message = str(error.get("message") or "")
     cls = _REMOTE_EXCEPTIONS.get(type_name)
     if cls is not None:
         raise cls(message)
+    base = _REMOTE_EXCEPTIONS.get(str(error.get("base") or ""))
+    if base is not None:
+        raise base(f"{type_name}: {message}" if type_name else message)
     raise PluginHostError(type_name, message)
 
 
@@ -112,7 +128,7 @@ def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _
         return str(value)
     if isinstance(value, (bytes, bytearray)):
         return {"__bytes__": base64.b64encode(bytes(value)).decode("ascii")}
-    if isinstance(value, dict):
+    if isinstance(value, (dict, types.MappingProxyType)):  # a read-only mapping is plain data too
         return {str(k): encode(v, refs, _depth + 1) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [encode(v, refs, _depth + 1) for v in value]
@@ -374,7 +390,7 @@ class Channel:
                 if not isinstance(exc, Exception):
                     logger.warning("%s: request %s raised %s", self._name, message.get("method"),
                                    type(exc).__name__)
-                return {"id": request_id, "error": {"type": type(exc).__name__, "message": str(exc)}}
+                return {"id": request_id, "error": error_payload(exc)}
             finally:
                 _SERVING.reset(token)
 

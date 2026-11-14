@@ -2,8 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "reac
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
+import { externalUrlTarget } from "@hermes/shared";
 import { api } from "@/lib/api";
 import { runDashboardPluginUpdate } from "@/lib/plugin-update";
+import { InstalledPluginsHeader } from "@/pages/PluginsPage_updateAll";
 import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 import type {
   CatalogEntry,
@@ -931,9 +933,7 @@ export default function PluginsPage() {
 
         <div className="flex flex-col gap-3">
 
-          <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
-            {t.pluginsPage.pluginListHeading}
-          </h3>
+          <InstalledPluginsHeader pluginCount={rows.length} {...{ loading, loadHub, showToast, t }} />
 
           {loading ? (
 
@@ -1278,6 +1278,12 @@ interface CatalogEntryCardProps {
   t: Translations;
 }
 
+// The backend drops non-https docs_url; gate the href too so no catalog value becomes javascript:.
+function catalogDocsHref(url: string): string | null {
+  const target = externalUrlTarget(url);
+  return target?.kind === "web" ? target.url : null;
+}
+
 function CatalogEntryCard(props: CatalogEntryCardProps) {
   const { busy, entry, onInstall, removed, t } = props;
 
@@ -1290,6 +1296,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
   if (caps.requires_env.length) chips.push(`env: ${caps.requires_env.join(", ")}`);
 
   const isRemoved = removed !== null;
+  const docsHref = catalogDocsHref(entry.docs_url);
 
   return (
     <Card className={cn(busy ? "opacity-70" : undefined)}>
@@ -1369,10 +1376,10 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
             <ExternalLink className="h-3 w-3 opacity-65" />
           </a>
 
-          {entry.docs_url ? (
+          {docsHref ? (
             <a
               className="inline-flex items-center gap-1 underline"
-              href={entry.docs_url}
+              href={docsHref}
               target="_blank"
               rel="noreferrer"
             >

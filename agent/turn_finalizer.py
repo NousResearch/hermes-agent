@@ -20,6 +20,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.review_signals import build_review_signals, skill_review_due
 from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
@@ -469,10 +470,12 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
-    messages,
+    messages, memory_review_due=False, skill_review_due=False,
 ) -> tuple[Any, bool, Optional[Any]]:
     """Resolve the turn's ``transform_llm_output`` outcome, then fire ``post_llm_call`` once per
     turn after the tool loop. Returns ``(final_response, transformed, pre_transform_response)``.
+    ``review_signals`` carries the review decision the caller makes after the hook
+    (``agent/review_signals.py``).
 
     The transform itself normally already ran before the assistant row was first persisted
     (``apply_llm_output_transform`` from ``finish_text_response`` / ``_persist_step``); this
@@ -491,6 +494,10 @@ def _apply_output_hooks(
         except Exception:
             side_question_token = None
             logger.warning("side question lease failed", exc_info=True)
+        from hermes_cli.lifecycle import has_hook
+        review_signals = build_review_signals(
+            agent, memory_review_due=memory_review_due, skill_review_due=skill_review_due,
+        ) if has_hook("post_llm_call") else None
         _invoke_hook_safely(
             "post_llm_call", logger,
             session_id=agent.session_id,
@@ -502,6 +509,7 @@ def _apply_output_hooks(
             model=agent.model,
             platform=platform,
             side_question_token=side_question_token,
+            review_signals=review_signals,
         )
     return final_response, transformed, pre_transform
 
@@ -582,10 +590,56 @@ def settle_held_final(agent, result: Any) -> None:
     result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
 
 
+def fence_result_reply(result: Any) -> None:
+    """Strip echoed ``<memory-context>`` spans from ``final_response``/``pre_transform_response`` (#81312).
+    A non-streamed reply reaches adapters (email bodies included) only through ``final_response``;
+    ``result["messages"]`` and the stored row keep the raw text (API Runs transcripts, ``get_messages``)."""
+    if not isinstance(result, dict):
+        return
+    from agent.memory_context import fence_recalled_context
+    # ``pre_transform_response`` is display text too: replay-gap recovery and post-stream suffix
+    # painting deliver it.
+    for key in ("final_response", "pre_transform_response"):
+        raw = result.get(key)
+        fenced = fence_recalled_context(raw) if isinstance(raw, str) else raw
+        if fenced != raw:
+            result[key] = fenced
+            if key == "final_response" and result.get("error") == raw:
+                result["error"] = fenced
+
+
 def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
     (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""
     return None if getattr(agent, "_hold_stream", False) else pre_transform
+
+
+def _mirror_turn_to_memory(
+    agent, *, original_user_message, final_response, interrupted, messages, review_memory, review_skills, vetoed,
+) -> None:
+    """External-memory sync (+ next prefetch), then the background memory/skill review. A prompt a
+    ``pre_llm_call`` hook vetoed never leaves the host, so neither runs for that turn."""
+    if vetoed:
+        return
+    agent._sync_external_memory_for_turn(
+        original_user_message=original_user_message, final_response=final_response,
+        interrupted=interrupted, messages=messages,
+    )
+    # Background memory/skill review runs AFTER delivery so it never competes with the
+    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
+    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
+    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
+    if (
+        final_response
+        and not interrupted
+        and not getattr(agent, "skip_background_review", False)
+        and (review_memory or review_skills)
+    ):
+        with suppress(Exception):
+            agent._spawn_background_review(
+                messages_snapshot=list(messages), review_memory=review_memory,
+                review_skills=review_skills,
+            )
 
 
 def finalize_turn(
@@ -596,7 +650,11 @@ def finalize_turn(
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
+    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
 
+    vetoed = _turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON  # a pre_llm_call block: no model call at all
+
+    agent._empty_response_retry_hint = None
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
@@ -698,7 +756,7 @@ def finalize_turn(
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
             _store_rewrite_on_tail(agent, messages, _raw, final_response)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
-        if not interrupted and not failed:
+        if not interrupted and not failed and not vetoed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
@@ -719,6 +777,9 @@ def finalize_turn(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
 
+    # Skill trigger: decided ONCE, from the tool iterations THIS turn used, before post_llm_call so
+    # the hook's review_signals and the review spawn below agree.
+    _should_review_skills = skill_review_due(agent)
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
@@ -726,6 +787,7 @@ def finalize_turn(
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+            memory_review_due=_should_review_memory, skill_review_due=_should_review_skills,
         )
 
     # Context engine observation hook: the turn finished with the finalized transcript.
@@ -828,41 +890,20 @@ def finalize_turn(
     from agent.voice_turn_route import end_voice_turn_route
     end_voice_turn_route(agent)
 
-    # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
-    _should_review_skills = (
-        agent._skill_nudge_interval > 0
-        and agent._iters_since_skill >= agent._skill_nudge_interval
-        and "skill_manage" in agent.valid_tool_names
-    )
     if _should_review_skills:
         agent._iters_since_skill = 0
 
-    # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message, final_response=final_response,
-        interrupted=interrupted, messages=messages,
+    _mirror_turn_to_memory(
+        agent, original_user_message=original_user_message, final_response=final_response,
+        interrupted=interrupted, messages=messages, review_memory=_should_review_memory,
+        review_skills=_should_review_skills, vetoed=vetoed,
     )
 
-    # Background memory/skill review runs AFTER delivery so it never competes with the
-    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
-    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
-    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
-    if (
-        final_response
-        and not interrupted
-        and not getattr(agent, "skip_background_review", False)
-        and (_should_review_memory or _should_review_skills)
-    ):
-        with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
-
     # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
-    # between turns. No-op otherwise; never raises.
+    # between turns. No-op otherwise; never raises. Not after a vetoed turn (no model calls).
     from agent.prepared_compaction import maybe_prepare
-    maybe_prepare(agent, messages, origin="turn-end")
+    if not vetoed:
+        maybe_prepare(agent, messages, origin="turn-end")
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.

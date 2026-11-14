@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import copy
@@ -28,8 +27,6 @@ _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 # wedged job, but with HERMES_CRON_TIMEOUT=0 (explicit "unlimited") a truly hung run_one_job would otherwise
 # mask the gateway watchdog forever — pre-#76502 the parent was at least reaped at ~1800s.
 _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
@@ -370,10 +367,9 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
             # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
             # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
             if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
-                from cron.scheduler_preflight import (
-                    SharedRouteAdapters, _primary_profile_routes_for_current_home)
+                from cron.scheduler_preflight import shared_route_adapters_for_current_home
 
-                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                adapters = shared_route_adapters_for_current_home(adapters)
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
@@ -547,7 +543,12 @@ def _manual_run_completion(
     ]
     if refreshed.get("next_run_at"):
         lines.append(f"Next scheduled run: {refreshed['next_run_at']}")
-    excerpt = _latest_job_output_excerpt(job_id)
+    # This completion re-enters the session that invoked action='run', not the job's delivery
+    # target. Repeating an externally delivered payload here leaks it into a second, possibly
+    # unrelated chat/thread. Keep it only when nobody else got it: a local job, or a delivery that
+    # failed on EVERY target (a partial failure already posted the output somewhere).
+    reached_nobody = not deliver or deliver == "local" or refreshed.get("last_delivery_reached_none")
+    excerpt = _latest_job_output_excerpt(job_id) if reached_nobody else None
     if excerpt:
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {
@@ -1142,7 +1143,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
+                "description": "For create/update: the full self-contained prompt (when it runs goes in 'schedule'; data windows like 'since yesterday' stay here; paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
             },
             "schedule": {
                 "type": "string",
@@ -1159,7 +1160,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'room:<room_id>' (post into a Bot Mode Group Chat; it starts a round only for members the output @mentions), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
             },
             "failure_deliver": {
                 "type": "string",
@@ -1268,4 +1269,5 @@ registry.register(
     check_fn=check_cronjob_requirements,
     emoji="⏰",
     dynamic_schema_overrides=_cronjob_schema_overrides,
+    compat_args=(*_HANDLER_FORWARDED_ARGS, "include_disabled", "monitor_script", "monitor_url"),
 )

@@ -61,7 +61,7 @@ jobs:
           cache-python: false
       - name: Run the native linker and wheel contracts
         run: |
-          bash scripts/run_tests.sh -j 2 \
+          just test -j 2 \
             tests/scripts/test_termux_python_linkage.py tests/scripts/test_termux_retag_wheel.py \
             tests/scripts/test_termux_build_wheels.py \
             tests/scripts/test_termux_wheelhouse_cache.py tests/scripts/test_termux_runtime_libs.py \
@@ -86,13 +86,15 @@ jobs:
           # tests-js generates real icons; the wrapper needs core Pillow/resvg.
           extras: '[]'
           cache-node: false
+      # tests-js builds desktop fixtures with apps/desktop's own toolchain (vite,
+      # node-pty): pnpm installs only the selected workspaces, so select it too.
       - name: Install the locked JS workspace
-        run: npm ci --workspace ui-tui --workspace tests-js --include-workspace-root --include=dev --no-fund --no-audit
+        run: pnpm install --frozen-lockfile --filter "{./ui-tui}..." --filter "{./tests-js}..." --filter "{./apps/desktop}..."
       - name: Check and bundle the TUI
         run: |
-          npm run check --workspace tests-js
-          npm run check --workspace ui-tui
-          npm run build --workspace ui-tui
+          pnpm --dir tests-js run check
+          pnpm --dir ui-tui run check
+          pnpm --dir ui-tui run build
 
   # A job-level `if` cannot read `secrets`, so the gate is a job that exports
   # whether the release-signing environment is provisioned. Without R2 the
@@ -141,11 +143,7 @@ jobs:
       - name: Preserve and retrieve pinned inputs
         run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
       - name: Stage the pinned bionic runtimes
-        run: |
-          bash scripts/termux/build_cpython.sh termux-build/payload
-          bash scripts/termux/build_uv.sh termux-build/payload
-          bash scripts/termux/termux_pkg_build.sh ffmpeg ffmpeg termux-build/payload
-          python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+        run: just termux-payload termux-build/payload python uv ffmpeg
       - name: Verify ffmpeg on the bare bionic runtime
         run: |
           digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')

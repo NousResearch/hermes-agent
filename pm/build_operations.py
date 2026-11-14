@@ -25,7 +25,7 @@ def check_project_lock(
     expects a stale lock and says so itself, the red failure tail is noise.
     The error still carries uv's message.
     """
-    from pm.environment import managed_environment
+    from pm.environment import managed_environment  # noqa: TID251
     from pm.operations import _require_install_allowed
 
     if not offline:
@@ -46,7 +46,7 @@ def export_requirements(
     cache: Path | None = None, env: Mapping[str, str] | None = None, explicit: bool = False,
 ) -> None:
     """Export locked runtime requirements, preserving markers and direct URL pins."""
-    from pm.environment import managed_environment
+    from pm.environment import managed_environment  # noqa: TID251
     from pm.operations import _require_install_allowed
 
     _require_install_allowed(explicit)
@@ -77,7 +77,7 @@ def build_requirements_environment(
     uv.lock the requirements were exported from: its overrides apply to the
     install and the closing check.
     """
-    from pm.environment import _fresh_build, managed_environment
+    from pm.environment import _fresh_build, managed_environment  # noqa: TID251
     from pm.operations import _require_install_allowed, _requirements
 
     _require_install_allowed(explicit)
@@ -158,7 +158,7 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
     from pm.lock import Facts
     from pm.package import StatePackage
     from pm.registry import walk
-    from pm.store import tree_digest
+    from pm.store import digest_matches
 
     if isinstance(names, str):
         raise TypeError("names must be a sequence, not a string")
@@ -186,7 +186,7 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
         if (not fact or fact.get("entry") != expected
                 or not entry.is_dir() or not entry.resolve().is_relative_to(source_store)
                 or not facts.installed(package.name, version, source_store, identity)
-                or tree_digest(entry) != fact.get("digest")):
+                or not digest_matches(entry, fact.get("digest"))):
             raise InstallError(package.name, "tool source failed verification", "run preparation again")
         _copy_links(package, entry)
         binary = package.binary(entry, target)
@@ -250,7 +250,7 @@ def stage_tools(names: Sequence[str], *, source_store: Path, out: Path, target: 
 
 def prune_cache(cache: Path, *, ci: bool = False) -> None:
     """Prune unused cache entries; CI mode also discards downloaded wheels."""
-    from pm.environment import managed_environment
+    from pm.environment import managed_environment  # noqa: TID251
 
     cache = Path(cache).absolute()
     environment = managed_environment(cache, cache=cache, realize=False, output=sys.stderr)

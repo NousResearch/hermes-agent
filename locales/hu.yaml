@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — modell váltása"
     usage_switch_provider: "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist: "`/model <name> --global` — megőrzés"
+    usage_reset: "`/model reset` — a munkamenet felülbírálásának törlése"
+    reset_done: "A munkamenet modell-felülbírálása törölve — mostantól a `{model}` (csatorna/globális alapértelmezés) van használatban. A beszélgetés előzményei megmaradnak."
+    reset_none: "Nincs aktív modell-felülbírálás ebben a munkamenetben — már a `{model}` (csatorna/globális alapértelmezés) van használatban."
     err_skew: "Ez az átjáró a(z) {boot_rev} revízió kódját futtatja, de a lemezen már a(z) {disk_rev} van kicsekkolva. A modellváltás elavult modul miatti összeomlást kockáztatna — indítsd újra az átjárót az új kód betöltéséhez: hermes gateway restart"
     err_switch_failed: "A(z) {model} modellre váltás nem sikerült ({error}); marad: {current}."
     err_config_not_updated: "a config.yaml nem frissült ({error})"
@@ -164,10 +167,13 @@ gateway:
     upload_failed: "✗ Nem sikerült feltölteni a hibakeresési jelentést: {error}"
     header: "**Hibakeresési jelentés feltöltve:**"
     auto_delete: "⏱ A beillesztések 6 óra múlva automatikusan törlődnek."
-    full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
+    full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share --nous` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
-    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug` parancsot az összefoglaló jelentés feltöltéséhez."
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
+    upload_hint: "Semmi sem lett feltöltve. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
+    upload_hint_local: "Semmi sem lett feltöltve. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez, vagy a `/debug local` parancsot a megtekintéséhez itt."
+    nous_refused: "Semmi sem lett feltöltve. A privát Nous-feltöltés innen nem érhető el: futtasd a `hermes debug share --nous` parancsot egy terminálban, vagy használd a Send diagnostics funkciót az asztali alkalmazásban. A `/debug upload` ehelyett nyilvános paste-be tölti fel az összefoglalót."
   deny:
     stale: "❌ Parancs elutasítva (a jóváhagyás elavult)."
     no_pending: "Nincs elutasítható függőben lévő parancs."
@@ -332,6 +338,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — a munkamenet cím nélkül indult."
     title_empty_untitled: "\n⚠️ Tisztítás után a cím üres — a munkamenet cím nélkül indult."
     tip: "\n✦ Tipp: {tip}"
+    paused_left: "\n⚠️ {count} üzenet, amelyet az előző beszélgetés szüneteltetése alatt küldtél, még az előző beszélgetésben van mentve, megválaszolatlanul. A futtatásukhoz: /resume {session_id}, majd {discard}."
   restart:
     in_progress: "⏳ Az átjáró újraindítása már folyamatban van..."
     restarting: "♻ Átjáró újraindítása. Ha 60 másodpercen belül nem kapsz értesítést, indítsd újra a konzolból a `hermes gateway restart` paranccsal."
@@ -487,8 +494,6 @@ gateway:
     root_new: "Új párhuzamos Hermes-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre hozzá.\n\nMinden topic önálló Hermes-munkamenet. A /new parancsot csak akkor használd egy meglévő topicban, ha le akarod cserélni annak a topicnak a jelenlegi munkamenetét."
     new_header: "Új Hermes-munkamenet indult ebben a topicban.\n\nTipp: párhuzamos munkához nyisd meg az All Messages részt, és küldj oda egy üzenetet — így külön topic jön létre, nem kell itt a /new. A /new az aktuális topichoz kötött munkamenetet cseréli le."
     help: "/topic — többmunkamenetes DM-mód bekapcsolása (egy bot, sok párhuzamos csevegés)\n\nHasználat:\n  /topic             Topicmód bekapcsolása, vagy az állapot megjelenítése, ha már be van kapcsolva\n  /topic help        Ennek az üzenetnek a megjelenítése\n  /topic off         Topicmód kikapcsolása és a topic-hozzárendelések törlése\n  /topic <id>        Topicon belül: korábbi munkamenet visszaállítása azonosító alapján\n\nHogyan működik:\n1. Futtasd egyszer a /topic parancsot ebben a DM-ben — a Hermes ellenőrzi,\n   hogy a BotFather Threads Settings be van-e kapcsolva, és bekapcsolja a többmunkamenetes módot.\n2. Koppints az All Messages részre a bot tetején, és küldj egy tetszőleges üzenetet.\n   A Telegram új topicot hoz létre az üzenethez; minden topic\n   önálló Hermes-munkamenet (friss előzmények, friss kontextus).\n3. A gyökér DM rendszerelőtérré válik — oda küldd a /topic, /status,\n   /help, /usage parancsokat. A normál promptok topicba valók.\n4. A /new egy topicon belül csak annak a topicnak a munkamenetét állítja alaphelyzetbe.\n5. A /topic <id> egy topicon belül egy régi munkamenetet állít vissza oda."
-    system_topic_name: "Rendszer"
-    system_topic_intro: "Rendszertopic a Hermes-parancsokhoz és az állapothoz."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "A csevegésazonosító nem állapítható meg."
     mode_not_enabled: "A többmunkamenetes topicmód jelenleg nincs bekapcsolva ebben a csevegésben."
@@ -516,6 +521,7 @@ gateway:
     not_git_repo: "✗ Nem git-tárhely — frissítés nem lehetséges."
     hermes_cmd_not_found: "✗ Nem sikerült megtalálni a `hermes` parancsot. A Hermes fut, de a frissítőparancs nem találta a futtatható fájlt a PATH-on vagy a jelenlegi Python interpreteren keresztül. Próbáld futtatni a `hermes update` parancsot manuálisan a terminálban."
     start_failed: "✗ Nem sikerült elindítani a frissítést: {error}"
+    already_running: "⏳ Már fut egy frissítés; a kérdéseire csak az válaszolhat, aki elindította. Várd meg, amíg befejeződik, majd próbáld újra a /update parancsot."
     starting: "☤ Hermes frissítés indítása… A folyamatot itt fogom közvetíteni."
     reply_failed: "✗ Nem sikerült elküldeni a választ a frissítési folyamatnak: {error}"
     reply_sent: "✓ `{label}` elküldve a frissítési folyamatnak."
@@ -601,6 +607,7 @@ gateway:
     disabled: "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
     enabled: "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
   shared:
+    fallback_model_suffix: " — tartalék ehhez: `{primary}`"
     session_db_unavailable: "A munkamenet-adatbázis nem érhető el."
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found: "A munkamenet nem található az adatbázisban."
@@ -625,6 +632,8 @@ gateway:
     action_always: "Engedélyezés mindig"
     action_deny: "Elutasítás"
     deadline: "Ha {window} alatt nem válaszolsz, NEM fut le."
+    not_requester: "Csak {requester} válaszolhat erre a jóváhagyásra."
+    not_requester_admins_only: "Erre a jóváhagyásra csak adminisztrátor vagy listázott jóváhagyó válaszolhat."
     text_choice_once: "Válaszolj `{prefix}approve` az egyszeri futtatáshoz"
     text_choice_session: "`{prefix}approve session` a minta engedélyezéséhez a munkamenet hátralévő részére"
     text_choice_always: "`{prefix}approve always` a végleges engedélyezéshez"
@@ -638,6 +647,9 @@ gateway:
       {command}
       ```
       {reason_label}: {reason}
+    truncated_full_above: "Rövidített előnézet: a teljes parancs ({total} karakter) a fenti üzenetben van."
+    truncated_deny_only: "Rövidített előnézet ({total} karakter), és a teljes parancsot nem lehetett itt megjeleníteni, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
+    text_prompt_deny_only: "A teljes jóváhagyási kérés túl hosszú ehhez a platformhoz, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
 
   notify:
     media_kind:
@@ -649,8 +661,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Nem sikerült kézbesíteni a mellékletet ({kind}: {file_name})."
     delivery_failed_retry: "⚠️ Az üzenet kézbesítése több próbálkozás után sem sikerült. Próbáld újra — a kérésed feldolgoztam, de a választ nem tudtam elküldeni."
     plain_fallback_prefix: "(A válasz formázása nem sikerült, egyszerű szöveg:)\n\n{content}"
-    turn_error_no_details: "nincs elérhető részlet"
-    turn_error_detailed: "Sajnálom, hibába ütköztem ({error_type}).\n{error_detail}\nPróbáld újra, vagy kezdj új munkamenetet a /reset paranccsal."
     turn_error: "Sajnálom, hibába ütköztem."
     context_injection_refused: "A kontextusbeszúrás elutasítva."
     no_home_channel: "📬 Nincs beállítva home csatorna a(z) {platform} platformhoz. A home csatornába kézbesíti a Hermes a cronfeladatok eredményeit és a platformok közötti üzeneteket.\n\nÍrd be: {sethome_cmd}, hogy ez a csevegés legyen a home csatornád, vagy hagyd figyelmen kívül."
@@ -749,6 +759,8 @@ gateway:
     reject_loop: "Az ügynök fut — futás közben a /loop status / pause / stop használható, új ciklus megadása előtt pedig a /stop."
     draining_maintenance: "⏳ Ez az ügynök egy karbantartási művelet miatt éppen leürül, és most nem fogad új köröket. Hamarosan visszatér — küldd el újra kis idő múlva."
     another_turn_running: "⏳ Ezen a munkameneten még fut egy másik kör. Az átirat védelmében ez az üzenet nem lett feldolgozva. Várd meg az aktív kör végét, majd küldd el újra."
+    setup_timeout: "⏳ A kör előkészítése ügynöki tevékenység nélkül elakadt, ezért megszakítottuk. Kérlek, küldd el újra az üzeneted."
+    setup_waiting: "⏳ Ez a kör még indul ({minutes} perc, még nincs ügynöki tevékenység). Az üzeneted sorban áll. A /stop paranccsal megszakíthatod, a sorban álló üzenetekkel együtt."
     behavior_queue_short: "sorba áll a következő körre"
     behavior_queue_long: "Amíg a Hermes foglalt, az üzenetek a következő körre kerülnek sorba."
     behavior_steer_short: "beirányít a futó feladatba (a következő eszközhívás után)"
@@ -807,6 +819,7 @@ gateway:
     ack_generate: "AGENTS.md létrehozása a projekt átvizsgálása alapján…"
   moa:
     prepare_failed: "Nem sikerült előkészíteni a MoA kört."
+    managed_session: "A /moa nem érhető el ebben a munkamenetben: a csökkentett módú, konfiguráció nélküli, kanban és felügyelt workeres munkamenetek minden kört a saját modelljükön futtatnak. Küldd el a promptot /moa nélkül."
   quick_command:
     no_output: "A parancs nem adott kimenetet."
     timed_out: "A gyorsparancs időtúllépés miatt leállt (30 s)."
@@ -985,10 +998,8 @@ platform:
     approved: "✅ Jóváhagyva."
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
-  yuanbao:
-    slow_response_notice: "Ez a feladat kicsit összetettebb — még dolgozom rajta, kis türelmet..."
-    owner_command_denied: "⚠️ A(z) {command} privát csevegés módban csak a létrehozó számára érhető el"
   shared:
+    response_as_file: "📎 Hosszú válasz: a teljes szöveg csatolva."
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
@@ -1182,8 +1193,6 @@ platform:
         unknown: "Ismeretlen skill: `{name}`. Kezdj el gépelni az automatikus kiegészítéshez."
       auto_args_description: "Argumentumok: {args_hint}"
       auto_description_fallback: "/{name} futtatása"
-    limits:
-      response_truncated: "⚠️ **A válasz csonkolva** — ez a válasz túllépte a kézbesítési limitet ({max_messages} üzenet). {dropped_chars} karakter nem lett kézbesítve; a teljes válasz a munkamenet naplóiban található."
     forum:
       default_title: "Új bejegyzés"
     voice:
@@ -1262,6 +1271,11 @@ platform:
       affirm: "✓ Igen"
       negate: "✗ Nem"
       other: "✏️ Egyéb (írd be a választ)"
+      multi_hint: "Válassz egyet vagy többet, majd koppints a Küldésre."
+      send: "✅ Küldés"
+      selected_count: "Kiválasztva: {count}"
+      select_one: "Előbb válassz legalább egy lehetőséget."
+      toggle_failed: "Nem sikerült frissíteni a kijelölést — koppints újra."
       expired_toast: "⚠️ Ez a kérdés lejárt — kérd újra: /retry."
       expired_body: "⚠️ Ez a kérdés lejárt vagy a munkamenet alaphelyzetbe állt — kérd újra: /retry."
       type_answer: "✏️ Írd be a választ a csevegésbe."
@@ -1385,6 +1399,12 @@ platform:
       unauthorized: "Ezeket a vezérlőket csak jogosult Matrix-felhasználó használhatja."
       not_requester: "Ezeket a vezérlőket csak az a felhasználó használhatja, aki a műveletet kérte."
   feishu:
+    clarify:
+      title: "A Hermes a válaszodra vár"
+      other: "✏️ Egyéb (írd be a választ)"
+      awaiting_typed: "Várakozás {user} beírt válaszára…"
+    picker:
+      apply_error: "Hiba a választás alkalmazásakor: {error}"
     approval:
       action_session: "Munkamenet"
       action_always: "Mindig"
@@ -1488,6 +1508,8 @@ platform:
     prompt_other: "✏️ Egyéb (írd be a választ)"
     prompt_expired: ⌛ Ez a kérdés már nem vár válaszra. Küldd el a válaszodat normál üzenetként.
 slash:
+  rewind:
+    description: "Visszatekerés egy korábbi prompthoz a szerkesztéshez és újraküldéshez, vagy elágazás onnan (Esc Esc)"
   approve:
     description: "Függőben lévő veszélyes parancs jóváhagyása"
   bg:
@@ -1711,10 +1733,24 @@ slash:
   version:
     description: "A Hermes Agent verziójának megjelenítése"
   debug:
-    description: "Hibakeresési jelentés (rendszerinfó + naplók) feltöltése és megosztható linkek kérése"
+    description: "Hibakeresési jelentés (verziók, konfigurációs kulcsok, hibaszámok; naplószöveg nélkül): előbb az adatvédelmi tájékoztató; a /debug upload linkeket oszt meg"
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
+  backtrack:
+    title: "↺ Átirat — válassz egy szerkesztendő promptot"
+    keys_hint: "Átirat böngészése · ↑↓/jk görgetés · ←→/hl promptok · ↵ szerkesztés · f elágazás · esc vissza"
+    prime_hint: "nyomd meg újra az esc-et az előző üzenet szerkesztéséhez"
+    no_previous: "Nincs szerkeszthető előző üzenet."
+    editing_hint: "↺ A(z) {number}. prompt szerkesztése — az Enter idáig teker vissza és elküldi · Esc Esc megszakítja"
+    edit_cancelled: "↺ Visszatekerés megszakítva; semmi sem lett eltávolítva."
+    rewound: "↺ Visszatekerve a(z) {number}. promptig ({count} üzenet archiválva); a szerkesztés elküldése."
+    forked: "⑂ Elágazás a(z) {number}. prompt előtt; az eredeti {parent} munkamenet változatlan. Szerkeszd az alábbi promptot, és nyomj Entert a küldéshez."
+    nothing: "(._.) Nincs korábbi prompt, amelyhez vissza lehetne tekerni."
+    target_changed: "(x_x) A munkamenet megváltozott, mióta a(z) {number}. promptot választottad; semmi sem lett eltávolítva. A szerkesztésed visszakerült a szövegmezőbe."
+    invalid: "(._.) Nincs {value}. prompt — válassz 1 és {total} között."
+    usage: "Használat: /rewind [N | fork N]"
+    rewind_failed: "(x_x) A visszatekerés sikertelen; az előzmények nem változtak: {error}"
   modern:
     thought_for: "{seconds} mp-ig gondolkodott"
     thought: "Gondolkodott"
@@ -2026,6 +2062,8 @@ cli:
     usage_switch_reasoning: "váltás és gondolkodási szint beállítása"
     usage_switch_provider: "szolgáltató váltása"
     usage_refresh: "élő modellisták újratöltése"
+    reset_none: "Már a beállított alapértelmezés ({model}) van használatban — nincs mit visszaállítani."
+    reset_no_default: "Nincs model.default a config.yaml-ban — nincs mire visszaállni."
     choice_switch_anyway: "Váltás mindenképp"
     desc_switch_anyway: "Ennek a modellnek a használata a jelenlegi Hermes-munkamenetben."
     choice_cancel: "Mégse"
@@ -2176,6 +2214,7 @@ cli:
     images_attached_other: "📎 {count} kép csatolva"
     command_interrupted: "Parancs megszakítva."
     welcome: "Üdv a Hermes Agentben! Írd be az üzenetedet, vagy a /help paranccsal nézd meg a parancsokat."
+    vscode_images_hint: "A VS Code itt teljes felbontású képeket is meg tud jeleníteni: kapcsold be a(z) terminal.integrated.enableImages beállítást."
     activated_skills_label: "Aktivált skillek:"
     redaction_disabled_title: "⚠  A titkok kitakarása KI VAN KAPCSOLVA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Az API-kulcsok és tokenek szó szerint megjelenhetnek a chatkimenetben, a munkamenet-JSON-okban és a naplókban. A visszakapcsoláshoz állítsd be a config.yaml fájlban: {setting}."
@@ -2630,6 +2669,7 @@ cli:
     goal_turns: "⊙ cél {used}/{max}"
     goal: "⊙ cél"
     ctx_pinned: " rögzítve"
+    ctx_fallback: " alapértelmezett"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Félretéve ({count} elem)"
@@ -3807,7 +3847,7 @@ tips:
   t246: "A HERMES_HOME_MODE környezeti változó (oktális, pl. 0701) egyedi mappajogosultságot állít be a webszerver bejárásához."
   t247: "Konténer mód: helyezz egy .container-mode fájlt a HERMES_HOME-ba, és a gazda CLI automatikusan a konténerbe lép át."
   t248: "A Ctrl+C 5 prioritási szinttel bír: felvétel megszakítása → bekérések megszakítása → választó bezárása → ügynök megszakítása → kilépés."
-  t249: "Az ügynök futása közbeni minden megszakítás időbélyeggel a ~/.hermes/interrupt_debug.log fájlba kerül."
+  t249: "Az ügynök futása közbeni megszakítások az agent.log fájlba kerülnek (megtekintés: `hermes logs`); részletes nyomkövetéshez állítsd be: HERMES_DEBUG_INTERRUPT=1."
   t250: "A BROWSER_CDP_URL bármely futó Chromium-alapú böngészőhöz kapcsolja a böngészőeszközöket – elfogad WebSocket, HTTP vagy host:port címet."
   t251: "A BROWSERBASE_ADVANCED_STEALTH=true fejlett felismerés elleni védelmet kapcsol be egyedi Chromiummal (Scale csomag)."
   t252: "A CLI 80 oszlopnál keskenyebb terminálban automatikusan kompakt módra vált."
@@ -3904,7 +3944,7 @@ tips:
   t343: "A /voice tts a csak-TTS módot kapcsolja — az ügynök hangosan válaszol, de a promptjaidat továbbra is gépeled."
   t344: "A /reload-skills újraolvassa a ~/.hermes/skills/ mappát, így a bemásolt skillek a munkamenet újraindítása nélkül megjelennek."
   t345: "A /indicator kaomoji|emoji|unicode|ascii kiválasztja a TUI elfoglaltságjelzőjének stílusát, amely az ügynök futása alatt látszik."
-  t346: "A /debug feltölt egy támogatási csomagot (rendszerinfó + naplók), és megosztható linkeket ad vissza — chatben is működik."
+  t346: "A /debug upload feltölt egy összefoglalót (verziók, konfigurációs kulcsok, hibaszámok; naplószöveg nélkül), és megosztható linket ad vissza — chatben is működik."
   t347: "A hermes -z \"<prompt>\" a legtisztább egylövetű mód: csak a végső válasz a stdout-on, semmi más — ideális szkriptekben csövezéshez."
   t348: "A hermes chat --pass-session-id beszúrja a munkamenet-azonosítót a rendszerpromptba, hogy az ügynök hivatkozhasson rá."
   t349: "A hermes chat --image path/to/pic.png helyi képet csatol egyetlen -q lekérdezéshez külön feltöltési lépés nélkül."
@@ -3969,3 +4009,8 @@ plan_usage:
   large_notice_limit: "Nagy modell: elérted a(z) {name} korlátot ({resets})."
   large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
   large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ A visszavont körökben módosított fájlok: {files}. Futtasd a /rollback parancsot az ellenőrzőpontok listázásához és egy visszaállításához."
+    more: "+{count} további"

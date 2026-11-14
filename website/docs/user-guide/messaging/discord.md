@@ -317,7 +317,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
+| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots and webhooks (any post carrying a `webhook_id`, such as CI or deploy alerts, counts as a bot even when Discord omits the bot flag). `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
@@ -742,6 +742,10 @@ The Discord adapter supports native file uploads for every common media type via
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
 
+## Long Replies
+
+A reply that would need more than 8 Discord messages (about 16,000 characters) is sent as one `reply-<id>.md` attachment holding the complete text, with a short caption, instead of a long run of 2,000-character messages. While a long reply streams, Hermes stops opening new messages at the limit, uploads the finished reply, then deletes the partial messages it had already posted for it. If the upload fails (no **Attach Files** permission, for example), nothing is deleted and the whole reply is delivered as messages, never cut short; they go out at the pace Discord's rate limits allow (about five per channel every five seconds), and a rate-limited message is retried after the wait Discord asks for. A reply over the attachment limit is split across numbered files of at most 7 MB each.
+
 ## Receiving Arbitrary File Types
 
 Any file type a user uploads is accepted. Authorization to message the agent is the gate — not the file extension. Every upload is downloaded, cached under `~/.hermes/cache/documents/`, and surfaced to the agent as a `DOCUMENT`-typed message event so it can inspect the file with `terminal` (`ffprobe`, `unzip`, `file`, `strings`, etc.) or `read_file`.
@@ -778,7 +782,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `90` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 ### Prompt layout
 
@@ -989,6 +993,8 @@ Semantics:
 - **DM fallback.** In DMs the role check scans mutual guilds; a user with an allowed role in any shared server is authorized in DMs too.
 
 This is the preferred pattern when the moderation team churns — new moderators get access the moment the role is granted, with no `.env` edit or gateway restart.
+
+**Editing the lists in `config.yaml` takes effect on the next message.** `discord.allowed_roles`, `discord.allow_from` and the channel lists are re-read when `config.yaml` changes, with no gateway restart: a role or user you remove is refused from their next message, slash command or button click. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`. Adding the *first* role or username to a bot connected without the Server Members intent still needs a restart, because the intent is chosen at connect. A username added later is matched only after the next reconnect resolves it to an ID.
 
 ### Mention Control
 

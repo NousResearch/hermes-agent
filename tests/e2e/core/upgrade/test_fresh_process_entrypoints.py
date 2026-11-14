@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_module
 from tests.e2e.core.upgrade._helpers import (
     WORKTREE,
     describe,
@@ -102,7 +103,7 @@ _PLATFORM_ALLOWLIST: dict[str, str] = {}
 _PRELOAD = (
     "openai", "httpx", "pydantic", "rich", "prompt_toolkit", "yaml", "ruamel.yaml", "requests", "jinja2",
     "fastapi", "starlette", "uvicorn", "anthropic", "cryptography", "psutil", "websockets", "dotenv",
-    "tenacity", "fire", "croniter", "markdown", "jwt", "packaging", "PIL",
+    "fire", "croniter", "markdown", "jwt", "packaging", "PIL",
 )
 
 # Import sites the pre-hand-off updater (v2026.9.14 update_cmd_fleet/_maint) reaches AFTER
@@ -492,7 +493,8 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
     ids = [e["id"] for e in entries]
     # Non-vacuous: the list really is the packaging config (every root module, every package).
     assert len(ids) == len(set(ids)), "duplicate module ids in the enumeration"
-    assert {"hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry"} <= set(ids)
+    entry_points = ("hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry")
+    assert {current_module(name) for name in entry_points} <= set(ids)
     find_tops = {p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]}
     covered_tops = {i.split(".")[0] if not i.endswith(".py") else i.split("/")[0] for i in ids}
     assert find_tops <= covered_tops, f"packages.find tops with no module enumerated: {find_tops - covered_tops}"
@@ -536,14 +538,13 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
 
 def _pre_handoff_tag() -> tuple[str, str] | None:
     """Newest release tag whose updater still ran post-pull phases in the pre-pull interpreter."""
-    cp = _git("for-each-ref", "--merged=HEAD", "--sort=-version:refname",
-              "--format=%(refname:short)", "refs/tags/v20*")
-    for tag in cp.stdout.split()[:15] if cp.returncode == 0 else []:
-        if _git("cat-file", "-e", f"{tag}:hermes_cli/update_handoff.py").returncode == 0:
-            continue
-        grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
-        return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
-    return None
+    from tests.e2e.core.upgrade import _install_helpers as I
+
+    tag = next((t for t in I.release_tags() if I.updater_generation(t) == "pre-handoff"), None)
+    if tag is None:
+        return None
+    grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
+    return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
 
 
 def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
@@ -562,6 +563,7 @@ def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
             _link_or_copy(s, dst / name)
 
 
+@pytest.mark.allow_network  # the old updater's requirements export provisions the PM toolchain
 def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
     modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.

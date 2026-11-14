@@ -1,0 +1,38 @@
+name: cortive
+title: Cortive Memory
+repo: https://github.com/KadenDevAi/hermes-cortive
+sha: 3eb2f4935994c6b7ea0d7067428d3051f9388fc6
+version: "0.1.0"
+description: >-
+  Adds Cortive, a private knowledge base for your Mac, to the agent's memory, alongside
+  Hermes's built-in memory: automatic recall of the pages, PDFs, screenshots, documents and notes you saved, plus
+  cortive_search, cortive_get and cortive_collections tools. Finds by meaning while the
+  Cortive app is running, by words otherwise. Read-only and local. Disclosure — reads the
+  local Cortive library file (~/Library/Application Support/cortive-ai/cortive.db, SQLite
+  opened read-only), which is outside the plugin's own data; connects to the Cortive app's
+  owner-only Unix socket on the same Mac (~/Library/Application Support/Cortive/agent/search.sock)
+  to send search text and receive capture ids and scores; writes exported screenshots and an
+  optional config file inside its Hermes plugin-data folder. No network calls, no credentials,
+  no background services, no telemetry. Recalled excerpts reach the model Hermes uses, like any
+  context; passwords and keys are hidden first, and the plugin is off in group chats by default.
+  Two tool hooks enforce that: pre_tool_call refuses other tools' calls that point at Cortive's
+  data folder, and transform_tool_result hides passwords saved in Cortive from other tools' output.
+maintainer: KadenDevAi
+tier: community
+category: memory
+docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/3eb2f4935994c6b7ea0d7067428d3051f9388fc6/README.md
+image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/3eb2f4935994c6b7ea0d7067428d3051f9388fc6/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/3eb2f4935994c6b7ea0d7067428d3051f9388fc6/docs/recall.png
+platforms:
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, transform_tool_result]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Needs the Cortive app (free beta, Apple silicon, macOS 14+) from https://github.com/KadenDevAi/cortive-releases; select it with `hermes config set memory.provider cortive`.
+  - Meaning search needs Cortive 0.2.0 or later running; otherwise search and recall match words only, and automatic recall waits for messages that refer to saved material.
+  - Voice recordings have no transcript, so the agent can find them but not read what was said.
+requires_hermes: ">=0.21.5"

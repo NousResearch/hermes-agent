@@ -1141,6 +1141,42 @@
       }
     },
     {
+      "name": "groups.context",
+      "summary": "Set one hosted room's purpose and shared notes; members see them from the next message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsContextParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsContextResult"
+        }
+      }
+    },
+    {
+      "name": "groups.continue",
+      "summary": "Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsContinueParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsContinueResult"
+        }
+      }
+    },
+    {
       "name": "groups.create",
       "summary": "Create a hosted room idempotently; authority is this gateway's stable install identity.",
       "params": [
@@ -1605,6 +1641,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ImageGenerateResult"
+        }
+      }
+    },
+    {
+      "name": "image.render",
+      "summary": "Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ImageRenderParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ImageRenderResult"
         }
       }
     },
@@ -4075,6 +4129,24 @@
       }
     },
     {
+      "name": "subagent.roster",
+      "summary": "Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentRosterResult"
+        }
+      }
+    },
+    {
       "name": "subagent.steer",
       "summary": "Queue steering text into a live delegated child owned by this session.",
       "params": [
@@ -4377,6 +4449,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/VaultLockResult"
+        }
+      }
+    },
+    {
+      "name": "vault.preview.fill",
+      "summary": "Fill a saved login into the in-app browser tab the renderer pinned (never submits).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VaultPreviewFillParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VaultPreviewFillResult"
         }
       }
     },
@@ -7802,6 +7892,74 @@
         "title": "CanonicalAttachment",
         "type": "object"
       },
+      "CanonicalBotCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "author_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Author Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CanonicalBotCancelParams",
+        "type": "object"
+      },
+      "CanonicalBotCancelResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending\nautomatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``\n(nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "stopping",
+              "finished"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "receipt_status": {
+            "title": "Receipt Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "status",
+          "receipt_status"
+        ],
+        "title": "CanonicalBotCancelResult",
+        "type": "object"
+      },
       "CanonicalBotDeliverParams": {
         "additionalProperties": false,
         "properties": {
@@ -7966,6 +8124,25 @@
             ],
             "default": null,
             "title": "Reason"
+          },
+          "target_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "working",
+                  "waiting_approval",
+                  "waiting_clarify",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target State"
           }
         },
         "required": [
@@ -7976,6 +8153,60 @@
           "message"
         ],
         "title": "CanonicalBotDeliverResult",
+        "type": "object"
+      },
+      "CanonicalClientIdentity": {
+        "additionalProperties": false,
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CanonicalClientIdentity",
+        "type": "object"
+      },
+      "CanonicalClientLabel": {
+        "additionalProperties": false,
+        "description": "The client a session's creator declared itself as (``session.create`` ``client``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CanonicalClientLabel",
         "type": "object"
       },
       "CanonicalConfigGetResult": {
@@ -8164,6 +8395,28 @@
             ],
             "default": null,
             "title": "Scope"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "normal",
+                    "fast",
+                    "auto",
+                    "cold",
+                    "ultrafast"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
           }
         },
         "title": "CanonicalConfigGetResult",
@@ -8667,6 +8920,17 @@
             ],
             "default": null,
             "title": "Client Env"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "CanonicalCreateParams",
@@ -8787,6 +9051,139 @@
         "title": "CanonicalEventsResult",
         "type": "object"
       },
+      "CanonicalGroupsPeerInviteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "home_install_id": {
+            "title": "Home Install Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "title": "Ttl Seconds",
+            "type": "number"
+          },
+          "status_ttl_seconds": {
+            "title": "Status Ttl Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "room_id",
+          "home_install_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "member_id"
+        ],
+        "title": "CanonicalGroupsPeerInviteParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "target_url": {
+            "title": "Target Url",
+            "type": "string"
+          },
+          "target_profile": {
+            "title": "Target Profile",
+            "type": "string"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          },
+          "catalog": {
+            "additionalProperties": true,
+            "title": "Catalog",
+            "type": "object"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "target_url",
+          "target_profile",
+          "grant",
+          "catalog"
+        ],
+        "title": "CanonicalGroupsPeerRegisterParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRevokeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant"
+        ],
+        "title": "CanonicalGroupsPeerRevokeParams",
+        "type": "object"
+      },
       "CanonicalListParams": {
         "additionalProperties": false,
         "properties": {
@@ -8832,6 +9229,47 @@
             "default": false,
             "title": "Include Hidden",
             "type": "boolean"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
+          "picker": {
+            "default": false,
+            "title": "Picker",
+            "type": "boolean"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
           }
         },
         "title": "CanonicalListParams",
@@ -8854,6 +9292,18 @@
             ],
             "title": "Scope",
             "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Cursor"
           }
         },
         "required": [
@@ -9972,6 +10422,17 @@
             "default": null,
             "title": "Unknown Toolsets"
           },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -10046,6 +10507,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -10105,6 +10577,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -10295,6 +10779,90 @@
             ],
             "default": null,
             "title": "Root Title"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview"
+          },
+          "last_reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Reply"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "git_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Git Branch"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Active At"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pinned"
           }
         },
         "required": [
@@ -10727,6 +11295,17 @@
             "default": null,
             "title": "Unknown Toolsets"
           },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "desktop_protocol": {
             "const": "hermes-gateway-v1",
             "title": "Desktop Protocol",
@@ -10834,6 +11413,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -10893,6 +11483,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -13365,6 +13967,17 @@
             "default": null,
             "title": "Required Env"
           },
+          "launch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionTargetLaunch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tools": {
             "anyOf": [
               {
@@ -13836,6 +14449,60 @@
           "skill"
         ],
         "title": "ConnectionTargetKind",
+        "type": "string"
+      },
+      "ConnectionTargetLaunch": {
+        "additionalProperties": false,
+        "description": "What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed\ndisplay text, never env values or headers.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionTargetLaunchKind"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Env"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "title": "ConnectionTargetLaunch",
+        "type": "object"
+      },
+      "ConnectionTargetLaunchKind": {
+        "enum": [
+          "remote",
+          "stdio"
+        ],
+        "title": "ConnectionTargetLaunchKind",
         "type": "string"
       },
       "ConnectionTargetState": {
@@ -19085,6 +19752,177 @@
         "title": "GroupsCapabilitiesResult",
         "type": "object"
       },
+      "GroupsChangedPayload": {
+        "additionalProperties": true,
+        "description": "``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent\nwhen something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the\nsame frame reaches a window once per open socket, and a copy needs no second read.",
+        "properties": {
+          "room_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Room Ids"
+          },
+          "broadcast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broadcast Id"
+          }
+        },
+        "title": "GroupsChangedPayload",
+        "type": "object"
+      },
+      "GroupsContextParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "routing": {
+            "anyOf": [
+              {
+                "enum": [
+                  "everyone",
+                  "lead",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing"
+          },
+          "lead_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lead Member Id"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "purpose",
+          "notes"
+        ],
+        "title": "GroupsContextParams",
+        "type": "object"
+      },
+      "GroupsContextResult": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/RoomContext"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RoomEvent"
+          }
+        },
+        "required": [
+          "context",
+          "event"
+        ],
+        "title": "GroupsContextResult",
+        "type": "object"
+      },
+      "GroupsContinueParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "discussion_event_id": {
+            "title": "Discussion Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "discussion_event_id"
+        ],
+        "title": "GroupsContinueParams",
+        "type": "object"
+      },
+      "GroupsContinueResult": {
+        "additionalProperties": false,
+        "properties": {
+          "continued": {
+            "default": true,
+            "title": "Continued",
+            "type": "boolean"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RoomEvent"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "GroupsContinueResult",
+        "type": "object"
+      },
       "GroupsCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -19605,6 +20443,18 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -20280,6 +21130,7 @@
       },
       "GroupsStateResult": {
         "additionalProperties": false,
+        "description": "``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is\nonly a backstop (absent on older backends: keep polling at the old rate).",
         "properties": {
           "room": {
             "$ref": "#/components/schemas/Room"
@@ -20294,6 +21145,29 @@
               }
             ],
             "default": null
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "change_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Change Events"
           }
         },
         "required": [
@@ -20882,6 +21756,148 @@
         "title": "ImageGenerateResult",
         "type": "object"
       },
+      "ImageRenderParams": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "graphics": {
+            "default": false,
+            "title": "Graphics",
+            "type": "boolean"
+          },
+          "terminal": {
+            "default": "unicode",
+            "enum": [
+              "kitty",
+              "unicode"
+            ],
+            "title": "Terminal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "cols",
+          "rows"
+        ],
+        "title": "ImageRenderParams",
+        "type": "object"
+      },
+      "ImageRenderResult": {
+        "additionalProperties": false,
+        "description": "``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint\n``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``)\nas half-blocks. ``off``: inline images are disabled or the file is not a readable image.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "kitty",
+              "unicode",
+              "off"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Color"
+          },
+          "transmit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transmit"
+          },
+          "placeholder": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Placeholder"
+          },
+          "cells": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cells"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ImageRenderResult",
+        "type": "object"
+      },
       "InflightTurn": {
         "additionalProperties": false,
         "description": "``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting\nclient rebuilds its bubbles from.",
@@ -21292,7 +22308,7 @@
       },
       "LanguageOption": {
         "additionalProperties": false,
-        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language. ``surfaces`` are the surfaces some\nlayer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface,\nsince picking it would only show English.",
         "properties": {
           "id": {
             "title": "Id",
@@ -21309,13 +22325,21 @@
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "surfaces": {
+            "items": {
+              "$ref": "#/components/schemas/LocaleSurface"
+            },
+            "title": "Surfaces",
+            "type": "array"
           }
         },
         "required": [
           "id",
           "endonym",
           "rtl",
-          "source"
+          "source",
+          "surfaces"
         ],
         "title": "LanguageOption",
         "type": "object"
@@ -22844,6 +23868,11 @@
             ],
             "default": null,
             "title": "Plugin"
+          },
+          "needs_auth": {
+            "default": false,
+            "title": "Needs Auth",
+            "type": "boolean"
           }
         },
         "required": [
@@ -24019,6 +25048,11 @@
           "ultrafast": {
             "default": false,
             "title": "Ultrafast",
+            "type": "boolean"
+          },
+          "daybreak": {
+            "default": false,
+            "title": "Daybreak",
             "type": "boolean"
           },
           "reasoning": {
@@ -25626,6 +26660,15 @@
             "default": false,
             "title": "Graphics",
             "type": "boolean"
+          },
+          "terminal": {
+            "default": "unicode",
+            "enum": [
+              "kitty",
+              "unicode"
+            ],
+            "title": "Terminal",
+            "type": "string"
           }
         },
         "title": "PetCellsParams",
@@ -27254,7 +28297,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.\n``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a\nmodel-provider plugin's updated tree failed to import (the previous version keeps serving).",
         "properties": {
           "name": {
             "title": "Name",
@@ -27308,6 +28351,18 @@
             },
             "title": "Missing In",
             "type": "array"
+          },
+          "load_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Load Error"
           }
         },
         "required": [
@@ -27500,6 +28555,26 @@
         ],
         "title": "PluginRestartTarget",
         "type": "string"
+      },
+      "PluginRpcParams": {
+        "additionalProperties": true,
+        "description": "Open: the plugin's handler owns every other key. ``session_id`` names the session the call\nacts in and passes that session's authorization first.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "PluginRpcParams",
+        "type": "object"
       },
       "PluginScanFinding": {
         "additionalProperties": false,
@@ -27708,6 +28783,59 @@
         "title": "PluginToolsetRow",
         "type": "object"
       },
+      "PluginUpdateAllRow": {
+        "additionalProperties": false,
+        "description": "One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the\nplugin or its scan returned caution; the plugin's own ``update`` walks that review.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PluginUpdateAllStatus"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "title": "PluginUpdateAllRow",
+        "type": "object"
+      },
+      "PluginUpdateAllSkip": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "PluginUpdateAllSkip",
+        "type": "object"
+      },
+      "PluginUpdateAllStatus": {
+        "enum": [
+          "updated",
+          "current",
+          "failed",
+          "needs_review"
+        ],
+        "title": "PluginUpdateAllStatus",
+        "type": "string"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -27720,7 +28848,9 @@
           "remove",
           "settings",
           "onboarding",
-          "presence"
+          "presence",
+          "update_all",
+          "auto_update"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -27780,7 +28910,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;\n``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -28431,6 +29561,72 @@
             ],
             "default": null,
             "title": "Unpaired From"
+          },
+          "results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginUpdateAllRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Results"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginUpdateAllSkip"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Current"
+          },
+          "auto_apply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Auto Apply"
+          },
+          "check_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Check Hours"
           }
         },
         "title": "PluginsManageResult",
@@ -28567,6 +29763,17 @@
             ],
             "default": null,
             "title": "Allow Shortcut"
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewVaultOperation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -28694,6 +29901,50 @@
           "text"
         ],
         "title": "PreviewRestartProgressPayload",
+        "type": "object"
+      },
+      "PreviewVaultOperation": {
+        "additionalProperties": false,
+        "description": "Internal vault transport, never arguments exposed to the model.",
+        "properties": {
+          "operation": {
+            "enum": [
+              "open",
+              "evaluate",
+              "close"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expression"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "PreviewVaultOperation",
         "type": "object"
       },
       "ProcessEntry": {
@@ -29214,9 +30465,152 @@
         "title": "ProfileCanonicalSession",
         "type": "object"
       },
+      "ProfileCreateReceipt": {
+        "additionalProperties": false,
+        "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "display_path": {
+            "title": "Display Path",
+            "type": "string"
+          },
+          "launch_label": {
+            "title": "Launch Label",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "skills_synced": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills Synced"
+          },
+          "skills_opted_out": {
+            "title": "Skills Opted Out",
+            "type": "boolean"
+          },
+          "alias_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Path"
+          },
+          "alias_collision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Collision"
+          },
+          "mirrored": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "shared",
+                  "type": "string"
+                }
+              ]
+            },
+            "title": "Mirrored",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "cloned_plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cloned Plugins",
+            "type": "array"
+          },
+          "memory_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Provider"
+          },
+          "channels_left_behind": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels Left Behind",
+            "type": "array"
+          },
+          "shared_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Channels",
+            "type": "array"
+          },
+          "served_now": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Served Now"
+          }
+        },
+        "required": [
+          "path",
+          "display_path",
+          "launch_label",
+          "source_label",
+          "skills_synced",
+          "skills_opted_out",
+          "alias_path",
+          "alias_collision",
+          "mirrored",
+          "warnings",
+          "cloned_plugins",
+          "memory_provider",
+          "channels_left_behind",
+          "shared_channels",
+          "served_now"
+        ],
+        "title": "ProfileCreateReceipt",
+        "type": "object"
+      },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
         "properties": {
           "env": {
             "default": false,
@@ -29885,7 +31279,7 @@
       },
       "ProfilesCreateParams": {
         "additionalProperties": false,
-        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on\nso a headless bot has a provider.",
+        "description": "``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the\nactive profile, no bundled skills); ``mirror_credentials`` and\n``share_auth`` default on (the bot page's defaults) so a headless bot has a provider.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -30052,6 +31446,51 @@
             ],
             "default": null,
             "title": "Mirror Credentials"
+          },
+          "clone_config": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clone Config"
+          },
+          "sync_imports": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sync Imports"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report"
           }
         },
         "required": [
@@ -30088,6 +31527,25 @@
           },
           "mirrored": {
             "$ref": "#/components/schemas/ProfileMirrored"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCreateReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -33428,6 +34886,30 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "undo_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Since"
+          },
+          "undo_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Message Id"
           }
         },
         "required": [
@@ -33449,6 +34931,17 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -34086,6 +35579,41 @@
         "title": "RoomAuthority",
         "type": "object"
       },
+      "RoomContext": {
+        "additionalProperties": false,
+        "description": "``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn\nprompt carries (inside the user-role message).",
+        "properties": {
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "routing": {
+            "default": "everyone",
+            "enum": [
+              "everyone",
+              "lead",
+              "auto"
+            ],
+            "title": "Routing",
+            "type": "string"
+          },
+          "lead_member_id": {
+            "default": "",
+            "title": "Lead Member Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purpose",
+          "notes"
+        ],
+        "title": "RoomContext",
+        "type": "object"
+      },
       "RoomDriverStatus": {
         "additionalProperties": false,
         "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt\n(``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)\nor the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled\nroom preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken).\n``member_activity`` lists live tasks in admission order (absent from older gateways).\n``last_error`` is this room's last preparation failure, null once one succeeds.",
@@ -34135,6 +35663,45 @@
             ],
             "default": null,
             "title": "Last Error"
+          },
+          "max_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Rounds"
+          },
+          "max_continues": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Continues"
+          },
+          "routing_modes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing Modes"
           },
           "peer_routes": {
             "items": {
@@ -34509,7 +36076,7 @@
       },
       "RoomMemberActivity": {
         "additionalProperties": false,
-        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``.",
+        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and\n``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running;\n``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running\nthe turn.",
         "properties": {
           "member_id": {
             "title": "Member Id",
@@ -34518,6 +36085,66 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "round_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Round Index"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool"
+          },
+          "progress_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Progress At"
           }
         },
         "required": [
@@ -39023,6 +40650,17 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -42159,6 +43797,354 @@
         "title": "SteerStatus",
         "type": "string"
       },
+      "StoredTranscriptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subagent Id"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "order": {
+            "default": "oldest",
+            "enum": [
+              "oldest",
+              "latest"
+            ],
+            "title": "Order",
+            "type": "string"
+          },
+          "inline_images": {
+            "default": false,
+            "title": "Inline Images",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "StoredTranscriptParams",
+        "type": "object"
+      },
+      "StoredTranscriptResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StoredTranscriptRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "reset": {
+            "title": "Reset",
+            "type": "boolean"
+          },
+          "subagent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subagent Id"
+          },
+          "available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Available"
+          },
+          "running": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Running"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "rows",
+          "next_cursor",
+          "reset"
+        ],
+        "title": "StoredTranscriptResult",
+        "type": "object"
+      },
+      "StoredTranscriptRow": {
+        "additionalProperties": true,
+        "description": "``row_kind: 'message'`` is a ``session.resume`` ``display_messages`` row. ``row_kind: 'compaction'``\nis a compaction handoff at its position: ``role: 'system'``, ``text`` the summary a reader sees (not\nthe parts written for the model), ``compacted_messages``, ``timestamp`` and the stored ``row_id``.",
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "content": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Call Id"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timestamp"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Id"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "display_metadata": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Labels"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
+          },
+          "row_kind": {
+            "enum": [
+              "message",
+              "compaction"
+            ],
+            "title": "Row Kind",
+            "type": "string"
+          },
+          "compacted_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Compacted Messages"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Truncated"
+          }
+        },
+        "required": [
+          "role",
+          "row_kind"
+        ],
+        "title": "StoredTranscriptRow",
+        "type": "object"
+      },
       "StreamDeltaPayload": {
         "additionalProperties": false,
         "description": "``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),\n``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``\n(reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on.",
@@ -42583,6 +44569,44 @@
         "title": "SubagentOutputTailEntry",
         "type": "object"
       },
+      "SubagentRosterEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagents": {
+            "default": 0,
+            "title": "Subagents",
+            "type": "integer"
+          },
+          "background": {
+            "default": 0,
+            "title": "Background",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SubagentRosterEntry",
+        "type": "object"
+      },
+      "SubagentRosterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SubagentRosterEntry"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "title": "SubagentRosterResult",
+        "type": "object"
+      },
       "SubagentSnapshot": {
         "additionalProperties": false,
         "description": "``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record.",
@@ -42709,6 +44733,18 @@
             ],
             "default": null,
             "title": "Accepting Steer"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
           }
         },
         "required": [
@@ -44119,6 +46155,18 @@
             ],
             "default": null,
             "title": "Labels"
+          },
+          "image_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image Path"
           }
         },
         "required": [
@@ -45054,6 +47102,28 @@
         "title": "UndoIntent",
         "type": "string"
       },
+      "UndoRollbackHint": {
+        "additionalProperties": false,
+        "description": "``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are\nthe changed paths, ``text`` is the rendered line in the backend's language.",
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UndoRollbackHint",
+        "type": "object"
+      },
       "Usage": {
         "additionalProperties": true,
         "description": "``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
@@ -45806,6 +47876,21 @@
             "default": null,
             "title": "Has Otp"
           },
+          "allowed_origins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allowed Origins"
+          },
           "backend": {
             "title": "Backend",
             "type": "string"
@@ -45884,6 +47969,101 @@
           }
         },
         "title": "VaultLockResult",
+        "type": "object"
+      },
+      "VaultPreviewFillParams": {
+        "additionalProperties": false,
+        "description": "``target`` is the opaque binding the renderer minted for one in-app browser tab.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "handle",
+          "target"
+        ],
+        "title": "VaultPreviewFillParams",
+        "type": "object"
+      },
+      "VaultPreviewFillResult": {
+        "additionalProperties": false,
+        "description": "Counts and the page origin only: never a secret.",
+        "properties": {
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "filled_fields": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Filled Fields"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Type"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "VaultPreviewFillResult",
         "type": "object"
       },
       "VaultRemoveParams": {
@@ -47790,6 +49970,24 @@
       }
     },
     {
+      "name": "bot_relay.cancel",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotCancelResult"
+        }
+      }
+    },
+    {
       "name": "bot_relay.deliver",
       "summary": "",
       "params": [
@@ -48074,6 +50272,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.invite",
+      "summary": "Operator only: mint one room grant for a member of another gateway's room.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerInviteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerInviteResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.register",
+      "summary": "Bind a target grant to the room's pinned peer member after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRegisterResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.revoke",
+      "summary": "Operator only: revoke one grant this gateway issued, by its exact room scope.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRevokeResult"
         }
       }
     },
@@ -48546,6 +50798,24 @@
       }
     },
     {
+      "name": "session.transcript",
+      "summary": "One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once, and each compaction handoff as a `row_kind: 'compaction'` row at its position), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows, compaction rows included, plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, kind, time, ids and the head of its text, and carries `truncated`). Oldest order: read on until a page is empty, then poll with the same `next_cursor` for the rows written since; `reset: true` means the rows the cursor covered changed shape, so the reply starts again from the first page. Latest order: read on until `next_cursor` is null; its cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment (a cursor from before it crossed, or a latest-order cursor from before a compaction rotated that segment, answers `reset: true`). With `subagent_id`: a delegated child of the session (running: through the parent's roster; finished: through its stored row, when its ancestry reaches this conversation); a foreign or unknown child is `available: false`. Refusals: invalid_params (a cursor issued for another session, child or order, or not by this read), not_found, permission_denied, profile_mismatch.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/StoredTranscriptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StoredTranscriptResult"
+        }
+      }
+    },
+    {
       "name": "shell.exec",
       "summary": "Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``).",
       "params": [
@@ -48615,6 +50885,26 @@
         "schema": {
           "$ref": "#/components/schemas/WorkerExecution"
         }
+      }
+    }
+  ],
+  "x-canonical-namespaces": [
+    {
+      "name": "plugin.{plugin_id}.{name}",
+      "summary": "A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported.",
+      "x-prefix": "plugin.",
+      "x-capability": "plugin-rpc-v1",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginRpcParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {}
       }
     }
   ],
@@ -49121,6 +51411,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/GatewayReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "groups.changed",
+      "summary": "A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsChangedPayload"
           }
         }
       ]

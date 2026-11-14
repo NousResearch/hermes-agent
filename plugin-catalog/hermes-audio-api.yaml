@@ -1,0 +1,20 @@
+name: hermes-audio-api
+repo: https://github.com/axAilotl/hermes-audio-api
+sha: 079c6c21e73257c34247e8314c0f0aa4270d1f5f
+title: Audio API
+description: "OpenAI-compatible /v1/audio/transcriptions and /v1/audio/speech endpoints backed by Hermes' configured STT and TTS providers. Disclosure — opens an HTTP listener (127.0.0.1:8643 by default) that starts with the gateway as soon as a key exists, protected by a bearer key (AUDIO_API_KEY, or the API server's API_SERVER_KEY when reuse is on, which is the default); uploaded audio and requested text go to whichever STT/TTS providers Hermes is configured to use; runs ffmpeg when it must convert the output format; calls Hermes' internal transcription and TTS helpers, which are not a stable plugin API."
+maintainer: axAilotl
+tier: community
+category: voice
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/axAilotl/hermes-audio-api#readme
+platforms: [linux, macos, windows]
+known_issues:
+  - Calls Hermes' transcription and text-to-speech helpers, which are outside the documented plugin API; tested against 0.23.0 and main.
+  - Listens on its own port because plugins cannot add routes to the built-in API server.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

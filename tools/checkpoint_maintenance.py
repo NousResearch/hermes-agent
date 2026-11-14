@@ -168,7 +168,12 @@ def prune_checkpoints(
     also deleted.
 
     Returns a dict with counts ``{"scanned", "deleted_orphan",
-    "deleted_stale", "errors", "bytes_freed"}``.
+    "deleted_stale", "cap_not_met", "errors", "bytes_freed"}``.
+
+    ``cap_not_met`` is not a failure: it means the store is still above
+    ``max_total_size_mb`` because every remaining project is down to its last
+    retained checkpoint (or the rewrite budget ran out first). ``errors`` stays
+    reserved for Git/OS failures.
 
     Never raises — maintenance must never block interactive startup.
     """
@@ -177,6 +182,7 @@ def prune_checkpoints(
         "scanned": 0,
         "deleted_orphan": 0,
         "deleted_stale": 0,
+        "cap_not_met": 0,
         "errors": 0,
         "bytes_freed": 0,
     }
@@ -342,15 +348,21 @@ def _prune_checkpoints(
             else:
                 result["deleted_stale"] += 1
 
-        from tools.checkpoint_pruning import Pruner, PruneError
+        from tools.checkpoint_pruning import CAP_FLOOR, CAP_MET, Pruner, PruneError
 
         pruner = Pruner(_run_git, store, str(base), _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
             if result["deleted_orphan"] + result["deleted_stale"] or pruner.gc_pending():
                 pruner.reclaim()
-            if not pruner.enforce_size(max_total_size_mb * 1024 * 1024):
-                result["errors"] += 1
-                logger.warning("Checkpoint store remains over its size cap; minimum history retained")
+            outcome = pruner.enforce_size(max_total_size_mb * 1024 * 1024)
+            if outcome != CAP_MET:
+                # Reaching the cap can require dropping a project's last retained checkpoint:
+                # a policy floor, not a failure, so it is counted apart from ``errors``.
+                result["cap_not_met"] += 1
+                logger.info(
+                    "Checkpoint store remains over its size cap: %s",
+                    "every project is at its last retained checkpoint" if outcome == CAP_FLOOR
+                    else "the rewrite budget ran out first")
         except (PruneError, OSError) as exc:
             result["errors"] += 1
             logger.warning("Checkpoint pruning stopped: %s", exc)
@@ -384,7 +396,7 @@ def maybe_auto_prune_checkpoints(
         if not base.exists():
             out["result"] = {
                 "scanned": 0, "deleted_orphan": 0, "deleted_stale": 0,
-                "errors": 0, "bytes_freed": 0,
+                "cap_not_met": 0, "errors": 0, "bytes_freed": 0,
             }
             return out
 

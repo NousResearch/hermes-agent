@@ -14,6 +14,15 @@ class PruneError(RuntimeError):
 
 GC_PENDING_NAME = ".gc-pending"
 
+# ``Pruner.enforce_size`` outcomes. Only ``CAP_MET`` means the store fits now; the other two are
+# a policy outcome, not a failure: the rewrites ran out of droppable history, or out of rounds.
+CAP_MET = "met"
+CAP_FLOOR = "floor"
+CAP_BUDGET = "budget"
+
+# Rounds of "drop every project's oldest snapshot" one prune may spend chasing the cap.
+_REWRITE_ROUNDS = 20
+
 
 def store_lock_path(base: Path) -> Path:
     base = base.resolve()
@@ -123,18 +132,24 @@ class Pruner:
                 changed = True
         return changed
 
-    def enforce_size(self, cap_bytes: int) -> bool:
+    def enforce_size(self, cap_bytes: int) -> str:
         """Periodic prune: gc per round (the measurement only moves after a repack) until the
-        store fits. Returns whether it did; a failed Git step raises immediately."""
+        store fits. A failed Git step raises immediately.
+
+        Returns ``CAP_MET`` once the store fits, else which limit stopped the rewrites: a cap
+        that every project's last retained checkpoint keeps out of reach is ``CAP_FLOOR`` —
+        reaching it would mean deleting history — and one the round budget gives up on first is
+        ``CAP_BUDGET``. Neither is a failure, so a caller must not fold them into its errors.
+        """
         if cap_bytes <= 0 or self.dir_size(self.store) <= cap_bytes:
-            return True
+            return CAP_MET
         self.reclaim()
         if self.dir_size(self.store) <= cap_bytes:
-            return True
+            return CAP_MET
         refs = self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines()
         # Keep the existing round-robin policy, remeasure after EACH rewrite.
-        # Twenty rounds bound maintenance when many large histories remain.
-        for _ in range(20):
+        # The round budget bounds maintenance when many large histories remain.
+        for _ in range(_REWRITE_ROUNDS):
             changed = False
             for ref in refs:
                 commits = self._commits(ref)
@@ -143,7 +158,7 @@ class Pruner:
                 self._rewrite(ref, commits, commits[1:], gc=True)
                 changed = True
                 if self.dir_size(self.store) <= cap_bytes:
-                    return True
+                    return CAP_MET
             if not changed:
-                break
-        return False
+                return CAP_FLOOR
+        return CAP_BUDGET

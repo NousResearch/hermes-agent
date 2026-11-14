@@ -56,6 +56,21 @@ def _loop_mod():
     return _cl
 
 
+def response_row_token_count(agent: Any, response: Any) -> Optional[int]:
+    """THIS response's own completion figure for its transcript row (``token_count``).
+
+    Pure metadata read, deliberately separate from ``record_response_usage``: it does not
+    touch session counters and does not fold MoA advisor fan-out (the row shows what the
+    aggregator produced; the session totals still do). ``None`` means the provider
+    reported no usage at all (unknown) — a reported ``0`` is a real figure."""
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return None
+    return int(normalize_usage(
+        usage, provider=getattr(agent, "provider", None), api_mode=getattr(agent, "api_mode", None),
+    ).output_tokens)
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when

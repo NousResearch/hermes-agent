@@ -18,7 +18,8 @@ On the session authority none was installed, so every ``desktop_ui`` tool the se
 still offers a GUI session failed with "only available in the Hermes desktop app". Here the
 emitter and the process sinks are installed once per process; the emitter routes each event to the
 turn that raised it (by the turn's bound ``HERMES_SESSION_ID``) through the generation-fenced
-execution stream, and the process sinks route by the process's ``session_key`` to the owning
+execution stream — re-registered under the child id when a mid-turn compression rotates it
+(``rebind``) — and the process sinks route by the process's ``session_key`` to the owning
 session's event stream (a background process outlives the turn that started it). The callbacks
 are installed per turn on the cached agent and restored with the other turn sinks.
 
@@ -97,7 +98,27 @@ def _install_emitter() -> None:
         return
     from tools import desktop_ui
     desktop_ui.set_emitter(_emit)
+    from gateway.session_context import register_id_rebind_hook
+    register_id_rebind_hook(rebind)
     _emitter_installed = True
+
+
+def rebind(previous_id, session_id) -> None:
+    """Follow a session-id rotation: the live turn keeps its window route under the new id.
+
+    Automatic compression re-points ``HERMES_SESSION_ID`` mid-turn (``_rebind_session_context``), so
+    ``_emit`` would look the turn up under an id no turn registered. The route is the live turn, not
+    the id, so register it again under the child. The pre-rotation key stays: a thread that inherited
+    the parent id still resolves to the same turn, and ``release`` drops every key naming it. A child
+    id a newer turn already owns is left alone — that turn owns the route now.
+    """
+    old, new = str(previous_id or ""), str(session_id or "")
+    if not old or not new or old == new:
+        return
+    with _lock:
+        publish = _turns.get(old)
+        if publish is not None and new not in _turns:
+            _turns[new] = publish
 
 
 def _publish_process(session, event_type, payload) -> None:
@@ -280,10 +301,11 @@ def wire(turn, agent):
 
 
 def release(token) -> None:
-    """Drop this turn's routing entry, unless a newer turn of the same session already replaced it."""
+    """Drop this turn's routing entries, wherever a session rotation moved them, unless a newer turn
+    of the same session already replaced the publisher."""
     if not token:
         return
-    key, publish = token
+    _key, publish = token
     with _lock:
-        if _turns.get(key) is publish:
-            _turns.pop(key, None)
+        for existing in [key for key, registered in _turns.items() if registered is publish]:
+            _turns.pop(existing, None)

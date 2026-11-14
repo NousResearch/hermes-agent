@@ -225,3 +225,46 @@ def test_init_fallback_keeps_codex_responses_for_openai_codex():
         assert agent.model == "gpt-5.4-mini"
         assert agent._fallback_activated is True
         assert agent.api_mode == "codex_responses"
+
+
+def test_init_fallback_to_anthropic_builds_the_native_client():
+    """#141486 / #150445: openai-codex primary (quota exhausted, no usable creds) -> an anthropic
+    fallback recomputes api_mode to anthropic_messages, so init must build the native Anthropic
+    client like the per-turn fallback does. Before the fix it kept the OpenAI-wire client and
+    never set ``_anthropic_api_key``, so ``_snapshot_primary_runtime`` raised AttributeError and
+    the agent (e.g. a managed kanban worker) died during construction."""
+    fb_client = _mock_client(api_key="sk-ant-fallback-1234567890", base_url="https://api.anthropic.com")
+    anthropic_client = MagicMock(name="anthropic_client")
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "anthropic":
+            return fb_client, "claude-opus-4-6"
+        return None, None  # openai-codex primary: quota exhausted
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("agent.anthropic_adapter.build_anthropic_client", return_value=anthropic_client) as build, \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+
+        agent = AIAgent(
+            provider="openai-codex",
+            model="gpt-5.4",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{"provider": "anthropic", "model": "claude-opus-4-6"}],
+        )
+
+        assert agent.provider == "anthropic"
+        assert agent._fallback_activated is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent._anthropic_client is anthropic_client
+        assert agent.client is None
+        assert build.call_args.args[:2] == ("sk-ant-fallback-1234567890", "https://api.anthropic.com")
+        assert agent._primary_runtime["api_mode"] == "anthropic_messages"
+        assert agent._primary_runtime["anthropic_api_key"] == "sk-ant-fallback-1234567890"
+        assert agent._primary_runtime["anthropic_base_url"] == "https://api.anthropic.com"

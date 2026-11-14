@@ -142,10 +142,22 @@ def _missing_external_cli():
                      code="missing_external_process_cli")
 
 
-@pytest.mark.parametrize("make_exc", [_anthropic_model_cooldown, _missing_external_cli])
+def _quota_exhausted():
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+
+    return AuthError("Codex usage limit reached; resets in 2h.", provider="openai-codex", code=CODEX_RATE_LIMITED_CODE)
+
+
+def _out_of_credits():
+    from hermes_cli.auth import AuthError
+
+    return AuthError("Your Nous Portal account has no usable credits.", provider="nous", code="no_usable_credits")
+
+
+@pytest.mark.parametrize("make_exc", [_anthropic_model_cooldown, _missing_external_cli, _quota_exhausted, _out_of_credits])
 def test_primary_failures_a_relogin_cannot_fix_are_not_called_lapsed_logins(make_exc):
-    """A per-model cooldown leaves the login working, and a missing CLI needs installing: neither is a
-    lapsed login, so a backup's later failure must not tell the user to sign in to the primary."""
+    """A per-model cooldown, a quota wall and an empty balance leave the login working, and a missing CLI
+    needs installing: none is a lapsed login, so a backup's later failure must not send the user to sign in."""
     from agent.primary_auth_fallback import primary_auth_failure_from_exc
 
     assert primary_auth_failure_from_exc(make_exc(), "anthropic", "custom") is None

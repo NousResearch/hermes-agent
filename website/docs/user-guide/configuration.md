@@ -2003,6 +2003,19 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+:::note MiniMax M3.1
+For the MiniMax M3.1 release line, Hermes sends effort as `output_config.effort`
+on the Anthropic-compatible route and as `reasoning_effort` on the global
+`https://api.minimax.io/v1` Chat Completions route. Supported levels are `low`,
+`medium`, `high`, `xhigh`, and `max`; `minimal` maps to `low` and `ultra` to `max`.
+M3.1 cannot disable thinking: an explicit `none` or disabled reasoning setting
+selects `low`, the minimum supported effort. Truly unset transport configuration
+(`None` or `{}`) omits the controls and leaves the server default (`max`).
+`/reasoning none` selects minimum reasoning; `/reasoning off` remains the
+existing display-only toggle. MiniMax M3 and M2.x retain their existing behavior.
+See [MiniMax's thinking guide](https://platform.minimax.io/docs/guides/text-generation#thinking).
+:::
+
 ### Answer length (`text_verbosity`)
 
 Responses-API models (OpenAI GPT-5 family and later, direct OpenAI, ChatGPT Codex and Azure routes) also accept a separate knob for how long the final natural-language answer is, independent of reasoning depth:

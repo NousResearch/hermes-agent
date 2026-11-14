@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway import delivery_ledger as dl
+from gateway.run import GatewayRunner
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +40,7 @@ def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
         thread_id=kw.get("thread_id", "171.001"),
         content=kw.get("content", "the final answer"),
         adapter_profile=kw.get("adapter_profile"),
+        routing_metadata=kw.get("routing_metadata"),
     )
 
 
@@ -390,8 +392,6 @@ class TestGatewayRedeliverySweep:
     @staticmethod
     def _runner(adapter=None):
         from gateway.config import Platform
-        from gateway.run import GatewayRunner
-
         runner = object.__new__(GatewayRunner)
         runner.adapters = {Platform.SLACK: adapter} if adapter else {}
         runner._profile_adapters = {}
@@ -536,6 +536,127 @@ class TestGatewayRedeliverySweep:
 
         assert _row("ob-1")["state"] == "failed" and _row("ob-1")["attempts"] == 0
         assert [r["obligation_id"] for r in dl.sweep_failed_for_runtime("slack")] == ["ob-1"]
+
+    @pytest.mark.asyncio
+    async def test_boot_replays_relay_reply_with_saved_destination(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.relay.adapter import RelayAdapter
+        from gateway.session import SessionSource
+        from tests.gateway.relay.stub_connector import StubConnector
+        from tests.gateway.relay.test_relay_adapter import make_desc
+
+        _record(routing_metadata={"scope_id": "workspace", "user_id": "sender"})
+        dl.mark_failed("ob-1", "send_path_degraded")
+        _orphan("ob-1")
+        _record("secondary", adapter_profile="reviewer")
+        _orphan("secondary")
+        descriptor = make_desc(platform="discord")
+        transport = StubConnector(descriptor)
+        transport._identities.append(("slack", "slack-bot"))
+        relay = RelayAdapter(PlatformConfig(), descriptor)
+        monkeypatch.setattr(relay, "_transport", transport)
+        runner = self._runner()
+        runner.adapters = {Platform.RELAY: relay}
+        origin = SessionSource(
+            platform=Platform.SLACK, chat_id="C1", thread_id="171.001",
+            scope_id="workspace", user_id="sender",
+        )
+        runner._async_session_store.lookup_by_session_key = AsyncMock(
+            return_value=SimpleNamespace(origin=origin),
+        )
+
+        assert await runner._redeliver_pending_obligations() == 1
+        assert _row("ob-1")["state"] == "delivered"
+        assert _row("secondary")["attempts"] == 0
+        assert transport.sent_platforms == ["slack"]
+        metadata = transport.sent[0]["metadata"]
+        assert metadata["thread_id"] == "171.001"
+        assert metadata["scope_id"] == "workspace"
+        assert metadata["user_id"] == "sender"
+
+        runner.config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True)})
+        _record("offline-native")
+        _orphan("offline-native")
+        assert await runner._redeliver_pending_obligations() == 0
+        assert _row("offline-native")["attempts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_reconnect_replays_definite_relay_failure(self, monkeypatch):
+        import asyncio
+        import json
+
+        from gateway.config import Platform, PlatformConfig
+        from gateway.relay.adapter import RelayAdapter
+        from gateway.relay.obligation_replay import wire_relay_obligation_replay
+        from gateway.relay.ws_transport import WebSocketRelayTransport
+        from tests.gateway.relay.test_relay_adapter import make_desc
+        from tests.gateway.relay.test_relay_going_idle import _IdleAwareServer
+        from tests.waiting import async_wait_until
+
+        connector = _IdleAwareServer()
+        original_on_frame = connector._on_frame
+        outbound = []
+
+        async def on_frame(ws, frame):
+            if frame["type"] == "hello":
+                await ws.send(json.dumps({
+                    "type": "descriptor", "descriptor": json.loads(descriptor.to_json()),
+                }) + "\n")
+            elif frame["type"] == "outbound":
+                outbound.append(frame)
+                metadata = frame["action"].get("metadata", {})
+                routed = metadata.get("scope_id") == "workspace" and metadata.get("user_id") == "sender"
+                await ws.send(json.dumps({
+                    "type": "outbound_result", "requestId": frame["requestId"],
+                    "result": {"success": routed, **({} if routed else {
+                        "error": "target not routed to an onboarded tenant",
+                    })},
+                }) + "\n")
+            else:
+                await original_on_frame(ws, frame)
+
+        descriptor = make_desc(platform="slack")
+        monkeypatch.setattr(connector, "_on_frame", on_frame)
+        await connector.start()
+        transport = WebSocketRelayTransport(connector.url, "slack", "bot", reconnect=True)
+        transport._dormant_redial_s = 0
+        relay = RelayAdapter(PlatformConfig(), descriptor, transport)
+        runner = self._runner()
+        runner._running = True
+        runner._background_tasks = set()
+        runner._async_session_store.lookup_by_session_key = AsyncMock(return_value=None)
+        wire_relay_obligation_replay(runner, relay)
+        try:
+            await transport.connect()
+            await transport.handshake()
+            runner.adapters = {Platform.RELAY: relay}
+            transport.hold_redial()
+            assert await transport.go_dormant()
+            await async_wait_until(lambda: transport._ws is None, timeout=5, what="dormant socket")
+            _record(routing_metadata={"scope_id": "workspace", "user_id": "sender"})
+            dl.mark_failed("ob-1", "send_path_degraded")
+            assert await runner._redeliver_failed_obligations_for_platform(Platform.SLACK) == 0
+            assert not outbound and _row("ob-1")["attempts"] == 0
+            assert _row("ob-1")["last_error"] == "relay transport not connected"
+
+            transport.release_redial()
+            await async_wait_until(
+                lambda: _row("ob-1")["state"] == "delivered", timeout=5, what="relay replay",
+            )
+            assert _row("ob-1")["attempts"] == 1
+            assert len(outbound) == 1
+            assert outbound[0]["platform"] == "slack"
+            assert outbound[0]["action"]["content"] == dl.RECONNECTED_MARKER + "the final answer"
+        finally:
+            runner._running = False
+            await transport.disconnect()
+            pending = list(runner._background_tasks)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await connector.stop()
 
     @pytest.mark.asyncio
     async def test_runtime_failed_redelivery_clears_resume_before_send(self):

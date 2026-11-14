@@ -13,6 +13,7 @@ best-effort: ledger failures must never block a send; callers wrap every call in
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -54,7 +55,7 @@ FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit 
 # used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
-_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded", "relay routing metadata unavailable"})
 # One tier per in-process retry; the last budgeted attempt is left to the boot sweep (retry_not_before).
 _RETRY_BACKOFF_SECONDS = (30.0, 120.0)
 assert len(_RETRY_BACKOFF_SECONDS) == MAX_ATTEMPTS - 1
@@ -201,11 +202,13 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             owner_pid INTEGER,
             owner_started_at INTEGER,
             last_error TEXT,
-            adapter_profile TEXT
+            adapter_profile TEXT,
+            routing_metadata TEXT
         )"""
     )
     if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    add_column_if_missing(conn, "delivery_obligations", "routing_metadata", "routing_metadata TEXT")
 
 
 def _transaction():
@@ -268,7 +271,8 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                      routing_metadata: Optional[dict] = None) -> None:
     """Record a final response as owed to the platform (state='pending')."""
     now, (pid, started) = time.time(), _owner_stamp()
     with _DB_LOCK, _transaction() as conn:
@@ -276,10 +280,11 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
-                owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                owner_pid, owner_started_at, adapter_profile, routing_metadata)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default",
+             json.dumps(_routing_snapshot(routing_metadata))))
         # Same transaction, same connection: the cron ledgers prune this way too
         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
         _prune_unlocked(conn, now)
@@ -349,9 +354,23 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
             (state, time.time(), error[:500] if error else None, obligation_id))
 
 
+def _routing_snapshot(metadata: Optional[dict]) -> dict[str, str]:
+    """Persist only the routing discriminators, never arbitrary outbound metadata."""
+    return {key: value for key in ("scope_id", "user_id", "profile")
+            if isinstance(value := (metadata or {}).get(key), str) and value.strip()}
+
+
+def _decode_routing_snapshot(raw: Optional[str]) -> dict[str, str]:
+    try:
+        value = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return {}
+    return _routing_snapshot(value) if isinstance(value, dict) else {}
+
+
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> dict[str, Any]:
+                 last_error: Optional[str] = None, routing_metadata: Optional[str] = None) -> dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
     the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
     ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
@@ -362,7 +381,8 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
             **({"runtime_recovery": True} if runtime else {}),
-            **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
+            **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1,
+            "routing_metadata": _decode_routing_snapshot(routing_metadata)}
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
@@ -391,12 +411,12 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at, routing_metadata
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-             owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+             owner_pid, owner_started_at, adapter_profile, last_error, updated_at, routing_metadata) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -442,12 +462,14 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default",
-                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row,
+                                            routing_metadata=routing_metadata))
     return claimed
 
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
-                             profile: Optional[str] = None) -> list[dict[str, Any]]:
+                             profile: Optional[str] = None,
+                             relay_reconnected: bool = False) -> list[dict[str, Any]]:
     """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
@@ -467,15 +489,19 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, attempts, created_at, owner_pid,
-                      owner_started_at, last_error, adapter_profile, updated_at
+                      owner_started_at, last_error, adapter_profile, updated_at, routing_metadata
                FROM delivery_obligations
                WHERE state='failed' AND platform=?""", (platform,)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
-             owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
+             owner_pid, owner_started_at, last_error, adapter_profile, updated_at, routing_metadata) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue
             due = retry_not_before(updated_at, last_error, attempts)
+            if relay_reconnected and last_error == "relay transport not connected":
+                # This error was returned before any frame went out. The new
+                # handshake is the recovery signal, even inside the backoff.
+                due = now
             if due is None:
                 continue
             owner_guard = (now, oid, owner_pid, owner_started_at)
@@ -501,7 +527,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                 # claim released unsent keeps its flood retry eligibility.
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
-                                            flood=is_flood_error(last_error), last_error=last_error))
+                                            flood=is_flood_error(last_error), last_error=last_error,
+                                            routing_metadata=routing_metadata))
     return claimed
 
 

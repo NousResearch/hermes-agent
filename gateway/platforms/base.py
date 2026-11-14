@@ -438,7 +438,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
-    finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
+    finalize_final_obligation, ledger_attempted, record_final_obligation, send_ledgered_final)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
@@ -447,7 +447,7 @@ from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
-from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
+from hermes_cli.observability.shared_metrics_gateway import records_delivery
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
@@ -4093,9 +4093,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
-        """Ledger a final before its send (``base_delivery_ledger.record_final_obligation``); the per-adapter seam."""
-        return await record_final_obligation(self, event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool,
+        routing_metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
+        return await record_final_obligation(self, event, session_key, text_content, delivery_adapter,
+                                             is_ephemeral_response, routing_metadata)
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
@@ -4171,6 +4173,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         record_delivery(result)  # a footer the captioned photo lost goes out on its own (#74547):
         await send_footer_unless_captioned(self, event.source.chat_id, images, result, metadata, record_delivery)
 
+    def _final_delivery_metadata(self, source: SessionSource, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Resolve transport metadata before recording and sending the same final."""
+        return metadata
+
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
@@ -4182,17 +4188,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
-        async def _send(delivery_adapter: "BasePlatformAdapter", obligation_id: Optional[str]) -> SendResult:
-            logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                        len(text_content), event.source.chat_id)
-            if obligation_id is not None:
-                await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-            result = await delivery_adapter._send_with_retry(
-                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-            stop_reply_clock(delivery_adapter, event.source.chat_id, result)
-            return result
-        return await ledger_bracket(self, event, session_key, text_content, _send,
-                                    is_ephemeral_response=is_ephemeral_response)
+        return await send_ledgered_final(self, event, session_key, text_content, metadata,
+                                         reply_to=reply_to, is_ephemeral_response=is_ephemeral_response)
 
     async def ledger_attempted_final(self, event: MessageEvent, session_key: str, response: str, *,
                                      error: str) -> bool:

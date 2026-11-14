@@ -9,21 +9,46 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
+from hermes_cli.observability.shared_metrics_gateway import stop_reply_clock
+
 logger = logging.getLogger("gateway.platforms.base")
 
 
 async def ledger_bracket(adapter: Any, event: Any, session_key: str, text_content: str,
-                         send: Callable[[Any, Optional[str]], Awaitable[Any]], *,
+                         send: Callable[[Any, Optional[str], dict[str, Any]], Awaitable[Any]], *,
+                         metadata: Optional[dict[str, Any]] = None,
                          is_ephemeral_response: bool = False) -> "tuple[Any, Any]":
-    """Resolve the CURRENT delivery adapter, record, ``send(delivery_adapter, obligation_id)``, finalize.
-    Returns the send result with the adapter that owns it."""
+    """Use the current delivery adapter and ledger the routing used by the same send."""
     delivery_adapter = adapter._final_delivery_adapter(event.source)
+    send_metadata = (
+        delivery_adapter._final_delivery_metadata(event.source, metadata)
+        if metadata is not None else {}
+    )
     obligation_id = await adapter._record_delivery_obligation(
-        event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-    result = await send(delivery_adapter, obligation_id)
+        event, session_key, text_content, delivery_adapter, is_ephemeral_response,
+        routing_metadata=send_metadata)
+    result = await send(delivery_adapter, obligation_id, send_metadata)
     if obligation_id is not None:
         await adapter._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
     return result, delivery_adapter
+
+
+async def send_ledgered_final(adapter: Any, event: Any, session_key: str, text_content: str,
+                              metadata: dict[str, Any], *, reply_to: Optional[str],
+                              is_ephemeral_response: bool) -> "tuple[Any, Any]":
+    async def _send(delivery_adapter: Any, obligation_id: Optional[str],
+                    send_metadata: dict[str, Any]) -> Any:
+        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                    len(text_content), event.source.chat_id)
+        if obligation_id is not None:
+            await adapter._release_turn_marker(event)  # the ledger now owns the crash recovery
+        result = await delivery_adapter._send_with_retry(
+            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=send_metadata)
+        stop_reply_clock(delivery_adapter, event.source.chat_id, result)
+        return result
+
+    return await ledger_bracket(adapter, event, session_key, text_content, _send, metadata=metadata,
+                                is_ephemeral_response=is_ephemeral_response)
 
 
 async def ledger_attempted(adapter: Any, event: Any, session_key: str, text: str, error: str) -> bool:
@@ -32,7 +57,8 @@ async def ledger_attempted(adapter: Any, event: Any, session_key: str, text: str
     and a lost send is not silence. False when nothing was saved (ledger off, a refused reply)."""
     saved: list[str] = []
 
-    async def _attempted(_delivery_adapter: Any, obligation_id: Optional[str]) -> Any:
+    async def _attempted(_delivery_adapter: Any, obligation_id: Optional[str],
+                         _metadata: dict[str, Any]) -> Any:
         from gateway.platforms.base import SendResult
         if obligation_id:
             saved.append(obligation_id)
@@ -44,7 +70,8 @@ async def ledger_attempted(adapter: Any, event: Any, session_key: str, text: str
 
 
 async def record_final_obligation(adapter: Any, event: Any, session_key: str, text_content: str,
-                            delivery_adapter: Any, is_ephemeral_response: bool) -> Optional[str]:
+                            delivery_adapter: Any, is_ephemeral_response: bool,
+                            routing_metadata: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
     next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
     or None."""
@@ -69,7 +96,8 @@ async def record_final_obligation(adapter: Any, event: Any, session_key: str, te
             platform=str(getattr(source.platform, "value", source.platform)),
             chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
             content=text_content,
-            adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+            adapter_profile=getattr(delivery_adapter, "_owner_profile", None),
+            routing_metadata=routing_metadata)
         await asyncio.to_thread(mark_attempting, obligation_id)
         return obligation_id
     except Exception:

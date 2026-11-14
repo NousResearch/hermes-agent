@@ -16,6 +16,7 @@ from tests.gateway.test_shared_busy_receive_loop import Adapter, _statuses, _wai
 
 @pytest.mark.asyncio
 async def test_busy_followup_keeps_its_marker_until_the_reply_is_ledgered(monkeypatch):
+    monkeypatch.setattr("pm.environments._payload_manifest", lambda _root: None)
     from gateway.config import GatewayConfig, Platform
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
@@ -31,11 +32,12 @@ async def test_busy_followup_keeps_its_marker_until_the_reply_is_ledgered(monkey
     runner._wire_adapter_handlers(adapter)
     source = adapter.build_source(chat_id='busy-chat', chat_type='dm', user_id='fixture-user')
     key = runner.session_store._generate_session_key(source)
-    gate = asyncio.Event()
+    gate, started = asyncio.Event(), asyncio.Event()
 
     async def turn(event, source, quick_key, run_generation):
         await runner._mark_durable_active_turn(event, quick_key)
         if event.text == 'one':
+            started.set()
             await gate.wait()
         execution_result.get()['result'] = {'final_response': 'reply to ' + event.text, 'messages': []}
         return 'reply to ' + event.text
@@ -51,7 +53,8 @@ async def test_busy_followup_keeps_its_marker_until_the_reply_is_ledgered(monkey
     monkeypatch.setattr(adapter, '_record_delivery_obligation', ledger)
 
     await adapter.handle_message(MessageEvent(text='one', source=source, message_id='m1'))
-    await _wait_for(lambda: _statuses(authority).get('one') == 'started')
+    await asyncio.wait_for(started.wait(), 30)
+    assert _statuses(authority).get('one') == 'started'
     await asyncio.wait_for(adapter.handle_message(MessageEvent(text='two', source=source, message_id='m2')), 5)
     gate.set()
     await _wait_for(lambda: 'reply to two' in adapter.sent and not adapter._background_tasks, 15)

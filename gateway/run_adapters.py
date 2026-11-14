@@ -950,6 +950,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             platform.value, exc_info=True,
         ):
             await self._redeliver_failed_obligations_for_platform(platform)
+        if platform is Platform.RELAY:
+            from gateway.relay.obligation_replay import replay_on_relay_replacement
+            replay_on_relay_replacement(self, adapter)
         # Rebuild channel directory with the new adapter
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
@@ -1412,6 +1415,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
+        if adapter.platform is Platform.RELAY:
+            from gateway.relay.obligation_replay import wire_relay_obligation_replay
+            wire_relay_obligation_replay(self, adapter)
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
         timing = busy_text_timing or getattr(self, "_busy_text_timing", None)
         if timing:

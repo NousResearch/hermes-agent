@@ -112,7 +112,7 @@ def _strip_shell_comments(command: str) -> str:
     # a later command from running, so invalid expressions must be kept too.
     marker_text = command.replace("\\\n", "")
     if any(marker in marker_text for marker in (
-        "<(", ">(", "$(", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(", "=(", "[[", "((",
+        "<(", ">(", "$(", "$[", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(", "=(", "[[", "((",
     )):
         return command
     # A continuation can split a heredoc operator. Do not strip the body while

@@ -24,3 +24,14 @@ export function stubMenuDomApis() {
   Element.prototype.releasePointerCapture ??= () => undefined
   Element.prototype.scrollIntoView ??= () => undefined
 }
+
+/** Visible anchors for interaction tests; clipping assertions run in Electron. */
+export function stubVisibleMenuAnchors() {
+  const getRect = Element.prototype.getBoundingClientRect
+
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    return this.matches('[data-slot="dropdown-menu-sub-trigger"]') ? new DOMRect(100, 100, 100, 24) : getRect.call(this)
+  })
+  vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(1024)
+  vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(768)
+}

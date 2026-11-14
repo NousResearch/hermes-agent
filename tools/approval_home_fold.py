@@ -38,7 +38,7 @@ def _home_prefix_fold_regex(path: str):
     # Optional leading root separator; a Windows drive letter is a component. Mandatory (and anchored
     # at a path start: ``/data/root/x`` is not ``/data~/x``) for a single-component home, else ``root/file`` folds.
     # A POSIX single-component home splits only on ``/`` or ``\/``: ``/root\*`` is the literal name ``/root*``.
-    sep = r"(?:\\?/)" if len(components) == 1 and os.name == "posix" and path.startswith("/") else r"[/\\]"
+    sep = r"(?:\\?/)" if len(components) == 1 and facts.os_family() != "win32" and path.startswith("/") else r"[/\\]"
     lead = r"(?<![\w.~$}/\\-])" + sep + "+" if len(components) == 1 else sep + "*"
     tail = _PATH_TAIL if sep == r"[/\\]" else r"(?P<tail>(?:\\?/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
     return re.compile(lead + (sep + "+").join(re.escape(c) for c in components) + tail)

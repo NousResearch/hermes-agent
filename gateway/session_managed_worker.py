@@ -52,7 +52,10 @@ def policy_if_managed(policy):
         return None
     if policy.ignore_user_config or policy.kanban_json is not None:
         return policy
-    if policy.config().get('gateway', {}).get('managed_workers') is not True:
+    gateway_section = policy.config().get('gateway')
+    # A profile config's own status line spells this key as a bare scalar (``gateway: running``);
+    # only the nested mapping carries the opt-in, and the status line must not crash the gate.
+    if not isinstance(gateway_section, dict) or gateway_section.get('managed_workers') is not True:
         return None
     request = json.loads(policy.request_json)
     if policy.platform != 'cli' or request.get('provider') != 'custom' or not request.get('base_url'):

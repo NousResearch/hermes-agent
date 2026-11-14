@@ -3,6 +3,7 @@ import path from 'node:path'
 
 import { LOCAL_CONNECTION_ID } from './connection-registry'
 import { profileNameFromDeleteRequest } from './profile-delete-routing'
+import { PROFILE_ID_ARG_RE } from './profile-id-guard'
 import { profileRenameFromRequest, type ProfileRenameRequest } from './profile-rename-routing'
 import type { WindowConnectionRoute } from './window-connection-route'
 
@@ -24,7 +25,7 @@ export interface MissingLocalProfileCheck {
   profileExists: (profile: string) => boolean
 }
 
-export const DESKTOP_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+export const DESKTOP_PROFILE_NAME_RE = PROFILE_ID_ARG_RE
 
 export function requireDesktopProfileRoute(value: unknown): DesktopProfileRoute {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

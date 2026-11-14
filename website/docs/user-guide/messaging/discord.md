@@ -808,6 +808,30 @@ request is answered, cancelled, or expires, even if the Discord view timeout is
 longer. A shorter Discord timeout retires the buttons without extending or ending
 the underlying approval wait.
 
+### Notify owners when input is waiting
+
+Discord does not notify channel members for an ordinary bot message. To ping the
+numeric users in `discord.allow_from` when Hermes is blocked on one of the prompts
+listed below, enable:
+
+```yaml
+discord:
+  approval_mentions: true
+```
+
+This covers dangerous-command approvals, slash-command confirmations, `clarify`
+questions, and update prompts. `DISCORD_APPROVAL_MENTIONS=true` is the equivalent
+environment override. Mentions are opt-in to avoid surprise notifications; only
+numeric allowlisted users are pinged, while role, `@everyone`, and reply-reference
+notifications remain disabled. A very large allowlist is cut to the first owners
+(by ID) that fit a quarter of Discord's 2,000-character message, so the prompt
+itself always fits.
+
+A nonempty environment setting overrides YAML, as with the other Discord flags.
+Each profile's gateway bot follows only its own profile's `.env` and
+`config.yaml`: one profile opting in never pings owners for another profile's
+prompts.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

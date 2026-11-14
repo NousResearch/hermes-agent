@@ -234,3 +234,97 @@ def test_suppression_is_scoped_to_its_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "dead-key")
     assert resolve_provider_secret("ELEVENLABS_API_KEY", "elevenlabs") == "el-key"
     assert resolve_provider_secret("XAI_API_KEY", "xai") == ""
+
+
+# ---------------------------------------------------------------------------
+# The no-OAuth fallback must apply the same origin pinning as the OAuth and
+# prefer_api_key branches: an env/.env XAI_BASE_URL pointing off the xAI origin
+# would otherwise receive the XAI_API_KEY bearer.
+# ---------------------------------------------------------------------------
+
+
+def test_api_key_fallback_rejects_foreign_base_url(tmp_path, monkeypatch):
+    from hermes_cli.config import invalidate_env_cache
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "paid-key-x1")
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+    monkeypatch.setenv("XAI_BASE_URL", "https://attacker.example/v1")
+    _set_xai_oauth_unavailable(monkeypatch)
+    invalidate_env_cache()
+    try:
+        creds = resolve_xai_http_credentials()
+        assert creds["provider"] == "xai"
+        assert creds["api_key"] == "paid-key-x1"
+        assert creds["base_url"] == "https://api.x.ai/v1"
+    finally:
+        invalidate_env_cache()
+
+
+def test_api_key_fallback_honors_hermes_xai_base_url(tmp_path, monkeypatch):
+    """HERMES_XAI_BASE_URL wins over XAI_BASE_URL on the fallback path, matching
+    the override order the OAuth and prefer_api_key branches already use."""
+    from hermes_cli.config import invalidate_env_cache
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "paid-key-x1")
+    monkeypatch.setenv("HERMES_XAI_BASE_URL", "https://staging.x.ai/v1")
+    monkeypatch.setenv("XAI_BASE_URL", "https://attacker.example/v1")
+    _set_xai_oauth_unavailable(monkeypatch)
+    invalidate_env_cache()
+    try:
+        creds = resolve_xai_http_credentials()
+        assert creds["base_url"] == "https://staging.x.ai/v1"
+    finally:
+        invalidate_env_cache()
+
+
+def test_api_key_fallback_rejects_http_base_url(tmp_path, monkeypatch):
+    """A cleartext override must fall back, not send the bearer over http."""
+    from hermes_cli.config import invalidate_env_cache
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "paid-key-x1")
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+    monkeypatch.setenv("XAI_BASE_URL", "http://localhost:8080/v1")
+    _set_xai_oauth_unavailable(monkeypatch)
+    invalidate_env_cache()
+    try:
+        creds = resolve_xai_http_credentials()
+        assert creds["base_url"] == "https://api.x.ai/v1"
+    finally:
+        invalidate_env_cache()
+
+
+def test_oauth_pool_fallback_base_url_is_pinned(tmp_path, monkeypatch):
+    """The pool entry's stored base_url comes from auth.json; with no env
+    override it became the request URL verbatim, so a foreign stored value
+    would receive the OAuth bearer. Pin it like every other channel."""
+    from types import SimpleNamespace
+
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+
+    entry = SimpleNamespace(
+        access_token="oauth-token-x1", runtime_api_key=None,
+        runtime_base_url=None, base_url="https://attacker.example/v1")
+
+    class _FakePool:
+        def select(self):
+            return entry
+
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider_id: _FakePool() if provider_id == "xai-oauth" else None)
+
+    creds = resolve_xai_http_credentials()
+    assert creds["provider"] == "xai-oauth"
+    assert creds["api_key"] == "oauth-token-x1"
+    assert creds["base_url"] == "https://api.x.ai/v1"

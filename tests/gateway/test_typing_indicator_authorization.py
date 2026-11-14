@@ -9,6 +9,8 @@ they assert "was the indicator started", not timing.
 """
 
 import asyncio
+import contextlib
+import contextvars
 from unittest.mock import AsyncMock
 
 import pytest
@@ -233,3 +235,34 @@ async def test_authorized_sender_keeps_processing_reactions():
 
     assert adapter.hook_calls == ["start", "complete"]
     assert len(runner.sources) == 1  # one verdict per event, shared by typing and both hooks
+
+
+class _LaunchScopedRunner(_StubRunner):
+    """Admits the sender only inside the launch-profile scope the standalone handler runs under
+    (``_standalone_scoped``): ambient ``os.environ`` is stale or foreign once multi-profile hosting is on."""
+
+    _in_launch_scope = contextvars.ContextVar("in_launch_scope", default=False)
+
+    @classmethod
+    @contextlib.contextmanager
+    def _standalone_launch_scope(cls):
+        token = cls._in_launch_scope.set(True)
+        try:
+            yield
+        finally:
+            cls._in_launch_scope.reset(token)
+
+    def _is_user_authorized_for_source(self, source):
+        self.sources.append(source)
+        return self._in_launch_scope.get()
+
+
+@pytest.mark.asyncio
+async def test_probe_reads_the_scope_the_handler_authorizes_under():
+    """An admitted sender keeps typing and reactions when the launch scope and ambient env disagree."""
+    adapter = _reacting_adapter(_LaunchScopedRunner())
+
+    await _drive_turn(adapter, _event(user_id=_OWNER))
+
+    assert adapter._keep_typing.await_count == 1
+    assert adapter.hook_calls == ["start", "complete"]

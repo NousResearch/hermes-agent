@@ -1578,6 +1578,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
+            _superseded = self._superseded_by(session)
             notification = {
                 "type": "completion",
                 "session_id": session.id,
@@ -1593,9 +1594,24 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
+                **({"superseded_by": _superseded} if _superseded else {}),
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
+
+    def _superseded_by(self, session: ProcessSession) -> Optional[str]:
+        """Id of the newest twin — same session_key + command, later started_at — so a
+        completion notice for a process the lane already re-ran says SUPERSEDED instead of
+        burning a turn re-explaining it.
+        ponytail: scans live tables only — a twin evicted past FINISHED_TTL reads as not
+        superseded (under-report, never a false positive)."""
+        if not session.session_key:
+            return None
+        with self._lock:
+            twins = [s for s in (*self._running.values(), *self._finished.values())
+                     if s.session_key == session.session_key and s.command == session.command
+                     and s.started_at > session.started_at]
+        return max(twins, key=lambda s: s.started_at).id if twins else None
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:

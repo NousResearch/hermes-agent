@@ -418,9 +418,12 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Heredoc bodies that are provably inert data (quoted delimiter, data-sink consumer like `cat > file
     # <<'EOF'`) are masked before scanning (#88336): a runbook line "a human can run: hermes gateway
     # restart" inside such a body is documentation, not a command this shell will execute.
+    # ``mask_code_consumers=False`` keeps python/osascript bodies visible: their payload reaches a
+    # shell at runtime (``os.system``, ``do shell script``), so masking it here would let an inline
+    # lifecycle command hide in the blanked body (#127698).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    text = strip_inert_heredoc_bodies(text)
+    text = strip_inert_heredoc_bodies(text, mask_code_consumers=False)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True
@@ -952,6 +955,59 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+def _heredoc_write_targets(unit: str) -> Iterator[str]:
+    """Paths a ``cat``/``tee`` heredoc command line writes its body to (``cat > P <<'EOF'``,
+    ``cat <<'EOF' | tee -a P``)."""
+    try:
+        tokens = _shlex_tokens(unit)
+    except ValueError:
+        return
+    for segment in _split_segments(tokens):
+        index = _executed_command_index(segment)
+        if index is None or _executable_name(segment[index]) not in {"cat", "tee"}:
+            continue
+        expect_target = False
+        for token in segment[index + 1:]:
+            if expect_target:
+                yield token
+                expect_target = False
+            elif token.lstrip("0123456789") in {">", ">>", ">|"}:
+                expect_target = True
+            elif token.startswith((">", "1>")) and token.lstrip("1>|"):
+                yield token.lstrip("1>|")
+            elif _executable_name(segment[index]) == "tee" and not token.startswith(("-", "<")):
+                yield token
+
+
+def _collect_heredoc_written_scripts(
+    command: str, cwd: Optional[str], written: Optional[dict[Path, list[str]]],
+) -> dict[Path, list[str]]:
+    """Add every body a heredoc in *command* writes to a path to *written*. The file does not exist
+    yet when the guard runs, so a later ``bash P`` / ``systemd-run P`` can only be scanned through
+    the body text (#148561). EVERY body is kept, not the last: the script may run between two
+    writes (``>`` then run then overwrite) or hold several appended bodies (``>>``)."""
+    from tools.shell_heredoc import iter_heredoc_bodies
+
+    written = {} if written is None else written
+    for unit, body in iter_heredoc_bodies(command):
+        for target in _heredoc_write_targets(unit):
+            for path in _resolved_or_nothing(target, cwd):
+                bodies = written.setdefault(_resolve_lenient(path), [])
+                if body not in bodies:
+                    bodies.append(body)
+    return written
+
+
+def _walk_candidates(command: str, walk_command: str, cwd: Optional[str], executed: bool) -> list[tuple[Path, bool]]:
+    """Referenced-script candidates: executed-view paths first, then paths only mentioned in masked
+    bodies. A heredoc body written to a candidate path is that script's text (see the walk); a body
+    that is only written stays documentation (#88336)."""
+    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    if walk_command != command:
+        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+    return candidates
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -1093,27 +1149,39 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    written: Optional[dict[Path, list[str]]] = None, charge: bool = True,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
-    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944)."""
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
+
+    *written* maps paths to the heredoc bodies written to them anywhere in the walk so far. It is
+    shared by every depth so a nested ``sh -c 'bash P'`` / ``systemd-run bash -c P`` payload still
+    resolves P to the body its parent wrote. ``charge=False`` is only for such a body: it is a
+    substring of text already charged, and each body is popped so it is scanned at most once."""
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
-    if not budget.charge_text(command):
+    if charge and not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
+    written = _collect_heredoc_written_scripts(command, cwd, written)
 
-    def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
+    def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, written=written,
+            charge=charge,
         )
 
-    # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
-    # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an
-    # oversized data file mentioned there otherwise fails closed as a "script".
+    # The walks below keep the lenient masked view — NOT the stricter one `_direct_lifecycle_scan`
+    # now uses (#127698): the mask boundary is what separates "executed" from "mentioned" path
+    # candidates below. A path or `sh -c` payload inside a provably-inert heredoc body is never
+    # shell-executed, and an oversized data file mentioned there otherwise fails closed as a
+    # "script" (#110422). Code-bearing bodies do not need walk visibility: an inline payload in
+    # them is already caught by the direct scan, and a path they merely mention must stay a
+    # mention (#113944).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
     walk_command = strip_inert_heredoc_bodies(command)
@@ -1126,11 +1194,10 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
-    if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
-
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed in _walk_candidates(command, walk_command, cwd, executed):
+        written_bodies = written.pop(_resolve_lenient(script_path), None)
+        if written_bodies and recurse("\n".join(written_bodies), cwd, candidate_executed, charge=False):
+            return True
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:

@@ -648,7 +648,7 @@ At the moment only the `platforms.<name>.extra` form is deep-merged into the pla
 
 When `base_url` is set, Hermes:
 
-- Builds the python-telegram-bot client against the local server
+- Builds the python-telegram-bot client against the local server. A bare server URL (`http://127.0.0.1:8081`) gets the Bot API's `/bot` path (and `/file/bot` for `base_file_url`) appended; a URL that already ends in `bot` is used as written
 - Auto-lifts its internal document/audio size cap from 20 MB → 2 GB
 - Reports the active limit in the "too large" error message (`Maximum: 2048 MB.`) so it's obvious which mode you're in
 - Sends through the same server outside the gateway too: `hermes send`, the `send_message` tool and cron deliveries that fall back to the standalone sender

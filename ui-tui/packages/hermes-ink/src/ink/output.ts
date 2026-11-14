@@ -65,13 +65,13 @@ type WriteOperation = {
   y: number
   text: string
   /**
-   * Per-line soft-wrap flags, parallel to text.split('\n'). softWrap[i]=true
-   * means line i is a continuation of line i-1 (the `\n` before it was
-   * inserted by word-wrap, not in the source). Index 0 is always false.
-   * Undefined means the producer didn't track wrapping (e.g. fills,
+   * Per-line soft-wrap marks, parallel to text.split('\n'). Tri-state:
+   * 0 = hard break, 1 = soft continuation, 2 = continuation whose
+   * separator space wrap-trim dropped from the screen. Index 0 is always
+   * 0. Undefined means the producer didn't track wrapping (e.g. fills,
    * raw-ansi) — the screen's per-row bitmap is left untouched.
    */
-  softWrap?: boolean[]
+  softWrap?: number[]
 }
 
 type ClipOperation = {
@@ -241,7 +241,7 @@ export default class Output {
     this.operations.push({ type: 'noSelect', region })
   }
 
-  write(x: number, y: number, text: string, softWrap?: boolean[]): void {
+  write(x: number, y: number, text: string, softWrap?: number[]): void {
     if (!text) {
       return
     }
@@ -505,7 +505,7 @@ export default class Output {
               // need the clipped previous line's content end so
               // screen.softWrap[lineY] correctly records the join point
               // even though that line's cells were never written.
-              if (softWrap && from > 0 && softWrap[from] === true) {
+              if (softWrap && from > 0 && softWrap[from]) {
                 prevContentEnd = x + stringWidth(lines[from - 1]!)
               }
 
@@ -537,8 +537,7 @@ export default class Output {
             // from writeLineToScreen is tab-expansion-aware, unlike
             // x+stringWidth(line) which treats tabs as width 0.
             if (softWrap) {
-              const isSW = softWrap[swFrom + offsetY] === true
-              swBits[lineY] = isSW ? prevContentEnd : 0
+              swBits[lineY] = encodeSoftWrapMark(softWrap[swFrom + offsetY]!, prevContentEnd)
               prevContentEnd = contentEnd
             }
 
@@ -573,6 +572,22 @@ export default class Output {
 
     return screen
   }
+}
+
+/**
+ * Encode one row's screen.softWrap value from its per-line mark (0 hard
+ * break, 1 continuation, 2 continuation whose separator space wrap-trim
+ * dropped). The sign carries the wrap-trim flag so the copier can re-insert
+ * the space; -0 collapses to 0, so an empty previous fragment falls back to
+ * -1 (continuation preserved; the clamp is unused on empty rows since they
+ * have no selectable cells).
+ */
+function encodeSoftWrapMark(mark: number, prevContentEnd: number): number {
+  if (!mark) {
+    return 0
+  }
+
+  return mark === 2 ? -prevContentEnd || -1 : prevContentEnd
 }
 
 function stylesEqual(a: AnsiCode[], b: AnsiCode[]): boolean {

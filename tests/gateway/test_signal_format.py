@@ -340,3 +340,22 @@ def test_fenced_command_round_trips_amid_styled_prose(command):
     assert text == f"Approve?\n{command}\nThis is dangerous and final."
     assert len(_find_style(styles, "BOLD")) == 2
     assert len(_find_style(styles, "ITALIC")) == 1
+
+
+@pytest.mark.parametrize("command", [
+    "echo " + "`" * 3 + " ; rm -rf /tmp/*/x*",
+    "printf '" + "`" * 3 + "' && rm -rf ~~/home~~",
+    "a " + "`" * 4 + " b **c** _d_",
+])
+def test_command_with_a_backtick_run_round_trips_inside_its_longer_fence(command):
+    """code_fence() wraps a command holding ``` in a longer fence; the ``` inside must not close it."""
+    from gateway.platforms.base_exec_approval import code_fence
+
+    fence = code_fence(command)
+    md = f"Approve?\n{fence}\n{command}\n{fence}\nThis is **dangerous**."
+    text, styles = _m2s(md)
+    mono = _find_style(styles, "MONOSPACE")
+    assert len(mono) == 1
+    start, length, _ = mono[0].split(":")
+    assert text[int(start) : int(start) + int(length)] == command
+    assert text == f"Approve?\n{command}\nThis is dangerous."

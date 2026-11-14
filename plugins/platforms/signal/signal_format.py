@@ -12,7 +12,19 @@ from agent.markdown_tables import is_table_divider, realign_markdown_tables
 # vertical Key: value rendering rather than soft-wrapping mid-cell.
 _TABLE_WIDTH = 40
 
-_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
+# Any fence length (CommonMark): code_fence() wraps a command that contains ``` in a longer run,
+# and a ``` inside it must not close the block.
+_CODE_BLOCK_RE = re.compile(r"(`{3,})[a-zA-Z0-9_+-]*\n?(.*?)\1(?!`)", re.DOTALL)
+_FENCE_SPLIT_RE = re.compile(r"((`{3,}).*?\2(?!`))", re.DOTALL)
+
+
+def _split_fenced(source: str) -> list[str]:
+    """``[prose, fenced, prose, ...]``: the fence pattern has a nested backreference group."""
+    parts, last = [], 0
+    for match in _FENCE_SPLIT_RE.finditer(source):
+        parts += [source[last:match.start()], match.group(1)]
+        last = match.end()
+    return parts + [source[last:]]
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _INLINE_PATTERNS = [
     (re.compile(r"`(.+?)`"), "MONOSPACE"),
@@ -31,7 +43,7 @@ def _utf16_len(s: str) -> int:
 def _normalize_bullet_markers(source: str) -> str:
     """Replace Markdown bullet markers with plain Unicode bullets (Signal renders ``- item`` literally).
     Fenced code blocks are kept byte-for-byte: list-looking lines inside code are code, not bullets."""
-    parts = re.split(r"(```.*?```)", source, flags=re.DOTALL)
+    parts = _split_fenced(source)
     return "".join(re.sub(r"(?m)^([ \t]{0,3})[-*+]\s+", r"\1• ", part) if idx % 2 == 0 else part
                    for idx, part in enumerate(parts))
 
@@ -40,7 +52,7 @@ def _fence_tables(source: str) -> str:
     """Re-align every GFM table outside a code fence and wrap it in a fence, so the code-block pass
     in markdown_to_signal() records one MONOSPACE range over the aligned block and shifts every
     later range for it. Fenced regions are left alone: a pipe table inside a code block is code."""
-    parts = re.split(r"(```.*?```)", source, flags=re.DOTALL)
+    parts = _split_fenced(source)
     return "".join(part if idx % 2 else _fence_unfenced_tables(part) for idx, part in enumerate(parts))
 
 
@@ -71,7 +83,7 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     styles: list[tuple[int, int, str]] = []
     code_blocks: list[tuple[int, int]] = []
     while match := _CODE_BLOCK_RE.search(text):
-        inner = match.group(1).rstrip("\n")
+        inner = match.group(2).rstrip("\n")
         start = match.start()
         length = len(inner)
         styles.append((start, length, "MONOSPACE"))

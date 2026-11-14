@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
@@ -452,7 +453,7 @@ from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
-from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home, get_real_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
@@ -819,31 +820,6 @@ def _credential_home_roots() -> list[Path]:
     return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
 
 
-def _kanban_root() -> Path:
-    """Kanban is root-shared across profiles by design (``kanban_db.kanban_home``)."""
-    return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
-
-
-def _kanban_board_dirs() -> list[Path]:
-    """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
-    board whatever its name; the allow side filters further)."""
-    with contextlib.suppress(OSError):
-        return [p for p in (_kanban_root() / "kanban" / "boards").iterdir() if p.is_dir()]
-    return []
-
-
-def _kanban_attachment_roots() -> list[Path]:
-    """Return durable Kanban attachment roots without importing kanban_db."""
-    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
-    if override:
-        return [Path(override).expanduser()]
-    roots = [_kanban_root() / "kanban" / "attachments"]
-    roots.extend(path / "attachments" for path in _kanban_board_dirs()
-                 if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                 and (path / "kanban.db").is_file())
-    return roots
-
-
 def _media_delivery_allowed_roots() -> list[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     from gateway.media_policy import media_delivery_allow_dirs
@@ -865,17 +841,15 @@ def _media_delivery_recency_seconds() -> float:
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
 
-def _kanban_board_db_paths() -> list[Path]:
-    """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
-    ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
-    return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
-
-
 def _media_delivery_denied_paths() -> list[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
-    home = Path(os.path.expanduser("~"))
+    # Native ``~``, an operator ``$HOME``, AND the account home a re-homed child keeps only in HERMES_REAL_HOME.
+    real_home = _or_default(get_real_home, "", exc=(OSError, RuntimeError, ValueError))
+    homes = dict.fromkeys(Path(h) for h in (os.path.expanduser("~"), os.environ.get("HOME"), real_home) if h)
+    # ...plus every ``{home}/home`` that ``terminal.home_mode: profile`` gives tool subprocesses as HOME.
+    homes.update(dict.fromkeys(r / "home" for r in _credential_home_roots()))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
-            *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
+            *(home / sub for home in homes for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]
 
@@ -1215,7 +1189,11 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
+    r'''(?:(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)|'''
+    # Escaped ``\n``/``\r``/``\t`` ends the path only before a real boundary (else ``\`` is a
+    # separator); the run is consumed so it leaves the caption with the tag.
+    r'''(?:\\[nrt])+(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$))'''
+    r'''[`"'*_]{0,3}\.?''',
     re.IGNORECASE)
 
 # Extension-less (Caddyfile) / unknown-ext (.py, .log) tags deliver only after
@@ -3206,24 +3184,26 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # Dedupe on the expanded path (first occurrence wins) so the same file referenced twice in one
         # response — e.g. a MEDIA tag inline AND in a summary footer — is uploaded once, not twice (#29131).
         seen_paths: set = set()
+        dropped_nul = False
 
         def _add(path: str) -> None:
+            nonlocal dropped_nul
+            if "\x00" in path:
+                dropped_nul = True  # never delivered, but its tag still leaves the caption
+                return
             # is_voice only for audio: a voice-flagged image would leave the photo batch.
             if path not in seen_paths:
                 seen_paths.add(path)
                 media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
         for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
-            if path:
-                try:
-                    _add(os.path.expanduser(path))
-                except (OSError, RuntimeError, ValueError):
-                    continue  # crafted ~\x00 path: skip it, keep the rest
+            if path:  # never expanduser a NUL path: it raises, and _add must still see it to drop its tag
+                _add(path if "\x00" in path else os.path.expanduser(path))
         for _, safe_path, _ in _extensionless_media_matches(scan_content):
             _add(safe_path)
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).
-        if media:
+        if media or dropped_nul:
             spans = _deliverable_tag_spans(cleaned)
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()

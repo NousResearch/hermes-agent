@@ -181,6 +181,15 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+For skills in your skills directory or an external skills directory, `skill_view(name)`
+also lists supporting paths in `linked_files`. In addition to the standard
+`references/`, `templates/`, `scripts/`, and `assets/` groups, it discovers custom
+subdirectories such as `steps/` when they contain recognized content files, such as
+Markdown documents or Python scripts. Empty directories and files inside dot-directories
+such as `.git/` or `steps/.hidden/` are omitted; supported dotfiles inside visible
+directories remain discoverable. This discovery is read-only: `skill_manage` writes
+remain restricted to the standard supporting directories.
+
 ### Skills added during a conversation
 
 The list of skills the agent picks from is part of the conversation's system prompt, which stays

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 
 REDACTED_SECRET_SOURCE_VALUE = "«redacted:secret-source»"
@@ -35,7 +36,11 @@ _MIN_VALUE_CHARS = 8
 # often exactly a lowercase word.
 _PLAIN_WORD_OR_HOST_RE = re.compile(r"[A-Za-z][a-z]*|[a-z0-9-]+(?:\.[a-z0-9-]+)+")
 
-_VALUES_BY_HOME: dict[str, tuple[str, ...]] = {}
+# home key -> its registered exact values, longest first; or, until a scrub first reads it, the applied
+# ``{name: value}`` map. Classifying imports agent.redact, which latches security.redact_secrets at import,
+# and startup publishes from load_hermes_dotenv BEFORE hermes_cli/main.py bridges that setting.
+_VALUES_BY_HOME: dict[str, tuple[str, ...] | dict[str, str]] = {}
+_LOCK = threading.Lock()
 
 
 def _worth_registering(name: str, value: str) -> bool:
@@ -52,24 +57,46 @@ def _worth_registering(name: str, value: str) -> bool:
     return _key_has_secret_keyword(name) and not _PLAIN_WORD_OR_HOST_RE.fullmatch(stripped)
 
 
-def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]) -> None:
-    """Replace ``hermes_home``'s registered values with the ones its sources just applied."""
-    from hermes_constants import hermes_home_key
-
+def _exact_forms(values: dict[str, str]) -> tuple[str, ...]:
     exact: dict[str, None] = {}
     for name, value in values.items():
-        if isinstance(value, str) and _worth_registering(name, value):
+        if _worth_registering(name, value):
             exact[value] = None
             exact[value.strip()] = None  # what a shell prints after word splitting / echo
             # How a tool that serialises its result as JSON (MCP, read_file of a .json) carries it.
             exact[json.dumps(value)[1:-1]] = None
             exact[json.dumps(value, ensure_ascii=False)[1:-1]] = None
-    key = hermes_home_key(hermes_home)
-    if not exact:  # revoked or never supplied: unregister, and keep the empty-registry fast path
-        _VALUES_BY_HOME.pop(key, None)
-        return
     # Longest first, so a value that is a substring of another never shadows its superstring.
-    _VALUES_BY_HOME[key] = tuple(sorted(exact, key=len, reverse=True))
+    return tuple(sorted(exact, key=len, reverse=True))
+
+
+def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]) -> None:
+    """Replace ``hermes_home``'s registered values with the ones its sources just applied (classified by
+    the first scrub that reads them, see ``_VALUES_BY_HOME``)."""
+    from hermes_constants import hermes_home_key
+
+    applied = {name: value for name, value in values.items() if isinstance(value, str)}
+    key = hermes_home_key(hermes_home)
+    with _LOCK:
+        if applied:
+            _VALUES_BY_HOME[key] = applied
+        else:  # revoked or never supplied: unregister, and keep the empty-registry fast path
+            _VALUES_BY_HOME.pop(key, None)
+
+
+def _registered(key: str) -> tuple[str, ...]:
+    entry = _VALUES_BY_HOME.get(key, ())
+    while isinstance(entry, dict):
+        exact = _exact_forms(entry)  # outside the lock: the first call imports agent.redact
+        with _LOCK:
+            if _VALUES_BY_HOME.get(key) is entry:  # else a newer publish landed meanwhile: classify that one
+                if exact:
+                    _VALUES_BY_HOME[key] = exact
+                else:
+                    _VALUES_BY_HOME.pop(key, None)
+                return exact
+            entry = _VALUES_BY_HOME.get(key, ())
+    return entry
 
 
 def redact_secret_source_values(text: str) -> str:
@@ -78,7 +105,7 @@ def redact_secret_source_values(text: str) -> str:
         return text
     from hermes_constants import hermes_home_key
 
-    for value in _VALUES_BY_HOME.get(hermes_home_key(), ()):
+    for value in _registered(hermes_home_key()):
         if value in text:
             text = text.replace(value, REDACTED_SECRET_SOURCE_VALUE)
     return text

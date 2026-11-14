@@ -6,7 +6,11 @@ registered values, and a value a source no longer supplies stops being masked.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -126,3 +130,23 @@ def test_removed_routed_source_releases_mask(tmp_path, monkeypatch, config):
 
     with _profile(home):
         assert redact_sensitive_text(f"bare {OPAQUE}") == f"bare {OPAQUE}"
+
+
+def test_startup_publish_leaves_the_redact_secrets_bridge_in_charge(tmp_path):
+    # load_hermes_dotenv publishes source values BEFORE hermes_cli/main.py bridges security.redact_secrets
+    # into HERMES_REDACT_SECRETS, and agent.redact snapshots that variable when it is first imported.
+    key = "sk-proj-" + "abcdefghijklmnopqrstuvwx1234"
+    script = "\n".join([
+        "import os",
+        "from agent.redact_secret_sources import publish_secret_source_values",
+        f"publish_secret_source_values({str(tmp_path)!r}, {{'VENDOR_TOKEN': {OPAQUE!r}}})",
+        "os.environ['HERMES_REDACT_SECRETS'] = 'false'  # the bridge",
+        "from agent.redact import redact_sensitive_text",
+        f"print(redact_sensitive_text('bare {OPAQUE} key {key}'))",
+    ])
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    env.pop("HERMES_REDACT_SECRETS", None)
+    out = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True,
+                         check=True, timeout=60).stdout
+    assert OPAQUE not in out  # the source value stays masked whatever the preference
+    assert key in out  # unrelated shapes follow the bridged redact_secrets: false

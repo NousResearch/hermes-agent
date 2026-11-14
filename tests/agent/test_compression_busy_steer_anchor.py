@@ -75,8 +75,10 @@ def test_s1_steer_summarized_away_becomes_anchor_not_historical_request():
     assert outcome == "inserted"
     _assert_alternation(compressed)
     users = _user_rows(compressed)
-    assert STEER_B in users, users
-    assert REQUEST_A not in users, "historical request replayed as new input"
+    # The anchor is a typed steer row: its content is the marker-wrapped text,
+    # so membership is a substring check, not exact equality.
+    assert any(STEER_B in u for u in users), users
+    assert not any(REQUEST_A in u for u in users), "historical request replayed as new input"
     assert COMPRESSION_CONTINUATION_USER_CONTENT not in users
     # Steer text is used exactly once across the whole compressed transcript.
     assert sum(str(m.get("content")).count(STEER_B) for m in compressed) == 1
@@ -113,10 +115,9 @@ def test_s3_newer_real_user_turn_outranks_older_steer():
     assert outcome == "inserted"
     _assert_alternation(compressed)
     users = _user_rows(compressed)
-    assert REQUEST_C in users, users
-    assert STEER_B not in users, "older consumed steer replayed over newer user turn"
-    assert REQUEST_A not in users
-    assert not any(STEER_B in u for u in users)
+    assert any(REQUEST_C in u for u in users), users
+    assert not any(STEER_B in u for u in users), "older consumed steer replayed over newer user turn"
+    assert not any(REQUEST_A in u for u in users)
 
 
 def test_newer_steer_outranks_older_real_user_turn():
@@ -129,8 +130,8 @@ def test_newer_steer_outranks_older_real_user_turn():
     assert outcome == "inserted"
     _assert_alternation(compressed)
     users = _user_rows(compressed)
-    assert STEER_B in users
-    assert REQUEST_A not in users
+    assert any(STEER_B in u for u in users)
+    assert not any(REQUEST_A in u for u in users)
 
 
 @pytest.mark.parametrize(
@@ -145,3 +146,62 @@ def test_compressed_steer_presence_only_counts_tool_rows(role):
     assert STEER_MARKER_OPEN in quoted["content"]
     live = {"role": "tool", "tool_call_id": "c", "content": f"ok{format_steer_marker(STEER_B)}"}
     assert _compressed_has_busy_steer([live]) is True
+
+
+# --- #154763: the anchored steer must be a typed delivery, and it must retire
+# the buffered copy so the next drain cannot inject a second carrier.
+
+
+def test_anchor_from_tool_borne_steer_is_a_typed_steer_row():
+    """The compaction anchor is a live delivery: it must carry the steer type and
+    the self-describing marker. A bare dict loses both on replay and gets merged
+    into the user's next prompt by alternation repair."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    original = [{"role": "user", "content": REQUEST_A}] + _tool_turns(0, 6, steer_at=2)
+    compressed = [_summary_row(), *_tool_turns(5, 1)]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed)
+
+    assert outcome == "inserted"
+    anchor = next(
+        m for m in compressed
+        if m.get("role") == "user" and STEER_B in str(m.get("content"))
+    )
+    assert anchor.get("display_kind") == STEER_DISPLAY_KIND
+    assert STEER_MARKER_OPEN in str(anchor["content"])
+
+
+def test_buffered_steer_consumed_by_anchor_is_not_reinjected():
+    """A steer still buffered when compaction anchors its text (tool-borne shape)
+    must leave the buffer: the anchor carries it, the next drain must find
+    nothing, and settlement must read the transfer as consumed (not withdrawable
+    back to the queue)."""
+    from agent.interrupt_control import InterruptControlMixin
+
+    agent = InterruptControlMixin()
+    agent.steer(STEER_B, ticket="adm-1")
+
+    original = [{"role": "user", "content": REQUEST_A}] + _tool_turns(0, 6, steer_at=2)
+    compressed = [_summary_row(), *_tool_turns(5, 1)]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed, agent=agent)
+
+    assert outcome == "inserted"
+    assert sum(str(m.get("content")).count(STEER_B) for m in compressed) == 1
+    assert agent._drain_pending_steer() is None, "buffered copy survived the anchor — second inject incoming"
+    assert agent.withdraw_steer("adm-1") is False, "settlement would re-queue text the anchor already carries"
+
+
+def test_consume_retires_one_copy_of_two_identical_buffered_steers():
+    """Two legitimate identical steers are representable; the anchor retires at
+    most one part, and the second steer still reaches the model."""
+    from agent.interrupt_control import InterruptControlMixin, consume_buffered_steer
+
+    agent = InterruptControlMixin()
+    agent.steer(STEER_B, ticket="adm-1")
+    agent.steer(STEER_B, ticket="adm-2")
+
+    assert consume_buffered_steer(agent, STEER_B) is True
+    assert consume_buffered_steer(agent, "unrelated text") is False
+    assert agent._drain_pending_steer() == STEER_B

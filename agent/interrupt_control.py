@@ -120,6 +120,24 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
         _set_steer_parts(agent, _steer_parts(agent) + parts)
 
 
+def consume_buffered_steer(agent, steer_text: str) -> bool:
+    """Retire one buffered part whose text matches, because another carrier (the compaction user-turn
+    anchor) now delivers that text in the rebuilt context. The part leaves the buffer and a ticketed
+    one is stamped consumed, so settlement commits it as delivered and no later drain injects a
+    second copy of the same steer. True when a part was taken."""
+    if not steer_text:
+        return False
+    with _ic_lock(agent, "_pending_steer_lock"):
+        parts = _steer_parts(agent)
+        for _i, (_ticket, _text) in enumerate(parts):
+            if _text == steer_text:
+                _set_steer_parts(agent, parts[:_i] + parts[_i + 1:])
+                if _ticket is not None:
+                    _steer_fates(agent)[_ticket] = True
+                return True
+    return False
+
+
 def _ic_codex_method(agent, name: str):
     """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
     if getattr(agent, "api_mode", None) != "codex_app_server":

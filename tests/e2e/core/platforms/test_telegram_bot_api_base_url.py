@@ -11,6 +11,7 @@ pytest.importorskip("telegram")
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.standalone import _telegram_bot
+from plugins.platforms.telegram.telegram_network import bot_api_urls
 
 TOKEN = "123456789:AAGURFJSzXoINq_Fj_Srvuf7mpZ4XRXO6rQ"
 
@@ -43,3 +44,18 @@ async def test_gateway_connect_builds_application_against_the_normalized_url(mon
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     await adapter.connect()
     assert built == {"base_url": "http://127.0.0.1:8081/bot", "base_file_url": "http://127.0.0.1:8081/file/bot"}
+
+
+@pytest.mark.parametrize("extra, expected", [
+    ({"base_url": "http://127.0.0.1:8081"},
+     {"base_url": "http://127.0.0.1:8081/bot", "base_file_url": "http://127.0.0.1:8081/file/bot"}),
+    # A reverse proxy's own route is configured, not missing: kept exactly as written (files too).
+    ({"base_url": "https://proxy.example/telegram/"},
+     {"base_url": "https://proxy.example/telegram/", "base_file_url": "https://proxy.example/telegram/"}),
+    ({"base_url": "https://proxy.example/telegram/", "base_file_url": "https://proxy.example/files/"},
+     {"base_url": "https://proxy.example/telegram/", "base_file_url": "https://proxy.example/files/"}),
+    ({"base_url": "http://127.0.0.1:8081/bot", "base_file_url": "http://127.0.0.1:8081"},
+     {"base_url": "http://127.0.0.1:8081/bot", "base_file_url": "http://127.0.0.1:8081/file/bot"}),
+])
+def test_only_bare_server_urls_get_the_bot_api_path(extra, expected):
+    assert bot_api_urls(extra) == expected

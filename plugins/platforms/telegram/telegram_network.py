@@ -557,14 +557,15 @@ def bot_api_urls(extra: Optional[dict]) -> dict:
     """``base_url``/``base_file_url`` kwargs for ``Bot``/``Application.builder`` from ``extra``.
 
     PTB appends the token straight to these, so a bare server URL (``http://127.0.0.1:8081``)
-    became ``…8081123456:AA…`` and httpx read the token's secret half as a port (#81787). A URL
-    whose path doesn't already end in ``bot`` (or carry PTB's ``{token}`` placeholder) gets the
-    Bot API's ``/bot`` / ``/file/bot`` path. ``base_file_url`` defaults to ``base_url`` as before."""
+    became ``…8081123456:AA…`` and httpx read the token's secret half as a port (#81787). Only a
+    BARE server URL (no path) gets the Bot API's ``/bot`` / ``/file/bot`` path; any configured path
+    (a reverse proxy's ``/telegram/``, ``…/bot``, PTB's ``{token}`` placeholder) is used as written.
+    ``base_file_url`` defaults to ``base_url`` as before."""
+    from urllib.parse import urlsplit
+
     def norm(url, suffix):
         url = str(url).strip()
-        if "{token}" in url or url.rstrip("/").endswith("bot"):
-            return url
-        return url.rstrip("/") + suffix
+        return url.rstrip("/") + suffix if urlsplit(url).path in ("", "/") else url
     base_url = (extra or {}).get("base_url")
     if not base_url:
         return {}

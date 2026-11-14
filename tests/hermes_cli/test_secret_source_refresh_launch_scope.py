@@ -158,6 +158,127 @@ def test_a_rotated_then_removed_sources_write_leaves_the_frozen_launch_env(launc
         set_multiplex_active(False)
 
 
+def _rotating_override_source(launch_home, fetch_prelude: str = "") -> None:
+    """The fixture source reads VAULT_ONLY_KEY from vault.txt (v1) as an override_existing source."""
+    plugin = launch_home / "plugins" / "fixture-secret-source" / "__init__.py"
+    plugin.write_text(plugin.read_text(encoding="utf-8").replace(
+        "        return FetchResult(", fetch_prelude + "        return FetchResult(").replace(
+        "'VAULT_ONLY_KEY': 'from-plugin'", "'VAULT_ONLY_KEY': open(f'{home_path}/vault.txt').read()"),
+        encoding="utf-8")
+    config = launch_home / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: true\n", "enabled: true\n    override_existing: true\n"), encoding="utf-8")
+    (launch_home / "vault.txt").write_text("v1", encoding="utf-8")
+
+
+def test_a_concurrent_write_during_the_fetch_never_enters_the_frozen_launch_env(launch_home):
+    """Another thread writes the source's name into os.environ while the vault fetch runs (stood in
+    for by the fetch itself, once foreign.txt exists); the source re-applies its unchanged value.
+    The frozen launch env must keep the value the source published, not the foreign one."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    _rotating_override_source(launch_home, (
+        "        import os, pathlib\n"
+        "        foreign = pathlib.Path(home_path) / 'foreign.txt'\n"
+        "        if foreign.exists():\n"
+        "            os.environ['VAULT_ONLY_KEY'] = foreign.read_text()\n"))
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes v1
+    activate_multi_profile_hosting()
+    try:
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "v1"
+        (launch_home / "foreign.txt").write_text("from-secondary", encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "v1"
+    finally:
+        set_multiplex_active(False)
+
+
+def test_a_sources_first_write_after_activation_stays_out_of_the_frozen_launch_env(launch_home):
+    """A source enabled only after activation writes and then rotates: neither value is the launch
+    env's, so the snapshot never gains the name (only a re-application over a pre-activation write
+    is followed)."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    _rotating_override_source(launch_home)
+    config = launch_home / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    activate_multi_profile_hosting()
+    try:
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "enabled: []", "enabled: [fixture-secret-source]"), encoding="utf-8")
+        for value in ("v1", "v2"):
+            (launch_home / "vault.txt").write_text(value, encoding="utf-8")
+            with _profile_runtime_scope(launch_home):
+                manager.discover_and_load(force=True)
+            assert os.environ["VAULT_ONLY_KEY"] == value
+            assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
+
+def test_a_source_reapplying_over_a_value_it_did_not_write_leaves_the_frozen_launch_env(launch_home):
+    """The source wrote v1 at boot, then the operator's value replaced it before activation: the
+    frozen env holds the operator's value, and the source's next write is not over its own earlier
+    write, so the snapshot must not follow it."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    _rotating_override_source(launch_home)
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes v1
+    os.environ["VAULT_ONLY_KEY"] = "operator-late"
+    activate_multi_profile_hosting()
+    try:
+        (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+        assert os.environ["VAULT_ONLY_KEY"] == "v2"
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "operator-late"
+    finally:
+        set_multiplex_active(False)
+
+
+def test_a_rotated_write_the_ascii_sweep_rewrote_is_still_followed(launch_home):
+    """A rotation to a value carrying a zero-width space is published, then stripped to ASCII by the
+    credential sweep: the snapshot follows the sanitized value, so the later removal still drops it."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    _rotating_override_source(launch_home)
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes v1
+    activate_multi_profile_hosting()
+    try:
+        (launch_home / "vault.txt").write_text("v2\u200b", encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+        assert os.environ["VAULT_ONLY_KEY"] == "v2"
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "v2"
+        config = launch_home / "config.yaml"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_refresh_for_one_home_never_replaces_another_homes_installed_scope(launch_home):
     """A scope stamped for a secondary (no home override) is not the launch home's to refresh: the
     launch profile's files and frozen env must not replace it."""

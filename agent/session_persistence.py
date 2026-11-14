@@ -141,6 +141,19 @@ def _image_marker(part: dict) -> str:
     return f"[screenshot detail={detail}]" if detail in ("low", "high", "auto") else "[screenshot]"
 
 
+def sanitize_divergence_sidecar(role: str, durable: Any) -> Optional[str]:
+    """The ``api_content`` a row needs when its reload would change it: ``get_messages_as_conversation``
+    replays user and assistant text through ``sanitize_context().strip()``, so keep the stored text when
+    that differs (compared in wire form). A multimodal turn's text projection counts: its turn context is
+    a text part (#118911), and the reload would strip the recalled memory out of it."""
+    if (
+        role in ("user", "assistant") and isinstance(durable, str) and durable
+        and sanitize_context(durable).strip() != durable.strip()
+    ):
+        return durable
+    return None
+
+
 def _persist_lock(agent):
     """Close and turn-start persistence can run on separate CLI threads: one critical section.
 
@@ -232,16 +245,12 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
         timestamp = timestamp if ov_timestamp is None else ov_timestamp
     if api_content == content:
         api_content = None
-    # get_messages_as_conversation replays rows through sanitize_context().strip(); capture the sent bytes
-    # when they would differ (compared in wire form).
-    if (
-        api_content is None and role in ("user", "assistant") and isinstance(content, str) and content
-        and sanitize_context(content).strip() != content.strip()
-    ):
-        api_content = content
+    durable = _durable_content(content)
+    if api_content is None:
+        api_content = sanitize_divergence_sidecar(role, durable)
     # Key order is the divert-JSONL wire order (divert_session_transcript_jsonl).
     row = {
-        "role": role, "content": _durable_content(content),
+        "role": role, "content": durable,
         "tool_name": msg.get("tool_name") or (msg.get("name") if role == "tool" else None),
         "tool_calls": msg["tool_calls"] if isinstance(msg.get("tool_calls"), list) else None,
         "tool_call_id": msg.get("tool_call_id"), "effect_disposition": msg.get("effect_disposition"),

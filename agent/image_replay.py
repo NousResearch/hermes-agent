@@ -34,6 +34,8 @@ DEFAULT_REPLAY_RECENT_IMAGES = 3
 _HINT_RE = re.compile(r"^\[Image attached(?P<local> at)?: (?P<ref>.+)\]$")
 # ``session_persistence._image_marker``: the live part's ``detail`` rides on its marker.
 _MARKER_RE = re.compile(r"^\[screenshot(?: detail=(?P<detail>low|high|auto))?\]$")
+# ``memory_context.build_memory_context_block``: each fence tag sits on its own line.
+_FENCE_RE = re.compile(r"^<(?P<close>/)?memory-context>$")
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 
 
@@ -50,14 +52,28 @@ def resolve_replay_recent_images(cfg: dict) -> int:
     return 0
 
 
+def _outside_recalled_memory(lines: list[str]) -> list[int]:
+    """Indexes of the lines outside a ``<memory-context>`` block. A turn's recalled memory replays with
+    it (its ``api_content`` sidecar) and can quote an older ``[Image attached…]`` or ``[screenshot]``
+    line from the transcript, which is not an image of this row."""
+    own, inside = [], False
+    for i, line in enumerate(lines):
+        if (fence := _FENCE_RE.match(line)) is not None:
+            inside = fence.group("close") is None
+        elif not inside:
+            own.append(i)
+    return own
+
+
 def _split_rebuilt_row(content: str) -> Optional[list[tuple[str, Any]]]:
     """A DB-rebuilt user row as its original parts, in order: ``("text", str)`` for each text run and
     ``("image", (ref, detail, marker_line))`` per ``[screenshot]`` line, the markers pairing 1:1 in order
     with the row's ``[Image attached…]`` hints wherever the image sat (API callers put it first;
     turn-time memory/hook context follows it). ``None`` when the counts disagree (a typed marker)."""
     lines = content.split("\n")
-    markers = [(i, m.group("detail")) for i, line in enumerate(lines) if (m := _MARKER_RE.match(line))]
-    hints = [m for line in lines if (m := _HINT_RE.match(line))]
+    own = _outside_recalled_memory(lines)
+    markers = [(i, m.group("detail")) for i in own if (m := _MARKER_RE.match(lines[i]))]
+    hints = [m for i in own if (m := _HINT_RE.match(lines[i]))]
     if not markers or len(hints) != len(markers):
         return None
     parts: list[tuple[str, Any]] = []

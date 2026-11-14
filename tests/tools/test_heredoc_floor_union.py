@@ -71,6 +71,14 @@ def test_code_heredoc_body_stays_visible_to_dangerous_scan(command):
     f"cat > /tmp/j <<'EOF'\n{RM_ROOT}\nEOF\ncd /tmp; sh j",
     f"cat > j <<'EOF'\n{RM_ROOT}\nEOF\nsudo -E env A=1 nohup bash 'j'",
     f"cat > j.sh <<'EOF'\n{RM_ROOT}\nEOF\nbash -n\n./j.sh",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\n/usr/bin/env bash job.sh",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\n/opt/homebrew/bin/bash job.sh",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nsudo -u root bash job.sh",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nMODE=production timeout 60 bash job.sh",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nif bash < job.sh; then echo ok; fi",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\necho y | (bash job.sh)",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\ncommand -v bash\nbash job.sh",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\ncommand -v\nbash job.sh",
 ])
 def test_heredoc_written_then_run_keeps_its_body_on_the_floors(gate_mode, command):
     # The body lands in a file the same string runs: it is code, not data.

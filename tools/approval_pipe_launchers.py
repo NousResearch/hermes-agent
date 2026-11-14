@@ -23,12 +23,12 @@ _PIPE_LAUNCHER_VALUE_FLAGS = {
 }
 
 
-def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
-    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
-    valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
+def _pipe_launcher_re(name: str, short: str, long_opts: tuple, ws: str = r"\s") -> str:
+    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}]){ws}++[^\s|;&<>]++"] if short else []
+    valued += [rf"--(?:{'|'.join(long_opts)}){ws}++[^\s|;&<>]++"] if long_opts else []
     duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
     args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
-    return rf"{name}(?:\s++(?>{args}))*+"
+    return rf"{name}(?:{ws}++(?>{args}))*+"
 
 
 _PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"

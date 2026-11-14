@@ -54,6 +54,24 @@ def test_absolute_shell_path_keeps_written_heredoc_on_floors(floors_off):
     assert approval.check_all_command_guards(command, "local")["approved"] is False
 
 
+@pytest.mark.parametrize("runner", [
+    "/opt/homebrew/bin/bash", "./bin/bash", "/usr/bin/env bash", "/usr/bin/sudo -E sh", "/usr/bin/python3",
+])
+def test_any_program_path_keeps_written_heredoc_on_floors(floors_off, runner):
+    # A directory before the shell / launcher / interpreter still names that program.
+    rm_root = "r" + "m -r" + "f /"
+    command = f"cat > job.sh <<'EOF'\n{rm_root}\nEOF\n{runner} job.sh"
+
+    assert detect_hardline_command(command)[0] is True, runner
+    assert approval.check_all_command_guards(command, "local")["approved"] is False, runner
+
+
+def test_path_qualified_reader_of_a_written_doc_stays_quiet(floors_off):
+    command = "cat > notes.md <<'EOF'\nrm notes.txt\nEOF\n/bin/cat notes.md"
+
+    assert approval_floors._match_user_deny_rule(command) is None
+
+
 def test_unquoted_heredoc_keeps_command_substitution_visible_to_hardline():
     command = "cat > notes.txt <<EOF\n$(rm -rf /)\nEOF"
 

@@ -21,7 +21,12 @@ from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
 from tools.approval_env_split import _env_split_payload
-from tools.approval_fetch_exec import DownloadThenRunMatcher, heredoc_scan_sources
+from tools.approval_fetch_exec import (
+    _PIPE_PATH_PREFIX_RE,
+    _PIPE_WRAPPERS_RE,
+    DownloadThenRunMatcher,
+    heredoc_scan_sources,
+)
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
 from tools.approval_hermes_store import _HERMES_HOME_BARE, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home

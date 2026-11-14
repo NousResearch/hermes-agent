@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { ModelSettings } from './model-settings'
 
@@ -98,15 +99,18 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-function renderModelSettings(scopeProfile?: string) {
+function renderModelSettings(
+  scopeProfile?: string,
+  props: { onMainModelChanged?: (provider: string, model: string) => void } = {}
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
     // The aux-task deep-link highlight reads useSearchParams, so the page
-    // needs a router context in tests (the app provides HashRouter at root).
+    // needs a router context (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
+        <ModelSettings scopeProfile={scopeProfile} {...props} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -1055,5 +1059,61 @@ describe('ModelSettings code-skew 503', () => {
 
     await waitFor(() => expect(recycleBackend).toHaveBeenCalledWith(undefined))
     await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))
+  })
+})
+
+describe('ModelSettings live-model repaint (active-profile scope)', () => {
+  // #153133: $settingsRequestProfile hands the page the CONCRETE profile key (#118432), so a
+  // `scopeProfile == null` test never matched an edit of the ACTIVE profile. Apply saved the new
+  // default and toasted it, but onMainModelChanged never ran: the composer stayed on 'manual' and
+  // every new session / Ctrl+T tab kept launching on the previous manual pick.
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+  })
+
+  it('reports the applied main model when the scope names the active profile', async () => {
+    clearNotifications()
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'nous',
+      model: 'hermes-4',
+      gateway_tools: [],
+      stale_aux: []
+    })
+    const onMainModelChanged = vi.fn()
+
+    renderModelSettings('default', { onMainModelChanged })
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'success' })))
+    expect(onMainModelChanged).toHaveBeenCalledWith('nous', 'hermes-4')
+  })
+
+  it('still reports an unscoped apply (a custom HERMES_HOME has no profile key)', async () => {
+    clearNotifications()
+    const onMainModelChanged = vi.fn()
+
+    renderModelSettings(undefined, { onMainModelChanged })
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'success' })))
+    expect(onMainModelChanged).toHaveBeenCalledWith('nous', 'hermes-4')
+  })
+
+  it('stays quiet when the apply edits another profile', async () => {
+    clearNotifications()
+    const onMainModelChanged = vi.fn()
+
+    renderModelSettings('research', { onMainModelChanged })
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'success' })))
+    expect(onMainModelChanged).not.toHaveBeenCalled()
   })
 })

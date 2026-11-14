@@ -62,8 +62,19 @@ class SessionPruneRewriteMixin:
         live-replay loaders stamp exactly that pair, and a rewritten-in-place row is as lost a race
         there as a row-addressed one (#124102).
         """
-        from agent.message_metadata import message_uid_or_none
+        from agent.conversation_compression_archive import (
+            ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS)
+        from agent.message_metadata import ABSORBED_MESSAGE_UIDS, message_uid_or_none
         from agent.transcript_repair import transcript_row_snapshot
+
+        def _is_merged_composite(message: dict[str, Any]) -> bool:
+            return bool(
+                message.get(ABSORBED_ROW_IDS)
+                or message.get(MERGED_DURABLE_ROWS)
+                or message.get(RETIRED_DURABLE_ROWS)
+                or message.get(UNNAMED_DURABLE_ROWS)
+                or message.get(ABSORBED_MESSAGE_UIDS)
+            )
 
         def _exact_id(message: dict[str, Any]) -> Optional[int]:
             rid = message.get("_row_id")
@@ -75,6 +86,7 @@ class SessionPruneRewriteMixin:
             (message, _exact_id(message))
             for message in held
             if isinstance(message, dict) and message.get(_DB_PERSISTED_MARKER_KEY)
+            and not _is_merged_composite(message)
             and message.get("role") in ("user", "assistant", "tool")]
         by_id = {row_id: message for message, row_id in exact if row_id is not None}
         # The unaddressed replay shape: snapshot + marker, no _row_id. Only rows the caller can

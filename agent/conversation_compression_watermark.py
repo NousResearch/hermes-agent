@@ -50,8 +50,22 @@ def held_archive_watermark(
     if watermark is None:
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER, StaleHeldHistory
+    from agent.conversation_compression_archive import (
+        ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS)
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS
+
+    def _is_merged_composite(m: dict) -> bool:
+        return bool(
+            m.get(ABSORBED_ROW_IDS)
+            or m.get(MERGED_DURABLE_ROWS)
+            or m.get(RETIRED_DURABLE_ROWS)
+            or m.get(UNNAMED_DURABLE_ROWS)
+            or m.get(ABSORBED_MESSAGE_UIDS)
+        )
 
     def _exact_id(m: dict, copied: bool) -> Optional[int]:
+        if _is_merged_composite(m):
+            return None
         rid = m.get("_row_id")
         if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
             return None

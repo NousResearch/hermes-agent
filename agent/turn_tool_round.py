@@ -438,6 +438,24 @@ def _rehydrate_scrubbed_assistant_msg(
             parsed_rd = json.loads(rd_val)
             if isinstance(parsed_rd, list):
                 assistant_msg["reasoning_details"] = parsed_rd
+        from collections.abc import Mapping
+        from typing import cast
+        from agent.message_metadata import DB_ROW_SNAPSHOT
+        if DB_ROW_SNAPSHOT in assistant_msg:
+            read_one = getattr(db, "_read_one", None)
+            full_row = (
+                read_one(
+                    "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+                    (sid,),
+                )
+                if callable(read_one)
+                else None
+            )
+            if full_row is not None:
+                from agent.transcript_repair import transcript_row_snapshot
+                assistant_msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(cast(Mapping[str, Any], full_row))
+            else:
+                assistant_msg.pop(DB_ROW_SNAPSHOT, None)
     except Exception:
         logger.debug("Mid-turn scrubbed assistant message rehydration failed open", exc_info=True)
 

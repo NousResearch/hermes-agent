@@ -641,3 +641,82 @@ def test_a_user_edit_landing_after_the_precheck_stays_active_in_the_commit(tmp_p
     assert live.count("edited inside the window") == 1  # the newer edit keeps its single active row
     assert "start" not in live  # the stale pre-edit body was never republished
     other.close()
+
+
+def test_merged_composite_re_stamped_by_flush_does_not_false_positive_stale_held_history(tmp_path: Path) -> None:
+    """When repair_message_sequence folds two consecutive durable rows (recording _absorbed_row_ids /
+    _merged_durable_rows and dropping _db_persisted) and the next _flush_messages_to_session_db
+    re-stamps _db_persisted=True on the history prefix, rewritten_held_row_ids and
+    prune_tool_results_only must not mistake the folded composite for a single-row rewrite."""
+    from typing import Any
+    from agent.agent_runtime_helpers import repair_message_sequence
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_MERGED_COMPOSITE_RESTAMP"
+    db.create_session(session_id, source="telegram")
+    raw_history = [{"role": "user", "content": "first user prompt"}] + _history()
+    db.append_messages_batch(session_id, raw_history)
+    agent: Any = _build_agent(db, session_id)
+    _configure_pruning(agent)
+
+    # Load without alternation repair so consecutive user rows [0, 1] are folded in memory by repair_message_sequence
+    messages = db.get_messages_as_conversation(session_id, repair_alternation=False, include_row_ids=True)
+    assert messages[0]["role"] == "user" and messages[1]["role"] == "user"
+    repair_message_sequence(agent, messages)
+    assert messages[0].get("_absorbed_row_ids")
+    assert not messages[0].get(_DB_PERSISTED_MARKER)
+
+    # Simulate persist-before-execute scanning conversation_history and re-stamping _db_persisted=True
+    agent._flush_messages_to_session_db(messages, conversation_history=list(messages))
+    assert messages[0].get(_DB_PERSISTED_MARKER) is True
+
+    assert db.rewritten_held_row_ids(session_id, messages) == []
+    with patch.object(db, "rewrite_pruned_rows", wraps=db.rewrite_pruned_rows) as in_place:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert count > 0
+    assert in_place.call_count == 1
+    assert result[0]["content"] == "first user prompt\n\nstart"
+    db.close()
+
+
+def test_merged_assistant_summary_composite_re_stamped_by_flush_does_not_trip_stale_held_history(tmp_path: Path) -> None:
+    """When _repair_alternation_after_compression merges an assistant summary row with the next
+    assistant+tool_calls row (recording _absorbed_row_ids and mutating tool_calls on the surviving
+    summary dict) and a subsequent flush re-stamps _db_persisted=True, rewritten_held_row_ids and
+    prune_tool_results_only must not trip StaleHeldHistory on the composite summary row."""
+    from typing import Any
+    from agent.agent_runtime_helpers import repair_message_sequence
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_MERGED_ASSISTANT_SUMMARY"
+    db.create_session(session_id, source="telegram")
+    raw_history = [
+        {"role": "user", "content": "head user"},
+        {"role": "assistant", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] summary"},
+        *_history()[1:],
+    ]
+    db.append_messages_batch(session_id, raw_history)
+    agent: Any = _build_agent(db, session_id)
+    _configure_pruning(agent)
+
+    messages = db.get_messages_as_conversation(session_id, repair_alternation=False, include_row_ids=True)
+    assert messages[1]["role"] == "assistant" and messages[2]["role"] == "assistant"
+    repair_message_sequence(agent, messages)
+    assert messages[1].get("_absorbed_row_ids")
+    assert messages[1].get("tool_calls")
+
+    # Simulate conversation_history_after_compression + _flush_messages_to_session_db re-stamping _db_persisted=True
+    agent._flush_messages_to_session_db(messages, conversation_history=list(messages))
+    assert messages[1].get(_DB_PERSISTED_MARKER) is True
+
+    assert db.rewritten_held_row_ids(session_id, messages) == []
+    with patch.object(db, "rewrite_pruned_rows", wraps=db.rewrite_pruned_rows) as in_place:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert count > 0
+    assert in_place.call_count == 1
+    assert result[1].get("tool_calls")
+    db.close()

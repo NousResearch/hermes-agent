@@ -402,6 +402,67 @@ def test_mid_turn_secret_value_guard_block_rehydrates_scrubbed_assistant_msg_in_
     assert assistant_pos["reasoning_content"] == "scrubbed reasoning 0x948f…a1b2"
 
 
+def test_mid_turn_secret_value_guard_scrub_refreshes_db_row_snapshot_for_proactive_prune(tmp_path):
+    """When persist-before-execute flushes assistant_msg (stamping DB_ROW_SNAPSHOT) and
+    secret-value-guard scrubs that row in state.db, _rehydrate_scrubbed_assistant_msg must
+    refresh DB_ROW_SNAPSHOT to the post-scrub digest so subsequent tool rounds do not trip
+    rewritten_held_row_ids -> StaleHeldHistory during proactive tool-result pruning."""
+    import json
+    from collections.abc import Mapping
+    from typing import Any, cast
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.message_metadata import DB_ROW_SNAPSHOT
+    from agent.transcript_repair import transcript_row_snapshot
+    from agent.turn_tool_round import _rehydrate_scrubbed_assistant_msg
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "sess_scrub_snapshot"
+    db.create_session(sid, source="cli")
+    raw_tc = [{"id": "c1", "type": "function", "function": {"name": "patch", "arguments": '{"new_string":"secret_token_value"}'}}]
+    scrubbed_tc = [{"id": "c1", "type": "function", "function": {"name": "patch", "arguments": '{"new_string":"[REDACTED]"}'}}]
+
+    assistant_msg: dict[str, Any] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": list(raw_tc),
+        "reasoning": "raw secret_token_value",
+        "reasoning_content": "raw secret_token_value",
+    }
+    user_msg: dict[str, Any] = {"role": "user", "content": "patch it"}
+    db.append_messages_batch(sid, [user_msg, assistant_msg])
+    user_msg[_DB_PERSISTED_MARKER] = True
+    assistant_msg[_DB_PERSISTED_MARKER] = True
+    pre_scrub_snapshot = assistant_msg[DB_ROW_SNAPSHOT]
+    assert isinstance(pre_scrub_snapshot, str)
+
+    # Simulate secret-value-guard scrubbing the pre-flushed assistant row in state.db
+    conn = db._conn
+    assert conn is not None
+    conn.execute(
+        "UPDATE messages SET tool_calls = ?, reasoning = ?, reasoning_content = ? WHERE id = ?",
+        (json.dumps(scrubbed_tc), "scrubbed [REDACTED]", "scrubbed [REDACTED]", assistant_msg["_row_id"]),
+    )
+    conn.commit()
+
+    tool_msg: dict[str, Any] = {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": '{"error": "BLOCKERAD (secret-value-guard): argumentet till \'patch\' innehåller det RÅA värdet"}',
+    }
+    messages = [user_msg, assistant_msg, tool_msg]
+    agent = SimpleNamespace(session_id=sid, _session_db=db)
+
+    _rehydrate_scrubbed_assistant_msg(agent, assistant_msg, messages)
+
+    stored_row = db._read_one("SELECT * FROM messages WHERE id = ?", (assistant_msg["_row_id"],))
+    assert stored_row is not None
+    assert assistant_msg[DB_ROW_SNAPSHOT] != pre_scrub_snapshot
+    assert assistant_msg[DB_ROW_SNAPSHOT] == transcript_row_snapshot(cast(Mapping[str, Any], stored_row))
+    assert db.rewritten_held_row_ids(sid, messages) == []
+    db.close()
+
+
 def test_cf76_openrouter_gemini4_disable_clamps_to_low_and_emits_thinking_config():
     from agent.gemini_native_adapter import GEMINI_SAFETY_SETTINGS_OFF
     from providers import get_provider_profile

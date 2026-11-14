@@ -105,6 +105,11 @@ def cmd_remove(name: str) -> None:
     """Remove an installed plugin by name."""
     console = _pc()._console()
     plugins_dir = _pc()._plugins_dir()
+    from hermes_cli.plugins_missing import forget_missing_plugin
+    if forget_missing_plugin(name) is not None:
+        console.print(f"[yellow]✗[/yellow] Plugin [bold]{name}[/bold]'s files were already gone; "
+                      "forgot its install record and plugins.enabled entry.")
+        return
     target = _pc()._require_installed_plugin(name, plugins_dir, console)
     try:
         result = _remove_user_plugin(plugins_dir, name, target)
@@ -148,6 +153,9 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
         return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
     target = _pc()._user_installed_plugin_dir(name)
     if target is None:
+        from hermes_cli.plugins_missing import forget_missing_plugin
+        if (forgotten := forget_missing_plugin(name)) is not None:
+            return forgotten
         return {"ok": False, "error": f"Plugin '{name}' was not found under {plugins_dir}."}
     try:
         return _remove_user_plugin(plugins_dir, name, target)

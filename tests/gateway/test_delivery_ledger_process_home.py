@@ -53,6 +53,7 @@ class _ServedAdapter(BasePlatformAdapter):
 
 @pytest.fixture(params=["hermes-home-env", "platform-default"])
 def launch_home(request, tmp_path, monkeypatch):
+    monkeypatch.setattr("pm.environments._payload_manifest", lambda _root: None)
     root = tmp_path / "root"
     (root / "profiles" / "research").mkdir(parents=True)
     if request.param == "hermes-home-env":

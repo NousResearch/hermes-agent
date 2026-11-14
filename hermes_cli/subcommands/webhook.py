@@ -60,7 +60,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "per-run context; the job's own prompt, skills, and delivery settings apply. Mutually exclusive "
         "with --deliver-only.")
 
-    webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
+    wh_list = webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
+    wh_list.add_argument("--json", dest="as_json", action="store_true",
+                         help="Print route metadata as JSON (excluding secrets)")
 
     wh_rm = webhook_subparsers.add_parser("remove", aliases=["rm"], help="Remove a subscription")
     wh_rm.add_argument("name", help="Subscription name to remove")

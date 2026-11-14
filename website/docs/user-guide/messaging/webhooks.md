@@ -525,6 +525,10 @@ The dashboard's **New subscription** form (web dashboard and desktop app) has th
 hermes webhook list
 ```
 
+For scripts, `hermes webhook list --json` prints an array of route metadata. It includes a route's
+`toolsets` when explicitly configured, and excludes HMAC secrets. An empty subscription store
+produces `[]`.
+
 ### Remove a subscription
 
 ```bash

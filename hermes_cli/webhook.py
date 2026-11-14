@@ -315,6 +315,14 @@ def _resolve_route_cron_job(profile: str, reference: str):
 
 def _cmd_list(args):
     subs = _load_subscriptions()
+    if getattr(args, "as_json", False):
+        # Allowlist route metadata: future credential fields must not leak into CLI output.
+        fields = ("description", "prompt", "events", "profile", "skills", "deliver", "deliver_chat_id", "deliver_only",
+                  "mirror_to_session", "script", "cron_job", "toolsets", "created_at", "enabled")
+        print(json.dumps([{"name": name, "url": _route_url(name, route),
+                           **{key: route[key] for key in fields if key in route}}
+                          for name, route in subs.items()], ensure_ascii=False))
+        return
     if not subs:
         print("  No dynamic webhook subscriptions.")
         print("  Create one with: hermes webhook subscribe <name>")

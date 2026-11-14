@@ -492,6 +492,9 @@ export const ruOverrides = {
       reasoningCollapsedTitle: 'Сворачивать «мышление» по умолчанию',
       reasoningCollapsedDesc:
         'Стриминговое рассуждение остаётся доступным, но не разворачивается, пока вы его не откроете.',
+      trajectoryCollapsedTitle: 'Сворачивать траекторию выполнения в сводку',
+      trajectoryCollapsedDesc:
+        'Когда начинается итоговый ответ, свернуть завершённые мысли и шаги инструментов в одну сводку.',
       uiScaleTitle: 'Масштаб интерфейса',
       uiScaleDesc: percent =>
         `Масштабирует текст и элементы управления во всём приложении. Также работает Cmd/Ctrl с +, − и 0. Сейчас: ${percent}%.`,
@@ -3589,6 +3592,8 @@ export const ruOverrides = {
       thought: 'Помыслил',
       thoughtBriefly: 'Кратко подумал',
       thoughtFor: duration => `Думал ${duration}`,
+      completedSteps: count => `Выполнено шагов: ${count}`,
+      completedStepsIn: (count, duration) => `Выполнено шагов: ${count} за ${duration}`,
       turnDuration: duration => `Этот ход занял ${duration}`,
       today: time => `Сегодня, ${time}`,
       yesterday: time => `Вчера, ${time}`,

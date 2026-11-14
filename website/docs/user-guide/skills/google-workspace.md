@@ -149,6 +149,17 @@ $GAPI sheets update SHEET_ID "Sheet1!A1:B2" --values '[["Name","Score"],["Alice"
 
 # Append rows
 $GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
+
+# Tabs: list them first instead of guessing "Sheet1" (TAB = title, case-insensitive, or sheetId/gid)
+$GAPI sheets tabs SHEET_ID
+$GAPI sheets add-tab SHEET_ID --title "Q4" [--index 0] [--rows 100 --columns 10]
+$GAPI sheets rename-tab SHEET_ID "Q4" --title "Q4 2026"
+$GAPI sheets copy-tab SHEET_ID "Q4 2026" [--title "Q1 2027"]   # default: "Copy of <tab>", after the source
+$GAPI sheets delete-tab SHEET_ID "Old tab"
+
+# Insert / delete rows and columns (--at is a 1-based row number or a column letter; inserts go before it)
+$GAPI sheets insert-rows SHEET_ID "Q4 2026" --at 5 --count 2
+$GAPI sheets delete-columns SHEET_ID "Q4 2026" --at C
 ```
 
 ## Docs

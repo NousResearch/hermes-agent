@@ -19,6 +19,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
+from tests.waiting import async_wait_until
 
 
 class _MinAdapter(BasePlatformAdapter):
@@ -103,10 +104,7 @@ async def test_queued_handoff_fires_each_generation(adapter):
 
     adapter.set_message_handler(handler)
     await adapter._process_message_background(first, key)
-    for _ in range(100):
-        if len(fired) == 2:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: len(fired) == 2, what="both generations' callbacks fired")
     assert fired == ["first", "second"]
     assert adapter._post_delivery_callbacks == {}
 

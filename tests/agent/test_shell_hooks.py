@@ -99,6 +99,10 @@ class TestParseResponse:
         ("pre_tool_call", {"permission": "allow", "updated_input": {"command": "ls"},
                            "hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "nested veto"}},
          {"action": "block", "message": "nested veto"}),
+        # A Hermes approval request outranks a foreign rewrite in the same reply.
+        ("pre_tool_call", {"action": "approve", "message": "Confirm this", "permission": "allow",
+                           "updated_input": {"command": "npm ci"}},
+         {"action": "approve", "message": "Confirm this"}),
         ("pre_tool_call", {"decision": "approve", "hookSpecificOutput": {"permissionDecision": "deny",
                                                                          "permissionDecisionReason": "still denied"}},
          {"action": "block", "message": "still denied"}),
@@ -108,6 +112,30 @@ class TestParseResponse:
         both used to parse to None here, so a ``deny`` let the tool run."""
         assert shell_hooks._parse_response(event, json.dumps(reply)) == expected
 
+
+    def test_mixed_replies_keep_the_most_severe_directive(self):
+        """Every combination of Hermes, nested and flat permission parts: the result is the most severe
+        directive present (block > approve > modify), so no shape can hide another's veto or approval ask."""
+        import itertools
+        hermes = [{}, {"action": "approve", "message": "ask-h"}, {"action": "modify", "args": {"x": 1}},
+                  {"action": "block", "message": "veto-h"}, {"decision": "approve"}]
+        nested = [{}, {"permissionDecision": "allow", "updatedInput": {"x": 2}},
+                  {"permissionDecision": "ask", "permissionDecisionReason": "ask-n"},
+                  {"permissionDecision": "deny", "permissionDecisionReason": "veto-n"}]
+        flat = [{}, {"permission": "allow", "updated_input": {"x": 3}}, {"permission": "ask", "agent_message": "ask-f"},
+                {"permission": "deny", "agent_message": "veto-f"}]
+        for h, n, f in itertools.product(hermes, nested, flat):
+            reply = {**h, **f, **({"hookSpecificOutput": n} if n else {})}
+            verbs = {h.get("action"), {"deny": "block", "ask": "approve"}.get(n.get("permissionDecision")),
+                     {"deny": "block", "ask": "approve"}.get(f.get("permission"))}
+            got = shell_hooks._parse_response("pre_tool_call", json.dumps(reply)) or {}
+            want = next((v for v in ("block", "approve") if v in verbs), None)
+            if want:
+                assert got.get("action") == want, reply
+            elif any((h.get("action") == "modify", "updatedInput" in n, "updated_input" in f)):
+                assert got.get("action") == "modify", reply
+            else:
+                assert got == {}, reply
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 

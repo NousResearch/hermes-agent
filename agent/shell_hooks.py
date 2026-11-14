@@ -720,8 +720,15 @@ def _lowered_directives(event: str, data: dict[str, Any]) -> list[dict[str, Any]
     return [d for d in found if d]
 
 
-# Most severe first: a veto anywhere in the reply outranks an escalation, which outranks a rewrite.
-_DIRECTIVE_RANK = (("decision", "block"), ("action", "approve"), ("action", "continue"), ("decision", "modify"))
+# Most severe first. One table ranks every directive a reply carries, Hermes-native ones included.
+_DIRECTIVE_RANK = ("block", "approve", "continue", "modify")
+_FOREIGN_KEYS = frozenset({"hookSpecificOutput", "permission", "agent_message", "user_message", "updated_input",
+                           "additional_context", "continue", "followup_message", "stopReason"})
+
+
+def _directive_rank(directive: dict[str, Any]) -> int:
+    verb = directive.get("action") or directive.get("decision")
+    return _DIRECTIVE_RANK.index(verb) if verb in _DIRECTIVE_RANK else len(_DIRECTIVE_RANK)
 
 
 def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -731,19 +738,18 @@ def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
     "updatedInput", "additionalContext"}}`` (Stop: nested ``decision: block``). The flat permission shape
     uses its own keys: ``{"permission", "agent_message", "user_message", "updated_input"}``, ``additional_context``,
     ``continue: false`` to refuse a submitted prompt, and a stop hook's ``followup_message`` to keep going.
-    Both shapes are read independently and the most severe directive wins; Hermes keys already in the
-    reply keep precedence, except that nothing masks a lowered veto."""
-    directives = _lowered_directives(event, data)
-    flat = min(directives, key=lambda d: next(i for i, (k, v) in enumerate(_DIRECTIVE_RANK) if d.get(k) == v),
-               default={})
+    A reply mixing shapes yields exactly one directive: the most severe of every directive it carries
+    (block > approval escalation > continue > modify), Hermes-native ones included. Contexts are kept."""
+    if not _FOREIGN_KEYS & data.keys():
+        return data
+    native = _RESPONSE_PARSERS.get(event, _parse_context)({k: v for k, v in data.items() if k not in _FOREIGN_KEYS})
+    candidates = _lowered_directives(event, data) + ([native] if native and _directive_rank(native) < len(_DIRECTIVE_RANK) else [])
+    winner = {k: v for k, v in min(candidates, key=_directive_rank, default={}).items() if k != "context"}
     nested = data.get("hookSpecificOutput")
-    contexts = [c for c in ((nested or {}).get("additionalContext") if isinstance(nested, dict) else None,
+    contexts = [c for c in ((native or {}).get("context"),
+                            nested.get("additionalContext") if isinstance(nested, dict) else None,
                             data.get("additional_context")) if isinstance(c, str) and c.strip()]
-    if contexts:
-        flat = {**flat, "context": "\n\n".join(contexts)}
-    rest = {k: v for k, v in data.items() if k != "hookSpecificOutput"}
-    # A lowered veto is never masked by a non-veto key of the same name (e.g. a legacy ``decision: approve``).
-    return {**rest, **flat} if flat.get("decision") == "block" else {**flat, **rest}
+    return {**winner, "context": "\n\n".join(contexts)} if contexts else winner
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

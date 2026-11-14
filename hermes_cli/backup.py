@@ -30,7 +30,7 @@ from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
+from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -115,14 +115,14 @@ _KEPT_CACHE_SUBDIRS = {
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
-    return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
+    return parts in BRIDGE_LOG_PARTS or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS)
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:

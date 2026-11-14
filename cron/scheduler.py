@@ -1959,7 +1959,12 @@ def _run_agent_with_watchdog(
             return
         reason = cancel_reason(cancel_event)
         if agent is not None and hasattr(agent, "interrupt"):
-            agent.interrupt(f"Cron run stopped: {reason}")
+            # The claim loss is the issuer, not the user: a bare message-only interrupt books as a user stop.
+            # cancel_reason's fallback names the loss; an operator cancel carries its recorded reason instead.
+            if reason == "cron fire ownership was lost":
+                agent.interrupt("Cron fire claim ownership was lost", tool_reason="cron fire claim lost")
+            else:
+                agent.interrupt(f"Cron run stopped: {reason}")
         raise RuntimeError(f"Cron job '{job_name}' was stopped: {reason}")
 
     def _heartbeat_run_claim_if_due():

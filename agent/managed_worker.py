@@ -236,7 +236,6 @@ class WorkerControls:
         self.agent = None
         self.stopped = threading.Event()
         self.finish = threading.Event()
-        self.turn_done = threading.Event()  # ends forward_activity
         self.clarifications = {}
         self.lock = threading.Lock()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
@@ -425,6 +424,7 @@ def execute(frame, channel):
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
+    turn_done = threading.Event()  # ends forward_activity
     try:
         with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
@@ -450,7 +450,7 @@ def execute(frame, channel):
             if wants_activity_frames(frame):
                 from agent.memory_provider import spawn_context_thread
                 spawn_context_thread(forward_activity, name='managed-activity',
-                                     args=(agent, channel, controls.turn_done)).start()
+                                     args=(agent, channel, turn_done)).start()
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
@@ -470,7 +470,7 @@ def execute(frame, channel):
             # Most failed results name no provider or model; the owner's error card needs the agent's.
             result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
                       **run_worker_turns(agent, frame, history)}
-            controls.turn_done.set()
+            turn_done.set()
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)
@@ -488,7 +488,7 @@ def execute(frame, channel):
             store.finish()
             channel.send('finished')
     finally:
-        controls.turn_done.set()
+        turn_done.set()
         unregister_gateway_notify(frame['route'])
         if agent is not None:
             retire_agent(agent)

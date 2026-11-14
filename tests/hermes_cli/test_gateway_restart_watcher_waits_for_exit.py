@@ -60,13 +60,14 @@ def test_watcher_judges_the_old_gateway_by_pid_and_start_time(tmp_path, monkeypa
     """A PID reused by an unrelated process ends the wait (no deadline needed); the old gateway's
     own (pid, start time) keeps it waiting. A reused PID is simulated by arming the watcher with a
     start time the live process does not have."""
+    from gateway import status as gateway_status
     from hermes_cli import _subprocess_compat
 
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     old = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
-    real_start = _subprocess_compat.process_start_time_stdlib(old.pid)
+    real_start = gateway_status.get_process_start_time(old.pid)
     spawned = []
     real_popen = subprocess.Popen
 
@@ -76,7 +77,7 @@ def test_watcher_judges_the_old_gateway_by_pid_and_start_time(tmp_path, monkeypa
         return proc
 
     def _arm(marker, start_time):
-        monkeypatch.setattr(_subprocess_compat, "process_start_time_stdlib", lambda pid: start_time)
+        monkeypatch.setattr(_subprocess_compat, "process_start_time_stdlib", lambda pid: start_time, raising=False)
         relaunch = [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"]
         with monkeypatch.context() as m:
             m.setattr(subprocess, "Popen", _capture)

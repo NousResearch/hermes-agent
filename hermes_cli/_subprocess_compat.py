@@ -689,9 +689,8 @@ def process_start_time_stdlib(pid: int) -> int | None:
     without /proc (macOS, Windows) or when the process is gone. ``gateway.status``'s start-time
     fingerprint reads the same field first, so the two agree on Linux."""
     try:
-        with open(f"/proc/{int(pid)}/stat", "rb") as fh:
-            # Field 22 counted after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
-            return int(fh.read().rsplit(b")", 1)[1].split()[19])
+        # Field 22 counted after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(Path(f"/proc/{int(pid)}/stat").read_bytes().rsplit(b")", 1)[1].split()[19])
     except (IndexError, ValueError, OSError):
         return None
 

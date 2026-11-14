@@ -131,25 +131,53 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     )
 
 
+def _usage_route(session: dict) -> dict:
+    """``provider`` / ``base_url`` / ``api_key`` that /usage reports for: the agent's, else the route its
+    build resolves (``_resolve_agent_model_runtime`` over the session's pick or stored route, so
+    ``provider: auto`` is the saved login). Call inside ``_session_profile_runtime_scope(session)``."""
+    if (agent := session.get("agent")) is not None:
+        return {key: getattr(agent, key, None) for key in ("provider", "base_url", "api_key")}
+    build = _deferred_build_agent_kwargs(session, None)
+    try:
+        return _resolve_agent_model_runtime(build.get("model_override"), build.get("provider_override"))[1]
+    except (RuntimeError, ValueError):  # signed out or unconfigured (AuthError is a RuntimeError): no route
+        return {}
+
+
+def _usage_on_nous_route(route: dict) -> bool:
+    """The /topup CTA applies to a Nous route only; another provider's session sees the balance alone."""
+    from agent.billing_links import is_nous_inference_route
+    return is_nous_inference_route(route.get("provider") or "", route.get("base_url") or "")
+
+
+def _usage_nous_fields(session: dict) -> dict:
+    """``session.usage``'s Nous fields: ``nous_route`` (the /topup CTA applies), plus the balance lines
+    whenever Nous is signed in (``nous_credits_usage_fields``, which never raises), in the session's scope."""
+    from agent.account_usage_nous import nous_credits_usage_fields
+    with _session_profile_runtime_scope(session):
+        nous_route = _usage_on_nous_route(_usage_route(session))
+        return {**nous_credits_usage_fields(session.get("agent"), nous_route=nous_route), "nous_route": nous_route}
+
+
 def _usage_account_blocks(session: dict) -> list[str]:
-    """Provider limits then Nous credits, as CLI/messaging /usage show them; neither needs an agent.
-    Both read the session profile's credentials, unreadable outside its scope when multiplexed (#132422).
-    Before the first turn the route is the session's composer pick, else the profile's provider."""
-    from agent.account_usage import fetch_account_usage, nous_credits_lines, render_account_usage_lines
+    """Provider limits then the Nous section (``nous_usage_lines``), as CLI/messaging /usage show them;
+    neither needs an agent. Both read the session profile's credentials, unreadable outside its scope
+    when multiplexed (#132422)."""
+    from agent.account_usage import account_limit_lines
+    from agent.account_usage_nous import nous_usage_lines
     agent = session.get("agent")
-    pick = session.get("model_override") or {}
     lines: list[str] = []
     with _session_profile_runtime_scope(session):
+        route = _usage_route(session)
         with contextlib.suppress(Exception):
-            if provider := getattr(agent, "provider", None) or pick.get("provider") or _config_model_target()[1]:
-                lines += render_account_usage_lines(fetch_account_usage(
-                    provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None)))
+            lines += account_limit_lines(route.get("provider"), base_url=route.get("base_url"),
+                                         api_key=route.get("api_key"))
         with contextlib.suppress(Exception):
             # Window plans: the last reply's gauges lift the portal's lagging percents (``is True``: a
-            # Mock agent's attribute is not a plan). Every other account: exactly main's call.
+            # Mock agent's attribute is not a plan). Every other account: no gauges.
             state = getattr(agent, "_credits_state", None)
             window = getattr(state, "is_usage_window", False) is True
-            lines += nous_credits_lines(credits_state=state) if window else nous_credits_lines()
+            lines += nous_usage_lines(nous_route=_usage_on_nous_route(route), credits_state=state if window else None)
     return lines
 
 

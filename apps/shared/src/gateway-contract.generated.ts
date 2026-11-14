@@ -3629,6 +3629,7 @@ export interface SessionUsageResult {
   plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
+  nous_route?: boolean | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -4921,6 +4922,36 @@ export interface SessionStats {
   provider: string
   fallback_model?: string | null
   plan_gauge?: PlanGauge | null
+}
+export interface SessionAccountUsageParams {
+  session_id: string
+}
+/** ``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is Nous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account read's dollar model, so the CLI draws its two bars without reading the account again. */
+export interface SessionAccountUsage {
+  lines: string[]
+  nous_lines?: string[]
+  nous_route: boolean
+  nous_usage?: NousUsageDollars | null
+}
+/** ``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block. */
+export interface NousUsageDollars {
+  available: boolean
+  status?: string
+  plan_name?: string | null
+  renews_at?: string | null
+  renews_display?: string | null
+  subscription_remaining_usd?: number | null
+  topup_remaining_usd?: number | null
+  total_spendable_usd?: number | null
+  plan_bar?: NousUsageBar | null
+  topup_bar?: NousUsageBar | null
+}
+/** ``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining). */
+export interface NousUsageBar {
+  kind: 'plan' | 'topup'
+  remaining_usd: number
+  total_usd: number
+  spent_usd?: number
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -7155,6 +7186,8 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** The /usage account blocks for this session's route: provider plan limits, then the Nous balance. */
+  'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -7223,6 +7256,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
+  'session.account_usage',
   'session.automation',
   'session.create',
   'session.detach',

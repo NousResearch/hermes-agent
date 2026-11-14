@@ -79,14 +79,6 @@ def history_unreadable() -> str:
     return t("gateway.shared.history_unreadable")
 
 
-def _configured_provider() -> str:
-    """``model.provider`` from the gateway config ("" when unset)."""
-    from gateway.run import _load_gateway_config
-    user_config = _load_gateway_config()
-    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
-
-
 def _quiet_sync(call, default=None):
     """Sync twin of ``_quiet``."""
     try:
@@ -494,7 +486,7 @@ class GatewayStatusCommandsMixin:
     async def _handle_topup_command(self, event: MessageEvent) -> str:
         """Handle /topup -- show the Nous balance and hand off to the portal. Does NOT charge, confirm,
         or track payment (that happens in the browser; the next /topup shows the new balance)."""
-        from agent.account_usage import build_credits_view
+        from agent.account_usage_nous import build_credits_view
         view = await _quiet(lambda: asyncio.to_thread(build_credits_view, markdown=True))
         if view is None or not view.logged_in:
             return t("gateway.credits.not_logged_in")
@@ -585,10 +577,13 @@ class GatewayStatusCommandsMixin:
         if not provider and getattr(self, "_session_db", None) is not None:
             provider, base_url = await self._persisted_billing_route(source)
         if not provider:
-            # Fresh or evicted session with no persisted route (e.g. /usage right after login):
-            # fall back to the configured provider, as /status does, so account limits such as
-            # Codex subscription windows still render from on-disk credentials (#15167).
-            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
+            # Fresh or evicted session with no persisted route (e.g. /usage right after login): the
+            # route its first turn resolves (``provider: auto`` is the saved login), so account limits
+            # such as Codex subscription windows render from on-disk credentials (#15167).
+            _model, route = await _quiet(lambda: asyncio.to_thread(
+                self._resolve_session_agent_runtime, source=source, session_key=session_key, fallback=False,
+            ), (None, {}))
+            provider, base_url, api_key = (route.get(k) or None for k in ("provider", "base_url", "api_key"))
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -607,15 +602,14 @@ class GatewayStatusCommandsMixin:
             render_account_usage_lines(account_snapshot, markdown=True) if account_snapshot else []
         )
 
-        # Nous credits + monthly-grant gauge (shared with CLI/TUI). Gates on "a Nous account is
-        # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
-        # a balance. Fail-open: never break /usage.
-        from agent.account_usage import nous_credits_lines
+        # The Nous section (shared with CLI/TUI) after the provider's block, whenever Nous is signed in;
+        # its top-up lines only on a Nous route. Fail-open: never break /usage.
+        from agent.account_usage_nous import nous_usage_lines
+        from agent.billing_links import is_nous_inference_route
         credits_state = getattr(agent, "_credits_state", None) if agent else None
-        credits_lines = await _quiet(
-            lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
-            [],
-        )
+        nous_route = is_nous_inference_route(provider or "", base_url or "")
+        credits_lines = await _quiet(lambda: asyncio.to_thread(
+            nous_usage_lines, nous_route=nous_route, markdown=True, credits_state=credits_state), [])
         # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
         from agent.plan_limits import portal_wording
         credits_lines = [portal_wording(line) for line in credits_lines]

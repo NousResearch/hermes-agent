@@ -40,11 +40,20 @@ class Wire:
 @pytest.mark.parametrize('settled_before_retry', [False, True])
 async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatch, settled_before_retry):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    config = {'terminal': {'client_env_turn_passthrough': ['JOB_RUN_ID']}}
+    monkeypatch.setattr('gateway.session_policy.profile_config', lambda authority: config)
+    monkeypatch.setattr('hermes_cli.config_effective.load_user_config_effective', lambda path: config)
+    monkeypatch.setenv('JOB_RUN_ID', 'original-viewer-run')
+    for name in ('HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG'):
+        monkeypatch.delenv(name, raising=False)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     executed = []
+    environments = []
 
     async def answer(event):
         from gateway.session_results import execution_result
+        from agent.session_client_env import bound_turn_env, toolchain_environ
+        environments.append((dict(bound_turn_env()), toolchain_environ({})))
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
@@ -59,6 +68,9 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
     agent = GatewayACPAgent()
     agent._gateway = wire
     agent._conn = SimpleNamespace(updates=[])
+    described = await wire.rpc('runtime.describe')
+    agent._turn_env_supported = 'turn-env-v1' in described['capabilities']
+    assert agent._turn_env_supported
 
     async def session_update(session_id, update):
         agent._conn.updates.append(update.content.text)
@@ -71,6 +83,7 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
             authority._schedule = lambda ref: None  # the lost turn is still queued at retry time
         with pytest.raises(GatewayClientError, match='outcome is unknown'):
             await agent.prompt([acp.text_block('same words')], 's')
+        monkeypatch.setenv('JOB_RUN_ID', 'changed-after-ack-loss')
         authority._schedule = schedule
         if settled_before_retry:
             await async_wait_until(lambda: 'ACK_same words' in agent._conn.updates, timeout=5,
@@ -81,8 +94,10 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
         assert len(rows) == 1 and executed == ['same words']
         assert agent._conn.updates.count('ACK_same words') == 1
         # A different prompt is new work with a fresh identity.
+        monkeypatch.delenv('JOB_RUN_ID')
         await asyncio.wait_for(agent.prompt([acp.text_block('other words')], 's'), 5)
         assert len(list_session_admissions(authority.db, session_id='s', pending_only=False)) == 2
+        assert environments == [({'JOB_RUN_ID': 'original-viewer-run'}, {'JOB_RUN_ID': 'original-viewer-run'}), ({}, {})]
     finally:
         agent._event_task.cancel()
         await wire.viewer.close()

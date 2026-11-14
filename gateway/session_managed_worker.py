@@ -61,6 +61,7 @@ def policy_if_managed(policy):
 
 
 def _bootstrap(authority, ref, row, policy, scope, text=None):
+    from agent.session_client_env import bound_turn_env
     from gateway.session_ingress import row_turn_author
     from gateway.session_policy import route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
@@ -76,6 +77,7 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy),
+        'turn_env': dict(bound_turn_env()),
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
@@ -128,26 +130,30 @@ def worker_turn_scope(frame):
     never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
     voice turn reaches the model as it does in process. Frames without it bind nothing."""
     from gateway.session_finite import finite_turn_scope
+    from agent.session_client_env import accepted_turn_env, turn_env_scope
     from gateway.session_display import display_turn_scope, restore_display
     from gateway.session_surface import restore_surface, surface_turn_scope
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
     if turn is None:
         yield
         return
-    flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1')} if isinstance(turn, dict) else None
+    flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1', 'turn_env')} if isinstance(turn, dict) else None
     if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
             or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
         raise ValueError('invalid_managed_worker_bootstrap')
     try:
         surface = restore_surface(turn['surface_v1']) if 'surface_v1' in turn else None
         display = restore_display(turn['display_v1']) if 'display_v1' in turn else None
+        # Trusted private pipe, already filtered by the owner; never stored in child policy.
+        values = turn.get('turn_env')
+        values = accepted_turn_env(values, values or {})
     except RuntimeStoreError as exc:
         raise ValueError('invalid_managed_worker_bootstrap') from exc
     if turn['yolo']:
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
     with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
-            display_turn_scope(frame['scope']['execution_id'], display):
+            display_turn_scope(frame['scope']['execution_id'], display), turn_env_scope(values):
         yield
 
 
@@ -719,6 +725,8 @@ async def execute_managed(authority, ref, row, policy):
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
+        from agent.session_client_env import bound_turn_env
+        worker.secrets.extend(v for v in bound_turn_env().values() if v)
         await asyncio.to_thread(worker.send, frame)
         worker.writer.start()
         while True:

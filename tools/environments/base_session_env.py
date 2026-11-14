@@ -163,10 +163,15 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
-    pipe_marker: str = "", persist_env: bool = True, seed_snaps: Iterable[str] = ()) -> str:
+    pipe_marker: str = "", persist_env: bool = True, seed_snaps: Iterable[str] = (),
+    turn_names: Iterable[str] = ()) -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
     ``persist_env=False`` skips the re-dump, so every command starts from the login-time
     snapshot and exports from one command never reach the next (the CWD marker still runs).
+    ``turn_names`` are the per-turn values this command's process env carries: saved and
+    restored across the source (and kept out of the re-dump) like the profile-scoped
+    passthrough names, so a persistent session answers a later turn with the fresh value
+    instead of an earlier turn's snapshot copy.
     ``source`` stdout goes to /dev/null because macOS bash 3.2 / some Homebrew builds echo
     ``declare -x`` lines when sourcing. AI_AGENT/HERMES_AGENT advertise the harness to remote
     backends (whose env is not inherited); ``${VAR:-default}`` never clobbers an outer harness.
@@ -180,7 +185,9 @@ def _wrap_command_script(
     """
     escaped = command.replace("'", "'\\''")
     capture = bool(pipe_marker) and _can_capture_pipestatus(command)
-    save, restore = _passthrough_save_restore(passthrough_names)
+    pinned = [name for name in dict.fromkeys((*passthrough_names, *turn_names))
+              if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name)]
+    save, restore = _passthrough_save_restore(pinned)
     parts = list(save)
     seeds = list(seed_snaps)
     if snapshot_ready and seeds:
@@ -201,7 +208,7 @@ def _wrap_command_script(
     if snapshot_ready and persist_env:
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
-            f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
+            f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, pinned)} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
     if capture:

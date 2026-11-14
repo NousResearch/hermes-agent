@@ -1124,7 +1124,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True,
+    turn_env: dict[str, str] | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1250,10 +1251,13 @@ def _run_prompt_submit(
         return st.result, goal_followup
     def run():
         from agent.notification_presentation import notification_turn
+        from agent.session_client_env import turn_env_scope
         # _prepare_turn_input owns profile binding for the worker. The context
         # here only gates presentation; do not introduce a second runtime scope.
+        # The turn's declared values (prompt.submit's ``turn_env``) are bound for this thread only,
+        # so every tool this turn starts inherits them and the next turn inherits none.
         from agent.notification_presentation import notification_policy_snapshot
-        with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
+        with turn_env_scope(turn_env), notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
             followup = run_body()
         if followup is not None:
             _run_post_turn_followups(rid, sid, session, *followup)

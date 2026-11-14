@@ -112,6 +112,25 @@ def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
     clear_session('managed-contract')
 
 
+def test_turn_environment_crosses_private_bootstrap_for_one_child_turn(tmp_path, monkeypatch):
+    from agent.managed_worker import validate_bootstrap
+    from agent.session_client_env import bound_turn_env, toolchain_environ, turn_env_scope
+    from gateway.session_managed_worker import worker_turn_scope
+    from gateway.session_kanban import run_worker_turns
+    with turn_env_scope({'JOB_RUN_ID': 'private-worker-run'}):
+        frame, _ = assignment(tmp_path, monkeypatch, finite=False)
+    frame = validate_bootstrap(json.loads(json.dumps(frame)))
+    observed = []
+    agent = SimpleNamespace(valid_tool_names=set(), run_conversation=lambda *a, **kw: observed.append(
+        (dict(bound_turn_env()), toolchain_environ({}))) or {'final_response': 'ok'})
+    run_worker_turns(agent, frame, [])
+    assert observed == [({'JOB_RUN_ID': 'private-worker-run'}, {'JOB_RUN_ID': 'private-worker-run'})]
+    assert bound_turn_env() == {}
+    plain, _ = assignment(tmp_path, monkeypatch, finite=False)
+    with worker_turn_scope(plain):
+        assert toolchain_environ({}) == {}
+
+
 
 def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp_path, monkeypatch):
     from agent.managed_worker import validate_bootstrap

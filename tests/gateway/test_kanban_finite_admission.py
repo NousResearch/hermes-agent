@@ -52,7 +52,7 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     async def resume(ref, params):
         pass
 
-    authority = SimpleNamespace(profile_id=str(tmp_path), submit=submit,
+    authority = SimpleNamespace(profile_id=str(tmp_path), submit=submit, turn_envs={},
                                 db=SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db')))
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)

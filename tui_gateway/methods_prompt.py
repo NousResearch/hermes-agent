@@ -673,7 +673,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 def _run_after_agent_ready(
     rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
-    hosted_images=None,
+    hosted_images=None, turn_env=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -704,7 +704,8 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        image_paths=hosted_images, terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        image_paths=hosted_images, terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        turn_env=turn_env)
 
 
 _TRUNCATION_PARAMS = (
@@ -879,6 +880,14 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    try:
+        from agent.session_client_env import accepted_turn_env, configured_turn_names
+        # Values that change per turn (a run identity) cannot ride the session's frozen ``client_env``.
+        # Keep only the names this profile declares; anything else is dropped, never refused. A map of
+        # the wrong shape is refused HERE, before the turn is claimed (nothing to undo).
+        turn_env = accepted_turn_env(params.get("turn_env"), configured_turn_names(_load_cfg()))
+    except ValueError as exc:
+        return _err(rid, 4125, str(exc))
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
@@ -987,7 +996,7 @@ def _(rid, params: dict) -> dict:
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
             rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
-            hosted_images),
+            hosted_images, turn_env=turn_env),
         daemon=True, name=f"prompt-submit-{sid}")
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

@@ -2874,6 +2874,7 @@ export interface PromptSubmitParams {
   confirm_empty_truncate?: boolean | null
   confirm_deep_truncate?: boolean | null
   rebind_survivor_row_ids?: number[] | null
+  turn_env?: Record<string, string> | null
 }
 /** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch. */
 export interface PromptSubmitResult {
@@ -5370,6 +5371,7 @@ export interface CanonicalSubmitParams {
   profile?: string | null
   session_id: string
   text: string
+  turn_env?: Record<string, string> | null
   submission_id?: string | null
   input_id?: string | null
   queued?: boolean
@@ -5423,6 +5425,7 @@ export interface CanonicalReplaceQueuedParams {
   admission_id: string
   submission_id: string
   text: string
+  turn_env?: Record<string, string> | null
   attachments?: CanonicalAttachment[] | null
   display_kind?: 'hidden' | null
   title_preview?: string | null

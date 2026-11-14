@@ -68,6 +68,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     def __init__(self):
         self._conn = None
         self._gateway = None
+        self._turn_env_supported = False
         self._connection = None
         self._connect_lock = asyncio.Lock()
         # A per-task overlay HERMES_HOME attaches to the profile its symlinked lock names (#138949).
@@ -90,7 +91,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._permissions = {}
         self._admissions = {}
         self._submitting = set()
-        # Session -> (content fingerprint, input_id, staged (text, attachments)) of a submit whose ack
+        # Session -> (content fingerprint, input_id, staged (text, attachments, turn_env)) of a submit whose ack
         # never arrived. The editor's retry (that session's next prompt, same content) reuses it, so the authority
         # returns the same admission.
         self._unacked = {}
@@ -171,6 +172,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     await connection.__aexit__(None, None, None)
                     raise
                 self._connection, self._gateway = connection, gateway
+                capabilities = descriptor.get("capabilities")
+                self._turn_env_supported = isinstance(capabilities, list) and "turn-env-v1" in capabilities
                 self._event_task = asyncio.create_task(self._events())
             if self._failure:
                 raise self._failure
@@ -245,6 +248,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _teardown(self):
         task, connection = self._event_task, self._connection
         self._event_task = self._connection = self._gateway = None
+        self._turn_env_supported = False
         if task is not None:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -670,7 +674,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if prepared is None:
             return PromptResponse(stop_reason='cancelled')
         retry_key, input_id, staged = prepared
-        text, attachments = staged
+        text, attachments, _ = staged
         answered, text = await self._run_slash(held_id, session_id, text) if not attachments else (False, text)
         if answered:
             return PromptResponse(stop_reason='end_turn')
@@ -683,6 +687,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
             client = await self._client()
+            staged = self._with_turn_env(staged, submit)
             link, resumes = self._link, self._resumes.get(session_id, 0)
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
         except BaseException as exc:
@@ -738,6 +743,17 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
 
+    def _with_turn_env(self, staged, submit):
+        """Freeze this submit's viewer values, not its retry fingerprint or the session's policy."""
+        text, attachments, turn_env = staged
+        if turn_env is None:
+            from hermes_cli.gateway_chat import shell_turn_env
+            turn_env = shell_turn_env() if self._turn_env_supported else {}
+        if self._turn_env_supported and turn_env:
+            submit['turn_env'] = turn_env
+        # Retain even an empty map: a retry must not pick up a later viewer identity.
+        return text, attachments, turn_env
+
     async def _admission_from_receipt(self, client, held_id, session_id, receipt):
         """The admission a ``prompt.submit`` receipt names, or None when the owner admitted nothing."""
         if receipt.get("voice_stopped") is True:
@@ -779,7 +795,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return True, None
 
     async def _prepare_submit(self, session_id, prompt):
-        """``(retry_key, input_id, (text, attachments))`` for one ACP prompt, or None when the editor's Stop
+        """``(retry_key, input_id, (text, attachments, turn_env))`` for one ACP prompt, or None when the editor's Stop
         arrived while it was staged."""
         from acp_adapter.content import _content_blocks_to_openai_user_content
         from acp_adapter.gateway_media import stage_user_content, submit_fingerprint
@@ -802,7 +818,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if session_id in self._pending_cancels:
             self._pending_cancels.discard(session_id)
             return None
-        return retry_key, uuid.uuid4().hex, staged
+        return retry_key, uuid.uuid4().hex, (*staged, None)
 
     async def _after_ack(self, session_id, admission_id, link, resumes):
         """A gap re-attach whose resume left after this submit covers it. The pump owns recovery: it

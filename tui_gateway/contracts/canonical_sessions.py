@@ -248,6 +248,7 @@ class CanonicalModelOverride(Params):
 
 class CanonicalSubmitParams(CanonicalSessionParams):
     text: str
+    turn_env: dict[str, str] | None = None
     submission_id: str | None = None
     input_id: str | None = None
     queued: bool = False
@@ -297,6 +298,7 @@ class CanonicalReplaceQueuedParams(CanonicalSessionParams):
     admission_id: str
     submission_id: str
     text: str
+    turn_env: dict[str, str] | None = None
     attachments: list[CanonicalAttachment] | None = None
     display_kind: Literal['hidden'] | None = None
     title_preview: str | None = None

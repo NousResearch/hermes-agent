@@ -9911,7 +9911,8 @@ const globalRemoteSessions = createGlobalRemoteSessionRoute({
   request: (conn, path, method, body) => fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
   requestPrimary: (path, method, body) => requestJsonForProfile(null, path, method, body as string),
   resolveGlobalRemote: () => resolveRemoteBackend(null),
-  waitReady: conn => waitForHermes(conn.baseUrl, conn.token, undefined, conn.authMode)
+  resolvePrimary: () => ensureBackend(null, { passive: true }),
+  waitReady: conn => waitForRemoteHermes(conn)
 })
 
 async function testDesktopConnectionConfig(input: any = {}) {
@@ -15585,7 +15586,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   })) as any
 
   if (pinned) {
-    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
+    await tagPrimaryAggregateRows(base, globalRemoteSessions.aggregateBackend, pinned)
   }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
@@ -15686,7 +15687,9 @@ async function reusedPrimarySshDescriptor(registry, connectionId: string) {
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).
 const primaryBackendInstallId = createPrimaryInstallIdResolver({
-  resolve: () => ensureBackend(null, { passive: true }),
+  // The backend the aggregate was read from (the app-global remote in mixed mode), so its rows
+  // are not counted again when that server is also a registry source.
+  resolve: () => globalRemoteSessions.aggregateBackend(),
   status: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 2_000 }),
   ttlMs: INSTALL_ID_TTL_MS,
   negativeTtlMs: INSTALL_ID_NEGATIVE_TTL_MS

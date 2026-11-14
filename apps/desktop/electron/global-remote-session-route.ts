@@ -5,11 +5,18 @@
 // session reads and mutations; every other topology keeps the primary route.
 
 import { authModeFromStatus, normalizeRemoteBaseUrl } from './connection-config'
-import { type ProfileSessionAggregateFetchOptions, resolveProfileSessionAggregateRoute } from './profile-session-routing'
+import {
+  type ProfileSessionAggregateFetchOptions,
+  resolveProfileSessionAggregateRoute
+} from './profile-session-routing'
 
+// The full resolved connection (headers, connectionId, ...) rides through untouched: readiness and
+// requests must see exactly what the later session request sends.
 interface RemoteConnection {
   authMode?: string
   baseUrl: string
+  connectionId?: string
+  headers?: Record<string, string>
   token?: string
 }
 
@@ -19,7 +26,25 @@ export interface GlobalRemoteSessionDeps {
   request: (conn: RemoteConnection, path: string, method: string, body?: unknown) => Promise<unknown>
   requestPrimary: (path: string, method: string, body?: unknown) => Promise<unknown>
   resolveGlobalRemote: () => Promise<null | RemoteConnection>
+  resolvePrimary: () => Promise<unknown>
   waitReady: (conn: RemoteConnection) => Promise<unknown>
+  /** Sidebar read budget: an offline global remote must not hold healthy profiles' rows. */
+  readBudgetMs?: number
+}
+
+const GLOBAL_REMOTE_READ_BUDGET_MS = 10_000
+
+function withinBudget<T>(work: Promise<T>, budgetMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`the app-global Hermes backend did not respond within ${budgetMs}ms`)),
+      budgetMs
+    )
+  })
+
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer))
 }
 
 export function createGlobalRemoteSessionRoute(deps: GlobalRemoteSessionDeps) {
@@ -37,9 +62,11 @@ export function createGlobalRemoteSessionRoute(deps: GlobalRemoteSessionDeps) {
     return remote
   }
 
+  const connection = () => pending || (pending = connect())
+
   // A failed dial or request drops the cached connection so the next read redials.
   const requestGlobal = async (path: string, method: string, body?: unknown) => {
-    const attempt = pending || (pending = connect())
+    const attempt = connection()
 
     try {
       return await deps.request(await attempt, path, method, body)
@@ -55,15 +82,23 @@ export function createGlobalRemoteSessionRoute(deps: GlobalRemoteSessionDeps) {
   const fetchOptions = (): ProfileSessionAggregateFetchOptions => ({
     globalRemote: deps.globalRemoteActive(),
     primaryProfileRemoteOverride: deps.primaryHasRemoteOverride(),
-    fetchJsonForGlobalRemote: (_profile, path) => requestGlobal(path, 'GET')
+    // A budget, not the dial's readiness deadline: the read settles as a named error next to the
+    // healthy profiles' rows, and the dial keeps going so a slow boot lands on a later refresh.
+    fetchJsonForGlobalRemote: (_profile, path) =>
+      withinBudget(requestGlobal(path, 'GET'), deps.readBudgetMs ?? GLOBAL_REMOTE_READ_BUDGET_MS)
   })
 
+  const usesGlobal = () => resolveProfileSessionAggregateRoute(fetchOptions()) === 'global-remote'
+
   return {
+    /** The backend the aggregate is read from: its owner tags the rows and its install id dedupes totals. */
+    aggregateBackend: (): Promise<unknown> =>
+      usesGlobal()
+        ? withinBudget(connection(), deps.readBudgetMs ?? GLOBAL_REMOTE_READ_BUDGET_MS)
+        : deps.resolvePrimary(),
     fetchOptions,
     request: (path: string, method: string, body?: unknown) =>
-      resolveProfileSessionAggregateRoute(fetchOptions()) === 'global-remote'
-        ? requestGlobal(path, method, body)
-        : deps.requestPrimary(path, method, body),
+      usesGlobal() ? requestGlobal(path, method, body) : deps.requestPrimary(path, method, body),
     reset: () => {
       pending = null
     }

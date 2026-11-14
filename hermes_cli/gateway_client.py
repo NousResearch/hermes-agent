@@ -45,6 +45,22 @@ def gateway_ws_target(endpoint, ticket):
     return url, [GATEWAY_WS_PROTOCOL, GATEWAY_WS_TICKET_PREFIX + ticket]
 
 
+def _keepalive_options(url: str) -> dict:
+    """No keepalive ping to a loopback owner (#154910). The owner answers pings on the loop that
+    runs the turn, so a long turn starves the pong and the default 20 s/20 s ping drops a healthy
+    socket; a dead loopback peer sends a real FIN/RST instead. Same rule as the dashboard server
+    (``web_server.py``). A remote owner keeps the default: a half-open tunnel looks like a stall."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").rstrip(".").lower()
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host == "localhost"
+    return {"ping_interval": None, "ping_timeout": None} if loopback else {}
+
+
 class GatewayClientError(ValueError):
     pass
 
@@ -382,7 +398,7 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
         # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
         # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
         async with connect(url, subprotocols=protocols, open_timeout=10, max_size=max_size,
-                           proxy=None) as ws:
+                           proxy=None, **_keepalive_options(url)) as ws:
             if protocols and ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise GatewayClientError("Gateway protocol mismatch; update/restart required")
             async with GatewayClient(ws) as client:

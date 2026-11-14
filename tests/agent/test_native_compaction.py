@@ -541,8 +541,8 @@ class TestPrunePreCheckpointItems:
 
     @pytest.mark.parametrize(
         ("char", "kept_chars"),
-        # ASCII 4 chars/token; Cyrillic 2 bytes/char; CJK 1 token/char.
-        [("x", 400), ("ж", 200), ("中", 100)],
+        # ASCII 4 chars/token; Cyrillic 2 bytes/char; CJK ceil(0.6 tokens/char) (#104806).
+        [("x", 400), ("ж", 200), ("中", 166)],
     )
     def test_retention_budget_newest_first_with_truncation(self, char, kept_chars):
         from agent.native_compaction import prune_pre_checkpoint_items

@@ -509,7 +509,11 @@ def _spawn_hermes_action(
         # two-step gate as the ``hermes update`` fleet restart: a refused blanket probe falls
         # back to ``sudo -l`` on the exact argv, so a command-scoped NOPASSWD entry qualifies.
         from hermes_cli.update_cmd_fleet import _sudo_noninteractive_ok
+        from hermes_constants import get_default_hermes_root
 
+        # sudo clears HERMES_HOME before bootstrap selects dependencies. Pin the data root in
+        # the command itself; CLI profile arguments still select the target gateway afterward.
+        cmd = runtime_command(PROJECT_ROOT, subcommand, home=get_default_hermes_root())
         if not _sudo_noninteractive_ok(["-l", "--", *cmd]):
             message = (
                 f"{name} targets the system-scope gateway service, which requires root, and "

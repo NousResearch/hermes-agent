@@ -482,12 +482,9 @@ async def test_posix_detached_restart_logs_helper_output_and_exit_status(monkeyp
 
     # A log that cannot be opened must still run the helper: bash skips a command whose redirect fails.
     monkeypatch.undo()  # the real Popen runs the probe
-    (tmp_path / "logs").chmod(0o500)
-    try:
-        probe = shell_cmd.replace("hermes gateway restart", "echo helper-ran")
-        out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)  # noqa: ASYNC221 -- the probe shell must finish before the assert
-    finally:
-        (tmp_path / "logs").chmod(0o700)
+    log_path.mkdir()  # a directory at the log path cannot be opened for append, even by root
+    probe = shell_cmd.replace("hermes gateway restart", "echo helper-ran")
+    out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)  # noqa: ASYNC221 -- the probe shell must finish before the assert
     assert "helper-ran" in out.stdout
 
 

@@ -624,12 +624,14 @@ process only; it never logs it. Run `attach` again for each new connection and e
 A client that speaks the control socket itself gets the same verdict and ticket without the spawn:
 see [Local control socket](#local-control-socket-public-client-contract).
 
-Every `attach` reply, success or refusal, also carries
+Every `attach` reply from a parsed invocation, success or refusal, also carries
 `"start_context": {"windows_service_session": <bool>}`. It is `true` when the caller runs elevated
 in Windows session 0, which is what an administrator's OpenSSH login gets, and `false` everywhere
-else, including off Windows. A gateway started from such a login inherits both, so the user's own
-desktop apps are refused with `gateway_other_session` until it exits. `attach --start` still
-starts it and exits as before, and prints a one-line warning on stderr first. A remote client that
+else, including off Windows. A gateway such a login spawns itself inherits both, so the user's own
+desktop apps are refused with `gateway_other_session` until it exits. A registered Scheduled Task is
+the exception: `--start` runs it, and it starts the gateway in the signed-in user's session at normal
+integrity. `attach --start` still starts the gateway and exits as before, and prints a one-line
+warning on stderr first. A remote client that
 sees `true` should run `attach` without `--start` (a gateway the user's own session started
 serves both), and when none is running ask the user to start Hermes from a normal
 (non-administrator) window on that machine's desktop. Do not suggest `hermes gateway install`

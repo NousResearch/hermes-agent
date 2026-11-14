@@ -19,10 +19,15 @@ from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
-from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.synthetic_event_platforms import (
+    resolve_platform as _resolve_synthetic_platform,
+    unroutable_completion_exhausted as _unroutable_completion_exhausted,
+    warn_unregistered_platform as _warn_unregistered_platform,
+)
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
@@ -657,18 +662,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 session_key, platform_name, chat_type, chat_id, evt.get("type", "?"),
             )
             return None
-        try:
-            platform = Platform(platform_name)
-            # Reject dynamic pseudo-members: plugin platforms must be registered.
-            if platform.value not in _BUILTIN_PLATFORM_VALUES:
-                try:
-                    from gateway.platform_registry import platform_registry
-                    if not platform_registry.is_registered(platform.value):
-                        raise ValueError(platform_name)
-                except Exception:
-                    raise ValueError(platform_name)
-        except Exception:
-            logger.warning("Synthetic process event has invalid platform metadata: %r", platform_name)
+        platform = _resolve_synthetic_platform(platform_name)
+        if platform is None:
+            _warn_unregistered_platform(self, platform_name)
             return None
 
         def _opt(field: str) -> Optional[str]:
@@ -1214,6 +1210,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
+        if source is None:
+            # An unregistered plugin has no SessionSource, but its session-key namespace
+            # still identifies which profile owns the durable completion ledger.
+            from gateway.run import _parse_session_key
+            profile = (_parse_session_key(str(evt.get("session_key") or "")) or {}).get("profile")
+            if profile:
+                source = SessionSource(platform=Platform.API_SERVER, chat_id="", profile=profile)
         if source is None or not getattr(source, "profile", None):
             raw_sid = _raw_process_event_session_id(evt)
             if raw_sid and getattr(getattr(self, "config", None), "multiplex_profiles", False):
@@ -1674,9 +1677,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             try:
                 delivered = await self._deliver_async_delegation_group(group)
                 if delivered is False:
-                    self._back_off_refused_completions(group)
-                    for evt in group:
-                        _pr.completion_queue.put(evt)
+                    await self._requeue_refused_async_group(group, _pr.completion_queue)
             except Exception as e:
                 for evt in group:
                     _pr.completion_queue.put(evt)
@@ -1691,6 +1692,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             step = int(evt.get("_watch_retry_step") or 0) + 1
             evt["_watch_retry_step"] = step
             evt["_watch_next_retry_at"] = _refusal_retry_at(step)
+
+    async def _requeue_refused_async_group(self, group: list[dict], completion_queue) -> None:
+        """Requeue a refused async group, or leave out an event nothing can ever route.
+
+        The backoff paces every refusal; only a platform this gateway cannot resolve is bounded
+        (#152734) — the rest (a parked profile, a full owner FIFO, a transport that is down) can
+        still clear, so they must keep waiting however long that takes.
+        """
+        self._back_off_refused_completions(group)
+        for evt in group:
+            if not await _unroutable_completion_exhausted(self, evt):
+                completion_queue.put(evt)
 
     @staticmethod
     def _redacted_output_tail(session, limit: int) -> str:

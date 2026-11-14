@@ -43,24 +43,28 @@ class TestSecureStateDbSymlinkFailClosed:
 
         lstat() validates one inode; a bare chmod(path) would follow a
         replacement symlink planted after the check and change the mode of an
-        unrelated target (#109857).
+        unrelated target (#109857). The swap happens at the pin (os.open, Linux)
+        or the chmod (elsewhere): the test runner's home-I/O guard re-enters a
+        patched os.lstat, which would land the swap before the check instead.
         """
         db_path = tmp_path / "state.db"
         db_path.write_bytes(b"regular")
         target = tmp_path / "unrelated"
         target.write_bytes(b"unrelated")
         os.chmod(target, 0o666)
+        swapped = []
 
-        real_lstat = os.lstat
+        def swap_then(real):
+            def call(path, *args, **kwargs):
+                if not swapped and Path(path) == db_path:
+                    swapped.append(path)
+                    db_path.unlink()
+                    db_path.symlink_to(target)
+                return real(path, *args, **kwargs)
+            return call
 
-        def swap_after_check(path):
-            st = real_lstat(path)
-            if Path(path) == db_path:
-                db_path.unlink()
-                db_path.symlink_to(target)
-            return st
-
-        monkeypatch.setattr(os, "lstat", swap_after_check)
+        monkeypatch.setattr(os, "open", swap_then(os.open))
+        monkeypatch.setattr(os, "chmod", swap_then(os.chmod))
         if hasattr(os, "O_PATH"):
             # Linux: the O_PATH|O_NOFOLLOW pin sees the swapped-in link and
             # fails closed before the caller's sqlite3.connect() follows it.
@@ -70,6 +74,7 @@ class TestSecureStateDbSymlinkFailClosed:
         else:
             _secure_state_db_files(db_path)
 
+        assert swapped
         assert stat.S_IMODE(target.stat().st_mode) == 0o666
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permission bits")

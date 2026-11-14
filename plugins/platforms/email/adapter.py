@@ -868,7 +868,11 @@ class EmailAdapter(BasePlatformAdapter):
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        # Native session viewers use the admission UUID as MessageEvent.message_id;
+        # it is not an email Message-ID and must not displace the last real mail.
+        explicit_id = reply_to_msg_id if reply_to_msg_id and re.fullmatch(
+            r"<[^<>\s@]+@[^<>\s@]+>", reply_to_msg_id) else None
+        original_msg_id = explicit_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,

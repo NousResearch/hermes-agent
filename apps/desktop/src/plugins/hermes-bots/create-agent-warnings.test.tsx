@@ -297,6 +297,54 @@ describe('profile creation warnings', () => {
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.message === warnings.join('\n'))).toEqual([])
   })
 
+  it('drops the warnings of a bot replaced under the same name during readiness', async () => {
+    mocks.connections.mockResolvedValue([{ id: 'local', label: 'This Mac' }, { id: 'studio', label: 'Studio' }])
+    const base = mocks.request.getMockImplementation()!
+    let finishReadiness!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'profiles.create'
+      ? Promise.resolve({ warnings })
+      : method === 'setup.runtime_check'
+        ? new Promise(resolve => { finishReadiness = () => resolve({ ok: true }) })
+        : base(method, params)
+    )
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(finishReadiness).toBeTypeOf('function'))
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    // A same-named replacement draft materializes on the new target.
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1))
+    await act(async () => finishReadiness())
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    expect(mocks.notify.mock.calls.filter(([notice]) => notice.message === warnings.join('\n'))).toEqual([])
+  })
+
+  it('pins Configure model to the connection the draft was created on, not the one active at Create', async () => {
+    mocks.activeConnection.value = 'gateway-a'
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
+      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    const configure = vi.fn()
+    const dialog = await renderDialog(true, configure)
+    await showNotifications()
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    mocks.activeConnection.value = 'gateway-b'
+    // The switch re-renders the dialog (here: any edit), so Create reads gateway-b as active.
+    fireEvent.click(screen.getByRole('button', { name: 'General' }))
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage ' } })
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    dialog.unmount()
+    const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
+    await act(async () => clearResumeToasts(undefined))
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
+    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage', connectionId: 'gateway-a', sourceScoped: true }))
+  })
+
   it('explicit Clear all dismisses persistent creation and needs-model cards', async () => {
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'profiles.create'

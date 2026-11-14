@@ -254,12 +254,13 @@ function slugTaken(roster: RosterRow[], slug: string, target: string, draft: nul
  *  (`draftTargetRef`, recorded with it): the "Create on" picker may point
  *  elsewhere by then, and a same-named bot there is not the draft. Each discard,
  *  and the dialog unmounting, bumps `draftGenRef` so an in-flight create
- *  deletes its own draft and configures nothing. The draft's creation
- *  warnings (`draftWarningRef`) belong to it: they go with every discard and
- *  are published only when the draft is submitted. */
-interface DraftWarning {
-  message: string
-  title: string
+ *  deletes its own draft and configures nothing. `draftReceiptRef` is what
+ *  the flight that recorded the draft learned: the connection it was created
+ *  on and its creation warnings. Every discard drops it, and a submit
+ *  publishes the warnings only while the receipt is still the recorded one. */
+interface DraftReceipt {
+  owner: string
+  warning: null | { message: string; title: string }
 }
 
 /** A creation warning names the profile and the machine it was created on
@@ -288,12 +289,12 @@ function useDraftProfile(
 ) {
   const draftGenRef = useRef(0)
   const draftTargetRef = useRef('')
-  const draftWarningRef = useRef<DraftWarning | null>(null)
+  const draftReceiptRef = useRef<DraftReceipt | null>(null)
 
   const discardDraft = () => {
     const draft = createdRef.current
     draftGenRef.current += 1
-    draftWarningRef.current = null
+    draftReceiptRef.current = null
     createdRef.current = flightRef.current = null
 
     if (draft) {
@@ -304,12 +305,11 @@ function useDraftProfile(
   useEffect(
     () => () => {
       draftGenRef.current += 1
-      draftWarningRef.current = null
     },
     []
   )
 
-  return { discardDraft, draftGenRef, draftTargetRef, draftWarningRef }
+  return { discardDraft, draftGenRef, draftTargetRef, draftReceiptRef }
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
@@ -325,7 +325,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
-  const { discardDraft, draftGenRef, draftTargetRef, draftWarningRef } = useDraftProfile(createdRef, flightRef)
+  const { discardDraft, draftGenRef, draftTargetRef, draftReceiptRef } = useDraftProfile(createdRef, flightRef)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -442,7 +442,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     setTargetConnection('')
     setBusy(false)
     setError(null)
-    createdRef.current = flightRef.current = draftWarningRef.current = null
+    createdRef.current = flightRef.current = draftReceiptRef.current = null
   }
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
@@ -591,10 +591,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       createdRef.current = slug
       draftTargetRef.current = target
-      // Held until this draft is submitted; a discard drops them with it.
-      draftWarningRef.current = created?.warnings?.length
-        ? { title: creationWarningTitle(slug, target || activeConnectionId, connections), message: created.warnings.join('\n') }
-        : null
+      const owner = target || activeConnectionId
+      draftReceiptRef.current = {
+        owner,
+        warning: created?.warnings?.length
+          ? { title: creationWarningTitle(slug, owner, connections), message: created.warnings.join('\n') }
+          : null
+      }
 
       // Apply capability picks from the Advanced tabs (best-effort; the
       // profile exists either way and Edit Profile can finish the job).
@@ -688,10 +691,9 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         return
       }
 
-      // Taken now: they belong to this bot even if the dialog closes during readiness.
-      const warning = draftWarningRef.current
-      draftWarningRef.current = null
-      const createdOn = activeConnectionId
+      // Kept even if the dialog closes during readiness; a discard drops it.
+      const receipt = draftReceiptRef.current
+      const createdOn = receipt?.owner ?? activeConnectionId
 
       // The intro turn is a real model call. Probe the new profile's route
       // first so a bot whose machine has no usable credential lands as
@@ -713,8 +715,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       }
 
       // Not for a draft a target change discarded while readiness ran.
-      if (warning && createdRef.current === slugCreated) {
-        host.notify({ kind: 'warning', title: warning.title, message: warning.message, persistent: true })
+      if (receipt?.warning && draftReceiptRef.current === receipt) {
+        host.notify({ kind: 'warning', title: receipt.warning.title, message: receipt.warning.message, persistent: true })
       }
 
       // Persistent: opening the chat clears ordinary notices.

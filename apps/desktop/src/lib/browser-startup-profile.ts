@@ -1,5 +1,7 @@
 import type { DesktopProfileRoute } from '@/global'
 
+import { PROFILE_ID_ARG_RE } from '../../electron/profile-id-guard'
+
 import { requireBrowserConnection } from './browser-connection'
 import { readJson, writeJson } from './storage'
 
@@ -17,7 +19,7 @@ export function requireProfileRoute(value: unknown): DesktopProfileRoute {
 
   const { connectionId, profile } = value as Record<string, unknown>
 
-  if (typeof profile !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile)) {
+  if (typeof profile !== 'string' || !PROFILE_ID_ARG_RE.test(profile)) {
     throw new Error('Invalid profile name.')
   }
 

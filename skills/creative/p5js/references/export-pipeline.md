@@ -280,10 +280,9 @@ See `scripts/export-frames.js` for the full implementation. Basic pattern:
 const puppeteer = require('puppeteer');
 
 async function captureFrames(htmlPath, outputDir, options) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  // Keep Chrome's sandbox and web security on; the script adds --no-sandbox only on hosts that
+  // cannot run it (root, containers, AppArmor userns restriction) and serves local assets itself.
+  const browser = await puppeteer.launch({ headless: true });
   const page = await browser.newPage();
 
   await page.setViewport({

@@ -40,9 +40,87 @@
  *   function draw() { ... }
  */
 
-const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs');
+
+// The sketch is served from this synthetic origin through request interception instead of file://,
+// so Chrome keeps web security on and no --allow-file-access-from-files is needed: the page (and any
+// CDN script it pulls in) can read only files under the sketch's own directory.
+const SKETCH_ORIGIN = 'http://p5-sketch.localhost';
+
+const MIME_TYPES = {
+  '.html': 'text/html', '.htm': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
+  '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.ttf': 'font/ttf', '.otf': 'font/otf', '.woff': 'font/woff', '.woff2': 'font/woff2',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.mp4': 'video/mp4',
+  '.txt': 'text/plain', '.csv': 'text/csv', '.glsl': 'text/plain', '.frag': 'text/plain',
+  '.vert': 'text/plain', '.obj': 'text/plain',
+};
+
+function apparmorRestrictsUserns() {
+  try {
+    return fs.readFileSync('/proc/sys/kernel/apparmor_restrict_unprivileged_userns', 'utf8').trim() === '1';
+  } catch {
+    return false;
+  }
+}
+
+function runningInDocker() {
+  if (fs.existsSync('/.dockerenv')) return true;
+  try {
+    return fs.readFileSync('/proc/1/cgroup', 'utf8').includes('docker');
+  } catch {
+    return false;
+  }
+}
+
+// Same host policy as Hermes' own browser (tools/browser_launcher.py needs_chromium_sandbox_bypass):
+// Chrome's sandbox stays on unless the host cannot run it.
+function sandboxBypassReason(facts = {}) {
+  const isRoot = facts.isRoot ?? (typeof process.getuid === 'function' && process.getuid() === 0);
+  if (isRoot) return 'running as root';
+  if (facts.inDocker ?? runningInDocker()) return 'running in a container';
+  if (facts.apparmorUserns ?? apparmorRestrictsUserns()) return 'AppArmor restricts unprivileged user namespaces';
+  return null;
+}
+
+function chromeArgs(facts = {}) {
+  const args = ['--disable-gpu'];
+  const reason = sandboxBypassReason(facts);
+  if (reason) {
+    console.error(`Chrome sandbox disabled: ${reason}`);
+    args.push('--no-sandbox', '--disable-dev-shm-usage');
+  }
+  return args;
+}
+
+// Map a request URL on SKETCH_ORIGIN to a file inside sketchDir, or null when it falls outside it.
+function resolveLocalFile(sketchDir, requestUrl) {
+  let url;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  if (url.origin !== SKETCH_ORIGIN) return null;
+  let rel;
+  try {
+    rel = decodeURIComponent(url.pathname);
+  } catch {
+    return null;
+  }
+  if (rel.includes('\0')) return null;
+  const root = fs.realpathSync(sketchDir);
+  let file;
+  try {
+    file = fs.realpathSync(path.join(root, rel));
+  } catch {
+    return null;
+  }
+  if (file !== root && !file.startsWith(root + path.sep)) return null;
+  return fs.statSync(file).isFile() ? file : null;
+}
 
 // Parse CLI arguments
 function parseArgs() {
@@ -95,19 +173,29 @@ async function main() {
   console.log(`Resolution: ${opts.width}x${opts.height}`);
   console.log(`Output: ${opts.output}/`);
 
+  const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({
     headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--disable-web-security',
-      '--allow-file-access-from-files',
-    ],
+    args: chromeArgs(),
   });
 
   const page = await browser.newPage();
+
+  const sketchDir = path.dirname(inputPath);
+  await page.setRequestInterception(true);
+  page.on('request', (req) => {
+    if (!req.url().startsWith(SKETCH_ORIGIN + '/')) {
+      req.continue();
+      return;
+    }
+    const file = resolveLocalFile(sketchDir, req.url());
+    if (!file) {
+      req.respond({ status: 404, contentType: 'text/plain', body: 'Not found' });
+      return;
+    }
+    const contentType = MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
+    req.respond({ status: 200, contentType, body: fs.readFileSync(file) });
+  });
 
   await page.setViewport({
     width: opts.width,
@@ -116,8 +204,8 @@ async function main() {
   });
 
   // Navigate to sketch
-  const fileUrl = `file://${inputPath}`;
-  await page.goto(fileUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+  const sketchUrl = `${SKETCH_ORIGIN}/${encodeURIComponent(path.basename(inputPath))}`;
+  await page.goto(sketchUrl, { waitUntil: 'networkidle0', timeout: 30000 });
 
   // Wait for canvas to appear
   await page.waitForSelector(opts.selector, { timeout: 10000 });
@@ -173,7 +261,11 @@ async function main() {
   await browser.close();
 }
 
-main().catch(err => {
-  console.error('Error:', err.message);
-  process.exit(1);
-});
+module.exports = { chromeArgs, resolveLocalFile, SKETCH_ORIGIN };
+
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Error:', err.message);
+    process.exit(1);
+  });
+}

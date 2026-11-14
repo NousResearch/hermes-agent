@@ -95,6 +95,7 @@ hermes setup --portal
 ```
 
 That logs you in, sets Nous as your provider, and turns on the Tool Gateway in one command.
+Interactive setup finishes with a tiny live check of your configured model (up to 20 seconds); failures explain how to fix the route without failing setup, and `--no-verify` skips the check.
 :::
 
 :::info Setup modes

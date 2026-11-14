@@ -955,6 +955,57 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+def _heredoc_write_targets(unit: str) -> Iterator[str]:
+    """Paths a ``cat``/``tee`` heredoc command line writes its body to (``cat > P <<'EOF'``,
+    ``cat <<'EOF' | tee -a P``)."""
+    try:
+        tokens = _shlex_tokens(unit)
+    except ValueError:
+        return
+    for segment in _split_segments(tokens):
+        index = _executed_command_index(segment)
+        if index is None or _executable_name(segment[index]) not in {"cat", "tee"}:
+            continue
+        expect_target = False
+        for token in segment[index + 1:]:
+            if expect_target:
+                yield token
+                expect_target = False
+            elif token.lstrip("0123456789") in {">", ">>", ">|"}:
+                expect_target = True
+            elif token.startswith((">", "1>")) and token.lstrip("1>|"):
+                yield token.lstrip("1>|")
+            elif _executable_name(segment[index]) == "tee" and not token.startswith(("-", "<")):
+                yield token
+
+
+def _heredoc_written_scripts(command: str, cwd: Optional[str]) -> dict[Path, str]:
+    """Map each path a heredoc in *command* writes to the body it writes. The file does not exist
+    yet when the guard runs, so a later ``bash P`` / ``systemd-run P`` in the same command can only
+    be scanned through the body text (#148561)."""
+    from tools.shell_heredoc import iter_heredoc_bodies
+
+    written: dict[Path, str] = {}
+    for unit, body in iter_heredoc_bodies(command):
+        for target in _heredoc_write_targets(unit):
+            for path in _resolved_or_nothing(target, cwd):
+                written[_resolve_lenient(path)] = body
+    return written
+
+
+def _walk_candidates(
+    command: str, walk_command: str, cwd: Optional[str], executed: bool,
+) -> tuple[list[tuple[Path, bool]], dict[Path, str]]:
+    """``(candidates, written)`` for the referenced-script walk: executed-view paths first, then
+    paths only mentioned in masked bodies, plus the heredoc bodies this command writes to a path.
+    A body the same command writes and then runs is that script's text: the file does not exist
+    yet at scan time (#148561). A body that is only written stays documentation (#88336)."""
+    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    if walk_command != command:
+        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+    return candidates, (_heredoc_written_scripts(command, cwd) if candidates else {})
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -1133,11 +1184,12 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
-    if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+    candidates, written = _walk_candidates(command, walk_command, cwd, executed)
 
     for script_path, candidate_executed in candidates:
+        written_body = written.pop(_resolve_lenient(script_path), None)
+        if written_body and recurse(written_body, cwd, candidate_executed):
+            return True
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:

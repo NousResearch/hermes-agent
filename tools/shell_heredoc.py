@@ -185,6 +185,37 @@ def _find_heredoc_close(
         cursor = after
 
 
+def iter_heredoc_bodies(command: str):
+    """Yield ``(command_unit, body)`` per command line that opens heredocs, quoted or not.
+
+    ``command_unit`` is the opener line from its owning simple command onward (so its redirects
+    are visible); ``body`` joins that line's heredoc bodies without terminator lines. Stops at the
+    first unparsable or unterminated heredoc: callers use this to scan MORE text, never less.
+    """
+    if "<<" not in command:
+        return
+    command_start = 0
+    while command_start < len(command):
+        command_end, specs, unknown_operator, _post, owner_start = _scan_heredoc_command_unit(
+            command, command_start)
+        if unknown_operator:
+            return
+        if not specs:
+            command_start = command_end + 1
+            continue
+        body_cursor = command_end + 1
+        bodies: list[str] = []
+        for delimiter, strip_tabs, _quoted in specs:
+            close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs)
+            if close_end is None:
+                return
+            terminator_start = command.rfind("\n", body_cursor, close_end - 1) + 1
+            bodies.append(command[body_cursor:max(body_cursor, terminator_start)])
+            body_cursor = close_end
+        yield command[owner_start:command_end], "".join(bodies)
+        command_start = body_cursor
+
+
 def strip_inert_heredoc_bodies(command: str, *, mask_code_consumers: bool = True) -> str:
     """Mask heredoc bodies that are provably inert data (see module docstring).
 

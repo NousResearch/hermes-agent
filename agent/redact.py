@@ -1181,18 +1181,32 @@ def _redact_query_string(query: str) -> str:
     )
 
 
-def _canonical_url_param_name(name: str) -> str:
-    """Decode a URL parameter name (up to 3 unquote rounds) for case-insensitive matching."""
+def _decode_url_param_name(name: str) -> str:
     decoded = name
     for _ in range(3):
         next_value = unquote_plus(decoded)
         if next_value == decoded:
             break
         decoded = next_value
-    folded = decoded.casefold()
+    return decoded
+
+
+def _canonical_url_param_name(name: str) -> str:
+    """Decode a URL parameter name (up to 3 unquote rounds) for case-insensitive matching."""
+    folded = _decode_url_param_name(name).casefold()
     # Preserve policy names that are canonically hyphenated (for example
     # x-amz-signature) before accepting underscore-normalized aliases.
     return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")
+
+
+def _is_sensitive_url_param(name: str) -> bool:
+    """A query-param name that holds a credential: the URL-only names above, plus the names the JSON-field
+    rule masks (its closed list and the affixed-key policy: ``accessToken``, ``x-api-key``,
+    ``private_token``, ``secret_key``, ``passwd``), so both passes agree on what a secret is (#119852)."""
+    if _canonical_url_param_name(name) in _SENSITIVE_QUERY_PARAMS:
+        return True
+    decoded = _decode_url_param_name(name).replace("-", "_")  # camelCase kept: _key_name_words splits on it
+    return bool(_JSON_KEY_NAMES_FULL_RE.fullmatch(decoded)) or _is_python_repr_secret_key(decoded)
 
 
 def _redact_strict_url_credentials(text: str) -> str:
@@ -1200,7 +1214,7 @@ def _redact_strict_url_credentials(text: str) -> str:
     network references); preserves keys, separators, public params, hosts, paths."""
     text = _STRICT_URL_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}=***"
-        if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
+        if _is_sensitive_url_param(m.group(2)) else m.group(0), text)
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 

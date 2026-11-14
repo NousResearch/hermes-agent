@@ -184,8 +184,8 @@ comfy model remove --relative-path models/checkpoints --model-names "model.safet
 | `--url` | Download URL (CivitAI, HuggingFace, direct) |
 | `--relative-path` | Subdirectory under workspace (e.g. `models/checkpoints`) |
 | `--filename` | Custom save filename |
-| `--set-civitai-api-token` | Persist CivitAI token |
-| `--set-hf-api-token` | Persist HuggingFace token |
+| `--set-civitai-api-token` | Persist CivitAI token to config.ini (for one-off downloads set `CIVITAI_API_TOKEN` in the env instead) |
+| `--set-hf-api-token` | Persist HuggingFace token to config.ini (for one-off downloads set `HF_API_TOKEN` in the env instead) |
 | `--downloader` | `httpx` (default) or `aria2` |
 
 Standard model directories:

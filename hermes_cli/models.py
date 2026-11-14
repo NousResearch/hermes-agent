@@ -1228,12 +1228,13 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw.split("/", 1)[1] if "/" in raw else raw
 
 
-def model_supports_fast_mode(model_id: Optional[str]) -> bool:
-    """Return whether Hermes should expose the /fast toggle for this model."""
+def model_supports_fast_mode(model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None) -> bool:
+    """Whether to expose /fast for this model; a Bedrock-only one only on the route its request builder tiers."""
     from agent.model_metadata import is_grok_46_family
-
+    if model_id in BEDROCK_ULTRAFAST_ROUTES:
+        return normalize_provider(provider) == "bedrock" and bedrock_fast_mode_overrides(model_id, base_url, "ultrafast") is not None
     return (
-        model_id in BEDROCK_ULTRAFAST_ROUTES or _is_anthropic_fast_model(model_id)
+        _is_anthropic_fast_model(model_id)
         or _is_openai_fast_model(model_id)
         or is_grok_46_family(str(model_id or "")))
 
@@ -1284,7 +1285,7 @@ def resolve_fast_mode_overrides(
     Ultrafast never silently downgrades to Priority. Bedrock has its own capability matrix."""
     if normalize_provider(provider) == "bedrock":
         return bedrock_fast_mode_overrides(model_id, base_url, tier)
-    if model_id in BEDROCK_ULTRAFAST_ROUTES or not model_supports_fast_mode(model_id):
+    if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None

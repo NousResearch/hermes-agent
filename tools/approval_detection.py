@@ -103,18 +103,35 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# The verb is argv[1] for multi-call binaries. Options before it are not
+# applet selection (busybox --help reboot must remain harmless).
+# A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses
+# the `)` closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data.
+# Every run is possessive: a failed command-name match must not re-split a whitespace run, a
+# directory path or a busybox run (cubic on a long blank-line run, and re.search holds the GIL).
+# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
+# reaches the same command word, so trying each would rescan the run once per newline.
+_CMD_PATH = r'(?:/?+(?:[^\s/)]++/)*+)?+'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
+
 _CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
+    + _MULTI_CALL_PREFIX
+    # Other wrappers (nice, timeout, command ...) are peeled structurally by tools.approval_wrappers.
+    + _CMD_PATH
 )
 
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
+# A closing quote does not end the shell word, so the quoted form needs the same terminator: joined
+# spellings (`"/"./*`, `"/"etc`, `"$HOME"/*`) reach the bare form through dequote_rm_operands (approval_wrappers), and a
+# quoted prefix of a subtree (`"$HOME"/project/build`) matches neither.
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
-    return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
+    return rf'(?:["\'](?:{path_alt})["\']{tail}|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.
@@ -157,7 +174,7 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
@@ -380,7 +397,9 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
+    from tools.approval_wrappers import hardline_detection_variants
+
+    for command_variant in hardline_detection_variants(command):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
@@ -871,6 +890,8 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    # sudo's list / validate / remove-timestamp modes take no command (`sudo -k cmd` does run it).
+    "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
 }
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
@@ -1445,13 +1466,15 @@ def _iter_shell_command_starts(command: str):
             starts.append(end)
 
 
-def _mark_command_starts(command: str, marker: str = "\n") -> str:
+def _mark_command_starts(command: str, marker: str = "\n", skip=()) -> str:
     """Insert *marker* (a newline) before each real (quote-aware) command start.
     ``\\n`` is already a ``_CMDPOS`` separator, so this exposes subshell ``(cmd)`` and brace-group
     ``{ cmd; }`` openers — which the flat pattern class omits — to the anchored patterns WITHOUT the
     quoted-prose false positives that adding ``(`` / ``{`` to ``_CMDPOS`` would cause: starts inside
     quotes are never produced, so ``--title "block (reboot)"`` is left as-is."""
-    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
+    skip_starts = [a for a, _ in skip]  # sorted, non-overlapping spans
+    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0 and not (
+        (k := bisect.bisect_right(skip_starts, o) - 1) >= 0 and o < skip[k][1]))
     return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
 
 
@@ -1604,24 +1627,42 @@ def _split_env_string(payload: str) -> list[str] | None:
     return args
 
 
-def _env_split_payload(tokens: list[str]) -> str | None:
+def _env_split_payload(tokens: list[str], _depth: int = 0) -> str | None:
+    from tools.approval_wrappers import _short_bundle
+
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "--" or not token.startswith("-"):
             return None
         option, equals, value = token.partition("=")
-        if option == "--split-string" or token.startswith("-S"):
-            attached = equals if option == "--split-string" else len(token) > 2
-            if not attached:
-                index += 1
-            payload = (value if option == "--split-string" else token[2:]) if attached else (
-                tokens[index] if index < len(tokens) else "")
-            args = _split_env_string(payload)
-            # Protect literal separators when reusing command-position detection;
-            # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
-        index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+        if option == "--split-string":
+            attached = value if equals else None
+        elif token.startswith("--"):
+            index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+            continue
+        else:
+            # getopt bundle: the first valued option owns the rest of the word (`-iS'nice'`, `-uS`).
+            _, owner, rest = _short_bundle("env", token)
+            if owner != "-S":
+                index += 2 if owner and not rest else 1
+                continue
+            attached = rest or None
+        if attached is None:
+            index += 1
+        payload = attached if attached is not None else (tokens[index] if index < len(tokens) else "")
+        args = _split_env_string(payload)
+        if args is None:
+            return None
+        rebuilt = args + tokens[index + 1:]
+        # env re-parses a split string that starts with options (`-S '-S reboot'`).
+        if rebuilt and rebuilt[0].startswith("-") and _depth < 8:
+            nested = _env_split_payload(["env", *rebuilt], _depth + 1)
+            if nested is not None:
+                return nested
+        # Protect literal separators when reusing command-position detection;
+        # only a real shell -c carrier may turn these argv bytes into code.
+        return shlex.join(rebuilt)
     return None
 
 
@@ -1670,6 +1711,8 @@ def _deny_command_variants(command: str):
 
 
 def _command_detection_variants(command: str):
+    from tools.approval_wrappers import literal_heredoc_bodies
+
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
@@ -1756,6 +1799,11 @@ def _command_detection_variants(command: str):
         variant = _splice(normalized, applied)
         if fresh(variant):
             yield variant
+        # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked.
+        # Not inside a quoted-delimiter heredoc fed to a non-shell: that body is literal data.
+        marked_variant = _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))
+        if fresh(marked_variant):
+            yield marked_variant
         pending = carry
 
 

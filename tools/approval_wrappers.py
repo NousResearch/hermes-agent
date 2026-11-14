@@ -1,0 +1,351 @@
+"""Command-position normalization for the hardline floor (detection-only rewrites).
+
+The ``_CMDPOS``-anchored hardline rules see a verb only where the shell would run it. Two bounded
+projections put a verb that IS run back on that anchor:
+
+* ``strip_wrapper_prefixes`` blanks a leading chain of exec wrappers from a fixed set (``nice``,
+  ``timeout 5``, ``command``, ``doas -u x``, a ``busybox`` / ``toybox`` applet selector ...), parsing each wrapper's own option grammar so an
+  option operand is never mistaken for the program (``timeout -s KILL 5 reboot``).
+* ``carried_command_variants`` re-scans the LITERAL command string a carrier would run: GNU
+  ``env -S`` / ``--split-string`` and the ``-c`` / ``--command`` argument of ``su`` / ``runuser``,
+  plus wrapper-peeled spellings of ``sh -c`` payloads. Computed strings (``sh -c "$(...)"``,
+  ``echo cmd | sh``) and argv grammars such as ``find -exec`` are out of reach for a static scan.
+
+This is heuristic hardening of the in-process approval floor, not a security boundary.
+"""
+
+import itertools
+import os
+import re
+
+# Adapted from Adolanium's wrapper-operand parser in #58643.
+_WRAPPER_WORDS = frozenset({
+    "sudo", "doas", "env", "exec", "nohup", "setsid", "time",
+    "command", "builtin", "nice", "ionice", "stdbuf", "timeout", "xargs",
+})
+
+_MULTI_CALL_WORDS = frozenset({"busybox", "toybox"})
+
+_WRAPPER_STR_OPERAND = {
+    "sudo": {"-u", "-g", "-h", "-p", "-U", "-D", "-R", "-T",
+             "--user", "--group", "--host", "--prompt", "--chdir",
+             "--role", "--type"},
+    "doas": {"-u", "-C"},
+    # -S / --split-string carry the command itself: carried_command_variants scans that payload.
+    "env": {"-u", "-C", "-a", "-S",
+            "--unset", "--chdir", "--argv0", "--split-string"},
+    "exec": {"-a"},
+    "ionice": {"-c", "-p", "--class", "--pid"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "time": {"-f", "-o", "--format", "--output"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "xargs": {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s",
+              "--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars",
+              "--process-slot-var"},
+}
+
+_WRAPPER_NUM_OPERAND = {
+    "sudo": {"-C", "--close-from"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-n", "--classdata"},
+}
+
+# Lookup / query modes name a program without running it (`command -v reboot`, `ionice -p 1`).
+_WRAPPER_QUERY_OPTIONS = {
+    "command": {"-v", "-V"}, "ionice": {"-p", "--pid", "--pgid", "--uid"},
+    # `sudo -k cmd` / `--reset-timestamp cmd` still run cmd; only these modes take no command.
+    "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
+}
+
+# GNU timeout durations: optional `+`, decimal/exponent, hex integer, inf/infinity, one s/m/h/d
+# suffix (`-` is rejected); the numeric options (nice -n, ionice -n, sudo -C) take a plain integer.
+_WRAPPER_DURATION_RE = re.compile(
+    r"\+?(?:(?i:inf(?:inity)?)|0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?")
+_WRAPPER_NUMBER_RE = re.compile(r"[+-]?\d+")
+
+# su / runuser: options that take a separate value (util-linux su-common.c), and the command option.
+_SU_VALUE_SHORT = frozenset("sgGwu")
+_SU_VALUE_LONG = frozenset({"--shell", "--group", "--supp-group", "--whitelist-environment", "--user"})
+_SU_COMMAND_LONG = frozenset({"--command", "--session-command"})
+
+_MAX_CARRIER_DEPTH = 3
+
+
+def _short_bundle(base: str, word: str) -> tuple[str, str | None, str]:
+    """getopt walk of a short-option bundle: (leading flags, first option owning a value, the rest of
+    the word). The rest is that option's attached value (`xargs -IfooI` sets -I to `fooI`)."""
+    valued = _WRAPPER_STR_OPERAND.get(base, set()) | _WRAPPER_NUM_OPERAND.get(base, set())
+    for index, char in enumerate(word[1:], start=2):
+        if "-" + char in valued:
+            return word[1:index - 1], "-" + char, word[index:]
+    return word[1:], None, ""
+
+
+def _option_kind(base: str, word: str) -> str | None:
+    """'str' / 'num' when *word* is an option of *base* owning the NEXT word, else None."""
+    option = word
+    if not word.startswith("--"):
+        _, option, attached = _short_bundle(base, word)
+        if option is None or attached:
+            return None
+    if option in _WRAPPER_STR_OPERAND.get(base, ()):
+        return "str"
+    return "num" if option in _WRAPPER_NUM_OPERAND.get(base, ()) else None
+
+
+def _is_query_option(base: str, word: str) -> bool:
+    queries = _WRAPPER_QUERY_OPTIONS.get(base, set())
+    if word.startswith("--"):
+        return word.split("=", 1)[0] in queries
+    # Short bundles: `command -pv reboot` still only looks reboot up, but in `sudo -ul reboot` the
+    # `l` is -u's value and reboot runs.
+    flags, option, _ = _short_bundle(base, word)
+    return option in queries or any("-" + char in queries for char in flags)
+
+
+def _is_env_split_option(base: str, word: str) -> bool:
+    if base != "env":
+        return False
+    if word.startswith("--"):
+        return word.split("=", 1)[0] == "--split-string"
+    return _short_bundle(base, word)[1] == "-S"
+
+
+def _timeout_duration_end(command: str, pos: int) -> int:
+    """`timeout -- 5 cmd`: `--` ends the options, but the duration positional still precedes the program."""
+    from tools.approval_detection import _read_shell_word
+
+    _, end, word = _read_shell_word(command, pos)
+    return end if _WRAPPER_DURATION_RE.fullmatch(word) else pos
+
+
+def _wrapper_prefix_end(command: str, start: int) -> int:
+    """Offset where the real program after any leading wrappers begins (*start* when none)."""
+    from tools.approval_detection import (
+        _ENV_ASSIGNMENT_RE, _deobfuscate_shell_word_for_detection, _read_shell_word,
+    )
+
+    pos, seen_prefix = start, False
+    while True:
+        ws, we, word = _read_shell_word(command, pos)
+        if ws == we:
+            return start  # prefix with no program: nothing executes
+        if _ENV_ASSIGNMENT_RE.fullmatch(word):
+            pos, seen_prefix = we, True  # `X=1 nice reboot`
+            continue
+        # Quote/escape-spelled wrappers (`n\\ice`, `'nice'`) are still the wrapper.
+        base = re.split(r"[\\/]", _deobfuscate_shell_word_for_detection(word))[-1].lower()
+        if base in _MULTI_CALL_WORDS:
+            # `busybox "reboot"`: the applet is argv[1]; peel so it gets command-word dequoting.
+            # An option first (`busybox --help reboot`, `--install`) runs no applet.
+            nws, nwe, nword = _read_shell_word(command, we)
+            if nws == nwe or nword.startswith("-"):
+                return ws if seen_prefix else start
+            seen_prefix, pos = True, we
+            continue
+        if base not in _WRAPPER_WORDS:
+            return ws if seen_prefix else start
+        wrapper_start = ws if seen_prefix else start
+        seen_prefix, pos = True, we
+        while True:  # this wrapper's options / assignments / leading positional
+            ows, owe, oword = _read_shell_word(command, pos)
+            if ows == owe or oword == "--":
+                pos = _timeout_duration_end(command, owe) if base == "timeout" else owe
+                break
+            if oword.startswith("-") and oword != "-":
+                if _is_query_option(base, oword):
+                    return start
+                if _is_env_split_option(base, oword):
+                    # The split string is the program AND its leading args (`env -S 'echo' reboot`
+                    # prints): keep env as the program; carried_command_variants scans the payload.
+                    return wrapper_start
+                if "=" in oword:
+                    pos = owe  # --opt=value carries its own operand
+                    continue
+                kind = _option_kind(base, oword)  # case-sensitive: `sudo -H` vs `sudo -h host`
+                if kind is None:
+                    pos = owe  # no-operand flag
+                    continue
+                vws, vwe, value = _read_shell_word(command, owe)
+                if vws == vwe:
+                    pos = owe
+                    continue
+                if kind == "num" and not _WRAPPER_NUMBER_RE.fullmatch(value):
+                    return start  # invalid operand: the wrapper errors here
+                pos = vwe
+                continue
+            if base == "env" and _ENV_ASSIGNMENT_RE.fullmatch(oword):
+                pos = owe
+                continue
+            if base == "timeout" and _WRAPPER_DURATION_RE.fullmatch(oword):
+                pos = owe  # leading duration positional
+                continue
+            break
+
+
+def strip_wrapper_prefixes(command: str) -> str:
+    """Blank every leading wrapper chain so the real verb sits at the ``_CMDPOS`` anchor."""
+    from tools.approval_detection import _iter_shell_command_starts, _splice
+
+    # Starts are not discovered in offset order (`if` bodies come after later commands), so sort
+    # and drop overlaps before splicing against the original offsets.
+    cuts = sorted(
+        (start, end) for start in _iter_shell_command_starts(command)
+        if (end := _wrapper_prefix_end(command, start)) > start
+    )
+    edits, last_end = [], -1
+    for start, end in cuts:
+        if start >= last_end:
+            edits.append((start, end, " "))
+            last_end = end
+    return _splice(command, edits)
+
+
+def _su_command_payload(args: list[str]) -> str | None:
+    """The ``-c`` / ``--command`` string of a ``su`` / ``runuser`` argv (getopt permutes, so it may
+    follow the user name), or None."""
+    index = 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if token == "--":
+            return None
+        option, equals, value = token.partition("=")
+        if option in _SU_COMMAND_LONG:
+            return value if equals else (args[index] if index < len(args) else None)
+        if option in _SU_VALUE_LONG:
+            index += 0 if equals else 1
+            continue
+        if not re.fullmatch(r"-[a-zA-Z].*", token):
+            continue
+        for offset, char in enumerate(token[1:], start=2):
+            if char == "c":
+                return token[offset:] or (args[index] if index < len(args) else None)
+            if char in _SU_VALUE_SHORT:
+                index += 0 if token[offset:] else 1
+                break
+    return None
+
+
+def _carried_payloads(command: str):
+    """Literal command strings that env -S, su -c, runuser -c or a shell -c would run."""
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection, _env_split_payload, _execution_flag_findings,
+        _iter_shell_command_word_spans, _iter_top_level_shell_segments, _shell_command_segment,
+        _shell_segment_tokens,
+    )
+
+    for _, payload in _execution_flag_findings(command):
+        if payload:
+            yield payload
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            name = re.split(r"[\\/]", _deobfuscate_shell_word_for_detection(word))[-1].lower()
+            if name not in ("env", "su", "runuser"):
+                continue
+            # Bound the carrier at its own command's end: in `echo "$(su -c 'x')"` the `)"` closing
+            # the substitution is not su's argv and would leave the tokenizer an unmatched quote.
+            tokens = _shell_segment_tokens(_shell_command_segment(segment, start), 0)
+            if not tokens:
+                continue
+            payload = _env_split_payload(tokens) if name == "env" else _su_command_payload(tokens[1:])
+            if payload:
+                yield payload
+
+
+def carried_command_variants(command: str):
+    """Detection variants for literal carried command strings, recursing a bounded depth; each is
+    wrapper-peeled and command-start marked like the top-level command."""
+    from tools.approval_detection import _command_detection_variants
+
+    seen, frontier = {command}, [command]
+    for _ in range(_MAX_CARRIER_DEPTH):
+        nested = []
+        for source in frontier:
+            for payload in _carried_payloads(source):
+                if payload in seen:
+                    continue
+                seen.add(payload)
+                nested.append(payload)
+                yield from _command_detection_variants(payload)
+                peeled = strip_wrapper_prefixes(payload)
+                yield from _command_detection_variants(peeled)
+                # The peeled form can expose a carrier the raw walk stops before (`xargs su -c ...`).
+                if peeled not in seen:
+                    seen.add(peeled)
+                    nested.append(peeled)
+        frontier = nested
+
+
+def hardline_detection_variants(command: str):
+    """The shared detection variants plus the hardline-only command-position projections:
+    exec wrappers (nice, timeout, command, doas ...) peeled using the original quote state so the
+    verb lands on the _CMDPOS anchor, and literal command strings carried by env -S / su -c /
+    runuser -c / sh -c scanned as commands of their own. Kept out of the dangerous layer, whose
+    unanchored rules (pipe-to-shell sinks) would read a peeled `|| sudo bash` as `| bash`."""
+    from tools.approval_detection import _command_detection_variants, _mask_quoted_newlines
+
+    seen = set()
+    masked = _mask_quoted_newlines(command)
+    stripped = strip_wrapper_prefixes(masked)
+    # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
+    # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
+    # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
+    peeled = itertools.chain(_command_detection_variants(stripped), carried_command_variants(stripped)) if stripped != masked else ()
+    for variant in itertools.chain(_command_detection_variants(command), peeled, carried_command_variants(command)):
+        for candidate in (variant, dequote_rm_operands(variant) if "rm" in variant.lower() else variant):
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+
+_MAX_RM_OPERANDS = 64
+
+
+def dequote_rm_operands(variant: str) -> str:
+    """*variant* with each quoted operand word of an ``rm`` command quote-removed, as the shell
+    passes it (``"/"./*`` -> ``/./*``), so the rm rules judge the whole word, not its quoted prefix.
+    A word that would contain whitespace is left alone: it is one operand, not several."""
+    from tools.approval_detection import (
+        _RE_FLAGS, _RM_FLAG_PREFIX, _read_shell_word, _splice, _strip_shell_word_syntax,
+    )
+
+    edits, cursor = [], 0
+    for match in re.finditer(_RM_FLAG_PREFIX, variant, _RE_FLAGS):
+        pos = match.end()
+        if pos < cursor:
+            continue
+        for _ in range(_MAX_RM_OPERANDS):
+            word_start, word_end, word = _read_shell_word(variant, pos)
+            if word_start == word_end:
+                break
+            if "'" in word or '"' in word:
+                plain = _strip_shell_word_syntax(word)
+                if plain and not any(char.isspace() for char in plain):
+                    edits.append((word_start, word_end, plain))
+            pos = word_end
+        cursor = pos
+    return _splice(variant, edits) if edits else variant
+
+
+# `cat <<'EOF'` / `tee f <<"EOF"`: a quoted delimiter makes the body literal, and these programs
+# only copy it. Any other consumer may run it (`bash`, `ssh host`, `cat <<'EOF' | sh`).
+_QUOTED_HEREDOC_RE = re.compile(r"""<<-?[ \t]*(['"])([A-Za-z0-9_.-]+)\1([^\n]*)\n""")
+_LITERAL_HEREDOC_READERS = frozenset({"cat", "tee"})
+
+
+def literal_heredoc_bodies(command: str) -> list[tuple[int, int]]:
+    """Spans of quoted-delimiter heredoc bodies that a literal reader only copies."""
+    spans, cursor = [], 0
+    for match in _QUOTED_HEREDOC_RE.finditer(command):
+        if match.start() < cursor:
+            continue  # inside an earlier body: text, not a redirection
+        line_start = command.rfind("\n", 0, match.start()) + 1
+        words = re.split(r"[;&|(]", command[line_start:match.start()])[-1].split()
+        if not words or os.path.basename(words[0]).lower() not in _LITERAL_HEREDOC_READERS or re.search(
+                r"[|;&]", match.group(3)):
+            continue
+        close = re.compile(r"^\t*" + re.escape(match.group(2)) + r"$", re.MULTILINE).search(command, match.end())
+        cursor = close.end() if close else len(command)
+        spans.append((match.end(), close.start() if close else cursor))
+    return spans

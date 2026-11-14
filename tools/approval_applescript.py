@@ -31,6 +31,8 @@ LLM about them, and a human answer covers this one command (no session/always gr
 
 import re
 
+from tools.approval_ansi_c import expand_ansi_c_quotes
+
 OSASCRIPT_RISKY_DESCRIPTION = (
     "AppleScript can close or quit apps without saving, delete or move files, "
     "send keystrokes, or run shell commands (osascript)"
@@ -76,12 +78,12 @@ def _program_name(word: str) -> str:
 
 def classify_osascript(text: str) -> set[str]:
     """Descriptions that apply to *text*; empty when every ``osascript`` run is a visible,
-    read-only program. The raw text and the backslash-newline-joined text are both read and the
-    findings united: joining is how the shell reads ``osa\\<newline>script``, but a quoted heredoc
-    body keeps its bytes, so joining there could forge a terminator. A variant only adds findings."""
-    joined = re.sub(r"\\\r?\n", "", text)
-    found = _classify(text)
-    return found | _classify(joined) if joined != text else found
+    read-only program. The raw text, the ``$'...'``-decoded text (``$'\\157sascript'`` runs
+    osascript) and each one backslash-newline-joined are read and the findings united: joining is
+    how the shell reads ``osa\\<newline>script``, but a quoted heredoc body keeps its bytes, so
+    joining there could forge a terminator. A variant only adds findings."""
+    readings = {text, expand_ansi_c_quotes(text)}
+    return set().union(*(_classify(r) for r in readings | {re.sub(r"\\\r?\n", "", r) for r in readings}))
 
 
 def _classify(text: str) -> set[str]:
@@ -108,7 +110,9 @@ def _classify(text: str) -> set[str]:
         if heredoc is not None:
             delim, quoted, strip_tabs = heredoc
             body, body_span = _heredoc_body(text, start + len(segment), delim, strip_tabs)
-            opaque = opaque or (not quoted and _expands(body))  # an unquoted delimiter expands the body
+            # An unquoted delimiter expands the body. Quote characters there are literal (`don't`
+            # opens no quote), so only a backslash keeps a `$` or backtick from expanding.
+            opaque = opaque or (not quoted and re.search(r"(?<!\\)(?:\\\\)*[$`]", body) is not None)
             program += "\n" + body
         if opaque or _expands(args):
             found.add(OSASCRIPT_OPAQUE_DESCRIPTION)

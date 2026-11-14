@@ -22,6 +22,7 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     tool_may_have_side_effect,
 )
+from tools.ansi_strip import strip_tool_metadata_text
 from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,17 @@ def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
     return msg
 
 
+def _strip_invisible_controls(content: Any) -> Any:
+    """Drop Unicode TAG chars and bidi overrides/isolates from every tool result's text (str or
+    text parts): they render as nothing but the model reads them, a hidden-instruction channel
+    in file, shell and web output alike. Emoji flag tag sequences and ZWJ are kept."""
+    if isinstance(content, str):
+        return strip_tool_metadata_text(content)
+    if isinstance(content, list):
+        return [{**p, "text": strip_tool_metadata_text(p["text"])} if _is_text_item(p) else p for p in content]
+    return content
+
+
 def _normalize_tool_call_id(tool_call_id: Any) -> Any:
     """Normalize a composite bridge id to its canonical call-id half."""
     if isinstance(tool_call_id, str) and "|" in tool_call_id:
@@ -460,7 +472,7 @@ def make_tool_result_message(
     tool_call_id = _normalize_tool_call_id(tool_call_id)
     # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
     # the untrusted block next to the data it describes — once, at construction (cache-safe).
-    wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
+    wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, _strip_invisible_controls(content)))
     message = stamp_message_timestamp({
         "role": "tool",
         "name": name,

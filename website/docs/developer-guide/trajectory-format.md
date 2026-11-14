@@ -3,7 +3,7 @@
 Hermes Agent saves conversation trajectories in ShareGPT-compatible JSONL format
 for use as training data, debugging artifacts, and reinforcement learning datasets.
 
-Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for `_save_trajectory`), `batch_runner.py`
+Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for `_save_trajectory`), `hermes_agent/batch_runner.py`
 
 
 ## File Naming Convention
@@ -15,7 +15,7 @@ Trajectories are written to files in the current working directory:
 | `trajectory_samples.jsonl` | Conversations that completed successfully (`completed=True`) |
 | `failed_trajectories.jsonl` | Conversations that failed or were interrupted (`completed=False`) |
 
-The batch runner (`batch_runner.py`) writes to a custom output file per batch
+The batch runner (`hermes_agent/batch_runner.py`) writes to a custom output file per batch
 (e.g., `batch_001_output.jsonl`) with additional metadata fields.
 
 You can override the filename via the `filename` parameter in `save_trajectory()`.
@@ -36,7 +36,7 @@ Each line in the file is a self-contained JSON object. There are two variants:
 }
 ```
 
-### Batch Runner Format (from `batch_runner.py`)
+### Batch Runner Format (from `hermes_agent/batch_runner.py`)
 
 ```json
 {

@@ -8,7 +8,7 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 
 `tools/registry.py` has no deps and is imported by every tool file; each `tools/*.py` calls
 `registry.register()` at import time; `model_tools.py` imports the registry and triggers discovery
-(`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `batch_runner.py`, `environments/`
+(`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `hermes_agent/batch_runner.py`, `environments/`
 consume it. Any `tools/*.py` with a top-level `registry.register()` is imported automatically — no
 manual import list. A tool that is a whole package (`tools/connectors/`) registers from
 `tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package

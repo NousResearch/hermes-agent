@@ -2,7 +2,7 @@
 
 Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训练数据、调试产物和强化学习数据集。
 
-源文件：`agent/trajectory.py`、`run_agent.py`（搜索 `_save_trajectory`）、`batch_runner.py`
+源文件：`agent/trajectory.py`、`run_agent.py`（搜索 `_save_trajectory`）、`hermes_agent/batch_runner.py`
 
 
 ## 文件命名规范
@@ -14,7 +14,7 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 | `trajectory_samples.jsonl` | 成功完成的对话（`completed=True`） |
 | `failed_trajectories.jsonl` | 失败或被中断的对话（`completed=False`） |
 
-批量运行器（`batch_runner.py`）按批次写入自定义输出文件
+批量运行器（`hermes_agent/batch_runner.py`）按批次写入自定义输出文件
 （例如 `batch_001_output.jsonl`），并附带额外的元数据字段。
 
 可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
@@ -35,7 +35,7 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 }
 ```
 
-### 批量运行器格式（来自 `batch_runner.py`）
+### 批量运行器格式（来自 `hermes_agent/batch_runner.py`）
 
 ```json
 {

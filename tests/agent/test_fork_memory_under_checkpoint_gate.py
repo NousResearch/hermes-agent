@@ -48,7 +48,7 @@ def _fork_site(site):
 
         return run_agent, (lambda: curator._run_llm_review("prompt")), ()
     if site == "batch_runner":
-        import batch_runner
+        from hermes_agent import batch_runner
 
         return batch_runner, (lambda: batch_runner._process_single_prompt(
             0, {"prompt": "p"}, 0, {"model": "m", "max_iterations": 3, "distribution": {}},

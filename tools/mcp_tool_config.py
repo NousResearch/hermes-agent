@@ -143,8 +143,17 @@ def _tail_server_stderr(server_name: str, *, max_bytes: int = 8192, max_lines: i
         return ""
 
 
-# Env vars safe to pass to stdio subprocesses (no secrets).
-_SAFE_ENV_KEYS = frozenset({"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR"})
+# Env vars safe to pass to stdio subprocesses (no secrets). The proxy and CA-bundle keys are
+# how a child reaches the network the same way Hermes does: without them a server behind a
+# corporate proxy or TLS inspection connects fine and then times out or fails
+# CERTIFICATE_VERIFY_FAILED on every tool call. Exact names only: a "*PROXY*" glob would pass
+# custom secret-named vars. Unset keys stay absent.
+_SAFE_ENV_KEYS = frozenset({
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+})
 
 # Windows process/location vars needed by launcher-style tools (e.g. Docker Desktop's MCP plugin discovery).
 _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
@@ -198,8 +207,10 @@ class _RenderedStr(str):
 
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
-    keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
-    precisely so subprocesses can consume them), plus the server config's own ``env``."""
+    keys (including parent ``http_proxy``/``https_proxy``/``no_proxy``/``ALL_PROXY`` in both
+    common cases, when set), ``XDG_*``, vars injected by an external secret source (users
+    configured that backend precisely so subprocesses can consume them), plus the server
+    config's own ``env`` (which still overrides the parent for the same key)."""
     from agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
     from tools.environments.local_env_policy import hermes_consumed_credentials

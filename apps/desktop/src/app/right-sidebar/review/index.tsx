@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $reviewCwd,
   $reviewDiff,
   $reviewDiffLoading,
   $reviewFiles,
@@ -58,6 +59,7 @@ export function ReviewPane() {
   const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
   const scope = useStore($reviewScope)
+  const cwd = useStore($reviewCwd)
   // Stage / unstage / revert and the ship bar act on the working tree, so they
   // only apply to the uncommitted scope; branch / last-turn are read-only.
   const isUncommitted = scope === 'uncommitted'
@@ -212,7 +214,7 @@ export function ReviewPane() {
         </div>
       )}
 
-      <ReviewShipBar />
+      <ReviewShipBar key={cwd} />
 
       <ConfirmDialog
         confirmLabel={revertingAll ? c.revertAll : c.revert}

@@ -425,7 +425,7 @@ page in the stage instead, so every section stays reachable.
 
 Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
 following the Figma conversation (`491:40346`; width from "Prod - Desktop" chat 16292:16175): one
-centred 440px column shared with the docked composer (`--portal-column-conversation`, read as
+centred 640px column shared with the docked composer (`--portal-column-conversation`, read as
 `--portal-conversation-*` in `app/chat/stage.css`), prose flush with the composer's edges
 (`--portal-column-conversation-inset`), 30px turn gaps and 20px output gaps. User bubbles hug their text at
 the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
@@ -469,8 +469,8 @@ Usage collection belongs to a consenting connection/profile, not merely the
 foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.
 
-The redesigned composer is 440 × 148 on an empty landing (msg 16292:15670). In a populated native
-conversation it keeps the 148px base height, spans the shared 440px column and
+The redesigned composer is 640 × 148 on an empty landing (msg 16292:15670). In a populated native
+conversation it keeps the 148px base height, spans the shared 640px column and
 docks 30px above the stage floor. Its card is navy, white .05 / blue .10 / black .80 flattened onto
 the stage (white on light), with no shadow, and its resting prompt is the card's heading line in
 full ink (16292:15681); Figma's dim second line ("Prompt suggestions or processing...") is template
@@ -808,11 +808,11 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-workspace-inset-start` | `0.3125rem` | ″ | The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. |
 | `--portal-workspace-inset-end` | `0.9375rem` | ″ |  |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
-| `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer: both 440 wide, the transcript flush with the composer's edges (chat 16292:16175). |
+| `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
-| `--portal-column-conversation` | `27.5rem` | ″ |  |
+| `--portal-column-conversation` | `40rem` | ″ |  |
 | `--portal-column-conversation-inset` | `0px` | ″ |  |
-| `--portal-column-landing` | `27.5rem` | ″ | The landing's composer before the first message, as wide as a conversation's (16292:14822). |
+| `--portal-column-landing` | `40rem` | ″ | The landing's composer before the first message, as wide as a conversation's (16292:14822). |
 | `--portal-tool-panel-width` | `26.25rem` | ″ | The developer tool panel's default width (Files, Terminal, Review and Browser share one width, redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. |
 | `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
 | `--portal-scroll-edge-fade` | `1.5rem` | ″ | How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). |

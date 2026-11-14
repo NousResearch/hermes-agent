@@ -22,7 +22,7 @@ import {
 } from '@/app/chat/transcript-receipt-turns'
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, isLocalSystemNotice, toChatMessages } from '@/lib/chat-messages'
 import {
   recordTranscriptBackfillPage,
   tailStateFromPage,
@@ -300,6 +300,85 @@ interface StoredRowSlot {
 }
 
 /**
+ * The window's live copies of a settled turn the page holds durably.
+ *
+ * A live reply (or the narration the stream sealed before a tool) reaches the
+ * window with no stored id when its completion carried no receipt, or one
+ * naming no user row, so no receipt can pair it with the page. Such a bubble
+ * waits for the next stored row to anchor it; when that row is dropped as part
+ * of a newer receipt turn the page holds, the bubble is left over and trails
+ * the newest reply, painting the previous turn's answer a second time.
+ *
+ * The page already carries the turn when it holds the turn's own prompt and the
+ * window has the next prompt after it. The bubble is then superseded by a page
+ * assistant message lying wholly between those two prompts with a text part
+ * containing its text. The bracket keeps an identical reply from another turn
+ * on screen. Still-streaming bubbles, errors, stopped partials and bubbles with
+ * no later prompt (the turn may still be running) stay.
+ */
+function staleLiveCopyIds(previous: ChatMessage[], refreshedTail: ChatMessage[]): Set<string> {
+  const stale = new Set<string>()
+  const pageReplies = refreshedTail.filter(message => message.role === 'assistant')
+
+  // A live reply no stored row pins down. Its neighbours bracket it, so they
+  // must not be copies of the same kind: a sealed narration sits next to the
+  // answer it precedes.
+  const liveCopy = (message: ChatMessage) =>
+    message.role === 'assistant' &&
+    !message.pending &&
+    !message.error &&
+    !message.interrupted &&
+    !isLocalSystemNotice(message) &&
+    (message.rowId === undefined || message.durableComplete === false || message.persistedTurn?.complete === false)
+
+  const anchors = previous.map(message => (liveCopy(message) ? [] : transcriptRowIds(message)))
+  const pageRows = new Set(refreshedTail.flatMap(transcriptRowIds))
+
+  previous.forEach((message, index) => {
+    const text = chatMessageText(message).trim()
+
+    if (!pageReplies.length || !text || !liveCopy(message)) {
+      return
+    }
+
+    const before = anchors.findLastIndex((rows, at) => at < index && rows.length > 0)
+    const after = anchors.findIndex((rows, at) => at > index && rows.length > 0)
+
+    // The turn runs from its own prompt, which the page must carry, to the next
+    // prompt. Without a stored row after the bubble the turn may still be
+    // running; equal prose between other rows is no proof of a twin.
+    if (
+      before < 0 ||
+      after < 0 ||
+      previous[before].role !== 'user' ||
+      previous[after].role !== 'user' ||
+      !anchors[before].some(id => pageRows.has(id))
+    ) {
+      return
+    }
+
+    const lower = Math.max(...anchors[before])
+    const upper = Math.min(...anchors[after])
+
+    const held = pageReplies.some(reply => {
+      const rows = transcriptRowIds(reply)
+
+      return (
+        rows.length > 0 &&
+        rows.every(id => id > lower && id < upper) &&
+        reply.parts.some(part => part.type === 'text' && part.text.includes(text))
+      )
+    })
+
+    if (held) {
+      stale.add(message.id)
+    }
+  })
+
+  return stale
+}
+
+/**
  * Stored-id merge for a page that overlaps the window but does not anchor in
  * front of it. A row with no stored id travels with the next stored row after
  * it, so a page-local fold stays in front of the row it preceded. Rows with no
@@ -325,6 +404,9 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   // A turn the page holds whole is the page's to draw, whatever stored ids
   // its live rows managed to bind (see transcript-receipt-turns).
   const receiptDrop = dropReceiptTurnsThePageHolds(previous, refreshedTail)
+  // Judged against the whole window: the stored rows around a live copy can be
+  // the very rows the receipt drop removes.
+  const staleCopies = staleLiveCopyIds(previous, refreshedTail)
   // Local notices of a dropped turn, keyed by the page row they precede.
   const anchored = new Map<number, ChatMessage[]>()
 
@@ -392,7 +474,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   }
 
   const previousTrailing = place(
-    receiptDrop.window.filter(message => !anchorNotice(message)),
+    receiptDrop.window.filter(message => !staleCopies.has(message.id) && !anchorNotice(message)),
     false
   )
 

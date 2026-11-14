@@ -885,3 +885,50 @@ def test_decode_schtasks_output_honours_a_utf16_bom():
     text = "Herm\u00e9s"
     assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
     assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")
+
+
+def test_whoami_user_parses_domain_backslash_output(monkeypatch):
+    """``whoami`` output like ``desktop-1\\alice`` is returned verbatim as the task principal."""
+    monkeypatch.setattr(
+        gateway_windows.subprocess, "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout=b"desktop-1\\alice\r\n", stderr=b""),
+    )
+    assert gateway_windows._whoami_user() == r"desktop-1\alice"
+
+
+def test_whoami_user_rejects_bare_name_and_failure(monkeypatch):
+    """POSIX ``whoami`` (no backslash) and a failing/timeout run both yield None so the caller
+    falls back to the env-var candidate."""
+    monkeypatch.setattr(
+        gateway_windows.subprocess, "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout=b"alice\n", stderr=b""),
+    )
+    assert gateway_windows._whoami_user() is None
+    monkeypatch.setattr(
+        gateway_windows.subprocess, "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"whoami: error"),
+    )
+    assert gateway_windows._whoami_user() is None
+
+
+def test_resolve_task_user_prefers_whoami_over_env_userdomain(monkeypatch):
+    """In an SSH session env reports ``WORKGROUP\\user`` (maps to no SID and breaks schtasks
+    /Create); the real logon token from ``whoami`` wins."""
+    monkeypatch.setattr(gateway_windows, "_whoami_user", lambda: r"DESKTOP-1\alice")
+    monkeypatch.setenv("USERNAME", "alice")
+    monkeypatch.setenv("USERDOMAIN", "WORKGROUP")
+    assert gateway_windows._resolve_task_user() == r"DESKTOP-1\alice"
+
+
+def test_resolve_task_user_falls_back_to_env_when_whoami_unavailable(monkeypatch):
+    """Without ``whoami`` the env-var spelling is kept: DOMAIN\\USER, bare USERNAME, else None."""
+    monkeypatch.setattr(gateway_windows, "_whoami_user", lambda: None)
+    monkeypatch.setenv("USERNAME", "alice")
+    monkeypatch.setenv("USERDOMAIN", "DESKTOP-1")
+    assert gateway_windows._resolve_task_user() == r"DESKTOP-1\alice"
+    monkeypatch.delenv("USERDOMAIN")
+    assert gateway_windows._resolve_task_user() == "alice"
+    monkeypatch.delenv("USERNAME")
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    assert gateway_windows._resolve_task_user() is None

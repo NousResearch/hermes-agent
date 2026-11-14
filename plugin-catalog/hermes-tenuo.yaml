@@ -1,34 +1,40 @@
 name: hermes-tenuo
-repo: https://github.com/tenuo-ai/hermes-tenuo
-sha: 0bd7a19722bca8d6045ce4317cc4d451688772eb
-description: >-
-  Signed, expiring tool permissions for Hermes. Constrain tool names and
-  arguments for sessions, cron jobs and delegated work, with local audit logs.
-
-  Disclosure — ordinary calls pass through until a warrant is configured.
-  Set require_warrant: true to block calls without one. A configured but
-  unloadable warrant blocks calls, and a kanban worker without a per-task warrant
-  is blocked. Tool names and arguments are appended to
-  $HERMES_HOME/tenuo/audit.jsonl (disable with audit_log: false). When
-  TENUO_CONNECT_TOKEN or TENUO_CONTROL_PLANE_URL are set, the bundled tenuo SDK
-  (compiled Rust core) streams those decisions, including arguments, to that
-  control plane.
 title: Tenuo
+version: "0.4.1"
+category: tools
+repo: https://github.com/tenuo-ai/hermes-tenuo
+sha: "9ef36fc7e590e63a537839c550e47ee419800a8c"
+description: >-
+  Signed, expiring tool permissions and local workspaces for Hermes Agent.
+  Warrants constrain tool calls and delegated agents; without a warrant or access
+  policy, enforcement is audit-only unless fail-closed mode is enabled. Hands is off
+  by default. When paired, it stores a local key and lets a Hermes session run shell
+  and file operations in the shared folder; commands and results go to Hermes and
+  its model. Sandboxing and no network are the defaults, with broader access
+  requiring explicit device flags.
+  Local audit logs include tool names and arguments. The optional Tenuo control plane
+  sends authorization events and the optional MCP wrapper connects to user-configured
+  servers. Delegation between Hermes agents is a preview and off until configured:
+  tenuo_delegate sends a task and a signed grant over HTTP to a peer agent you pair,
+  the A2A receiver drops messages without a valid delegation, and calls to MCP servers
+  named in mcp_proofs carry a signed proof.
 maintainer: tenuo-ai
 tier: community
-category: tools
 requires_hermes: ">=0.20"
-docs_url: https://github.com/tenuo-ai/hermes-tenuo
-version: "0.3.1"
+docs_url: https://github.com/tenuo-ai/hermes-tenuo#readme
+platforms: []
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - tenuo_delegate
   provides_hooks:
     - pre_tool_call
     - post_tool_call
     - on_session_start
     - on_session_end
     - subagent_start
-  provides_middleware: []
+    - pre_llm_call
+    - pre_gateway_dispatch
+  provides_middleware: [tool_execution]
   requires_env:
     - TENUO_WARRANT
     - TENUO_SIGNING_KEY

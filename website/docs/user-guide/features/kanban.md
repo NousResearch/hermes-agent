@@ -1273,6 +1273,8 @@ Without `--thread-id`, the subscription targets the caller's own topic when it s
 from inside a gateway session. Otherwise it takes the thread of this task's existing subscription to the
 same chat; when several exist, it takes the lowest thread id and names the others on stderr. A Telegram
 DM target with nothing to infer from warns that the ping goes to the DM root.
+`notify-unsubscribe` without `--thread-id` removes the matching row the same way: the chat's root-lane
+subscription when there is one, else the caller's own topic, else the chat's only threaded subscription.
 
 **Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
 to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route

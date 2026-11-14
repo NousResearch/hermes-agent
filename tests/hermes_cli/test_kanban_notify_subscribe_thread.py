@@ -67,3 +67,25 @@ def test_a_dm_with_nothing_to_infer_warns_and_an_explicit_thread_is_kept(task, c
     _subscribe(other, "--platform", "telegram", "--chat-id", DM, "--thread-id", "7")
     assert _threads(other) == ["7"]
     assert "warning" not in capsys.readouterr().err
+
+
+def _unsubscribe(*argv):
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    return kc.kanban_command(parser.parse_args(["kanban", "notify-unsubscribe", *argv]))
+
+
+def test_unsubscribe_with_the_same_arguments_removes_the_inferred_topic(task, monkeypatch):
+    for name, value in (("PLATFORM", "telegram"), ("CHAT_ID", DM), ("THREAD_ID", "42"), ("USER_ID", DM)):
+        monkeypatch.setenv(f"HERMES_SESSION_{name}", value)
+    _subscribe(task, "--platform", "telegram", "--chat-id", DM)
+    assert _unsubscribe(task, "--platform", "telegram", "--chat-id", DM) == 0
+    assert _threads(task) == []
+
+
+def test_unsubscribe_without_thread_still_prefers_a_root_lane_row(task):
+    with kbc.connect() as conn:
+        kbn.add_notify_sub(conn, task_id=task, platform="telegram", chat_id=DM)
+        kbn.add_notify_sub(conn, task_id=task, platform="telegram", chat_id=DM, thread_id="7")
+    assert _unsubscribe(task, "--platform", "telegram", "--chat-id", DM) == 0
+    assert _threads(task) == ["7"]

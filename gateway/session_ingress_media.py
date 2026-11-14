@@ -515,7 +515,7 @@ def sweep_settled_media(db, *, now=None):
             FROM session_admissions WHERE status='terminal' AND (json_type(payload_json, '$.attachments_v1.media')
             IS NOT NULL OR json_type(payload_json, '$.native_text_v1.media') IS NOT NULL)""").fetchall()
     cutoff = now - MEDIA_CACHE_MAX_AGE_HOURS * 3600
-    stale = {}
+    stale = _aged_tool_images(db, cutoff)
     for (encoded,) in rows:
         attachments, native = json.loads(encoded)
         for reference in (attachments or []) + (native or []):
@@ -525,6 +525,24 @@ def sweep_settled_media(db, *, now=None):
             except OSError:
                 continue
     return release_unheld_media(db, list(stale.values()), retain_history=False) if stale else 0
+
+
+def _aged_tool_images(db, cutoff):
+    """Images a tool showed the model (``agent.image_replay.retain_tool_image``) have no admission
+    to hold them; the media-cache age bounds them like settled chat media. Enumerated only when
+    ``db`` is the active profile's store, as ``collect_unheld_api_images`` does."""
+    from hermes_constants import get_hermes_home
+    root = _media_root()
+    if Path(db.db_path).resolve().parent != get_hermes_home().resolve() or not root.is_dir():
+        return {}
+    aged = {}
+    for path in root.glob('*/tool_*'):
+        try:
+            if path.stat(follow_symlinks=False).st_mtime < cutoff:
+                aged[str(path)] = {'path': str(path), 'sha256': path.parent.name}
+        except OSError:
+            continue
+    return aged
 
 
 def collect_unheld_api_images(db):

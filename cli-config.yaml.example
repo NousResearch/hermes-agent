@@ -934,8 +934,9 @@ prompt_caching:
 #   # per session. Unset = 3 inside delegated subagents, unlimited for the main
 #   # agent; a number applies everywhere; 0 = unlimited.
 #   max_calls_per_image: 3
-#   # Newest user images re-sent on turns rebuilt from the session DB (API server,
-#   # --resume) when the model takes images natively; 0 = off. Older images drop
+#   # Newest images (user attachments, vision_analyze and browser screenshot embeds)
+#   # re-sent on turns rebuilt from the session DB (API server, --resume) when the
+#   # model takes images natively; 0 = off. Older images drop
 #   # in whole batches of this size, so the cached prefix changes once per batch.
 #   replay_recent_images: 3
 #

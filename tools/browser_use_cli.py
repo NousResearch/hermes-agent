@@ -318,8 +318,12 @@ def _native_screenshot_result(result: dict[str, Any], path: str) -> Optional[dic
         data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
                                             max_base64_bytes=resolve_embed_target_bytes(),
                                             max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+        from agent.image_replay import retain_tool_image
+        data_url, replay_hint = retain_tool_image(data_url)  # turns rebuilt from the DB re-attach it
         text = json.dumps(result, ensure_ascii=False)
         attached = text + "\n\nThe screenshot from this call is attached — inspect it with your native vision."
+        if replay_hint:
+            attached += f"\n\n{replay_hint}"
         return {"_multimodal": True, "text_summary": text, "meta": {"screenshot_path": path, "native_vision": True},
                 "content": [{"type": "text", "text": attached}, {"type": "image_url", "image_url": {"url": data_url}}]}
     except Exception as e:

@@ -1238,7 +1238,7 @@ DEFAULT_CONFIG = {
         # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
         # an explicit number applies everywhere; 0 = unlimited.
         "max_calls_per_image": None,
-        "replay_recent_images": 3,  # newest user images re-sent on turns rebuilt from state.db; 0 = off
+        "replay_recent_images": 3,  # newest user/tool images re-sent on turns rebuilt from state.db; 0 = off
     },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.

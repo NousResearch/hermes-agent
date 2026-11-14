@@ -435,6 +435,8 @@ class GatewayChatView:
         self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
         self.pending = snapshot.get('pending', [])
         self.model = str((snapshot.get('info') or {}).get('model') or self.model).split('/')[-1]
+        from hermes_cli.terminal_breadcrumbs import report_agent_session
+        await asyncio.to_thread(report_agent_session, self.session_id)
         if not self.finite:
             # Bare `hermes -c` in this terminal continues the session it is now on, as the
             # in-process CLI re-wrote its breadcrumb on every session switch.

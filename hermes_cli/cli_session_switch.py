@@ -23,6 +23,7 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
     """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
     per-session state, re-anchor the DB flush index, and notify memory providers with
     reset=False (their state stays valid and just targets the new id; parent keeps lineage)."""
+    getattr(cli, "_write_terminal_breadcrumb", lambda: None)()
     if not cli.agent:
         return
     cli.agent.session_id = session_id

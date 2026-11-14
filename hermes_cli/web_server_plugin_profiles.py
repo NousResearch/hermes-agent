@@ -221,8 +221,8 @@ def _note_dropped_cookie(home: Path, name: str) -> None:
         if key in _cookie_droppers:
             return
         _cookie_droppers.add(key)
-    _log.warning("Plugin %s: dropped Set-Cookie from its plugin host's answer; hosted plugins cannot set "
-                 "cookies on the gateway's site", name)
+    _log.warning("Plugin %s (profile home %s): dropped Set-Cookie from its plugin host's answer; hosted "
+                 "plugins cannot set cookies on the gateway's site", name, home)
 
 
 def _hosted_executor(home: Path) -> ThreadPoolExecutor:

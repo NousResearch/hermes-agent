@@ -31,18 +31,18 @@ def _answers_with_cookies(monkeypatch):
 def _launch_hosted(daemon):
     secondary._install(daemon.launch, "launch-hosted")
     secondary._plugins(daemon.launch, enabled=["launch-hosted"], isolation="host")
-    return "/api/plugins/launch-hosted/ping", lambda: daemon.owner
+    return "/api/plugins/launch-hosted/ping", lambda: daemon.owner, daemon.launch
 
 
 def _secondary_hosted(daemon):
     secondary._beta_plugin(daemon)
-    return secondary.PING, daemon.beta_ticket  # a ticket per request
+    return secondary.PING, daemon.beta_ticket, daemon.beta  # a ticket per request
 
 
 @pytest.mark.parametrize("setup", [_launch_hosted, _secondary_hosted], ids=["launch-mount", "secondary-profile"])
 def test_hosted_plugin_answer_reaches_the_browser_without_set_cookie(daemon, monkeypatch, caplog, setup):
     _answers_with_cookies(monkeypatch)
-    url, credentials = setup(daemon)
+    url, credentials, home = setup(daemon)
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
         first = daemon.client.get(url, headers=credentials())
@@ -54,4 +54,6 @@ def test_hosted_plugin_answer_reaches_the_browser_without_set_cookie(daemon, mon
         assert response.headers.get_list("set-cookie2") == []
         assert response.headers["x-plugin"] == "kept"
     assert not daemon.client.cookies
-    assert len([r for r in caplog.records if "Set-Cookie" in r.getMessage()]) == 1
+    warnings = [r.getMessage() for r in caplog.records if "Set-Cookie" in r.getMessage()]
+    assert len(warnings) == 1
+    assert f"(profile home {home})" in warnings[0]  # names which profile's copy of the plugin did it

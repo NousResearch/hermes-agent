@@ -8,6 +8,9 @@ from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 logger = logging.getLogger(__name__)
 
+# Seconds before each re-preparation after a refused publication; the last one repeats.
+_REPREPARE_DELAYS = (0, 0.5, 2, 5)
+
 
 def _route_snapshot(store, route):
     entry = store._entries.get(route)
@@ -168,6 +171,7 @@ async def recover_local_sessions_async(authority, *, schedule=False, initial=Fal
     """
     from gateway.session_authorities import async_owner_scope
     async with async_owner_scope(authority):
+        attempt = 0
         while not _stopping(authority):
             before, adapter = dict(authority.sessions), _adapter(authority)
             previous_closes = dict(authority.pending_closes)
@@ -175,3 +179,12 @@ async def recover_local_sessions_async(authority, *, schedule=False, initial=Fal
             bundle = await _prepare_joined(authority, schedule, initial)
             if _publish(authority, bundle, before, adapter, previous_closes, viewers, schedule):
                 return
+            # Route churn or a held store lock: re-prepare, paced so a hot store is not rescanned
+            # back to back. Never give up; a dropped pass would strand queued local input.
+            delay = _REPREPARE_DELAYS[min(attempt, len(_REPREPARE_DELAYS) - 1)]
+            attempt += 1
+            if attempt == len(_REPREPARE_DELAYS):
+                logger.warning('Local startup recovery for %s re-prepared %d times (routes kept changing); '
+                               'retrying every %.0fs', authority.profile_id, attempt, delay)
+            if delay:
+                await asyncio.sleep(delay)

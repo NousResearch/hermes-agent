@@ -223,3 +223,36 @@ async def test_async_startup_rearms_persisted_close_on_a_legacy_adopted_session(
     await recover_local_sessions_async(restarted, schedule=True)
     await async_wait_until(lambda: len(calls) == 2, timeout=3)
     assert db2.get_session('chat')['end_reason'] == 'cli_close'
+
+
+@pytest.mark.asyncio
+async def test_refused_publication_reprepares_with_paced_backoff_and_one_warning(tmp_path, monkeypatch, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from gateway import session_local_startup as startup
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(authority).session_id
+    authority.sessions.clear()
+    real_publish, refusals, slept = startup._publish, [], []
+
+    def churn(*args):
+        if len(refusals) < 6:  # routes keep moving under the preparation
+            refusals.append(True)
+            return False
+        return real_publish(*args)
+
+    async def sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr(startup, '_publish', churn)
+    monkeypatch.setattr(startup, 'asyncio', SimpleNamespace(
+        **{name: getattr(asyncio, name) for name in dir(asyncio) if not name.startswith('_') and name != 'sleep'},
+        sleep=sleep))
+    with caplog.at_level(logging.WARNING, logger=startup.__name__):
+        await startup.recover_local_sessions_async(authority)
+    assert sid in authority.sessions, 'recovery gave up instead of retrying'
+    # First retry is immediate; later ones back off and the last delay repeats.
+    assert slept == [0.5, 2, 5, 5, 5]
+    warnings = [r for r in caplog.records if 're-prepared' in r.getMessage()]
+    assert len(warnings) == 1, warnings

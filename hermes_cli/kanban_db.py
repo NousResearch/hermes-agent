@@ -93,7 +93,7 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
     try:
         result = subprocess.run(
             ["git", "-C", str(cwd), *args],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, check=False,
         )
     except Exception:

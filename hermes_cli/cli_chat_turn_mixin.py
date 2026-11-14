@@ -121,6 +121,8 @@ class CLIChatTurnMixin:
                 self._prompt_start_time = time.time()
                 self._prompt_duration = 0.0
                 # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
+                from hermes_cli.osc_status import report_working
+                report_working()  # OSC 7501: agent state working for terminal monitors (Herdr et al.)
                 agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
                 agent_thread.start()
                 interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
@@ -476,6 +478,12 @@ class CLIChatTurnMixin:
 
     def _chat_settle_turn(self, turn):
         """After the agent thread ends: freeze timers, flush streams, drain TTS, sync history/session id."""
+        # OSC 7501: report the finished state to terminal agent monitors (Herdr et al.).
+        from hermes_cli.osc_status import report_idle, report_done
+        if getattr(turn, "result", None):
+            report_done()
+        else:
+            report_idle()
         if self._prompt_start_time is not None:
             self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
             self._prompt_start_time = None

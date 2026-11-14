@@ -12,7 +12,7 @@ def test_resolve_uses_named_personality_when_set():
             "personalities": {"helpful": "You are helpful."},
         },
     }
-    assert resolve_ephemeral_system_prompt_from_config(cfg) == "You are helpful."
+    assert resolve_ephemeral_system_prompt_from_config(cfg) == "manual forever\n\nYou are helpful."
 
 def test_resolve_falls_back_to_manual_system_prompt():
     cfg = {

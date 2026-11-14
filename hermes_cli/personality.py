@@ -30,7 +30,7 @@ BUILTIN_PERSONALITIES: dict[str, str] = {
     "noir": "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?",
     "uwu": "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<",
     "philosopher": "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself.",
-    "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
+    "hype": "YOOO LET'S GOOOM!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
 }
 
 
@@ -97,8 +97,15 @@ def available_personalities(cfg: Optional[dict[str, Any]] = None) -> dict[str, A
     return merged
 
 
+def compose_personality_prompt(cfg: Optional[dict[str, Any]], personality_prompt: Any) -> str:
+    """Compose the standing manual prompt before a rendered personality prompt."""
+    manual = prompt_text(_get(cfg, "agent", "system_prompt", default=""))
+    personality = prompt_text(personality_prompt)
+    return "\n\n".join(part for part in (manual, personality) if part)
+
+
 def resolve_personality(value: Any, cfg: Optional[dict[str, Any]] = None) -> tuple[str, str]:
-    """Resolve a requested personality to ``(canonical_name, prompt_text)``."""
+    """Resolve a requested personality to ``(canonical_name, composed_prompt_text)``."""
     name = normalize_personality_name(value)
     if not name:
         return "", ""
@@ -106,7 +113,9 @@ def resolve_personality(value: Any, cfg: Optional[dict[str, Any]] = None) -> tup
     if name not in personalities:
         names = ", ".join(f"`{n}`" for n in sorted(personalities))
         raise ValueError(f"Unknown personality: `{str(value).strip()}`.\n\nAvailable: `none`, {names}")
-    return name, render_personality_prompt(personalities[name])
+    personality = render_personality_prompt(personalities[name])
+    explicit = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+    return name, explicit or compose_personality_prompt(cfg, personality)
 
 
 def active_personality_name(cfg: Optional[dict[str, Any]]) -> str:
@@ -116,12 +125,13 @@ def active_personality_name(cfg: Optional[dict[str, Any]]) -> str:
 
 
 def resolve_ephemeral_system_prompt(cfg: Optional[dict[str, Any]]) -> str:
-    """Session overlay: ``display.personality`` when it names a known personality, else the
-    user-owned ``agent.system_prompt``. Callers still prefer ``HERMES_EPHEMERAL_SYSTEM_PROMPT``."""
+    """Compose the standing manual prompt and selected personality as one session overlay.
+
+    Callers still prefer explicit ``HERMES_EPHEMERAL_SYSTEM_PROMPT`` overrides.
+    """
     name = active_personality_name(cfg)
-    if name:
-        return render_personality_prompt(available_personalities(cfg)[name])
-    return prompt_text(_get(cfg, "agent", "system_prompt", default=""))
+    personality = render_personality_prompt(available_personalities(cfg)[name]) if name else ""
+    return compose_personality_prompt(cfg, personality)
 
 
 def persist_personality(value: Any) -> bool:

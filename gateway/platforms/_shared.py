@@ -579,10 +579,14 @@ class DeliveryOutcome:
         """Success-envelope fields of a send split into several messages: every landed id."""
         return {"delivered_message_ids": list(self.message_ids)} if len(self.message_ids) > 1 else {}
 
-    def failure(self, error: dict, *, never_sent: bool = False) -> dict:
+    def failure(self, error: dict, *, never_sent: bool = False, never_left: bool = False) -> dict:
         """``error`` stamped with this send's state. ``never_sent`` = the FINAL failure proves its own
         request never left or was refused; it means NONE only when nothing earlier landed or may have.
+        ``never_left`` (implies ``never_sent``) = it was a connect/DNS/pool failure, not a refusal: a
+        NONE result then carries ``never_left`` so cron can tell "the network is down" (see
+        ``standalone_never_left``) from an answer the platform gave.
         An ``error`` already stamped by an inner sender keeps what IT saw landing or maybe landing."""
+        never_sent = never_sent or never_left
         inner = error.get("delivery")
         ids = list(dict.fromkeys([*self.message_ids, *delivered_message_ids(error)]))
         if self.has_landed or ids or inner == PARTIAL:
@@ -593,7 +597,16 @@ class DeliveryOutcome:
         out["delivery"] = state
         if ids:
             out["delivered_message_ids"] = ids
-        return {**out, "retryable": True} if state == NONE else out
+        if state != NONE:
+            return {k: v for k, v in out.items() if k != "never_left"}
+        return {**out, "retryable": True, **({"never_left": True} if never_left else {})}
+
+
+def standalone_never_left(result: Any) -> bool:
+    """True when a standalone failure proves nothing was sent BECAUSE the request never left the
+    host (DNS, connect or pool failure). Unlike a refusal, it says nothing about the target, only
+    that the network was unreachable: the one failure worth holding for the adapter's reconnect."""
+    return isinstance(result, dict) and delivery_state(result) == NONE and result.get("never_left") is True
 
 
 def delivery_state(result: Any) -> str:

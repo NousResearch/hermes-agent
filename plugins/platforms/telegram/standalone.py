@@ -360,8 +360,9 @@ def _rich_send_result(rich, chat_id, outcome) -> dict:
         as_file = isinstance(rich.raw_response, dict) and rich.raw_response.get("sent_as_file")
         warnings = ["Message was longer than the Telegram split cap; sent it as a file"] if as_file else None
         return _success(chat_id, warnings, message_id=rich.message_id)
-    never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
-    return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
+    raw = rich.raw_response if isinstance(rich.raw_response, dict) else {}
+    return outcome.failure(_error(f"Telegram send failed: {rich.error}"),
+                           never_sent=raw.get("never_sent") is True, never_left=raw.get("never_left") is True)
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
@@ -468,8 +469,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # Nothing sent (cron may replay it) only when this request never left or was refused, no
         # receipt came back (``last_msg``: a chunk or the album) and ``outcome`` saw no earlier try
         # that may have posted it.
-        return outcome.failure(_error(f"Telegram send failed: {e}"), never_sent=last_msg is None and (
-            kinds.send_error_kind(e) in (kinds.REFUSED, kinds.FLOOD, kinds.UNSENT)))
+        kind = kinds.send_error_kind(e)
+        return outcome.failure(_error(f"Telegram send failed: {e}"),
+                               never_sent=last_msg is None and kind in (kinds.REFUSED, kinds.FLOOD, kinds.UNSENT),
+                               never_left=last_msg is None and kind == kinds.UNSENT)
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,

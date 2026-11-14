@@ -64,7 +64,7 @@ platforms:
       imap_security: starttls     # tls (default) | starttls | plain
       imap_tls_verify: false      # Bridge uses a self-signed cert
       smtp_host: 127.0.0.1
-      smtp_security: starttls     # default: tls on port 465, starttls otherwise
+      smtp_security: starttls     # default: tls on 465/ports ending in 465; starttls otherwise
       smtp_tls_verify: false
 ```
 
@@ -106,6 +106,7 @@ EMAIL_AUTHSERV_ID=mx.google.com
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
+# EMAIL_SMTP_SECURITY=tls              # Set for implicit TLS on a custom port
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
@@ -229,6 +230,7 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
+| `EMAIL_SMTP_SECURITY` | No | port-based | `tls` (implicit TLS), `starttls`, or `plain`; ports ending in 465 default to `tls`. |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |

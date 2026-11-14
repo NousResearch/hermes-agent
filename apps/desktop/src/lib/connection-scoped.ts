@@ -105,8 +105,8 @@ export function onConnectionScopeChange(listener: () => void): () => void {
   return () => void scopeListeners.delete(listener)
 }
 
-function loadEntry<T>(entry: ScopedEntry<T>): T {
-  const raw = readKey(entry.key + suffixFor(entry))
+function loadEntry<T>(entry: ScopedEntry<T>, suffix = suffixFor(entry)): T {
+  const raw = readKey(entry.key + suffix)
 
   if (raw === null) {
     return entry.fallback
@@ -165,6 +165,29 @@ export function connectionScopedAtom<T>(
   })
 
   return entry.$value
+}
+
+/** Apply an explicit edit to a known owner's cache, even while another scope
+ *  is displayed or a rescope is suppressing ordinary persistence echoes. */
+export function updateConnectionScopedValue<T>(
+  $value: WritableAtom<T>,
+  connection: ConnectionScopeDescriptor,
+  update: (value: T) => T
+): void {
+  const entry = registry.find(candidate => candidate.$value === $value) as ScopedEntry<T> | undefined
+
+  if (!entry) {
+    throw new Error('Expected a connection-scoped atom')
+  }
+
+  const suffix = connectionScopeSuffix(connection, entry.includeProfile)
+  const active = entry.suffix === suffix && suffixFor(entry) === suffix
+  const next = update(active ? $value.get() : loadEntry(entry, suffix))
+  writeKey(entry.key + suffix, entry.codec.encode(next))
+
+  if (active) {
+    $value.set(next)
+  }
 }
 
 /**

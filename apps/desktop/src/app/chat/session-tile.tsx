@@ -44,7 +44,7 @@ import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
@@ -59,6 +59,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
+import { pinSession, unpinSession } from '@/store/session-pin-sync'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
@@ -850,13 +851,14 @@ export function stackSessionTilesIntoMain(): void {
  *  the derived values change. */
 function useTileMenuRow(storedSessionId: string): {
   pinId: string
+  serverPinned: boolean
   profile?: string
   renameable: boolean
   title: string
 } {
   const cache = useRef<{
     key: string
-    value: { pinId: string; profile?: string; renameable: boolean; title: string }
+    value: { pinId: string; serverPinned: boolean; profile?: string; renameable: boolean; title: string }
   } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
@@ -876,11 +878,12 @@ function useTileMenuRow(storedSessionId: string): {
     const pinId = stored ? sessionPinId(stored) : storedSessionId
     const title = tileTitle(storedSessionId)
     const profile = stored?.profile
+    const serverPinned = stored?.pinned === true
     const renameable = workspaceSessionRenameable(tileWorkspaceScope(storedSessionId))
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${renameable}`
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${renameable}\u0000${serverPinned}`
 
     if (cache.current?.key !== key) {
-      cache.current = { key, value: { pinId, profile, renameable, title } }
+      cache.current = { key, value: { pinId, profile, renameable, serverPinned, title } }
     }
 
     return cache.current.value
@@ -901,9 +904,9 @@ interface SessionTabMenuTarget {
  *  generic over stored ids, primary included). One source for the right-click
  *  menu and the phone picker's button menu, so the two never drift. */
 function useSessionTabActions({ onClose, onHideTabBar, storedSessionId, tabPaneId }: SessionTabMenuTarget) {
-  const { pinId, profile, renameable, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, renameable, serverPinned, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
-  const pinned = pinnedSessionIds.includes(pinId)
+  const pinned = pinnedSessionIds.includes(pinId) || serverPinned
 
   return {
     onArchive: () => void sessionTileDelegate()?.archiveSession(storedSessionId),
@@ -911,7 +914,7 @@ function useSessionTabActions({ onClose, onHideTabBar, storedSessionId, tabPaneI
     onClose,
     onDelete: () => void sessionTileDelegate()?.deleteSession(storedSessionId),
     onHideTabBar,
-    onPin: () => (pinned ? unpinSession(pinId) : pinSession(pinId)),
+    onPin: () => (pinned ? unpinSession : pinSession)(pinId, tileStoredRow(storedSessionId) ?? undefined),
     pinned,
     profile,
     renameable,

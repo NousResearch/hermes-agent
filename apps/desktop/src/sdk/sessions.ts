@@ -1,12 +1,7 @@
-import {
-  pinSession,
-  setPinnedSessionOrder,
-  setSidebarSessionOrderIds,
-  setSidebarSessionOrderManual,
-  unpinSession
-} from '@/store/layout'
+import { setPinnedSessionOrder, setSidebarSessionOrderIds, setSidebarSessionOrderManual } from '@/store/layout'
 import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { setSessionColorOverride } from '@/store/session-color'
+import { pinSession, unpinSession } from '@/store/session-pin-sync'
 
 /** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive
  *  compression's session-id rotation; a row's live id resolves through
@@ -46,7 +41,7 @@ export const sessionsHost = {
     const id = durableSessionPinId(storedSessionId)
 
     if (pinned) {
-      pinSession(id, index)
+      pinSession(id, undefined, index)
     } else {
       unpinSession(id)
     }

@@ -324,6 +324,10 @@ class AdmissionRepository(Protocol):
         """The live row, else its terminal tombstone, else ``None``."""
         ...
 
+    def latest_admission(self, *, session_id: str, payload_marker: str) -> AdmissionRecord | None:
+        """The session's newest row by ``seq``, of any status, whose decoded payload holds the top-level key ``payload_marker``; ``None`` when no row does."""
+        ...
+
     def settled_result(self, *, admission_id: str, epoch: int | None = None, generation: int | None = None) -> AdmissionResult | None:
         """The row and its stored result. Without ``epoch``: the row (``not_found``), ``None`` unless it is terminal with a stored result. With ``epoch`` and ``generation``: epoch, the row (``not_found``), its owner (``stale_generation``); a row not terminal answers with result ``None``; a terminal row without a stored result refuses ``storage_unavailable``."""
         ...

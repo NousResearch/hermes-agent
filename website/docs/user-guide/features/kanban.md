@@ -960,7 +960,7 @@ hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
-hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
+hermes kanban schedule <id> [reason] [--at <ISO8601>]  # park; optionally wake on a dispatcher tick
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
@@ -1023,14 +1023,34 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
-### Scheduled task starts (`scheduled_at`)
+### Timed follow-ups (`schedule --at`)
 
-Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.
+Park an existing task until an explicit time with `hermes kanban schedule` or the
+worker's `kanban_schedule` tool. Both accept `at` as an ISO-8601 timestamp with a
+timezone (`Z` or an offset such as `+09:00`). Dates and timestamps without a timezone
+are rejected before the task changes.
 
 ```bash
-hermes kanban create "nightly backup audit" \
-  --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
+hermes kanban schedule <id> "check the deployment again" --at "2027-01-01T09:00:00+09:00"
 ```
+
+The equivalent worker call is
+`kanban_schedule(at="2027-01-01T09:00:00+09:00", reason="check the deployment again")`.
+Scheduling ends the current run and persists the deadline as `scheduled_at` (UTC
+epoch seconds) in the board database. The task stays in `scheduled` until the
+first non-dry dispatcher tick at or after that instant. It then follows the usual
+unblock path: `todo` while parents remain open, otherwise `ready`. Existing
+assignee, dispatch eligibility, capacity and respawn guards still apply; the
+deadline makes a task eligible, not a guarantee of immediate execution. The
+dispatcher must be running, and overdue schedules are picked up after restart.
+
+Scheduling an already scheduled task replaces its deadline. Omitting `--at`/`at`
+parks it until explicit `unblock` and cancels any previous timer. Reasons, including
+legacy `SCHEDULED_UNTIL=...` markers, are never parsed as timers. Manual `unblock`
+also cancels the timer. A timed wake records `unblocked` and `schedule_elapsed`
+events atomically, so repeated ticks cannot wake the same schedule twice.
+
+This schedules existing tasks; `kanban create --scheduled-at` is not supported.
 
 ### Respawn guard
 
@@ -1447,7 +1467,8 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `blocked` | `{reason, kind, recurrences}` | Worker or human flipped the task to `blocked`. `kind` is the typed block reason (`needs_input`, `capability`, `transient`, or `null` for a generic block); `recurrences` is the unblock-loop counter. A `kind=dependency` block with no incomplete parent lands here as `needs_input` (payload adds `requested_kind: dependency`, `rekind_reason: no_open_parent`) because `todo` would only get it re-promoted and respawned on the next dispatch tick. Synthesizes a zero-duration run when called on a never-claimed task with `--reason`. |
 | `dependency_wait` | `{reason, kind}` or `{reason: parent_not_done, demoted: true, parent}` | Worker blocked with `kind=dependency` while at least one parent is still open — the task is only waiting on another task, so it routes to `todo` (parent-gated, auto-promoted) instead of `blocked` and no recurrence is counted. No human needed. Also emitted when `link`/`kanban_link` puts a `ready` child under a parent that is not `done`: the child drops back to `todo` and this event records why (the `ready → running` claim re-checks parents, so nothing can run it until the parent completes or the link is removed with `hermes kanban unlink`). |
 | `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for orchestration attention, breaking the unblock↔re-block loop. |
-| `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. |
+| `unblocked` | — | Releases `blocked`/`scheduled` through the dependency gate, manually or on a timed wake. Resets the dispatcher's `consecutive_failures` but preserves `block_recurrences`. `run_id` is `NULL`. |
+| `schedule_elapsed` | `{scheduled_at, woken_at}` | A timed schedule became due. Both timestamps are UTC epoch seconds; recorded atomically with `unblocked` and timer clearing. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
 
 **Edits** (human-driven changes that aren't transitions):

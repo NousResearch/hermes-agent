@@ -886,6 +886,7 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    ("scheduled_at", "scheduled_at REAL"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

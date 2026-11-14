@@ -421,7 +421,7 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract last_failure_error scheduled_at".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
@@ -851,7 +851,7 @@ def _handle_block(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_schedule")
 def _handle_schedule(args: dict, **kw) -> str:
-    """Park the current task until an orchestrator re-gates it."""
+    """Park the current task for explicit unblock or a timed dispatcher wake."""
     tid = _worker_guard("kanban_schedule", args)
     raw_reason = args.get("reason")
     _check(raw_reason is None or isinstance(raw_reason, str), "reason must be a string")
@@ -865,8 +865,8 @@ def _handle_schedule(args: dict, **kw) -> str:
                f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
                "blocker, or kanban_complete so the completion judge can evaluate it.")
         ok = kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
+            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid), at=args.get("at"))
+        _check(ok, f"could not schedule {tid} (unknown id, stale run, or not in todo/ready/running/blocked/scheduled)")
         return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 
 

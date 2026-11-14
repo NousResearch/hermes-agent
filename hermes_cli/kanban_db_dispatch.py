@@ -1994,11 +1994,7 @@ def dispatch_once(
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
-    Wraps :func:`_dispatch_once_locked` in the non-blocking :func:`_dispatch_tick_lock`
-    so two dispatchers on one ``kanban.db`` never race a write tick on WAL
-    frames. The loser returns an empty ``DispatchResult`` with
-    ``skipped_locked=True`` and writes nothing; the lock is keyed on the
-    resolved DB path so unrelated boards tick in parallel.
+    Contending ticks return ``skipped_locked=True`` without writing; unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
@@ -2342,6 +2338,10 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    from hermes_cli.kanban_db_schedule import wake_due_scheduled
+
+    if not dry_run:
+        wake_due_scheduled(conn)
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,

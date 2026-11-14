@@ -114,11 +114,17 @@ def append_user_instruction(parts: list, instruction: str) -> str:
 
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
-    """Recover the user's instruction from a slash-skill-expanded turn: the
-    string unchanged when it is NOT scaffolding, the extracted instruction when
-    the scaffolding carried one, or ``None`` for a bare ``/skill`` invocation."""
+    """Recover the user's instruction from a slash-skill-expanded or gateway
+    auto-load turn: the string unchanged when it is NOT scaffolding, the
+    extracted instruction when the scaffolding carried one, or ``None`` for a
+    bare ``/skill`` invocation."""
     if not isinstance(content, str):
         return None
+    if content.startswith(_AUTO_LOAD_PREFIX):
+        # Gateway auto-load scaffolding wraps the user's typed text in the same
+        # model-facing turn as the loaded skill bodies; strip it so providers
+        # store only what the user actually typed (see _describe_auto_loaded_skill_turn).
+        return _describe_auto_loaded_skill_turn(content)
     if not content.startswith(_SKILL_INVOCATION_PREFIX):
         return content
     if _BUNDLE_MARKER in content:

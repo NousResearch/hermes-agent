@@ -1,0 +1,29 @@
+name: searchscope-ai-visibility
+title: Search Scope AI Visibility Auditor
+repo: https://github.com/InovArcAi/searchscope-ai-visibility-mcp
+sha: 7c400d1f750ef9e0ee029ba11311d1c67ebdf49b
+description: >-
+  Audit any public website for AI search visibility through Search Scope's hosted MCP server
+  (Streamable HTTP at https://mcp.searchscope.com.au/mcp, no sign-in, no keys in config). Three
+  read-only tools: audit_ai_visibility (ten-section audit with ranked fixes), extract_site_entities
+  (entity and relationship map) and generate_geo_query_universe (AI search prompts by intent), plus
+  the ai-visibility-audit skill that tells the agent when and how to use them. Search Scope is an SEO
+  consultancy in Perth, Western Australia, providing AI search visibility, multi-location SEO and
+  national SEO. Portable Agent Plugins v1 package (plugin.json + mcp.json), configuration only.
+  Disclosure: every tool call goes to Search Scope's hosted server, which fetches up to 15 public
+  pages of the named site and keeps no page content (sampled request logs may record the audited
+  URL); /mcp is rate limited to 60 requests a minute per client; tool results enter the session
+  context and so reach the user's model provider; the server is marked untrusted; the tool set is
+  served at runtime and is not covered by the pinned sha; the skill links to searchscope.com.au.
+maintainer: Search Scope
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/InovArcAi/searchscope-ai-visibility-mcp#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

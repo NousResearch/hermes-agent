@@ -1,0 +1,44 @@
+name: agrici-seo-hermes
+repo: https://github.com/devbyahsan/hermes-seo
+sha: 96dd20198225efb3efed0fc4354f48309ab6cc94
+subdir: ""
+description: "Free, open-source SEO audit skill for Hermes Agent. 26 sub-skills, 9 optional extensions, cross-platform Python tools. MIT. Derived from Claude SEO 2.6.0 (AgriciDaniel)."
+maintainer: "AgriciDaniel"
+tier: community
+category: seo
+requires_hermes: ">=0.21.5"
+version: "2.6.0"
+capabilities:
+  skills:
+    - seo
+    - seo-audit
+    - seo-technical
+    - seo-content
+    - seo-content-brief
+    - seo-schema
+    - seo-images
+    - seo-sitemap
+    - seo-geo
+    - seo-plan
+    - seo-programmatic
+    - seo-competitor-pages
+    - seo-hreflang
+    - seo-local
+    - seo-maps
+    - seo-google
+    - seo-backlinks
+    - seo-cluster
+    - seo-sxo
+    - seo-drift
+    - seo-ecommerce
+    - seo-dataforseo
+    - seo-image-gen
+    - seo-flow
+    - seo-agentic
+    - seo-page
+  provides_tools: []
+  provides_hooks:
+    - schema-validation (post_edit, post_write, post_save)
+  requires_env: []
+  config_schema: {}
+  

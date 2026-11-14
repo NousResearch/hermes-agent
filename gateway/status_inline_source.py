@@ -8,6 +8,9 @@ Hermes' own bootstraps, which run an entry point in-process and are mapped back 
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
+from functools import lru_cache
+from threading import Lock
 
 
 def inline_source_flag_index(tokens: list[str]) -> int | None:
@@ -143,14 +146,21 @@ def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
     return [target, *argv] if kind == "path" else ["-m", target, *argv]
 
 
-def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
-    """*tokens* as the equivalent ``python -m <module> <argv…>`` when this interpreter's ``-c`` source
-    is a Hermes bootstrap running an entry point in-process; None for any other inline source.
+# Recognized launcher lines are much more expensive to parse than incidental -c misses.
+# Retain them separately so a busy process table cannot evict the hot gateway identity.
+_POSITIVE_BOOTSTRAP_CACHE: OrderedDict[tuple[str, ...], tuple[str, ...]] = OrderedDict()
+_POSITIVE_BOOTSTRAP_LOCK = Lock()
+_POSITIVE_BOOTSTRAP_LIMIT = 64
 
-    Command lines usually arrive space-joined (``/proc``, psutil, ``ps``), which splits the source
-    across tokens; the shortest token run that ends in a recognised tail is the source, whatever
-    joined it, and the tokens after it are the entry point's argv.
-    """
+
+@lru_cache(maxsize=64)
+def _inline_bootstrap_argv_cached(tokens: tuple[str, ...]) -> list[str] | None:
+    with _POSITIVE_BOOTSTRAP_LOCK:
+        remembered = _POSITIVE_BOOTSTRAP_CACHE.get(tokens)
+        if remembered is not None:
+            _POSITIVE_BOOTSTRAP_CACHE.move_to_end(tokens)
+    if remembered is not None:
+        return list(remembered)
     index = inline_source_flag_index(tokens)
     if index is None:
         return None
@@ -158,5 +168,34 @@ def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
         if tokens[end].rstrip().endswith(")"):
             entry = _bootstrap_entry(" ".join(tokens[index + 1 : end + 1]), tokens[end + 1 :])
             if entry is not None:
-                return [tokens[0], *entry]
+                result = [tokens[0], *entry]
+                with _POSITIVE_BOOTSTRAP_LOCK:
+                    _POSITIVE_BOOTSTRAP_CACHE[tokens] = tuple(result)
+                    _POSITIVE_BOOTSTRAP_CACHE.move_to_end(tokens)
+                    if len(_POSITIVE_BOOTSTRAP_CACHE) > _POSITIVE_BOOTSTRAP_LIMIT:
+                        _POSITIVE_BOOTSTRAP_CACHE.popitem(last=False)
+                return result
     return None
+
+
+def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
+    """*tokens* as the equivalent ``python -m <module> <argv…>`` when this interpreter's ``-c`` source
+    is a Hermes bootstrap running an entry point in-process; None for any other inline source.
+
+    Command lines usually arrive space-joined (``/proc``, psutil, ``ps``), which splits the source
+    across tokens; the shortest token run that ends in a recognised tail is the source, whatever
+    joined it, and the tokens after it are the entry point's argv.
+
+    Results are memoized on the token tuple (maxsize=64) because the Desktop profile listing runs a
+    liveness check per profile, re-parsing the same launcher line repeatedly under the GIL. Each
+    call returns a fresh list so callers may mutate freely.
+    """
+    result = _inline_bootstrap_argv_cached(tuple(tokens))
+    return list(result) if result is not None else None
+
+
+def clear_inline_bootstrap_cache() -> None:
+    """Clear the ``inline_bootstrap_argv`` memoization cache (for tests)."""
+    _inline_bootstrap_argv_cached.cache_clear()
+    with _POSITIVE_BOOTSTRAP_LOCK:
+        _POSITIVE_BOOTSTRAP_CACHE.clear()

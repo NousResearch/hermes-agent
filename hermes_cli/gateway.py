@@ -3851,8 +3851,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(f"  Run: {sudo}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
-    status_cmd = ["status", svc, "--no-pager"] + (["-l"] if full else [])
-    _run_systemctl(status_cmd, system=system, capture_output=False, timeout=10)
+    from hermes_cli.gateway_status_notes import print_scrubbed_output
+    print_scrubbed_output(_run_systemctl(["status", svc, "--no-pager"] + (["-l"] if full else []), system=system, timeout=10, **_CAPTURE_TEXT))
     result = _run_systemctl(["is-active", svc], system=system, timeout=10, **_CAPTURE_TEXT)
     if result.stdout.strip() == "active":
         print(f"✓ {scope_label} gateway service is running")

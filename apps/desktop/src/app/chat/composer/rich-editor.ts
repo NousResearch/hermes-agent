@@ -21,6 +21,12 @@ import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
+/** Programmatic line breaks are real draft content. A bare, unmarked <br> can
+ * instead be the editor's height-preserving placeholder or Chromium junk. */
+function isComposerLineBreak(node: ChildNode | null): node is HTMLBRElement {
+  return node?.nodeName === 'BR' && (node as HTMLElement).dataset.composerLineBreak !== undefined
+}
+
 /** Chromium's litter: editing beside a `contenteditable=false` chip splits the
  *  line and leaves zero-length text nodes behind. They render as nothing and
  *  serialize as nothing, so no reader of the editor should count them. */
@@ -173,7 +179,10 @@ function appendTextWithBreaks(target: DocumentFragment | HTMLElement, text: stri
 
   lines.forEach((line, index) => {
     if (index > 0) {
-      target.append(document.createElement('br'))
+      const lineBreak = document.createElement('br')
+
+      lineBreak.dataset.composerLineBreak = ''
+      target.append(lineBreak)
     }
 
     if (line) {
@@ -306,6 +315,17 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
  *  insert. That's how a paste into an open `@url:` scope replaces the scope
  *  instead of stacking on it (`@url:@url:\`https://…\``). */
 export function insertComposerContentsAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
+  // The lone unmarked <br> in an empty normalized editor is scaffolding, not
+  // draft content. Never let a real insert accumulate after it: that turns one
+  // requested newline into two serialized newlines.
+  if (
+    editor.childNodes.length === 1 &&
+    editor.firstChild?.nodeName === 'BR' &&
+    !isComposerLineBreak(editor.firstChild)
+  ) {
+    editor.replaceChildren()
+  }
+
   const scoped = consumeBefore > 0 ? rangeBeforeCaret(editor, consumeBefore) : null
 
   if (scoped) {
@@ -574,7 +594,12 @@ export function composerPlainText(node: Node): string {
   // its height — not a line the user typed. Reading it as "\n" is how a
   // just-cleared composer stayed non-empty: the newline got stashed as the
   // session's draft and painted back on return.
-  if (el.dataset.slot === RICH_INPUT_SLOT && el.childNodes.length === 1 && el.firstChild?.nodeName === 'BR') {
+  if (
+    el.dataset.slot === RICH_INPUT_SLOT &&
+    el.childNodes.length === 1 &&
+    el.firstChild?.nodeName === 'BR' &&
+    !isComposerLineBreak(el.firstChild)
+  ) {
     return ''
   }
 
@@ -890,7 +915,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   // A trailing <br> right after a chip / only whitespace is a phantom line.
   const last = editor.lastChild
 
-  if (last?.nodeName === 'BR') {
+  if (last?.nodeName === 'BR' && !isComposerLineBreak(last)) {
     let prev: ChildNode | null = last.previousSibling
 
     while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {

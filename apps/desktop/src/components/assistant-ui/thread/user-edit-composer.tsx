@@ -860,7 +860,20 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    // Chromium has no native contenteditable action for macOS Option+Enter, so
+    // insert the line break explicitly and sync the edited draft immediately.
+    if (event.key === 'Enter' && event.altKey && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault()
+      rememberInitialDraft()
+      recordUndoPoint()
+      insertComposerContentsAtCaret(event.currentTarget, '\n')
+      syncDraftFromEditor(event.currentTarget)
+
+      return
+    }
+
+    // Shift+Enter stays native; Enter without a newline modifier submits.
+    if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
       event.preventDefault()
       submitEdit(event.currentTarget)
     }

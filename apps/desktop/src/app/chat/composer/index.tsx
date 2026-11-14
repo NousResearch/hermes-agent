@@ -989,7 +989,20 @@ export function ChatBar({
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    // Chromium inserts a line break for Shift+Enter, but macOS Option+Enter has
+    // no native contenteditable editing action. Insert that newline explicitly
+    // and flush it through the same rich-editor path as paste/chip mutations.
+    if (event.key === 'Enter' && event.altKey && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault()
+      recordUndoPoint()
+      insertComposerContentsAtCaret(event.currentTarget, '\n')
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
+    // Shift+Enter stays native; plain Enter submits.
+    if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
       event.preventDefault()
 
       // Decide from the DOM, not React state. `hasComposerPayload` is derived

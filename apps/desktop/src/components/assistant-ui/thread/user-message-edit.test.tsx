@@ -11,6 +11,7 @@ import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/reac
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { composerPlainText, placeCaretEnd } from '@/app/chat/composer/rich-editor'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
 import { assistantMessage, stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
@@ -231,6 +232,25 @@ describe('Enter submission and latch behavior', () => {
     // The editor should allow the newline to be inserted (by not preventing default)
     // We don't simulate actual newline insertion here (requires complex DOM manipulation)
     // but we verify the guard did not block it
+  })
+
+  it('inserts a newline on Option+Enter without submitting', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+    editor.textContent = 'line one'
+    fireEvent.input(editor)
+    placeCaretEnd(editor)
+
+    fireEvent.keyDown(editor, { altKey: true, key: 'Enter' })
+
+    expect(composerPlainText(editor)).toBe('line one\n')
+    await new Promise(resolve => window.setTimeout(resolve, 50))
+    expect(onEdit).not.toHaveBeenCalled()
   })
 
   // Interleaving covered nowhere else: dirty edit → blur schedules the 80ms

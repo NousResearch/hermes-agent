@@ -1,4 +1,4 @@
-"""Credential shapes that leaked past agent.redact (#53741, #125680, #134475, #141283, #147240).
+"""Credential shapes that leaked past agent.redact (#53741, #125680, #134475, #141283, #142852, #147240).
 
 Each class pins one family: the leak is masked in both the default (head/tail) mask and the
 non-reusable ``file_read`` + ``secret_file`` sentinel, and the look-alike identifiers or docs
@@ -227,4 +227,30 @@ class TestGoogleOAuthCredentials:
 
     @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
     def test_short_or_embedded_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestSeparatorTail:
+    """A token followed by ``_``/``-`` (``ghp_…_SUFFIX``) was missed wholesale: the shared trailing
+    guard rejected the separator and backtracking could not end the body anywhere else (#142852)."""
+
+    BODY = "Ab3" * 12
+
+    @pytest.mark.parametrize("prefix", ["ghp_", "npm_", "hf_"])
+    @pytest.mark.parametrize("lead,tail", [("", "_SUFFIX"), ("", "-backup"), ("x-", "_SUFFIX"),
+                                           ("never_", "-backup"), ("", ".x")])
+    def test_token_with_separator_tail_is_masked(self, prefix, lead, tail):
+        token = prefix + self.BODY
+        text = f"value {lead}{token}{tail} here"
+        _assert_masked(text, token)
+        for out in _both_modes(text):
+            assert f"{tail} here" in out, out
+
+    def test_exact_length_aws_key_with_underscore_tail_is_masked(self):
+        token = "AKIA" + "AB12" * 4
+        _assert_masked(f"export {token}_old", token)
+
+    @pytest.mark.parametrize("text", ["id AKIA" + "AB12" * 4 + "xyz here", "ghp_tooshort_x here",
+                                      "pip install scikit-learn backup-sk-learn"])
+    def test_alnum_tail_short_body_and_lookalikes_kept(self, text):
         _assert_unchanged(text)

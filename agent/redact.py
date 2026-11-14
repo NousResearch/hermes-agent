@@ -850,18 +850,21 @@ def _last_char_class(pattern: str) -> "str | None":
         i += 1
     return last
 
+
+def _trailing_guard(pattern: str) -> str:
+    """Lookahead ending ``pattern``: reject a following alphanumeric (word boundary) or a char of
+    the pattern's own body class. ``_``/``-`` are rejected only when the body admits them."""
+    body_class = _last_char_class(pattern)
+    return f"(?![A-Za-z0-9]|{body_class})" if body_class is not None else r"(?![A-Za-z0-9_-])"
+
+
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     # The trailing guard may only negate a pattern's own body class. One shared
     # class wider than a body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]{10,}``) fails at
     # the body's natural end and at every backtrack step alike, so a token
     # followed by an underscore/dash is not matched at all and ships in cleartext
     # (#142852). A pattern without a ``[...]`` class falls back to the shared class.
-    branches = []
-    for pattern in patterns:
-        body_class = _last_char_class(pattern)
-        guard = f"(?!{body_class})" if body_class is not None else r"(?![A-Za-z0-9_-])"
-        branches.append(f"(?:{pattern}){guard}")
-    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(branches) + r")")
+    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(f"(?:{p}){_trailing_guard(p)}" for p in patterns) + r")")
 
 
 def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
@@ -875,9 +878,9 @@ def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
     # Groups are disjoint by first char, so leftmost-first match order is unchanged.
     by_first: dict = {}
     for pattern in patterns:
-        by_first.setdefault(pattern[0], []).append(pattern[1:])
+        by_first.setdefault(pattern[0], []).append(f"(?:{pattern[1:]}){_trailing_guard(pattern)}")
     body = "|".join(f"{re.escape(c)}(?:{'|'.join(rest)})" for c, rest in by_first.items())
-    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")(?![A-Za-z0-9_-])")
+    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")")
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)

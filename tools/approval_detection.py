@@ -14,6 +14,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools import approval_parser_budget as _parser_budget
+from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 
 logger = logging.getLogger("tools.approval")
@@ -35,7 +37,7 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     _HERMES_HOME_DIR + r'config\.yaml\b'
 )
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
@@ -103,10 +105,14 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# Every run is possessive: a failed command-name match must not re-split a whitespace run between the
+# leading and trailing \s (cubic on a long blank-line run, and re.search holds the GIL while it runs).
+# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
+# reaches the same command word, so trying each would rescan the run once per newline.
 _CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
 )
 
 
@@ -370,7 +376,15 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 
 def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description); a scan over budget fails closed."""
+    try:
+        with _parser_budget.parser_budget(command):
+            return _detect_hardline_command(command)
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        return (True, _PARSER_LIMIT_DESCRIPTION)
+
+
+def _detect_hardline_command(command: str) -> tuple:
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -409,15 +423,17 @@ _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 # powershell/pwsh as the program a command runs: line start, a shell separator, or a launcher
 # (sudo -u bob, env FOO=1, timeout 5, xargs, wsl, cmd /c, ssh -p 22 <host>; option tokens may carry
 # one value; ssh and cmd /c may quote the remote command), with an optional directory prefix (`C:\\...\\powershell.exe`). The prefix excludes
-# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic).
+# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic). Likewise
+# for blank-line runs: the whitespace before the program is possessive (the prefix class excludes
+# whitespace, so nothing is lost) and, as in _CMDPOS, only the last newline of a run starts a match.
 _PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
-    r"(?:^|[;&|({`\n]"
-    r"|(?:^|[;&|({`\n])\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    r"(?:^|[;&|({`]|\n(?![^\S\n]*+\n)"
+    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
     + _PS_LAUNCHER_OPTIONS + r"\s"
     r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
-    r"|(?:^|[;&|({`\n])[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
-    r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
+    r"\s*+(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
 DANGEROUS_PATTERNS = [
@@ -941,6 +957,7 @@ _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
 _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
+_MAX_SUBSTITUTION_DEPTH = 32
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
@@ -954,6 +971,14 @@ def _command_parser_limit_exceeded(command: str) -> bool:
         return True
     # Long separator-free input has no compound-command utility and makes every regex inspect one giant token.
     if len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS and not any(char in command for char in ";&|\n"):
+        return True
+    # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
+    # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
+    # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed. Measured
+    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`); comments and quoted-heredoc
+    # bodies are data. Nesting that only the escape strip mints (`\$\(`, `$\<newline>(`, `\")\"`)
+    # is bounded by the scan budget instead (`$''(` nests too, but its scan stays linear).
+    if _parser_budget.substitution_depth(unicodedata.normalize("NFKC", command)) > _MAX_SUBSTITUTION_DEPTH:
         return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
 
@@ -1273,72 +1298,6 @@ def _skip_shell_whitespace(command: str, pos: int) -> int:
     return pos
 
 
-def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str = "",
-                brace: bool = False, stop_unterminated: bool = False, naive_backtick: bool = False,
-                comments: bool = False):
-    """Yield ``(kind, i, j, quote)`` lexical steps over ``text[start:end]`` without expanding.
-
-    The single quote/escape state machine behind every detection scanner. ``kind`` is ``"char"``
-    (one char), ``"esc"`` (backslash + the char it escapes; never inside single quotes), ``"quote"``
-    (an opening/closing quote char) or ``"subst"`` (a ``$(...)`` / backtick / ``${...}`` span);
-    With *comments*, ``"comment"`` spans are skipped without interpreting their quote syntax.
-    ``quote`` is the state the step was read in (``None``, ``'`` or ``"``). Substitutions are
-    recognized unquoted when ``"u"`` is in *subst*, inside double quotes when ``"q"`` is; *brace*
-    adds unquoted ``${...}``. An unterminated substitution falls through as plain chars unless
-    *stop_unterminated*, which yields ``("subst", i, None, quote)`` and ends the scan (the caller
-    descends to *end* itself). *naive_backtick* closes a backtick at the next backtick even if
-    escaped (the quoted-prose masker's historical behavior)."""
-    n = len(text) if end is None else end
-    quote: str | None = None
-    i = start
-    while i < n:
-        ch = text[i]
-        kind, j = "char", i + 1
-        if comments and quote is None and _is_shell_comment_start(text, i):
-            kind, j = "comment", text.find("\n", i, n)
-            if j < 0:
-                j = n
-        elif quote != "'" and ch == "\\" and i + 1 < n:
-            kind, j = "esc", i + 2
-        elif ch == quote or (quote is None and ch in "'\""):
-            kind = "quote"
-        elif quote != "'" and ("q" if quote else "u") in subst and (
-            ch == "`" or text.startswith("$(", i) or (brace and not quote and text.startswith("${", i))
-        ):
-            if ch == "`":
-                close = text.find("`", i + 1) + 1 or None if naive_backtick else _scan_backtick_end(text, i)
-            elif text[i + 1] == "(":
-                close = _scan_dollar_paren_end(text, i)
-            else:
-                close = text.find("}", i + 2) + 1 or None
-            if close is not None:
-                kind, j = "subst", close
-            elif stop_unterminated:
-                yield ("subst", i, None, quote)
-                return
-        yield (kind, i, j, quote)
-        if kind == "quote":
-            quote = None if quote else ch
-        i = j
-
-
-def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
-    depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
-        if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
-    return None
-
-
-def _scan_backtick_end(command: str, start: int) -> int | None:
-    # Backticks have no quote awareness: only a backslash escapes the next char.
-    match = re.compile(r"(?:\\.|[^`\\])*`", re.DOTALL).match(command, start + 1)
-    return match.end() if match else None
-
-
 def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
     """Read one shell word without executing expansions."""
     start = end = _skip_shell_whitespace(command, pos)
@@ -1351,6 +1310,7 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
 
 def _literal_command_substitution_output(script: str) -> str | None:
     """Resolve tiny literal command substitutions without executing a shell."""
+    _parser_budget.charge(len(script))
     try:
         tokens = shlex.split(script, posix=True)
     except ValueError:
@@ -1400,6 +1360,11 @@ def _strip_shell_word_syntax(word: str) -> str:
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
+    # Pure, and the word walkers ask for the same words once per command start: memoize per call.
+    return _parser_budget.memo(_deobfuscate_shell_word, word)
+
+
+def _deobfuscate_shell_word(word: str) -> str:
     for _ in range(2):
         previous = word
         word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))
@@ -1434,8 +1399,13 @@ def _iter_shell_command_starts(command: str):
 
     scan(0, len(command))
     seen = set()
+    run_from = run_to = -1
     for start in starts:
-        start = _skip_shell_whitespace(command, start)
+        # Each newline of a blank-line run is a start that skips to the same word: reuse the last skip
+        # when the start falls inside the run it covered instead of rescanning the run per newline.
+        if not run_from <= start <= run_to:
+            run_from, run_to = start, _skip_shell_whitespace(command, start)
+        start = run_to
         if start >= len(command) or start in seen or _is_shell_comment_start(command, start):
             continue
         seen.add(start)
@@ -1931,7 +1901,11 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
 
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description) for the first match."""
-    description = next(_iter_dangerous_descriptions(command), None)
+    try:
+        with _parser_budget.parser_budget(command):
+            description = next(_iter_dangerous_descriptions(command), None)
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        description = _PARSER_LIMIT_DESCRIPTION
     if description is None:
         return (False, None, None)
     return (True, description, description)
@@ -1941,4 +1915,10 @@ def detect_content_rule_keys(command: str) -> list[str]:
     """Pattern keys of every content-level rule (``_CONTENT_RULE_DESCRIPTIONS``) the command matches,
     wherever they fall in detection order. The approval gates require consent for these on top of
     the first match, so an approved pipe-to-shell cannot wave through a credential upload."""
-    return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
+    try:
+        with _parser_budget.parser_budget(command):
+            return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        # Safe only because the hardline floor runs first on the same command, walks every variant
+        # under an equal budget and refuses it, so no gate acts on this [] (pinned by a test).
+        return []

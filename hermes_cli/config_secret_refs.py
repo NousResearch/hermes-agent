@@ -333,9 +333,13 @@ def config_set_secret_value(key: str, value: Any, user_config: dict) -> Any:
 def masked_display_value(key: str, value: Any) -> Any:
     """The value ``hermes config set`` echoes: masked when the (possibly nested) key is
     credential-shaped, e.g. ``model.api_key`` (lowercase, so it misses the .env routing). A
-    ``${VAR}`` reference is not a secret and is shown as is."""
+    ``${VAR}`` reference is not a secret and is shown as is. A mapping or list value gets its nested
+    credential keys masked, as ``config get`` does."""
     from hermes_cli.config import _is_secret_config_key
-    if _is_secret_config_key(key) and isinstance(value, str) and value and not is_env_reference(value):
+    from hermes_cli.config_secret_display import _maskable_secret_text, redact_config_value
+    if not (text := _maskable_secret_text(value)):
+        return redact_config_value(value)
+    if _is_secret_config_key(key) and not is_env_reference(text):
         from agent.redact import mask_secret
-        return mask_secret(value)
+        return mask_secret(text)
     return value

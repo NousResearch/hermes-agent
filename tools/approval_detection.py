@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_git_options import _GIT_GLOBAL_FLAGS, _join_escaped_word_chars
 
 logger = logging.getLogger("tools.approval")
 
@@ -76,15 +77,6 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # separator is now the same whitespace run as _GLOBAL_FLAGS, so e.g. `docker --log-level  warn stop
 # web` reaches the lifecycle verb again. Single-space commands match exactly as before.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
-# Git's global options sit between the binary and the subcommand: `git -C <path> push --force`,
-# `git --git-dir=<path> reset --hard`, `git -c key=val clean -fd`. Each option is ONE shell word that
-# may carry a JOINTED value (`-C'/tmp/my repo'`, `-c user.name='a b'`), so the value is matched whole —
-# quoted spans included — rather than split at its first space, which left an unmatched fragment before
-# the subcommand whenever the path held a space. A separate value is still at most one non-dash word.
-# The git rules below therefore match the SUBCOMMAND, which no literal `git <verb>` prefix ever is
-# (#150744).
-_GIT_OPTION_WORD = r"""(?:[^\s"'`$]++|\$\([^()]*+\)|`[^`]*+`|\$(?!\([^()]*+\))|"[^"]*"|'[^']*')+"""
-_GIT_GLOBAL_FLAGS = rf'(?:-{_GIT_OPTION_WORD}(?:\s++(?!-\S){_GIT_OPTION_WORD})?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -1705,19 +1697,6 @@ def _deny_command_variants(command: str):
         for _, payload in _execution_flag_findings(source):
             if payload:
                 pending.append(payload)
-
-
-_ESCAPED_WORD_CHAR = re.compile(r"\\([ \t\"'`])|\\.", re.DOTALL)
-
-
-def _join_escaped_word_chars(command: str) -> str:
-    """Replace each backslash-escaped space, tab, quote or backtick with `_`, outside single quotes
-    (where a backslash is literal); `\\` pairs are consumed first so an escaped backslash stays itself."""
-    def join(span: re.Match) -> str:
-        if span.group(0)[0] == "'":
-            return span.group(0)
-        return _ESCAPED_WORD_CHAR.sub(lambda e: "_" if e.group(1) else e.group(0), span.group(0))
-    return re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.", join, command, flags=re.DOTALL)
 
 
 def _command_detection_variants(command: str):

@@ -678,6 +678,15 @@ def run_checkout_untouched(root: Path) -> bool:
     return checkout_untouched(_run_start[0], Path(root), _run_start[1])
 
 
+def run_checkout_moved(root: Path) -> bool:
+    """Whether this run changed HEAD, independently of an autostash or branch switch."""
+    if _run_start is None:
+        return False
+    git_cmd, (start_head, _branch) = _run_start
+    head = head_and_branch(git_cmd, Path(root))[0]
+    return bool(start_head and head and head != start_head)
+
+
 def preflight_refusal(git_cmd, root: Path, target_ref: str, critical_files) -> str | None:
     """Why this update must not start, checked BEFORE the first tree move; ``None`` to proceed.
 

@@ -134,7 +134,7 @@ _HERMES_CONFIG_SET_APPROVAL_POLICY = (
     # `python -m hermes_cli.main` that the updater and the cron lifecycle guard invoke.
     # Optional leading `VAR=value` assignments (`HERMES_HOME=... hermes config set ...`).
     r'(?>(?:\w++=[^\s]*+[ \t]+)*)'
-    r'(?:(?:[^\s:]*?/)?(?:ai\.)?hermes\b'
+    r'(?:(?:[^\s:]*?/)?(?:ai\.)?hermes(?:\.exe)?\b'
     r'|(?:[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]+hermes_cli\.main\b)'
     r'(?>(?:[ \t]+(?:' + _HERMES_TOP_LEVEL_VALUE_FLAGS + r'[ \t]+[^\s]++'
     r'|--?[\w-]++(?:=[^\s]++)?))*)'  # global options before the subcommand

@@ -47,6 +47,7 @@ def _policy_rule_fires(command: str) -> bool:
     # The macOS bundle binary and an absolute path to the program.
     "ai.hermes config set approvals.mode off",
     "/usr/local/bin/hermes config set approvals.mode off",
+    "hermes.exe config set approvals.mode off",
     # The module form the updater and the cron lifecycle guard actually invoke.
     "python -m hermes_cli.main config set approvals.mode off",
     "python3 -m hermes_cli.main config set approvals.mode off",

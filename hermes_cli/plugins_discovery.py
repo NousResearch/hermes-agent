@@ -135,7 +135,7 @@ def is_skipped_plugin_dir(name: str) -> bool:
     """True for directory names discovery never treats as plugins. Cache/dunder dirs (__pycache__,
     __MACOSX__, …) can raise PermissionError when walked and take down every later tool call
     (#86996); foreign-harness dirs hold another tool's manifest convention."""
-    return (name.startswith("__") and name.endswith("__")) or name in _FOREIGN_HARNESS_MANIFEST_DIRS
+    return name.startswith(".") or (name.startswith("__") and name.endswith("__")) or name in _FOREIGN_HARNESS_MANIFEST_DIRS
 
 
 def scan_directory(
@@ -241,6 +241,12 @@ def resolve_manifest_winners(manifests: list[PluginManifest]) -> dict[str, Plugi
                 continue
             logger.info("Plugin '%s' at %s (%s) shadows the bundled copy at %s", key, manifest.path,
                         manifest.source, shadowed.path)
+        elif shadowed is not None and shadowed.source == manifest.source:
+            logger.warning(
+                "Plugin '%s' at %s (%s) shadows an earlier %s plugin with the same manifest name at %s; "
+                "only the later one will load",
+                key, manifest.path, manifest.source, manifest.source, shadowed.path,
+            )
         winners[key] = manifest
     return winners
 

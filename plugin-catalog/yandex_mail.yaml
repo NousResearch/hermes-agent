@@ -1,6 +1,6 @@
 name: yandex_mail
 repo: https://github.com/akinfold/hermes-yandex-mail
-sha: 34b650089939867a553dfa82db9d888945c7e403
+sha: 9d1f7e94b07f06825ba6baea05941f27810caae9
 subdir: hermes_yandex_mail
 title: "Yandex Mail"
 image: https://raw.githubusercontent.com/akinfold/hermes-yandex-mail/34b650089939867a553dfa82db9d888945c7e403/docs/banner.png

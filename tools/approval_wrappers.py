@@ -286,26 +286,39 @@ def hardline_detection_variants(command: str, capped: list[str] | None = None):
     from tools.approval_detection import _command_detection_variants, _mask_quoted_newlines
 
     seen = set()
-    masked = _mask_quoted_newlines(command)
+    # The peel and carrier scans read a literal heredoc body (`cat <<'EOF'`) as the text it is.
+    masked = _blank_literal_heredoc_bodies(_mask_quoted_newlines(command))
     stripped = strip_wrapper_prefixes(masked)
     # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
     # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
     # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
     peeled = itertools.chain(_command_detection_variants(stripped, capped=capped), carried_command_variants(stripped)) if stripped != masked else ()
-    for variant in itertools.chain(_command_detection_variants(command, capped=capped), peeled, carried_command_variants(command)):
+    carried = carried_command_variants(_blank_literal_heredoc_bodies(command))
+    for variant in itertools.chain(_command_detection_variants(command, capped=capped), peeled, carried):
         for candidate in (variant, dequote_rm_operands(variant) if "rm" in variant.lower() else variant):
             if candidate not in seen:
                 seen.add(candidate)
                 yield candidate
 
 
+def _blank_literal_heredoc_bodies(command: str) -> str:
+    """*command* with literal heredoc bodies blanked (newlines kept, so offsets and lines survive)."""
+    spans = literal_heredoc_bodies(command)
+    for start, end in reversed(spans):
+        command = command[:start] + re.sub(r"[^\n]", " ", command[start:end]) + command[end:]
+    return command
+
+
 _MAX_RM_OPERANDS = 64
+# Quote-removing a word with one of these would turn quoted text into syntax (`"/etc;backup"`).
+_RM_OPERAND_SYNTAX = frozenset(";|&()<>`")
 
 
 def dequote_rm_operands(variant: str) -> str:
     """*variant* with each quoted operand word of an ``rm`` command quote-removed, as the shell
     passes it (``"/"./*`` -> ``/./*``), so the rm rules judge the whole word, not its quoted prefix.
-    A word that would contain whitespace is left alone: it is one operand, not several."""
+    A word that would contain whitespace or a shell operator is left alone: it is one operand, not
+    several, and its quoted `;` is not a separator."""
     from tools.approval_detection import (
         _RE_FLAGS, _RM_FLAG_PREFIX, _read_shell_word, _splice, _strip_shell_word_syntax,
     )
@@ -321,7 +334,7 @@ def dequote_rm_operands(variant: str) -> str:
                 break
             if "'" in word or '"' in word:
                 plain = _strip_shell_word_syntax(word)
-                if plain and not any(char.isspace() for char in plain):
+                if plain and not any(char.isspace() or char in _RM_OPERAND_SYNTAX for char in plain):
                     edits.append((word_start, word_end, plain))
             pos = word_end
         cursor = pos

@@ -34,6 +34,8 @@ _BLOCKED = [
     "rm -rf " + _Q + "/etc" + _Q + "/../*",
     "rm -rf " + _Q + "/etc" + _Q + "/../../*",
     "nice rm -rf '/usr'/../*",
+    # sudo -u takes the rest of the bundle as its value, so the command runs.
+    "sudo -ul su -c reboot",
     # Heredoc bodies that a shell (or a shell behind a pipe / ssh) executes stay scanned.
     "bash <<'EOF'\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
     "cat <<'EOF' | sh\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
@@ -42,12 +44,18 @@ _BLOCKED = [
     "cat <<'EOF'\nx\nEOF\ntrue; " + _Q + "reboot" + _Q,
     # An unquoted delimiter expands the body, so it is not literal.
     "cat <<EOF\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
+    "cat <<'EOF' | sh\nnice reboot\nEOF",
+    "bash <<'EOF'\nsu -c reboot\nEOF",
+    "cat <<'EOF'\nx\nEOF\nnice reboot",
     "ls; " + _Q + "reboot" + _Q,
 ]
 
 _ALLOWED = [
     # sudo -l lists what the carrier would run; nothing runs.
     "sudo -l su -c reboot",
+    "sudo -ll su -c reboot",
+    "sudo -nl su -c reboot",
+    "sudo -ln su -c reboot",
     # A quoted prefix of a subtree is the subtree.
     "nice rm -rf " + _Q + "$HOME" + _Q + "/project/build",
     "/bin/rm -rf " + _Q + "/" + _Q + "tmp/build",
@@ -55,10 +63,17 @@ _ALLOWED = [
     "rm -rf " + _Q + "/etc" + _Q + "/nginx/old",
     "rm -rf /etcetera/",
     "rm -rf /etc/../tmp/x",
+    # A quoted `;` / `|` is part of the name, not a separator.
+    "rm -rf " + _Q + "/etc;backup" + _Q,
+    "rm -rf '/etc;old'",
+    "rm -rf " + _Q + "/etc|x" + _Q,
     # Literal heredoc text written by cat / tee.
     "cat <<'EOF'\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
     "cat <<'EOF' > notes.md\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
     "tee docs.md <<" + _Q + "EOF" + _Q + "\nls; " + _Q + "shutdown" + _Q + " -h now\nEOF",
+    # ...including wrapper and carrier lines in that text.
+    "cat <<'EOF'\nnice reboot\nEOF",
+    "cat <<'EOF'\nsu -c reboot\nEOF",
 ]
 
 

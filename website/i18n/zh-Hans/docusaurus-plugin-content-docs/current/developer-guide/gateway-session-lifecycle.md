@@ -196,8 +196,10 @@ Session key 是标识对话通道的确定性字符串。它们由 `build_sessio
 ### Key 格式
 
 ```
-agent:main:{platform}:{chat_type}[:{chat_id}][:{thread_id}][:{participant_id}]
+agent:main:{platform}:{chat_type}[:{slack scope_id}][:{chat_id}][:{thread_id}][:{participant_id}]
 ```
+
+实际布局中，Slack 会多一个 `scope_id` 槽位（位于 chat 标识之前；Discord 的 guild 作用域被刻意不加入，以保持 key 兼容性）。当一条消息属于线程时，`chat_type` 槽位会被规范化为 `"thread"`（源码 `gateway/session.py::build_session_key` 主持这一定义）。本节示例是简化视图；**切勿手动构造会话键，始终以 `build_session_key()` 为准。**
 
 ### DM 规则
 

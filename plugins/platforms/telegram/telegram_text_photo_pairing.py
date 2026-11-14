@@ -21,6 +21,7 @@ import os
 from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import caption_is_command
 from plugins.platforms.telegram.telegram_batching import adopt_routing
 from plugins.platforms.telegram.telegram_media_group import CAPTION_TEXT_ATTR, tracking_album_items
 
@@ -68,6 +69,14 @@ def claim_pending_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
     _claims(adapter)[id(msg)] = (key, pending, done)
 
 
+def with_comment(adapter: Any, comment: str, caption: Optional[str]) -> str:
+    """The absorbed comment joined to the media's caption: comment first, unless the caption is a slash
+    command, which must lead to parse (``/goal ...`` then the comment as its context)."""
+    if not caption:
+        return comment
+    return adapter._merge_caption(caption, comment) if caption_is_command(caption) else adapter._merge_caption(comment, caption)
+
+
 def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
     """Move the claimed text into the image ``event`` (text first, then the caption) and cancel its flush.
 
@@ -88,10 +97,9 @@ def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
     task = adapter._pending_text_batch_tasks.pop(key, None)
     if task is not None and not task.done():
         task.cancel()
-    event.text = adapter._merge_caption(pending.text, event.text) if event.text else pending.text
+    event.text = with_comment(adapter, pending.text, event.text)
     if CAPTION_TEXT_ATTR in event.__dict__:  # a document inlined its text: an album merge rebuilds from the caption
-        caption = event.__dict__[CAPTION_TEXT_ATTR]
-        event.__dict__[CAPTION_TEXT_ATTR] = adapter._merge_caption(pending.text, caption) if caption else pending.text
+        event.__dict__[CAPTION_TEXT_ATTR] = with_comment(adapter, pending.text, event.__dict__[CAPTION_TEXT_ATTR])
     event.absorb_reply_expected(pending)
     if pending.reply_to_message_id and not event.reply_to_message_id:
         for attr in ("reply_to_message_id", "reply_to_text", "reply_to_author_id",

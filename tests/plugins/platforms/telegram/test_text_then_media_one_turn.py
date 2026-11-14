@@ -74,5 +74,7 @@ async def test_comment_before_a_document_album_with_a_command_caption_reaches_th
     await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
     await async_wait_until(lambda: not adapter._media_group_events and not adapter._pending_text_batches, timeout=5)
 
-    texts = [c.args[0].text for c in adapter.handle_message.await_args_list]
-    assert any("Look at these" in (t or "") for t in texts), texts
+    events = [c.args[0] for c in adapter.handle_message.await_args_list]
+    assert len(events) == 1, [e.text for e in events]
+    assert events[0].get_command() == "goal", events[0].text
+    assert "Look at these" in events[0].get_command_args(), events[0].text

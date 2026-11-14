@@ -26,8 +26,11 @@ logger = logging.getLogger("hermes.coding_context")
 
 CODING_TOOLSET = "coding"
 
-# Surfaces where ``auto`` may adopt the posture; messaging platforms are deliberately absent.
-INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "desktop", ""}
+# Surfaces where ``auto`` may adopt the posture; messaging platforms are deliberately absent.  The Desktop
+# reaches this check under two labels, whichever one ``agent.platform`` carries: ``gui`` (the label its client
+# sends at ``session.create``, which the session stores) and ``desktop`` (the backend fallback in
+# ``tui_gateway.agent_factory``); ``gateway.session_policy.SURFACES`` maps the first onto the second.
+INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "gui", "desktop", ""}
 # Project-root signals (cheap filename checks) marking a code workspace even without git.
 _PROJECT_MARKERS = (
     "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "package.json", "tsconfig.json", "deno.json",

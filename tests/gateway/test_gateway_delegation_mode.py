@@ -395,9 +395,10 @@ async def test_a_heartbeat_built_agent_pins_the_configured_mode_across_a_restart
     assert len(dispatches) == 2 and chat.sent[-1] == PAUSE
 
 
-@pytest.mark.parametrize("platform_key", ["api_server", "local", "webhook"])
+@pytest.mark.parametrize("platform_key", ["api_server", "local", "webhook", "gui", "desktop"])
 def test_auto_never_joins_on_a_surface_that_is_not_a_chat(platform_key):
-    """``auto`` is about a pause message reaching a person: API, local and webhook turns keep today's path."""
+    """``auto`` is about a pause message reaching a person: API, local, webhook and Desktop turns keep
+    today's path.  The Desktop's own ``session.create`` source is ``gui``."""
     from tools.delegate_tool_config import gateway_delegation_inline
 
     assert gateway_delegation_inline(_interim(False), platform_key, interim_enabled=False) is False

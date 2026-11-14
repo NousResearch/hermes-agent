@@ -377,7 +377,10 @@ class GatewayTurnPrepareMixin:
             if not isinstance(config, dict):
                 config = {}
             gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+            # Off a fallback, the route is the session's own: a stale fallback marker must not undo it (#152333).
+            stale_marker = not runtime["fallback_active"] and config.pop("_fallback_route", None) is not None
+            if (row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items())
+                    and not stale_marker):
                 return
             config["gateway_runtime"] = runtime
             db.update_session_meta(session_id, json.dumps(config), model=model)

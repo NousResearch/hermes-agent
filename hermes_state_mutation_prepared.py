@@ -52,6 +52,7 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
     row = conn.execute('SELECT model_config FROM sessions WHERE id=?', (target,)).fetchone()
     model_config = json.loads(row[0] or '{}')
     model_config['provider'] = config['provider']
+    model_config.pop('_fallback_route', None)  # an explicit selection is not a fallback route (#152333)
     conn.execute('UPDATE sessions SET model=?,model_config=? WHERE id=?', (model, _json(model_config), target))
     # This selection is newer than any model pick still waiting for a turn boundary: that pick is superseded.
     # A level deferred beside it stays unless this selection carries its own, as defer_pick keeps it.

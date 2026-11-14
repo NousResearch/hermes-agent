@@ -267,10 +267,12 @@ class TestInvisibleUnicode:
 
     @pytest.mark.parametrize("before_cut", range(2, 7))  # 1: only U+1F3F4 is before the cut
     def test_flag_straddling_scan_limit_not_flagged(self, before_cut):
-        """A real flag cut by MAX_SCAN_CHARS keeps its exemption; tags before the cut stay checked."""
+        """A real flag across MAX_SCAN_CHARS keeps its exemption; tags next to it stay checked."""
         wales = "\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in "gbwls") + "\U000E007F"
-        text = "a" * (MAX_SCAN_CHARS - before_cut) + wales + "\u200b tail"  # U+200B is past the cut
+        text = "a" * (MAX_SCAN_CHARS - before_cut) + wales + " tail"
         assert scan_for_threats(text, scope="strict") == []
+        # The whole input is checked now, not just the head: a zero-width char past the cap is reported.
+        assert scan_for_threats(text + "\u200b", scope="strict") == ["invisible_unicode_U+200B"]
         smuggled = "a" * (MAX_SCAN_CHARS - before_cut - 1) + chr(0xE0041) + wales
         assert "invisible_unicode_U+E0041" in scan_for_threats(smuggled, scope="strict")
 

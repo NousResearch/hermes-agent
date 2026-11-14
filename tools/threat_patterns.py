@@ -125,7 +125,6 @@ INVISIBLE_CHARS = frozenset(
 # legitimate use of TAG chars. Only those three are exempt: a generic "flag-shaped" exemption lets a
 # run of fake flags carry a smuggled sentence a few tag letters at a time.
 _RGI_SUBDIVISION_FLAGS = ("gbeng", "gbsct", "gbwls")
-_FLAG_LEN = 7  # U+1F3F4 + five tag letters + CANCEL TAG
 EMOJI_TAG_SEQUENCE_RE = re.compile(
     "|".join("\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in code) + "\U000E007F" for code in _RGI_SUBDIVISION_FLAGS))
 

@@ -1184,7 +1184,11 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     try:
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
-        if db is None:
+        # A live handle proves nothing about the ROW: a fresh chat persists its ``sessions`` row on the
+        # first submit, so inserting this pivot first violates ``messages.session_id``'s foreign key and
+        # the switch silently loses exactly the notice it describes. ``_ensure_session_db_row`` is
+        # INSERT OR IGNORE, so the existing-row path stays a no-op.
+        if db is None or not db.get_session(_submit_row_target_key(session)):
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:

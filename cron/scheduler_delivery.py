@@ -188,7 +188,8 @@ def _cron_display_name(job: dict) -> str:
 
 
 def _cron_mirror_message(job: dict, text: str) -> str:
-    return f"[Cron delivery: {_cron_display_name(job)}]\n{text}"
+    name = " ".join(p for p in map(str.strip, _cron_display_name(job).splitlines()) if p)  # only line breaks go: other whitespace is the stored name
+    return f"[Cron delivery: {name}] (your own scheduled message, already sent to the user)\n{text}\n[Cron delivery end: {name}]"
 
 
 def _maybe_mirror_cron_delivery(

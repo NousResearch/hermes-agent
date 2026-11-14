@@ -448,3 +448,82 @@ class TestResumeDisplaySanitization:
         assert "\x07" not in output
         assert "hi" in output and "there" in output
         assert "fine" in output
+
+
+class TestTranscriptResumeDisplay:
+    """``resume_display: transcript`` replays every message in full."""
+
+    def _capture(self, cli_obj, monkeypatch):
+        lines = []
+        monkeypatch.setattr("cli._cprint", lambda text: lines.append(str(text)))
+        cli_obj._display_resumed_history()
+        return "\n".join(lines)
+
+    def test_full_history_not_capped_or_truncated(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = _large_history(15)
+        output = self._capture(cli, monkeypatch)
+
+        # All 15 exchanges survive — no "last 10" cap, no earlier-messages line.
+        for i in range(1, 16):
+            assert f"Question #{i}" in output
+            assert f"Answer #{i}" in output
+        assert "earlier message" not in output.lower()
+
+    def test_long_assistant_and_user_text_are_not_truncated(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        long_user = "user-start " + ("x" * 900) + " user-end"
+        long_assistant = "assistant-start " + ("y" * 900) + " assistant-end"
+        cli.conversation_history = [
+            {"role": "user", "content": long_user},
+            {"role": "assistant", "content": long_assistant},
+        ]
+        output = self._capture(cli, monkeypatch)
+
+        assert "user-start" in output and "user-end" in output
+        assert "assistant-start" in output and "assistant-end" in output
+        assert "..." not in output.replace("…", "")
+
+    def test_tool_calls_keep_a_row_and_tool_results_stay_hidden(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = _tool_call_history()
+        output = self._capture(cli, monkeypatch)
+
+        assert "Search for Python tutorials" in output
+        assert "Here are some great Python tutorials" in output
+        assert "Found 5 results" not in output  # tool result bodies are not replayed
+        assert "web_search" in output or "Search" in output
+
+    def test_off_suppresses_all_history(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "off"}})
+        cli.conversation_history = _simple_history()
+        assert self._capture(cli, monkeypatch).strip() == ""
+
+    def test_transcript_strips_terminal_escapes(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = [
+            {"role": "user", "content": "hi \x1b[2J there"},
+            {"role": "assistant", "content": "ok \x1b]0;pwned\x07 fine"},
+        ]
+        output = self._capture(cli, monkeypatch)
+        assert "\x1b[2J" not in output
+        assert "\x1b]0;pwned" not in output
+        assert "hi" in output and "there" in output
+        assert "fine" in output
+
+    def test_withheld_prompt_replays_original_typed_ask(self, monkeypatch):
+        """Transcript mode must show the typed ask, not the model-facing policy placeholder."""
+        from agent.message_metadata import PRE_LLM_BLOCK_WITHHELD_PROMPT, WITHHELD_PROMPT
+
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = [{
+            "role": "user",
+            "content": PRE_LLM_BLOCK_WITHHELD_PROMPT,
+            "display_metadata": {WITHHELD_PROMPT: "My original typed question"},
+        }]
+        previewed = []
+        monkeypatch.setattr(cli, "_print_user_message_preview", previewed.append)
+
+        cli._display_resumed_history()
+
+        assert previewed == ["My original typed question"]

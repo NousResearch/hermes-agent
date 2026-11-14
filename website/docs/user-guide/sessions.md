@@ -250,6 +250,15 @@ The recap:
 - **Caps** at the last 10 exchanges with a "... N earlier messages ..." indicator
 - Uses **dim styling** to distinguish from the active conversation
 
+To replay the entire previous conversation instead — every user and assistant message in full, with each tool call as a one-line row and no exchange/character caps — set:
+
+```yaml
+display:
+  resume_display: transcript   # full transcript, Codex-style scrollback
+```
+
+`transcript` prints the history in the same visual style as live turns, so resuming feels like stepping away and coming back rather than opening a new session.
+
 To disable the recap and keep the minimal one-liner behavior, set in `~/.hermes/config.yaml`:
 
 ```yaml

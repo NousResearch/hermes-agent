@@ -864,12 +864,19 @@ class CLIAgentSetupMixin:
         return True
 
     def _display_resumed_history(self):
-        """Render a dim Rich-panel recap of the previous conversation, capped at the last
-        ``resume_exchanges`` user/assistant exchanges with a hidden-count indicator."""
+        """Render the previous conversation on resume.
+
+        ``resume_display: transcript`` replays every message in full, live-chat style;
+        ``full`` (default) renders a dim Rich-panel recap capped at the last
+        ``resume_exchanges`` user/assistant exchanges; ``minimal``/``off`` say nothing.
+        """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
-        if not display_history or self.resume_display == "minimal":
+        if not display_history or self.resume_display in ("minimal", "off"):
+            return
+        if self.resume_display == "transcript":
+            self._display_resumed_transcript(display_history, _sanitize_display_text, _strip_reasoning_tags)
             return
         _disp = CLI_CONFIG.get("display", {})
         entries, _last_asst_idx, _last_asst_full = _collect_resume_entries(
@@ -917,3 +924,85 @@ class CLIAgentSetupMixin:
         _record_output_history_entry(lambda: self._render_resume_history_panel_lines(panel))
         with _suspend_output_history():
             self._console_print(panel)
+
+    def _display_resumed_transcript(self, display_history, sanitize, strip_reasoning):
+        """Replay the whole previous conversation into scrollback, live-chat style.
+
+        Every user and assistant message is printed in full — no exchange cap, no
+        character truncation, no recap panel. Tool results are skipped (their payloads
+        can be megabytes); each tool call keeps a one-line row so the flow stays
+        readable. This is what ``display.resume_display: transcript`` selects.
+        """
+        import json
+
+        from agent.message_metadata import withheld_prompt_text
+        from cli import _DIM, _RST, _cprint
+
+        for msg in display_history:
+            role = msg.get("role", "")
+            display_kind = msg.get("display_kind")
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls") or []
+            if role == "system" or display_kind == "hidden":
+                continue
+            if display_kind in _RESUME_EVENT_KEYS:
+                metadata = msg.get("display_metadata") or {}
+                label = (metadata.get("display_text")
+                         if display_kind in ("async_delegation_complete", "process_complete") else None)
+                _cprint(f"  {_DIM}◈ {_escape(sanitize(label or t(_RESUME_EVENT_KEYS[display_kind])))}{_RST}")
+                continue
+            if role == "user":
+                # A pre_llm_call veto stores the model-facing placeholder in content and the
+                # text the human typed in display_metadata: the transcript shows the typed ask.
+                text = sanitize(withheld_prompt_text(msg) or _user_display_text(content))
+                if text.strip():
+                    self._print_user_message_preview(text)
+                continue
+            if role != "assistant":
+                continue  # tool results stay out of the replay; the call row below names the work
+            text = sanitize(strip_reasoning("" if content is None else str(content))).strip()
+            if text:
+                self._print_resumed_assistant(text)
+            for call in tool_calls:
+                fn = call.get("function") or {}
+                name = fn.get("name") or "tool"
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except (TypeError, ValueError):
+                        args = {"command": args}
+                if not isinstance(args, dict):
+                    args = {}
+                try:
+                    from hermes_cli.cli_modern_layout import completed_tool_line
+                    _cprint(completed_tool_line(self, name, args, 0.0))
+                except Exception:  # health: allow BLE001 -- a cosmetic tool-row render must never break the replay
+                    _cprint(f"  {_DIM}⚙ {_escape(name)}{_RST}")
+
+    def _print_resumed_assistant(self, text: str) -> None:
+        """Print one stored assistant message with the same styling a live answer gets."""
+        from cli import ChatConsole, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            label = _skin.get_branding("response_label", "☤ Hermes")
+            resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+            resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+        except Exception:  # health: allow BLE001 -- a missing/broken skin must fall back to defaults, not break replay
+            label, resp_color, resp_text = "☤ Hermes", "#CD7F32", "#FFF8DC"
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import answer_label, closing_separator
+            _cprint(answer_label())
+            ChatConsole().print(
+                _render_final_assistant_content(text, mode=self.final_response_markdown),
+                style=resp_text, soft_wrap=True)
+            _cprint(closing_separator(True))
+        else:
+            from rich import box as rich_box
+            from rich.panel import Panel
+            ChatConsole().print(Panel(
+                _render_final_assistant_content(text, mode=self.final_response_markdown),
+                title=f"[{resp_color} bold]{label}[/]", title_align="left", border_style=resp_color,
+                style=resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
+                width=self._scrollback_box_width()))

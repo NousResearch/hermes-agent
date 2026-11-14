@@ -38,6 +38,7 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/store/session', () => ({
   $connection: atom(null),
+  $selectedStoredSessionId: atom(null),
   setConnection: vi.fn(),
   setGatewayState: vi.fn()
 }))

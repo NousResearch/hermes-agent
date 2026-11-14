@@ -3780,7 +3780,10 @@ export const frOverrides = {
   },
   composer: {
     message: 'Message',
-    wakingProfile: profile => `Réveil de ${profile}…`,
+    switchingProfile: profile => `Passage à ${profile}…`,
+    switchingProfileSlow: 'Connexion en cours. Les messages envoyés maintenant attendront et iront à cet agent.',
+    switchProfileFailed: profile => `Impossible de passer à ${profile}`,
+    willSendTo: profile => `Sera envoyé à ${profile}`,
     placeholderStarting: 'Démarrage de Hermes…',
     placeholderReconnecting: 'Reconnexion à Hermes…',
     placeholderFollowUp: 'Envoyer un suivi',

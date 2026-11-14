@@ -3,7 +3,10 @@ import type { TranslationOverrides } from './define-locale'
 export const zhHantChat = {
   composer: {
     message: '訊息',
-    wakingProfile: profile => `正在喚醒 ${profile}…`,
+    switchingProfile: profile => `正在切換到 ${profile}…`,
+    switchingProfileSlow: '仍在連線。現在傳送的訊息會等待連線完成後送給此代理。',
+    switchProfileFailed: profile => `無法切換到 ${profile}`,
+    willSendTo: profile => `將傳送給 ${profile}`,
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',
     placeholderFollowUp: '傳送後續訊息',

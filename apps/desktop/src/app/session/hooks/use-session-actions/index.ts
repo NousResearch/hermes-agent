@@ -53,6 +53,7 @@ import {
   type AgentProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  invalidateNewChatIntent,
   isLegacyNewChatProfile,
   normalizeProfileKey,
   resolveActiveSourceOwnerRoute,
@@ -193,7 +194,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
-import { publishWarmSessionRuntime } from './session-usage'
+import { applyStoredUsage, publishWarmSessionRuntime } from './session-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -271,16 +272,9 @@ export interface BranchLoadedSessionOptions {
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
 
-// Reflect a stored row's persisted token counts into the live usage atom
-// (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
-  const input = stored.input_tokens || 0
-  const output = stored.output_tokens || 0
-
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
-}
-
 interface FreshSessionDraftOptions {
+  /** The rail already owns this draft request; do not supersede its activation. */
+  preserveProfileSwitch?: boolean
   preserveRoute?: boolean
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
@@ -504,6 +498,11 @@ export function useSessionActions({
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
+
+      if (!draftOptions.preserveProfileSwitch) {
+        invalidateNewChatIntent()
+      }
+
       const preserveRoute = draftOptions.preserveRoute ?? false
       createIntentRef.current = null
       const replaceRoute = draftOptions.replaceRoute ?? false

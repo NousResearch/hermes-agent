@@ -2303,7 +2303,10 @@ export const jaOverrides = {
 
   composer: {
     message: 'メッセージ',
-    wakingProfile: profile => `${profile} を起動中…`,
+    switchingProfile: profile => `${profile} に切り替え中…`,
+    switchingProfileSlow: 'まだ接続中です。今送信したメッセージは接続を待ってからこのエージェントに届きます。',
+    switchProfileFailed: profile => `${profile} に切り替えられませんでした`,
+    willSendTo: profile => `${profile} に送信します`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',
     placeholderFollowUp: 'フォローアップを送信',

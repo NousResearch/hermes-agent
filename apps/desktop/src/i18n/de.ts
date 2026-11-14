@@ -3773,7 +3773,10 @@ export const deOverrides = {
   },
   composer: {
     message: 'Nachricht',
-    wakingProfile: profile => `Wecke ${profile}…`,
+    switchingProfile: profile => `Wechsel zu ${profile}…`,
+    switchingProfileSlow: 'Verbindung wird noch hergestellt. Nachrichten, die du jetzt sendest, warten und gehen an diesen Agenten.',
+    switchProfileFailed: profile => `Wechsel zu ${profile} fehlgeschlagen`,
+    willSendTo: profile => `Wird an ${profile} gesendet`,
     placeholderStarting: 'Hermes wird gestartet…',
     placeholderReconnecting: 'Verbindung zu Hermes wird wiederhergestellt…',
     placeholderFollowUp: 'Folge senden',

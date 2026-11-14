@@ -3229,7 +3229,10 @@ export const zhOverrides = {
 
   composer: {
     message: '消息',
-    wakingProfile: profile => `正在唤醒 ${profile}…`,
+    switchingProfile: profile => `正在切换到 ${profile}…`,
+    switchingProfileSlow: '仍在连接。现在发送的消息会等待连接完成后发给此智能体。',
+    switchProfileFailed: profile => `无法切换到 ${profile}`,
+    willSendTo: profile => `将发送给 ${profile}`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',
     placeholderFollowUp: '发送后续消息',

@@ -99,6 +99,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
+import { SendTargetHint } from './send-target-hint'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -128,6 +129,30 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
   return stacked
     ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
     : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+}
+
+/**
+ * assistant-ui requires an Input for its composer-state binding (text, IME,
+ * paste and form submit), while the visible editor is contentEditable.
+ *
+ * `asChild` avoids TextareaAutosize's synchronous scrollHeight measurement on
+ * every value change: profiling 400-char typing found >900ms spent measuring
+ * an invisible input. Keep the plain textarea hidden and out of tab order.
+ */
+function ComposerStateInput() {
+  return (
+    <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
+      <textarea
+        aria-hidden
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        className="sr-only"
+        spellCheck={false}
+        tabIndex={-1}
+      />
+    </ComposerPrimitive.Input>
+  )
 }
 
 export function ChatBar({
@@ -1235,32 +1260,7 @@ export function ChatBar({
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />
-      {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
-        so the composer-state binding (text + IME + paste + form-submit hookup)
-        wires up. We render the real input UI ourselves above via the
-        contentEditable, so the primitive is invisible (sr-only).
-
-        IMPORTANT: don't let it render its default <TextareaAutosize>. That
-        component runs `useLayoutEffect(resizeTextarea)` on every value change
-        and reads `node.scrollHeight` against a hidden measurement textarea,
-        forcing two synchronous layouts per keystroke for an element the
-        user can't see. Profiling 400-char synthetic typing showed >900ms
-        cumulative cost in getHeight2/calculateNodeHeight alone (~2.3ms/key)
-        on top of the per-keystroke React commit.
-
-        `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
-        plain <textarea>, which carries the binding but skips autosize. */}
-      <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
-        <textarea
-          aria-hidden
-          autoCapitalize="off"
-          autoComplete="off"
-          autoCorrect="off"
-          className="sr-only"
-          spellCheck={false}
-          tabIndex={-1}
-        />
-      </ComposerPrimitive.Input>
+      <ComposerStateInput />
     </div>
   )
 
@@ -1304,6 +1304,7 @@ export function ChatBar({
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
+            <SendTargetHint />
             <ActionBadges sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}

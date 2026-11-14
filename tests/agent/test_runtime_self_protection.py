@@ -206,3 +206,27 @@ def test_unresolvable_cd_falls_back_to_the_process_cwd(fake_runtime, tmp_path, m
     # reading rather than guessing a directory the shell may not enter.
     assert rsp.command_deletes_runtime('cd "$TARGET" && rm -rf .') is not None
     assert rsp.command_deletes_runtime("cd - && rm -rf .") is not None
+
+
+def test_cd_does_not_hide_an_absolute_or_dollar_home_target(fake_runtime, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert rsp.command_deletes_runtime(f"cd {elsewhere} && rm -rf $HOME/hermes-agent/venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {elsewhere} && rm -rf ${{HOME}}/hermes-agent/venv") is not None
+
+
+def test_a_cd_that_may_not_move_the_shell_keeps_the_old_directory(fake_runtime, tmp_path, monkeypatch):
+    # `||` runs the delete only when the cd FAILED, a piped cd runs in a subshell,
+    # and after `;` a cd into a missing directory leaves the shell where it was.
+    install = tmp_path / "hermes-agent"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(install)
+    assert rsp.command_deletes_runtime(f"cd {elsewhere} || rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {elsewhere} | rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {tmp_path / 'missing'}; rm -rf venv") is not None
+    # A cd that certainly moved the shell elsewhere does clear the relative target.
+    assert rsp.command_deletes_runtime(f"cd {elsewhere}; rm -rf venv") is None
+    assert rsp.command_deletes_runtime(f"cd {tmp_path / 'missing'} && rm -rf venv") is None

@@ -41,6 +41,9 @@ from typing import Optional
 # `&&`, `||` and `|` each start a fresh command whose own name decides whether
 # it deletes anything.
 _SEGMENT_SPLIT_RE = re.compile(r"\n|&&|\|\||[;|]")
+# The same split keeping the separators: whether a `cd` moved the shell for the
+# NEXT segment depends on how they are joined.
+_SEGMENT_SEP_SPLIT_RE = re.compile(r"(\n|&&|\|\||[;|])")
 
 # Words whose argument tail is a *different* command (sudo rm ...) or an
 # environment assignment prefix (FOO=1 rm ...).
@@ -235,8 +238,8 @@ def _resolve_target(raw: str, cwd: str) -> str:
     ``_normalize_path`` resolves it against the process cwd, as it always did.
     """
     word = (raw or "").strip().strip("\"'")
-    if not word or os.path.isabs(word) or os.path.isabs(os.path.expanduser(word)):
-        return word
+    if not word or os.path.isabs(os.path.expandvars(os.path.expanduser(word))):
+        return word  # `$HOME/...` is as absolute as `~/...`
     return os.path.join(cwd, word) if cwd else word
 
 
@@ -263,7 +266,9 @@ def _directory_change_target(words: list[str], cwd: str) -> str:
     if "$" in target or "`" in target or "%" in target:
         return ""
     expanded = os.path.expanduser(target)
-    return expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.join(cwd, expanded) if cwd else ""
 
 
 def _uv_uninstall_target(words: list[str]) -> Optional[str]:
@@ -310,46 +315,59 @@ def command_deletes_runtime(command: str) -> Optional[str]:
         return None
 
     try:
-        cwd = _normalize_path(os.getcwd())
+        start = _normalize_path(os.getcwd())
     except OSError:  # the process cwd was removed under us
-        cwd = ""
-    for segment in _SEGMENT_SPLIT_RE.split(command):
+        start = ""
+    cwds = (start,)  # every directory the shell may be in for the current segment
+    parts = _SEGMENT_SEP_SPLIT_RE.split(command)
+    for index in range(0, len(parts), 2):
+        segment = parts[index]
+        joiner = parts[index + 1] if index + 1 < len(parts) else ""
         words = _strip_prefixes(_split_words(segment))
         if not words:
             continue
         name = os.path.basename(words[0]).lower()
 
-        if name in _DIRECTORY_CHANGE_COMMANDS:
-            if cwd:
-                cwd = _directory_change_target(words, cwd)
+        if name in _DIRECTORY_CHANGE_COMMANDS or name in _DIRECTORY_POP_COMMANDS:
+            cwds = _cwds_after_directory_change(words, name, cwds, joiner)
             continue
 
-        if name in _DIRECTORY_POP_COMMANDS:
-            cwd = ""
-            continue
+        hit = _segment_deletes_runtime(segment, words, name, cwds)
+        if hit:
+            return hit
 
-        if name == "uv":
-            target = _uv_uninstall_target(words)
-            if target:
-                return target
-            continue
+    return None
 
-        if name == "find" and _FIND_DELETE_RE.search(segment):
-            for word in words[1:]:
-                if not word.startswith("-"):
-                    hit = is_protected_path(_resolve_target(word, cwd))
-                    if hit:
-                        return hit
-            continue
 
-        if name not in _DELETING_COMMANDS:
-            continue
+def _cwds_after_directory_change(words: list[str], name: str, cwds: tuple[str, ...], joiner: str) -> tuple[str, ...]:
+    """Directories the segment after a ``cd``/``pushd``/``popd`` may run in.
 
-        for word in words[1:]:
-            if word.startswith("-"):
-                continue
+    A pipeline member runs in a subshell (its ``cd`` moves nothing) and ``||``
+    runs the next command only when the ``cd`` failed, so both keep ``cwds``.
+    A ``cd`` into a directory that does not exist fails, and after ``;`` or a
+    newline the next command still runs where the shell was: keep both readings
+    so a typo'd or not-yet-created target cannot hide the real one. Unknowable
+    moves (``popd``, ``cd -``, ``cd "$X"``) fall back to the process cwd (``""``).
+    """
+    if joiner in ("|", "||"):
+        return cwds
+    if name in _DIRECTORY_POP_COMMANDS:
+        return ("",)
+    moved = tuple(dict.fromkeys(_directory_change_target(words, cwd) for cwd in cwds))
+    if joiner == "&&" or all(target and os.path.isdir(target) for target in moved):
+        return moved
+    return tuple(dict.fromkeys(cwds + moved))
+
+
+def _segment_deletes_runtime(segment: str, words: list[str], name: str, cwds: tuple[str, ...]) -> Optional[str]:
+    """Protected path one command segment deletes, its relative targets read from each of ``cwds``."""
+    if name == "uv":
+        return _uv_uninstall_target(words)
+    if name not in _DELETING_COMMANDS and not (name == "find" and _FIND_DELETE_RE.search(segment)):
+        return None
+    for word in (word for word in words[1:] if not word.startswith("-")):
+        for cwd in cwds:
             hit = is_protected_path(_resolve_target(word, cwd))
             if hit:
                 return hit
-
     return None

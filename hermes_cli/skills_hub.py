@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -968,7 +969,8 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
     # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
-    all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
+    catalog = _skill_catalog(skip_disabled=True)
+    all_skills = [{**s, "name": s["load_name"]} for s in catalog if s["load_name"]]
     root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
@@ -1004,6 +1006,26 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
             else f"{enabled_count} enabled, {disabled_count} disabled")
     c.print(f"[dim]{counts['hub']} hub-installed, {counts['builtin']} builtin, "
             f"{counts['local']} local — {tail}[/]\n")
+    if hidden := _hidden_skill_notes(catalog):
+        c.print("[yellow]Not listed (same name as another skill):[/]\n" + escape("\n".join(hidden)) + "\n")
+
+
+def _hidden_skill_notes(catalog: list[dict]) -> list[str]:
+    """One line per scanned copy the table leaves out: a different skill shadowed by a
+    higher-precedence one (project > local > create_dir > external_dirs), or a same-tier
+    duplicate even its exact path cannot load. Symlink views / identical copies stay silent."""
+    from agent.skill_utils import provably_same_skill
+    notes = []
+    for s in catalog:
+        if s["status"] == "ambiguous" and not s["load_name"]:
+            notes.append(f"  {s['name']}: {s['path']} — shares its name and path with another skill in "
+                         "the same tier, so it cannot load; rename one")
+        elif s["status"] == "shadowed":
+            top = min(o["tier"] for o in catalog if o["name"] == s["name"])
+            winners = [o["path"] for o in catalog if o["name"] == s["name"] and o["tier"] == top and o is not s]
+            if winners and not any(provably_same_skill([s["path"], w]) for w in winners):
+                notes.append(f"  {s['name']}: {s['path']} — shadowed by {'; '.join(map(str, winners))}")
+    return notes
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:

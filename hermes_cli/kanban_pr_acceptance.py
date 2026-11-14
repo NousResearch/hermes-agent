@@ -48,11 +48,22 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
+        if query is not None and _unreadable_repository(exc.stdout):
+            # gh exits 1 on any GraphQL error, and a repo this login cannot see is an
+            # HTTP 200 NOT_FOUND; hand back the null repository so the caller names it as auth.
+            return {"data": {"repository": None}}
         raise
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+def _unreadable_repository(stdout: str | None) -> bool:
+    try:
+        return json.loads(stdout or "")["data"]["repository"] is None
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 class _GateAuthError(RuntimeError):

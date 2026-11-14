@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
 
 logger = logging.getLogger("tools.approval")
 
@@ -733,6 +734,12 @@ _CONTENT_RULE_DESCRIPTIONS = frozenset({
     "pipe a credential file into a curl/wget upload (possible exfiltration)",
     "invisible or bidirectional Unicode control character (possible obfuscation)",
 })
+
+# Descriptions whose blast radius is the OPERATOR's own work rather than anything the session
+# owns, so an auxiliary-LLM APPROVE is not consent for them: smart mode asks the human instead of
+# consulting the guardian, and the answer covers that one command (no session/always grant).
+# Keep this list to actions that destroy state the agent did not create and cannot recreate.
+SMART_MANUAL_ONLY_DESCRIPTIONS = frozenset({OSASCRIPT_RISKY_DESCRIPTION, OSASCRIPT_OPAQUE_DESCRIPTION})
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1891,6 +1898,10 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         return
     if _is_verification_artifact_cleanup(command):
         return
+    if only is None:
+        # First, on the raw command: the osascript keys are manual-only, so they must lead the findings
+        # (`do shell script "rm ..."` would otherwise surface as a guardian-reviewable rm rule).
+        yield from sorted(classify_osascript(unicodedata.normalize("NFKC", command.replace("\x00", ""))))
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]

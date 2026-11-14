@@ -885,11 +885,14 @@ _ZHIPU_API_KEY_RE = re.compile(
 # adapter keeps one in every install's ``.env``. The first character is the top six bits of
 # the id's leading ASCII digit, so ids starting 0-3 encode to ``M``, 4-7 to ``N`` and 8-9 to
 # ``O`` at every snowflake length; ``[MNO]`` covers them all, not just the older ``M`` bots.
+# The id form has no left-boundary lookbehind: a token glued to an escape spelling
+# (``\\n``/``%0A``/``\\u0020`` in JSON-dumped or URL-encoded tool output, an ANSI colour
+# code) has a letter/digit as its left neighbor and would slip a ``(?<![A-Za-z0-9])`` guard.
+# Candidates are found overlapping (lookahead) and the snowflake decode in
+# _is_discord_token is what rejects every start that is not a real user id.
 _DISCORD_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])("
-    r"mfa\.[A-Za-z0-9_-]{20,}"
-    r"|[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}"
-    r")(?![A-Za-z0-9_.-])"
+    r"(?<![A-Za-z0-9_.-])(mfa\.[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_.-])"
+    r"|(?=([MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,})(?![A-Za-z0-9_.-]))"
 )
 
 
@@ -903,6 +906,18 @@ def _is_discord_token(candidate: str) -> bool:
     except (ValueError, base64.binascii.Error):
         return False
     return decoded.isdigit() and 17 <= len(decoded) <= 20
+
+
+def _redact_discord_tokens(text: str, mask_fn) -> str:
+    parts, pos = [], 0
+    for m in _DISCORD_TOKEN_RE.finditer(text):
+        token = m.group(1) or m.group(2)
+        start = m.start(1) if m.group(1) else m.start(2)
+        if start < pos or not _is_discord_token(token):
+            continue
+        parts += (text[pos:start], mask_fn(token))
+        pos = start + len(token)
+    return "".join(parts) + text[pos:] if parts else text
 
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
@@ -1541,8 +1556,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "." in text:
         _mask = _mask_token_nonreusable if file_read else _mask_token
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _mask(m.group(1)), text)
-        text = _DISCORD_TOKEN_RE.sub(
-            lambda m: _mask(m.group(1)) if _is_discord_token(m.group(1)) else m.group(1), text)
+        text = _redact_discord_tokens(text, _mask)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

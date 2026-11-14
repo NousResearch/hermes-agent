@@ -346,7 +346,9 @@ def _check_find(verb: str, args: list[str], scope: _Scope) -> str | None:
     writes = "-delete" in args
     for cmd in _find_exec_commands(args):
         # Judge the executed command as if `{}` were a file in the locked skill.
-        probe = [w if w != "{}" else os.path.join(scope.locked[0][1], "SKILL.md") for w in cmd] if scope.locked else cmd
+        # With no skill on disk (a damaged record), the record is the only thing left to protect.
+        target = os.path.join(scope.locked[0][1], "SKILL.md") if scope.locked else scope.record
+        probe = [w if w != "{}" else target for w in cmd]
         writes = writes or (bool(probe) and _argv_refusal(
             probe, scope.cwd, scope.locked, scope.record, scope.depth, scope.env) is not None)
     return scope.first_hit(starts, ancestor="any") if writes else None
@@ -466,7 +468,7 @@ def command_refusal(command: str, cwd: str) -> str | None:
     locked, unreadable = _guard_state()
     if unreadable:
         locked = _skill_dirs(None)  # the lock set is unknown: judge every skill in the profile as locked
-    if not locked:
+    elif not locked:
         return None
     reason = _command_refusal(command, cwd or os.getcwd(), locked, _record_path())
     return UNREADABLE_RECORD_REFUSAL.format(detail=unreadable) if unreadable and reason else reason

@@ -168,3 +168,18 @@ def test_usage_bumps_never_save_over_a_damaged_lock_record(unreadable_record):
     locked_md = home / "skills/ops/locked-skill/SKILL.md"
     assert "cannot be read" in (path_refusal([str(locked_md)]) or "")
     assert "cannot be read" in (command_refusal(f"echo x > {locked_md}", str(home)) or "")
+
+
+def test_a_damaged_lock_record_stays_protected_with_no_skills_on_disk(tmp_path, monkeypatch):
+    """With every skill archived or removed, the damaged record is still the only copy of its locks."""
+    from tools.skill_lock import command_refusal, path_refusal
+
+    home = tmp_path / "hh"
+    record = home / "skills/.usage.json"
+    record.parent.mkdir(parents=True)
+    record.write_text('{"archived-skill": {"locked": true}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert "cannot be read" in (path_refusal([str(record)]) or "")
+    for command in (f"echo '{{}}' > {record}", f"find {home}/skills -name .usage.json -exec rm {{}} +"):
+        assert "cannot be read" in (command_refusal(command, str(home)) or ""), command
+    assert command_refusal(f"cat {record}", str(home)) is None

@@ -24,6 +24,8 @@ from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
+from tools.computer_use.tool_clipboard import _do_clipboard_read, _do_clipboard_write, _summarize_clipboard_write
+from tools.computer_use.tool_zoom_menu import _do_invoke_menu, _do_zoom
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +315,9 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
     focus_app = _noop_stub("focus_app", "app", "raise_window")
+    clipboard_read = _noop_stub("clipboard_read", result=ActionResult(ok=True, action="clipboard_read", meta={"types": [], "text": None}))
+    clipboard_write = _noop_stub("clipboard_write", "text", "image_path", "file_path")
+    invoke_menu = _noop_stub("invoke_menu", "path")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
@@ -421,8 +426,10 @@ def _scroll_xy(args: dict[str, Any]) -> dict[str, Any]:
                 y=coord[1] if coord and coord[1] is not None else None)
 
 def _do_click(backend, action, args, button=None, count=1, **delivery):
+    # from_zoom only when set, so third-party backends whose click() predates it keep working.
     return backend.click(element=args.get("element"), **_xy(args), button=button or args.get("button") or "left",
-                         click_count=count, modifiers=args.get("modifiers"), **delivery)
+                         click_count=count, modifiers=args.get("modifiers"),
+                         **({"from_zoom": True} if args.get("from_zoom") else {}), **delivery)
 
 def _do_drag(backend, action, args, **delivery):
     src, dst = args.get("from_coordinate"), args.get("to_coordinate")
@@ -453,7 +460,9 @@ def _summarize_click(action: str, args: dict[str, Any], fg: str) -> str:
     return f"{action}{where}{fg}"
 
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
-# guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).
+# guard). ``destructive``: needs the approval prompt — every action that mutates user-visible state, plus
+# `clipboard_read`: the clipboard routinely holds the password or token the user last copied, so exposing it to
+# the model is a disclosure the user approves, not a free read like capture/list_*.
 # ``summarize(action, args, fg_suffix)`` renders the one-line approval prompt.
 _ActionSpec = namedtuple("_ActionSpec", "handler input destructive summarize",
                          defaults=(False, False, lambda a, args, fg: a + fg))
@@ -482,6 +491,12 @@ _ACTIONS: dict[str, _ActionSpec] = {
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
+    "clipboard_read": _ActionSpec(_do_clipboard_read, destructive=True,
+                                  summarize=lambda a, args, fg: "read the clipboard (returns whatever the user last copied)"),
+    "clipboard_write": _ActionSpec(_do_clipboard_write, destructive=True, summarize=_summarize_clipboard_write),
+    "zoom": _ActionSpec(_do_zoom),
+    "invoke_menu": _ActionSpec(_do_invoke_menu, destructive=True,
+                               summarize=lambda a, args, fg: "menu " + " > ".join(map(str, args.get("menu_path") or [])) + fg),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
@@ -490,6 +505,9 @@ _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
 _ACTION_SUGGESTIONS = {
     "hotkey": "key", "press_key": "key", "keypress": "key", "key_combo": "key", "shortcut": "key", "type_text": "type",
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
+    "read_clipboard": "clipboard_read", "get_clipboard": "clipboard_read", "paste_from_clipboard": "clipboard_read",
+    "write_clipboard": "clipboard_write", "set_clipboard": "clipboard_write", "copy_to_clipboard": "clipboard_write",
+    "zoom_in": "zoom", "crop": "zoom", "menu": "invoke_menu", "click_menu": "invoke_menu", "select_menu": "invoke_menu",
 }
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fence: Callable[[], None] = lambda: None,
@@ -503,7 +521,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
-    if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
+    if ((spec.input or action == "invoke_menu") and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
             and (mismatch := _input_target_mismatch(backend, requested_app)) is not None):
         return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
             f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "

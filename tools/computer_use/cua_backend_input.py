@@ -88,7 +88,8 @@ class _InputMixin:
 
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None,
               button: str = "left", click_count: int = 1, modifiers: Optional[list[str]] = None,
-              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
+              delivery_mode: Optional[str] = None, bring_to_front: bool = False,
+              from_zoom: bool = False) -> ActionResult:
         refusal, args = self._target_args("click")
         if refusal is not None:
             return refusal
@@ -108,6 +109,8 @@ class _InputMixin:
         ), "click requires element= or x/y.")
         if modifiers:
             args["modifier"] = modifiers
+        if from_zoom and x is not None:  # the driver maps zoom-image pixels back to the window (last zoom call)
+            args["from_zoom"] = True
         return refusal if refusal is not None else self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,

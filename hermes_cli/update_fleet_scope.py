@@ -191,11 +191,19 @@ def _checkouts_named(strings) -> set[Path]:
     return roots
 
 
-def _foreign_of(roots: set[Path]) -> str | None:
-    """A checkout from *roots* when NONE of them is the one running this update, else None.
+def _source_checkouts(argv, interpreter=()) -> set[Path]:
+    """The checkout(s) whose CODE an argv runs.
 
-    Any-match, not first-match: a worktree sharing the runtime checkout's venv names both (the
-    interpreter path resolves into the runtime checkout, the source path into the worktree)."""
+    The interpreter (a ``python*`` argv[0], ``VIRTUAL_ENV``) is weaker evidence than the source it
+    runs: a worktree started through the runtime checkout's venv names both, and runs the worktree.
+    It decides only when the argv names no source checkout at all."""
+    argv = [str(arg) for arg in argv]
+    head = argv[:1] if argv and Path(argv[0]).name.startswith("python") else []
+    return _checkouts_named(argv[len(head):]) or _checkouts_named([*head, *interpreter])
+
+
+def _foreign_of(roots: set[Path]) -> str | None:
+    """A checkout from *roots* when none of them is the one running this update, else None."""
     from hermes_cli.update_receipt import _updater_code_root
     mine = _updater_code_root()
     if mine is None or not roots or mine in roots:
@@ -205,21 +213,23 @@ def _foreign_of(roots: set[Path]) -> str | None:
 
 def gateway_pid_foreign_checkout(pid: int) -> str | None:
     """The other checkout gateway *pid* runs, or None (this update's, or unreadable)."""
-    probes: list[str] = []
+    argv: list[str] = []
+    interpreter: list[str] = []
     with suppress(Exception):
         import psutil  # type: ignore
         process = psutil.Process(pid)
         with suppress(Exception):
-            probes.append(process.environ().get("VIRTUAL_ENV") or "")
+            interpreter.append(process.environ().get("VIRTUAL_ENV") or "")
         with suppress(Exception):
-            probes.extend(process.cmdline() or [])
+            argv.extend(process.cmdline() or [])
     if (home := gateway_pid_home(pid)) is not None:
         with suppress(Exception):
             from gateway.status import read_runtime_status
             record = read_runtime_status(Path(home) / "gateway_state.json") or {}
             if record.get("pid") == pid:
-                probes.extend(str(arg) for arg in record.get("argv") or [])
-    return _foreign_of(_checkouts_named(probes))
+                # sys.argv: its first item is the resolved module path, i.e. source evidence.
+                argv.extend(str(arg) for arg in record.get("argv") or [])
+    return _foreign_of(_source_checkouts(argv, interpreter))
 
 
 def _definition_command(path: Path) -> list[str]:
@@ -239,7 +249,7 @@ def definition_foreign_checkout(path) -> str | None:
         argv = _definition_command(Path(path))
     except (OSError, ValueError, plistlib.InvalidFileException):
         return None
-    return _foreign_of(_checkouts_named(argv))
+    return _foreign_of(_source_checkouts(argv))
 
 
 def systemd_unit_foreign_checkout(scope_cmd: list, svc_name: str) -> str | None:

@@ -111,7 +111,11 @@ def test_scratch_home_update_never_rewrites_the_account_unit_or_another_checkout
 @pytest.mark.parametrize("own", [False, True], ids=["other-checkout", "own-checkout"])
 def test_ancestor_gateway_of_another_checkout_is_never_signalled(tmp_path, monkeypatch, own):
     code_root = _updater_code_root() if own else _checkout(tmp_path / "runtime-checkout")
-    gateway = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", str(code_root / "hermes_cli" / "main.py")])
+    # argv[0] is an interpreter inside the UPDATER's checkout (a worktree run through the runtime
+    # checkout's venv): the source it runs, not the interpreter, decides the checkout.
+    shared_venv_python = str(_updater_code_root() / ".venv" / "bin" / "python")
+    gateway = subprocess.Popen([shared_venv_python, "-c", "import time; time.sleep(60)",
+                                str(code_root / "hermes_cli" / "main.py")], executable=sys.executable)
     real_kill = os.kill  # the test records os.kill below; the stand-in gateway still has to die
     try:
         signalled: list[int] = []

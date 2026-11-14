@@ -18,6 +18,11 @@ config/provider later), `max_iterations` (default 500, shared with subagents),
 `chat(message) -> str` is the simple interface; `run_conversation(user_message, system_message=None,
 conversation_history=None, task_id=None) -> dict` returns `final_response` + `messages`.
 
+The turn facade publishes content-free `session_observations` under the admitted lease.
+Seal only explicit terminal flags or exception branches, never final-response prose;
+all writes fence the lease acquisition and exact generation. Contract and coverage
+limits: `website/docs/developer-guide/conversation-observations.md`.
+
 ## Agent loop (`agent/conversation_loop.py` + `agent/turn_*.py`)
 
 Entirely synchronous, with interrupt checks, budget tracking, and a one-turn grace call:

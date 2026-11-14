@@ -72,9 +72,11 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
     "same_tool_failure_warn_after": ("warn_after", "same_tool_failure"),
     "no_progress_warn_after": ("warn_after", "idempotent_no_progress"),
+    "tool_repetition_warn_after": ("warn_after", "tool_repetition"),
     "exact_failure_block_after": ("hard_stop_after", "exact_failure"),
     "same_tool_failure_halt_after": ("hard_stop_after", "same_tool_failure"),
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
+    "tool_repetition_block_after": ("hard_stop_after", "tool_repetition"),
 }
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
@@ -128,6 +130,11 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # Successful mutating calls (same args + same result) are not failures and are
+    # excluded from idempotent no-progress. Defaults sit above the identical-call
+    # streak halt so that newer consecutive-streak stop is not loosened.
+    tool_repetition_warn_after: int = 5
+    tool_repetition_block_after: int = 8
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
@@ -269,6 +276,16 @@ _DECISION_MESSAGES: dict[str, str] = {
         "{tool_name} returned the same result {count} times. Use the result already provided "
         "or change the query instead of repeating it unchanged."
     ),
+    "tool_repetition_block": (
+        "Blocked {tool_name}: this call repeated the same arguments and "
+        "returned the same result {count} times without making progress. "
+        "Stop repeating it unchanged; change the arguments or approach, or report the blocker."
+    ),
+    "tool_repetition_warning": (
+        "{tool_name} repeated the same arguments and returned the same result "
+        "{count} times without making progress. Change the arguments or approach "
+        "instead of repeating it unchanged."
+    ),
     "identical_call_streak_halt": (
         "Stopped {tool_name}: the same call with identical arguments returned the same result "
         "{count} times in a row. Stop repeating it unchanged; use the result already provided or change strategy."
@@ -322,6 +339,8 @@ class ToolCallGuardrailController:
         # signature -> a mutating call succeeded since its last failure
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        # signature -> (result_hash, repeat_count) for successful mutating calls.
+        self._tool_repetition: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
         # Identical-call streak: CONSECUTIVE identical (tool, args, result) calls; any different call or
         # result resets it, so re-reads after edits and varied polling are never flagged.
@@ -375,6 +394,9 @@ class ToolCallGuardrailController:
         record = self._no_progress.get(signature) if self._is_idempotent(tool_name) else None
         if record is not None and record[1] >= self.config.no_progress_block_after:
             return self._decide("block", "idempotent_no_progress_block", tool_name, record[1], signature)
+        repetition_block = self._mutating_repetition_block(tool_name, signature)
+        if repetition_block is not None:
+            return repetition_block
         return allow
 
     def after_call(
@@ -402,6 +424,7 @@ class ToolCallGuardrailController:
                 exact_count = self._exact_failure_counts[signature] = exact_count + 1
             same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._no_progress.pop(signature, None)
+            self._tool_repetition.pop(signature, None)
             # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
             # tools a run of distinct red commands is diagnosis, not a loop — warn, never halt.
             if (
@@ -434,6 +457,8 @@ class ToolCallGuardrailController:
             self._same_tool_failure_counts.clear()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            if self._is_mutating(tool_name):
+                return self._track_tool_repetition(tool_name, signature, result)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result, tool_name)
@@ -446,6 +471,33 @@ class ToolCallGuardrailController:
 
     def _is_idempotent(self, tool_name: str) -> bool:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+
+    def _is_mutating(self, tool_name: str) -> bool:
+        # Pollers are mutating, but an unchanged poll is progress (stall-guard exemption).
+        return tool_name in self.config.mutating_tools and not is_stall_guard_repeatable(tool_name)
+
+    def _mutating_repetition_block(
+        self, tool_name: str, signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        """Block the next identical successful mutating call once the hard-stop streak is reached."""
+        if not self._is_mutating(tool_name):
+            return None
+        record = self._tool_repetition.get(signature)
+        if record is None or record[1] < self.config.tool_repetition_block_after:
+            return None
+        return self._decide("block", "tool_repetition_block", tool_name, record[1], signature)
+
+    def _track_tool_repetition(
+        self, tool_name: str, signature: ToolCallSignature, result: str | None,
+    ) -> ToolGuardrailDecision:
+        """Count same-args, same-result successes. A changed result restarts the streak."""
+        result_hash = _result_hash(result, tool_name)
+        previous = self._tool_repetition.get(signature)
+        repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
+        self._tool_repetition[signature] = (result_hash, repeat_count)
+        if self.config.warnings_enabled and repeat_count >= self.config.tool_repetition_warn_after:
+            return self._decide("warn", "tool_repetition_warning", tool_name, repeat_count, signature)
+        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,

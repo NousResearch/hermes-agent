@@ -6294,6 +6294,12 @@ export interface PetHatchProgressPayload {
   total?: string | null
   [key: string]: unknown
 }
+/** Exact stored IDs observed disappearing in a committed native DB snapshot. */
+export interface SessionsDeletedPayload {
+  session_ids: string[]
+  profile: string
+  [key: string]: unknown
+}
 /** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
 /** ``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent when something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the same frame reaches a window once per open socket, and a copy needs no second read. */
@@ -7418,6 +7424,8 @@ export interface BackendGatewayEventMap {
   'session.usage': SessionUsagePayload
   /** state.db moved; refetch the session list. */
   'sessions.changed': ChangeSignalPayload
+  /** Committed session rows disappeared; evict exact sidebar IDs immediately. */
+  'sessions.deleted': SessionsDeletedPayload
   /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
   'setup.ready': SetupReadyPayload
   /** A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway. */
@@ -7524,6 +7532,7 @@ export const GATEWAY_EVENT_TYPES = [
   'session.title',
   'session.usage',
   'sessions.changed',
+  'sessions.deleted',
   'setup.ready',
   'skills.changed',
   'skin.changed',

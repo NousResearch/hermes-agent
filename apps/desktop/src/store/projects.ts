@@ -495,7 +495,11 @@ function tagProjectSessionConnection(project: SidebarProjectTree, owner: Project
   }
 }
 
-function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner): void {
+function applyProjectTreePayload(
+  res: ProjectTreePayload,
+  owner: ProjectRowOwner,
+  removalSnapshot: SessionTombstoneGenerationSnapshot
+): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
   // The tree refreshes on every sessions.changed and window focus, and most of
   // those answers are unchanged. Keep unchanged nodes by reference so the
@@ -503,7 +507,13 @@ function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner
   $projectTree.set(
     replaceEqualDeep(
       $projectTree.get(),
-      (res.projects ?? []).map(project => tagProjectSessionConnection(project, owner))
+      (res.projects ?? []).map(project =>
+        excludeProjectSessions(tagProjectSessionConnection(project, owner), session =>
+          tombstoneRowIds(session).some(id =>
+            sessionRemovalIntersected(removalSnapshot, id, session.profile ?? 'default')
+          )
+        )
+      )
     )
   )
   $activeProjectId.set(res.active_id ?? null)
@@ -524,6 +534,7 @@ function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner
 
 async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<void> {
   const generation = ++projectTreeRefreshGeneration
+  const removalSnapshot = captureSessionTombstoneGenerations()
   const { gateway, profile } = context
 
   if (activeGateway() === gateway) {
@@ -559,7 +570,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       return
     }
 
-    applyProjectTreePayload(res, context)
+    applyProjectTreePayload(res, context, removalSnapshot)
     markProjectsRpcSuccess()
   } catch (err) {
     if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
@@ -596,6 +607,7 @@ export async function refreshProjectTree(): Promise<void> {
 async function refreshProjectTreeAcrossProfiles(): Promise<void> {
   const owner = projectRowOwner()
   const generation = ++projectTreeRefreshGeneration
+  const removalSnapshot = captureSessionTombstoneGenerations()
   $projectTreeLoading.set(true)
 
   try {
@@ -614,7 +626,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
       return
     }
 
-    applyProjectTreePayload(res, owner)
+    applyProjectTreePayload(res, owner, removalSnapshot)
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)
@@ -648,7 +660,9 @@ function dropRemovedProjectSessions(
   const tombstones = $removedSessionIds.get()
 
   return excludeProjectSessions(project, session =>
-    tombstoneRowIds(session).some(id => tombstones.has(id) || sessionRemovalIntersected(removalSnapshot, id))
+    tombstoneRowIds(session).some(
+      id => tombstones.has(id) || sessionRemovalIntersected(removalSnapshot, id, session.profile ?? 'default')
+    )
   )
 }
 

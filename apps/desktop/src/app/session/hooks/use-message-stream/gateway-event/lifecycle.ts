@@ -19,6 +19,7 @@ import {
 import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
+import { notifySessionsDeleted } from '@/store/session-live-deletion'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 import { $sessionTiles, dropSessionState, sessionTileDelegate, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -26,6 +27,16 @@ import { $sessionTiles, dropSessionState, sessionTileDelegate, unbindTileRuntime
 import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
+
+const changeHandlers: Partial<Record<GatewayEvent['type'], (event: GatewayEvent) => void>> = {
+  'pet.changed': event => notifyPetChanged(event.payload as PetChangeMeta | undefined),
+  'cron.changed': notifyCronChanged,
+  'sessions.changed': notifySessionsChanged,
+  'projects.changed': notifyProjectsChanged,
+  'platforms.changed': notifyPlatformsChanged,
+  'pairing.changed': notifyPairingChanged,
+  'sessions.deleted': event => notifySessionsDeleted((event as GatewayEvent<'sessions.deleted'>).payload)
+}
 
 function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeSource: boolean): void {
   // Seed the active skin into the desktop theme registry without applying,
@@ -74,33 +85,13 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (
-    event.type === 'pet.changed' ||
-    event.type === 'cron.changed' ||
-    event.type === 'sessions.changed' ||
-    event.type === 'projects.changed' ||
-    event.type === 'platforms.changed' ||
-    event.type === 'pairing.changed'
-  ) {
-    // Change-watcher broadcasts (server._broadcast_watched_changes): the
-    // backend's on-disk signature moved. Route to the live-sync ticks the
-    // former pollers now subscribe to. Only the active source+profile's
-    // changes apply — background profile sockets (and other connections'
-    // gateways) watch their own homes.
+  const changeHandler = changeHandlers[event.type]
+
+  if (changeHandler) {
+    // Other connections' gateways watch their own homes; only the active
+    // source can publish into this sidebar. The payload owns the profile.
     if (fromActiveSource()) {
-      if (event.type === 'pet.changed') {
-        notifyPetChanged(payload as PetChangeMeta | undefined)
-      } else if (event.type === 'cron.changed') {
-        notifyCronChanged()
-      } else if (event.type === 'projects.changed') {
-        notifyProjectsChanged()
-      } else if (event.type === 'platforms.changed') {
-        notifyPlatformsChanged()
-      } else if (event.type === 'pairing.changed') {
-        notifyPairingChanged()
-      } else {
-        notifySessionsChanged()
-      }
+      changeHandler(event)
     }
 
     return true

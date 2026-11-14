@@ -247,10 +247,14 @@ def _session_rows_sig(conn, mtime):
         return (_MTIME_FALLBACK, mtime), True
     order = " ORDER BY id" if "id" in available else ""
     digest = hashlib.blake2b(digest_size=16)
+    ids = set()
+    id_index = fields.index("id") if "id" in fields else None
     for row in conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}"):
+        if id_index is not None:
+            ids.add(row[id_index])
         digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
         digest.update(b"\0")
-    return (fields, digest.digest()), False
+    return (fields, digest.digest(), frozenset(ids)), False
 
 
 def _session_db_content_sig(db_path: Path):
@@ -261,10 +265,38 @@ def _session_db_content_sig(db_path: Path):
     changed (#98005). Cache behind the DB/WAL mtime, then inspect only the
     sessions columns that drive Desktop projections. Legacy stores safely use
     the subset of columns they have. A failed read after a good digest keeps it:
-    digest -> mtime -> digest would broadcast twice.
+    digest -> mtime -> digest would broadcast twice. A freshly computed digest
+    also carries session IDs so a committed disappearance can emit
+    ``sessions.deleted`` without waiting for the generic refresh floor.
     """
-    return _db_content_sig(
-        db_path, _sessions_db_sig_cache, _session_rows_sig, fallback=lambda mtime: (_MTIME_FALLBACK, mtime))
+    cached = _sessions_db_sig_cache.get(str(db_path))
+    previous = cached[1] if cached is not None else None
+    signature = _db_content_sig(
+        db_path, _sessions_db_sig_cache, _session_rows_sig,
+        fallback=lambda mtime: (_MTIME_FALLBACK, mtime))
+    # Cache hits and locked reads return the same signature object. Only two
+    # readable ID snapshots can prove disappearance; None and fallbacks cannot.
+    if isinstance(previous, tuple) and isinstance(signature, tuple) and signature is not previous:
+        _broadcast_session_deletions(db_path.parent, previous, signature)
+    return signature
+
+
+def _broadcast_session_deletions(home: Path, previous, current) -> None:
+    """Only two readable ID snapshots prove deletion; never a missing/locked store.
+
+    Publish independently of the generic refresh floor: Desktop can evict exact
+    IDs without interrupting typing or rehydrating a live transcript.
+    """
+    if not isinstance(previous, tuple) or not isinstance(current, tuple):
+        return
+    if len(previous) != 3 or len(current) != 3:
+        return
+    if "id" not in previous[0] or "id" not in current[0]:
+        return
+    deleted = sorted(previous[2] - current[2])
+    if deleted:
+        profile = home.name if home.parent.name == "profiles" else "default"
+        _broadcast_global_event("sessions.deleted", {"session_ids": deleted, "profile": profile})
 
 
 # Filesystem timestamps come from a coarse clock (~4 ms ticks; whole seconds on some filesystems) and

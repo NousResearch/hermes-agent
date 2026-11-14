@@ -102,6 +102,18 @@ test('a timed-out git command reaps descendants, including the Windows Python ho
   }
 }, 20_000)
 
+test('a multi-byte character split across two pipe reads comes back intact', async () => {
+  // Write the first byte of 你 (e4 bd a0), let the read land, then the rest: per-chunk
+  // decoding turned this into U+FFFD (a CJK file's diff in the review pane, earendil-works/pi#11326).
+  const script = `const b = Buffer.from('你好');
+for (const s of [process.stdout, process.stderr]) s.write(b.subarray(0, 1));
+setTimeout(() => { process.stdout.write(b.subarray(1)); process.stderr.write(b.subarray(1)) }, 200)`
+
+  const result = await execGit(process.execPath, ['-e', script])
+
+  expect(result).toMatchObject({ code: 0, stdout: '你好', stderr: '你好' })
+})
+
 test('app quit kills a timed git command still running, descendants included', async () => {
   const tree = hangingTreeFixture()
 

@@ -142,8 +142,9 @@ export function hyprlandRequest(socketPath: string, command: string): Promise<nu
     socket.setTimeout(REQUEST_TIMEOUT_MS, () => finish(null))
     socket.on('error', () => finish(null))
     socket.on('connect', () => socket.write(command))
-    socket.on('data', chunk => {
-      body += chunk.toString('utf8')
+    socket.setEncoding('utf8') // window titles are UTF-8: decode across reads
+    socket.on('data', (chunk: string) => {
+      body += chunk
     })
     socket.on('end', () => finish(body))
   })

@@ -367,11 +367,15 @@ export function execGit(
         }, options.timeoutMs)
       : null
 
-    child.stdout?.on('data', chunk => {
-      stdout += chunk.toString()
+    // Decode across chunks: a multi-byte UTF-8 character split between two pipe reads
+    // turns into U+FFFD when each chunk is decoded on its own (earendil-works/pi#11326).
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk
     })
-    child.stderr?.on('data', chunk => {
-      stderr += chunk.toString()
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk
     })
 
     if (timer) {

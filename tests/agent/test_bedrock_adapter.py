@@ -226,6 +226,92 @@ class TestConvertToolsToConverse:
         assert convert_tools_to_converse([]) == []
         assert convert_tools_to_converse(None) == []
 
+    def test_strips_top_level_oneof_from_schema(self):
+        # Pydantic discriminated unions emit a root-level oneOf that Bedrock
+        # Converse rejects with ValidationException — must be stripped.
+        from agent.bedrock_adapter import convert_tools_to_converse
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "classify",
+                "description": "Classify input",
+                "parameters": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"text": {"type": "string"}}},
+                        {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string"}}}},
+                    ]
+                },
+            },
+        }]
+        result = convert_tools_to_converse(tools)
+        schema = result[0]["toolSpec"]["inputSchema"]["json"]
+        assert "oneOf" not in schema
+        assert schema["type"] == "object"
+        assert isinstance(schema["properties"], dict)
+
+    def test_strips_top_level_allof_preserves_sibling_keys(self):
+        # allOf alongside type/description — only allOf must be removed.
+        from agent.bedrock_adapter import convert_tools_to_converse
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search",
+                "parameters": {
+                    "type": "object",
+                    "description": "Search params",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "allOf": [{"properties": {"query": {"type": "string"}}}],
+                },
+            },
+        }]
+        result = convert_tools_to_converse(tools)
+        schema = result[0]["toolSpec"]["inputSchema"]["json"]
+        assert "allOf" not in schema
+        assert schema["type"] == "object"
+        assert schema["description"] == "Search params"
+        assert "query" in schema["properties"]
+        assert schema["required"] == ["query"]
+
+    def test_schema_without_banned_keys_passes_through_unchanged(self):
+        # Normal schemas must not be altered.
+        from agent.bedrock_adapter import convert_tools_to_converse
+        original = {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "File path"}},
+            "required": ["path"],
+        }
+        tools = [{
+            "type": "function",
+            "function": {"name": "read_file", "description": "Read file", "parameters": original},
+        }]
+        result = convert_tools_to_converse(tools)
+        assert result[0]["toolSpec"]["inputSchema"]["json"] == original
+
+    def test_plugin_conditional_required_hint_is_stripped_only_at_top_level(self):
+        # #139065: a plugin tool's Pydantic ``allOf: [{if/then}]`` hint 400'd every Converse
+        # call. Only the root is the wall; nested combinators must reach Bedrock untouched.
+        from agent.bedrock_adapter import convert_tools_to_converse
+        nested = {"anyOf": [{"type": "string"}, {"type": "integer"}]}
+        params = {
+            "type": "object",
+            "properties": {"mode": {"type": "string"}, "target": nested},
+            "allOf": [{"if": {"properties": {"mode": {"const": "file"}}},
+                       "then": {"required": ["target"]}}],
+        }
+        plain = {"type": "object", "properties": {"q": {"type": "string"}}}
+        result = convert_tools_to_converse([
+            {"type": "function", "function": {"name": "core", "parameters": plain}},
+            {"type": "function", "function": {"name": "plugin_tool", "parameters": params}},
+        ])
+        core_schema = result[0]["toolSpec"]["inputSchema"]["json"]
+        plugin_schema = result[1]["toolSpec"]["inputSchema"]["json"]
+        assert not {"allOf", "anyOf", "oneOf"} & plugin_schema.keys()
+        assert plugin_schema["properties"]["target"] == nested
+        assert core_schema == plain
+        assert "allOf" in params  # caller's registry schema is not mutated
+
 
 # ---------------------------------------------------------------------------
 # Message conversion: OpenAI → Converse

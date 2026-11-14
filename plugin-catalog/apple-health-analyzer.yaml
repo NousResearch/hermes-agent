@@ -30,3 +30,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+image: https://raw.githubusercontent.com/krumjahn/apple-health-hermes/d3af46771983793def433a945aca524b2efdd371/docs/hermes-marketplace-banner.png

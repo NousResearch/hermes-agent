@@ -803,6 +803,7 @@ from hermes_cli.web_routers import (
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
+    chat_session as _chat_session_routes,
     dashboard_ui as _dashboard_ui_routes,
     webapp as _webapp_routes,
     shared_metrics as _shared_metrics_routes,
@@ -853,6 +854,7 @@ app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
+app.include_router(_chat_session_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
 # The saved-connections proxy checks its surface per request (WebSocket routes take no Request).

@@ -1,20 +1,58 @@
+import { useEffect, useRef, useState } from "react";
+
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+import {
+  COPY_STATE_RESET_MS,
+  copyLastResponse,
+  type CopyLastState,
+} from "./chat-copy-last";
+
+/** Button copy per outcome; "failed" is honest — nothing was copied. */
+const LABELS: Record<CopyLastState, string> = {
+  copied: "copied",
+  failed: "copy failed",
+  idle: "copy last response",
+};
+
 /**
- * Floating "copy last response" overlay on the chat terminal: sends `/copy` over
- * the PTY (see chat-copy-last.ts) and shows "copied" for the 1.5s reset window.
+ * Floating "copy last response" overlay on the chat terminal. The click reads the transcript over
+ * HTTP and writes the browser clipboard (see chat-copy-last.ts) instead of typing `/copy` into the
+ * PTY composer, which used to submit an unsent draft to the model (#149751). The label claims
+ * "copied" only after that write resolved, and says "copy failed" when nothing reached the
+ * clipboard.
  */
 export function CopyLastButton({
-  onClick,
-  copied,
+  channel,
+  sessionId,
+  profile,
   color,
 }: {
-  onClick: () => void;
-  copied: boolean;
+  channel: string;
+  sessionId: string | null;
+  profile?: string;
   color: string;
 }) {
+  const [state, setState] = useState<CopyLastState>("idle");
+  const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (resetRef.current) clearTimeout(resetRef.current);
+    },
+    [],
+  );
+
+  const onClick = () => {
+    if (resetRef.current) clearTimeout(resetRef.current);
+    void copyLastResponse({ channel, profile, sessionId }).then((text) => {
+      setState(text ? "copied" : "failed");
+      resetRef.current = setTimeout(() => setState("idle"), COPY_STATE_RESET_MS);
+    });
+  };
+
   return (
     <Button
       ghost
@@ -36,7 +74,7 @@ export function CopyLastButton({
       <span className="inline-flex items-center gap-1.5">
         <Copy className="h-3 w-3 shrink-0" />
         <span className="hidden min-[400px]:inline tracking-wide">
-          {copied ? "copied" : "copy last response"}
+          {LABELS[state]}
         </span>
       </span>
     </Button>

@@ -356,3 +356,56 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
         "https://api.x.ai/v1",
         "xai-oauth",
     )
+
+
+def test_x_search_sends_max_turns_and_returns_usage(monkeypatch):
+    from tools import x_search_tool as mod
+
+    captured = {}
+    usage = {
+        "input_tokens": 1200, "output_tokens": 300,
+        "server_side_tool_usage_details": {"x_search_calls": 2, "x_posts_fetched": 44, "x_users_fetched": 3},
+    }
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"output_text": "ok", "citations": ["https://x.com/a/status/1"], "usage": usage})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(mod, "_load_x_search_config", lambda: {"max_turns": 3})
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(mod.x_search_tool(query="q"))
+
+    assert captured["json"]["max_turns"] == 3
+    assert result["usage"]["server_side_tool_usage_details"]["x_posts_fetched"] == 44
+
+
+def test_x_search_omits_max_turns_and_usage_by_default(monkeypatch):
+    from tools import x_search_tool as mod
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"output_text": "ok"})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(mod, "_load_x_search_config", lambda: {"max_turns": 0})
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(mod.x_search_tool(query="q"))
+
+    assert "max_turns" not in captured["json"]
+    assert "usage" not in result
+
+
+def test_x_search_rejects_non_integer_max_turns(monkeypatch):
+    from tools import x_search_tool as mod
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(mod, "_load_x_search_config", lambda: {"max_turns": "lots"})
+
+    result = json.loads(mod.x_search_tool(query="q"))
+
+    assert "max_turns" in result["error"]

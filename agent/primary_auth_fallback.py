@@ -144,7 +144,7 @@ def lead_failed_turn_with_primary_auth(agent: Any, result: Any) -> None:
     if result.get("failed") is not True or result.get("interrupted") or "primary_auth_failure" in result:
         return
     current = str(getattr(agent, "provider", "") or "").strip()
-    if failure.provider and current.lower() == failure.provider:
+    if failure.provider and current.lower() == failure.provider and not _runs_the_backup(agent, failure):
         return  # the primary itself is serving again: its failure is not this turn's story
     backup = current if current and current.lower() != "custom" else (failure.backup or current)
     lead = primary_auth_lead(failure, backup=backup, failure_reason=result.get("failure_reason"),

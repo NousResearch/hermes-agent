@@ -192,3 +192,29 @@ def test_the_exported_primary_failure_never_carries_a_secret_from_the_primarys_e
     exported: dict = result["primary_auth_failure"]
     assert secret not in exported["error"] and secret not in result["final_response"]
     assert exported["provider"] == "anthropic" and exported["relogin"] == "hermes auth add anthropic"
+
+
+def test_a_fallback_on_the_primarys_provider_but_another_endpoint_still_leads_with_the_primary():
+    """A fallback entry can use the primary's provider slug with other credentials and another endpoint:
+    that is a different route, so its failure still leads with the primary's re-login. Only a turn on the
+    primary's own route (same slug, no other endpoint recorded) is the primary serving again."""
+    from types import SimpleNamespace
+
+    from agent.primary_auth_fallback import PrimaryAuthFailure, lead_failed_turn_with_primary_auth
+
+    def failed_turn(agent):
+        result: dict = {"failed": True, "final_response": "backup refused", "failure_reason": "auth"}
+        lead_failed_turn_with_primary_auth(agent, result)
+        return result
+
+    failure = PrimaryAuthFailure(provider="anthropic", error="token expired", relogin="hermes auth add anthropic",
+                                 backup="anthropic", backup_base_url="https://second-account.test/v1")
+    backup_route = SimpleNamespace(provider="anthropic", base_url="https://second-account.test/v1",
+                                   _primary_auth_failure=failure)
+    assert "hermes auth add anthropic" in failed_turn(backup_route)["final_response"]
+
+    serving_again = PrimaryAuthFailure(provider="anthropic", error="token expired",
+                                       relogin="hermes auth add anthropic", backup="custom")
+    primary_route = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com",
+                                    _primary_auth_failure=serving_again)
+    assert "primary_auth_failure" not in failed_turn(primary_route)

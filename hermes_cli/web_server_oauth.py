@@ -25,7 +25,10 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     if not value:
         return ""
     if callable(value) and not isinstance(value, str):
-        return "<entra-id-bearer>"
+        from agent.credential_source import ENTRA_ID, credential_source
+
+        # Name a tagged provider's source (``<key-cmd-bearer>``); untagged keeps the Entra form.
+        return f"<{credential_source(value) or ENTRA_ID}-bearer>"
     s = str(value)
     if s.count(".") >= 2:
         s = s.rsplit(".", 1)[-1]

@@ -116,3 +116,48 @@ def test_both_surfaces_share_one_source_table():
 
 def test_string_keys_keep_the_masked_form(capsys):
     assert _banner(capsys, "sk-live-abcdefghijklmnop3456").strip() == "🔑 Using API key: sk-live-...3456"
+
+
+def _anthropic_401_help(monkeypatch, key) -> str:
+    from agent import turn_recovery
+
+    lines = []
+    monkeypatch.setattr(turn_recovery, "_plines", lambda _agent, *messages: lines.extend(messages))
+    turn_recovery._print_anthropic_401_diagnostics(SimpleNamespace(), key)
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize(("build", "label_key"), CASES)
+def test_anthropic_401_diagnostics_labels_callable_source(monkeypatch, build, label_key):
+    """The 401 help uses the same source label as the banner, without minting a credential."""
+    diagnostics = _anthropic_401_help(monkeypatch, build(monkeypatch))
+
+    assert t(label_key) in diagnostics, diagnostics
+    assert ("az login" in diagnostics) == (label_key == "cli.config.microsoft_entra_id"), diagnostics
+    assert ("Run the configured `key_cmd` manually" in diagnostics) == (label_key == "cli.config.key_cmd_token")
+
+
+@pytest.mark.parametrize(("build", "label_key"), CASES)
+def test_anthropic_401_env_and_login_advice_only_for_a_string_key(monkeypatch, build, label_key):
+    """ANTHROPIC_TOKEN / ANTHROPIC_API_KEY / `hermes auth` never fed a callable key, so its 401 help
+    must not send the user there; a string key keeps that advice and its token prefix."""
+    callable_help = _anthropic_401_help(monkeypatch, build(monkeypatch))
+    string_help = _anthropic_401_help(monkeypatch, "sk-ant-api03-abcdefghijklmnop")
+
+    for advice in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "hermes auth add anthropic"):
+        assert advice not in callable_help, callable_help
+        assert advice in string_help, string_help
+    assert "Token prefix: sk-ant-api03" in string_help, string_help
+
+
+@pytest.mark.parametrize(("build", "label_key"), CASES)
+def test_masked_previews_name_the_source_not_entra(monkeypatch, build, label_key):
+    """Log/debug-dump and dashboard previews of a callable key read the source tag too."""
+    from agent.api_error_summary import ApiErrorSummaryMixin
+    from agent.credential_source import credential_source
+    from hermes_cli.web_server_oauth import _truncate_token
+
+    key = build(monkeypatch)
+    expected = f"<{credential_source(key) or 'entra-id'}-bearer>"
+    assert ApiErrorSummaryMixin._mask_api_key_for_logs(None, key) == expected
+    assert _truncate_token(key) == expected

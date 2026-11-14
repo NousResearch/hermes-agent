@@ -1,0 +1,37 @@
+name: remedigenius
+repo: https://github.com/RajaRenga/RemediGenius-CE
+subdir: profiles/remedigenius/plugins/rg-triage
+sha: 651a54d35d480fb3eccbfc559eac1c3cbff9bcdd
+version: "0.9.2"
+title: RemediGenius — AWS Security Triage Desk
+description: >-
+  Read-only AWS security triage desk on Hermes: prioritizes what Security Hub, GuardDuty and
+  Inspector already found, verifies with read-only calls, and drafts IaC fixes a human approves.
+  Disclosure — runs the rgtriage engine locally (subprocess or local socket), which reads AWS with
+  your configured read-only credentials and keeps state under ~/.rgtriage; findings and chat go to
+  the model provider you configure; no telemetry, no self-update.
+maintainer: RajaRenga
+tier: community
+category: tools
+docs_url: https://github.com/RajaRenga/RemediGenius-CE/tree/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/profiles/remedigenius/plugins/rg-triage#readme
+image: https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/marketplace-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/spot-v091/board-overview.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/spot-v091/knowledge.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/651a54d35d480fb3eccbfc559eac1c3cbff9bcdd/docs/media/hermes-triage/coverage-response.png
+requires_hermes: ">=0.23.1"
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools:
+    - rg_triage
+    - rg_analytics
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_skill_lifecycle
+    - post_api_request
+    - post_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

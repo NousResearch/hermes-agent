@@ -113,7 +113,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
-from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_runs as _api_runs, api_server_run_pause as _run_pause
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -1586,7 +1586,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
-        routes.extend(_api_runs._http_routes(self))
+        routes.extend(_api_runs._http_routes(self) + _run_pause._http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -2357,7 +2357,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "chat_completions": True, "chat_completions_streaming": True,
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
-            **_STATIC_FEATURE_FLAGS,
+            **_STATIC_FEATURE_FLAGS, **_run_pause.FEATURE_FLAGS,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
             "cors": bool(self._cors_origins)}
         return web.json_response({
@@ -2373,7 +2373,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "features": features,
             "endpoints": {
                 name: {"method": entry[0], "path": entry[1]}
-                for name, entry in _CAPABILITY_ENDPOINTS
+                for name, entry in (*_CAPABILITY_ENDPOINTS, *_run_pause.CAPABILITY_ENDPOINTS)
                 if len(entry) < 3 or features[entry[2]]},
         })
 
@@ -3102,7 +3102,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             model_lock=("accepted" if ctx["lock_active"] else ""))
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
-        events = _SessionEventQueue(session_id, run_id)
+        events = _run_pause.watch_session_stream(self, _SessionEventQueue(session_id, run_id))
         queue, _event_payload = events.queue, events.payload
         # Claim ownership inside the request's profile scope before any run-keyed state
         # exists, so /v1/runs/{id}* control is confined to the starting profile.

@@ -1248,8 +1248,11 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
 
 async def _handle_get_run(self, request: web.Request, *, _api_server) -> web.Response:
     """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
-    _, status, _, _, err = _load_owned_run(
+    run_id, status, _, _, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="status", active_fallback=True)
+    if err is None:  # a live pause reads pausing / paused
+        from gateway.platforms.api_server_run_pause import overlay_status
+        status = overlay_status(self, run_id, status)
     return err or web.json_response(status)
 
 

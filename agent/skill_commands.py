@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -158,9 +159,38 @@ def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
     return " ".join(tail.split())
 
 
+_AUTO_LOAD_SCAFFOLDS: OrderedDict[str, None] = OrderedDict()
+_AUTO_LOAD_SCAFFOLDS_MAX = 32
+_AUTO_LOAD_SCAFFOLDS_LOCK = threading.Lock()
+
+
+def register_auto_load_scaffold(scaffold: str) -> None:
+    """Record the exact payload text the gateway prepended to a turn's typed text, so the
+    boundary is known rather than guessed from prose the user may also have typed or pasted."""
+    if not scaffold:
+        return
+    with _AUTO_LOAD_SCAFFOLDS_LOCK:
+        _AUTO_LOAD_SCAFFOLDS[scaffold] = None
+        _AUTO_LOAD_SCAFFOLDS.move_to_end(scaffold)
+        while len(_AUTO_LOAD_SCAFFOLDS) > _AUTO_LOAD_SCAFFOLDS_MAX:
+            _AUTO_LOAD_SCAFFOLDS.popitem(last=False)
+
+
+def _registered_auto_load_tail(content: str) -> Optional[str]:
+    """Text after the longest registered scaffold *content* starts with; None on a miss."""
+    with _AUTO_LOAD_SCAFFOLDS_LOCK:
+        best = max((s for s in _AUTO_LOAD_SCAFFOLDS if content.startswith(s)), key=len, default=None)
+    return None if best is None else content[len(best):]
+
+
 def _auto_load_typed_text(content: str) -> str:
-    """The user's text after the FINAL payload footer of an auto-load turn, stripped
-    (``""`` when none). The footer ends with this exact sentence (_build_skill_message)."""
+    """The user's text after the auto-load payloads of a turn, stripped (``""`` when none).
+    The boundary the gateway registered wins; a turn built in another process (an old session
+    row) falls back to the FINAL payload footer, which ends with this exact sentence
+    (_build_skill_message)."""
+    registered = _registered_auto_load_tail(content)
+    if registered is not None:
+        return registered.strip()
     footer_end = content.rfind(_SKILL_DIR_NOTE_END)
     if footer_end == -1:
         return ""

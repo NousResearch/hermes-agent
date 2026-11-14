@@ -12,7 +12,9 @@ MemoryManager._strip_skill_scaffolding.
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
-from agent.skill_commands import extract_user_instruction_from_skill_message, _SKILL_DIR_NOTE_END
+from agent.skill_commands import (
+    _SKILL_DIR_NOTE_END, extract_user_instruction_from_skill_message, register_auto_load_scaffold,
+)
 
 
 _SINGLE_SKILL_TURN = (
@@ -155,3 +157,17 @@ class TestMemoryManagerStripsScaffolding:
         mgr.flush_pending(timeout=5.0)
         assert provider.synced == [lookalike]
 
+    def test_pasted_scaffold_lookalikes_in_typed_text_reach_memory(self):
+        """The gateway-registered boundary keeps typed text that itself looks like scaffolding."""
+        scaffold = (
+            '[IMPORTANT: The "example" skill is auto-loaded. Follow its instructions for this session.]\n'
+            f"Skill body.\n[Skill directory: /skills/example]\nResolve paths, {_SKILL_DIR_NOTE_END}\n\n"
+        )
+        register_auto_load_scaffold(scaffold)
+        note = "[Skill setup note: set FOO_TOKEN] why does setup keep failing?"
+        footer = f"it said {_SKILL_DIR_NOTE_END} what does that mean"
+        mgr, provider = _manager_with_recorder()
+        mgr.sync_all(scaffold + note, "Checking.")
+        mgr.sync_all(scaffold + footer, "Checking.")
+        mgr.flush_pending(timeout=5.0)
+        assert provider.synced == [note, footer]

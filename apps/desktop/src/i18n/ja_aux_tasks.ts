@@ -3,7 +3,6 @@ import type { AuxTaskCopyMap } from './types_aux_tasks'
 export const jaAuxTasks: AuxTaskCopyMap = {
   vision: { label: 'ビジョン', hint: '画像分析' },
   compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
-  skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
   approval: { label: '承認', hint: 'スマート自動承認' },
   mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
   title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },

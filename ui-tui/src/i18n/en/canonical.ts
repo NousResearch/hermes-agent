@@ -3,6 +3,8 @@
 // Owned namespace: `canonical`. Function leaves take positional args; packs use `{0}`, `{1}`.
 // Status-bar phrases here are free text (nothing compares against them).
 
+import { gatewayTextEn } from '@hermes/shared/gateway-text'
+
 export const canonicalEn = {
   canonical: {
     // app/slash/canonicalSessionControls.ts + canonicalSessionCommands.ts
@@ -41,6 +43,9 @@ export const canonicalEn = {
       unconfirmedPrefix: '[unconfirmed · Alt+K retry] ',
       // {0}=admission status identifier (unknown; queued rows render plain), {1}=input text
       serverRow: (status: string, text: string) => `[${status}] ${text}`,
+      // {0}=input text of a turn lost when the gateway restarted (status unknown): it pauses the queue
+      // until the person drops it (select it with ↑, then Ctrl+X → prompt.resolve_unknown).
+      lostRow: (text: string) => `[paused: lost in restart · ↑ select, Ctrl+X discard] ${text}`,
       discardFailed: (message: string) => `discard failed: ${message}`,
       journalCleanupFailed: (message: string) => `input delivered; journal cleanup failed: ${message}`,
       notSavedQueueKept: (message: string) => `input not saved: ${message} — queue kept`,
@@ -48,7 +53,10 @@ export const canonicalEn = {
       statusInputNotSaved: 'input not saved',
       unknownExecution: 'unknown execution — Ctrl+X to discard before retrying',
       invalidRecord: (name: string) => `Invalid pending input record: ${name}`,
-      clipboardImageFailed: (message: string) => `clipboard image failed: ${message}`
+      clipboardImageFailed: (message: string) => `clipboard image failed: ${message}`,
+      pasteNotApplied: 'paste dropped: the draft it was pasted into is gone',
+      imagesNotRestored: (count: number) =>
+        `${count} image${count === 1 ? '' : 's'} from the edited prompt not re-attached (the draft changed)`
     },
     // lib/imageAttachments.ts — owner-staged image validation.
     images: {
@@ -57,10 +65,9 @@ export const canonicalEn = {
       notFound: (path: string) => `Image not found: ${path}`,
       noOwnerPath: 'Image upload did not return an owner path'
     },
-    // canonicalGateway.ts — launch-contract refusals.
+    // @hermes/shared/gateway-canonical (given Ink's `t`) and launchOptions.ts — launch-contract refusals.
     launch: {
-      noTuiPolicy: 'gateway does not support tui session policy; update/restart the gateway',
-      unsupportedOptions: (options: string) => `gateway does not support TUI launch options: ${options}`,
+      ...gatewayTextEn.canonical.launch,
       invalidToolProgress: (value: string) => `invalid HERMES_TUI_TOOL_PROGRESS: ${value}`
     }
   }

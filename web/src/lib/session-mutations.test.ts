@@ -44,3 +44,19 @@ it('surfaces revision conflicts and never substitutes missing counters', async (
   await expect(api.deleteSession('no-snapshot')).rejects.toThrow(/snapshot/);
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it('sends mutations when crypto.randomUUID is unavailable on an insecure origin', async () => {
+  const fetcher = vi.fn(async (_path: string, init: RequestInit) => {
+    if (!init.method) { return Response.json({ exists: true, runtime_revision: 12, runtime_generation: 4 }); }
+    return Response.json({ ok: true });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  vi.stubGlobal('crypto', {
+    getRandomValues: (bytes: Uint8Array) => bytes.fill(0xab),
+  });
+
+  await api.deleteSession('insecure-origin');
+
+  const request = new URL(fetcher.mock.calls[1][0] as string, 'http://localhost');
+  expect(request.searchParams.get('request_id')).toBe('abababab-abab-4bab-abab-abababababab');
+});

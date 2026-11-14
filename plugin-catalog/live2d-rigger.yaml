@@ -1,0 +1,45 @@
+name: live2d-rigger
+title: Live2D Rigger
+repo: https://github.com/flabanabba8/live2d-rigger
+sha: f13a5af37c3322b8de5fca6d193ab20ec46189b8
+version: 0.6.2
+description: "Create a provisional Live2D character from a brief with complete image parts, local cutout, placement, an experimental Umamo/JDK rig and Core motion review; also inspect and adjust a copy of an existing model. XY head turns, independent limbs and polished eyes are not provided. Disclosure — runs the Java (JDK) and Kotlin/Umamo classpath, the Python with Playwright and the Cubism SDK viewer folder that you set in the plugin settings (the model cannot name a program, classpath or command), plus FFmpeg and a local headless browser against a viewer served only on a temporary loopback port, each with a minimal environment; on first use it scans PATH and the hardware (read-only) and asks which routes to use; opening an existing model copies its folder into the plugin's data directory; on request it downloads official Live2D sample archives from cubism.live2d.com after you agree to Live2D's licence; the host image tool may use its configured provider; no Cubism SDK, Core, viewer, sample model, layers or textures are bundled, and the catalog thumbnail contains character artwork."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/flabanabba8/live2d-rigger/blob/f13a5af37c3322b8de5fca6d193ab20ec46189b8/README.md
+image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/f13a5af37c3322b8de5fca6d193ab20ec46189b8/assets/thumbnail.jpg
+platforms:
+- linux
+capabilities:
+  provides_tools:
+  - live2d_setup
+  - live2d_begin_model
+  - live2d_clone_model
+  - live2d_remove_layer
+  - live2d_model_layer
+  - live2d_arrange_layers
+  - live2d_place_layer
+  - live2d_set_canvas
+  - live2d_register_layer
+  - live2d_default_layout
+  - live2d_configure_umamo
+  - live2d_check_rig_domains
+  - live2d_rebuild_prototype
+  - live2d_model_rig
+  - live2d_build_model
+  - live2d_render_model_motion
+  - live2d_model_status
+  - live2d_open_model
+  - live2d_inspect_model
+  - live2d_adjust_physics
+  - live2d_render_clip
+  - live2d_write_motion
+  - live2d_inspect_resources
+  - live2d_check_motion
+  - live2d_reference_samples
+  - live2d_fetch_reference_sample
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

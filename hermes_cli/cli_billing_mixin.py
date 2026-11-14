@@ -103,6 +103,23 @@ def _cancel_sub_choices() -> list[tuple[str, str, str]]:
         ("cancel", t("cli.billing.choice_go_back"), t("cli.subscription.desc_keep_your_plan"))]
 
 
+# Keep going on credits: window plans only (the portal sends the setting only there).
+def _keep_going_row() -> tuple[str, str, str]:
+    return ("hermes", t("cli.billing.keep_going_choice"), t("cli.billing.keep_going_desc"))
+
+
+def _keep_going_agree_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("agree", t("cli.billing.keep_going_turn_on"), t("cli.billing.keep_going_desc")),
+        _cancel_row(desc_key="cli.billing.keep_going_keep_off_desc")]
+
+
+def _keep_going_off_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("off", t("cli.billing.keep_going_turn_off"), t("cli.billing.keep_going_turn_off_desc")),
+        _cancel_row(label_key="cli.billing.keep_going_leave_on")]
+
+
 class CLIBillingMixin:
     """Mixin holding interactive-CLI billing and subscription handlers."""
 
@@ -263,7 +280,9 @@ class CLIBillingMixin:
             if head or tail:
                 return True
         from agent.account_usage import nous_credits_lines
-        lines = nous_credits_lines()
+        lines = nous_credits_lines(
+            credits_state=getattr(getattr(self, "agent", None), "_credits_state", None),
+        )
         if not lines:
             return False
         print()
@@ -708,6 +727,8 @@ class CLIBillingMixin:
                 print(f"  {t('cli.billing.auto_reload_on_line', threshold=format_money(ar.threshold_usd), reload_to=format_money(ar.reload_to_usd))}")
             else:
                 print(f"  {t('cli.billing.auto_reload_off_line')}")
+        if state.keep_going_on_credits is not None:
+            print(f"  {t('cli.billing.keep_going_on_line' if state.keep_going_on_credits else 'cli.billing.keep_going_off_line')}")
         if state.can_change_plan and state.cli_billing_enabled:  # card at a glance, full-menu case only
             if state.card is not None:
                 print(f"  {t('cli.billing.card_line', card=state.card.display)}")
@@ -716,6 +737,7 @@ class CLIBillingMixin:
         print(f"  {_RULE}")
         # Action gating: admin + kill-switch for charge/auto-reload; everyone gets portal.
         if not self._billing_require_admin(state, icon="", off_reason_key="cli.billing.killswitch_reason_overview"):
+            self._billing_offer_keep_going_off(state)
             return
         if not self._app:  # non-interactive: no modal, just the portal funnel
             self._billing_portal_hint(state)
@@ -732,11 +754,16 @@ class CLIBillingMixin:
         print(f"  {_RULE}")
         # No "Allow Remote Spending" item — discovered at pay time. "Add funds" charges the org's
         # portal-saved card (server-held; no card ref leaves the client).
+        # "hermes" only on window plans (the portal sends the setting only there).
+        choices = _topup_menu_choices()
+        if state.keep_going_on_credits is not None:
+            choices.insert(2, _keep_going_row())  # after Auto-reload
         action = {
             "buy": self._billing_buy_flow,
             "auto": self._billing_auto_reload_flow,
+            "hermes": self._billing_keep_going_on_credits_flow,
             "limit": self._billing_limit_screen,
-            "portal": self._billing_open_portal}.get(self._modal_choice(t("cli.billing.topup_title"), "", _topup_menu_choices()))
+            "portal": self._billing_open_portal}.get(self._modal_choice(t("cli.billing.topup_title"), "", choices))
         if action:
             action(state)
         else:
@@ -1052,9 +1079,13 @@ class CLIBillingMixin:
 
     def _billing_patch_auto_top_up(self, state, **kwargs) -> bool:
         """PATCH auto-top-up; scope denials → step-up, other errors → renderer. True on success."""
-        from hermes_cli.nous_billing import BillingError, BillingScopeRequired, patch_auto_top_up
+        from hermes_cli.nous_billing import patch_auto_top_up
+        return self._billing_patch(state, patch_auto_top_up, **kwargs)
+
+    def _billing_patch(self, state, call, **kwargs) -> bool:
+        from hermes_cli.nous_billing import BillingError, BillingScopeRequired
         try:
-            patch_auto_top_up(**kwargs)
+            call(**kwargs)
         except BillingScopeRequired:
             self._billing_handle_scope_required(state)
             return False
@@ -1062,6 +1093,49 @@ class CLIBillingMixin:
             self._billing_render_charge_error(state, exc)
             return False
         return True
+
+    def _billing_offer_keep_going_off(self, state):
+        """Turning "Keep going on credits" off only stops spending, so an admin can still do it with
+        Remote Spending off (the portal and the server allow it too)."""
+        if not (state.can_change_plan and state.keep_going_on_credits and getattr(self, "_app", None)):
+            return
+        if self._modal_choice(t("cli.billing.keep_going_is_on_title"), "", _keep_going_off_choices()) == "off":
+            self._billing_keep_going_on_credits_flow(state)
+
+    def _billing_keep_going_on_credits_flow(self, state):
+        """Window plans: flip "Keep going on credits". Turning it on spends money later, so it asks
+        first; turning it off does not."""
+        turn_on = not state.keep_going_on_credits
+        if turn_on and self._modal_choice(
+                t("cli.billing.keep_going_confirm_title"), t("cli.billing.keep_going_confirm_body"),
+                _keep_going_agree_choices()) != "agree":
+            print(f"  {t('cli.billing.cancelled_yellow')}")
+            return
+        self._billing_set_keep_going(state, turn_on, allow_stepup=True)
+
+    def _billing_set_keep_going(self, state, turn_on: bool, *, allow_stepup: bool) -> None:
+        """PATCH the setting. A scope denial runs the step-up, then sends the same change ONCE (no card or
+        org Remote Spending check: the setting is not a charge, and turning it off must always work)."""
+        from hermes_cli.nous_billing import BillingError, BillingScopeRequired, patch_keep_going_on_credits
+        try:
+            patch_keep_going_on_credits(enabled=turn_on)
+        except BillingScopeRequired as exc:
+            if not allow_stepup:
+                self._billing_render_charge_error(state, exc)
+                return
+            if self._step_up_remote_spending(
+                    explain=t("cli.subscription.stepup_explain"),
+                    noninteractive_msg=f"  {t('cli.subscription.stepup_noninteractive')}",
+                    declined_msg=f"  {t('cli.subscription.stepup_declined')}",
+                    not_granted_msg=f"  {t('cli.subscription.stepup_not_granted')}"):
+                self._billing_set_keep_going(state, turn_on, allow_stepup=False)
+            return
+        except BillingError as exc:
+            self._billing_render_charge_error(state, exc)
+            return
+        print(f"  {t('cli.billing.keep_going_turned_on' if turn_on else 'cli.billing.keep_going_turned_off')}")
+        from agent.credits_tracker import apply_keep_going_change
+        apply_keep_going_change(getattr(self, "agent", None), turn_on)
 
     def _billing_auto_reload_disable(self, state):
         """PATCH ``enabled:false``; the endpoint still requires threshold/topUpAmount → echo current (or 0)."""

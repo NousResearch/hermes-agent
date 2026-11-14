@@ -51,3 +51,25 @@ def test_rollback_lists_and_restores_through_the_gateway(capsys, monkeypatch, tm
         assert cli.conversation_history == []  # the owner's rewound transcript
     finally:
         conn.close()
+
+
+def test_rollback_all_reaches_the_gateway_and_kept_edits_are_shown(capsys, monkeypatch, tmp_path):
+    """The owner's whole-tree restore keeps hand-edits by default: the CLI says which, and its
+    ``--all``/``--force`` override travels as ``all`` instead of being dropped."""
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    client = _Client({
+        "rollback.restore": {"success": True, "restored_to": "3101637", "reason": "before write_file",
+                             "skipped_user_edits": ["notes.md"]}})
+    conn = _connection(client)
+    cli = _Cli()
+    try:
+        gateway_rollback.rollback(cli, conn, "/rollback 1")
+        assert client.calls[-1] == ("rollback.restore", {"session_id": "local-rb", "hash": "1"})
+        out = capsys.readouterr().out
+        assert "notes.md" in out and "--all" in out, out
+        gateway_rollback.rollback(cli, conn, "/rollback 1 --all")
+        assert client.calls[-1] == ("rollback.restore", {"session_id": "local-rb", "hash": "1", "all": True})
+        gateway_rollback.rollback(cli, conn, "/rollback 1 a.txt --force")
+        assert client.calls[-1] == ("rollback.restore", {"session_id": "local-rb", "hash": "1", "file_path": "a.txt"})
+    finally:
+        conn.close()

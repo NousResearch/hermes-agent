@@ -33,3 +33,32 @@ async def discover_commands(authority, actor, params, *, completion=False):
                     else command_catalog(scope=scope))
 
     return await asyncio.to_thread(discover)
+
+
+async def list_plugins(authority, actor, params):
+    """``plugins.list`` for this profile's own plugin manager: what the gateway loaded, with each
+    plugin's tool/hook/command counts and load error (the classic CLI's ``/plugins`` reads it, so the
+    CLI process imports no plugin code). Plain data only."""
+    if 'session:read' not in actor.capabilities or actor.profile_id != authority.profile_id:
+        raise RuntimeStoreError('permission_denied')
+    if params:
+        raise RuntimeStoreError('invalid_params')
+
+    def rows():
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugins import get_plugin_toolsets
+        with _profile_runtime_scope(Path(authority.profile_id)):
+            discover_plugins()  # idempotent: the profile's plugins are normally loaded already
+            manager = get_plugin_manager()
+            loaded, toolsets = manager.list_plugins(), get_plugin_toolsets()
+            portable = sorted(manager.get_portable_mcp_servers())
+        return {'plugins': [{'name': str(p['name']), 'key': str(p['key']), 'version': str(p['version'] or ''),
+                             'enabled': bool(p['enabled']), 'tools': int(p['tools']), 'hooks': int(p['hooks']),
+                             'commands': int(p['commands']), 'error': str(p['error'] or '')} for p in loaded],
+                # The CLI's /tools and its completion validate plugin toolsets against these.
+                'toolsets': [{'key': str(key), 'label': str(label), 'description': str(desc or '')}
+                             for key, label, desc in toolsets],
+                'portable_mcp_servers': [str(name) for name in portable]}
+
+    return await asyncio.to_thread(rows)

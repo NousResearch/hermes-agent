@@ -84,6 +84,7 @@ export function createSimulatedBillingApi(fixture: SimulatedFixture): BillingApi
       return ok({ message: 'Downgrade scheduled.', ok: true })
     },
     stepUp: async () => ok({ granted: true, ok: true }),
-    updateAutoReload: async () => ok({ ok: true })
+    updateAutoReload: async () => ok({ ok: true }),
+    updateKeepGoingOnCredits: async () => ok({ ok: true })
   }
 }

@@ -1,0 +1,19 @@
+name: aave-mcp
+title: Aave
+repo: https://github.com/aave/skills
+sha: 7132f6e952f9100f16577c33774a1e63948f7fab
+subdir: plugins/mcp
+version: "1.0.0"
+description: "Aave V3 and V4 through Aave's official MCP server (Streamable HTTP at https://mcp.aave.com, no sign-in, no keys in config): live markets and rates on every chain Aave runs on, wallet positions and health factor, rewards, DAO governance, swap quotes, and unsigned transactions for the user's own wallet to sign. Bundles five workflow skills: safe transactions, deleverage, yield analysis, account activity and transaction confirmation. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to mcp.aave.com, which records tool usage for analytics and keeps a wallet address only as a keyed hash. The server never holds keys. Every tool is annotated read-only except submit_signed_order and cancel_order, which relay an order or cancellation the user already signed; the package marks the server untrusted, so Hermes asks before either runs and refuses them in unattended runs. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Aave Labs
+tier: community
+category: tools
+docs_url: https://github.com/aave/skills/tree/main/plugins/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

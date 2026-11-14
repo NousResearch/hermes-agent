@@ -1,6 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
+import { zhHantMemoryLayers } from './zh-hant_memory_layers'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
@@ -15,6 +17,7 @@ export const zhHantSettings = {
   },
 
   settings: {
+    memoryLayers: zhHantMemoryLayers,
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',
@@ -47,7 +50,7 @@ export const zhHantSettings = {
       advancedOutput: '輸出限制',
       advancedDelegation: '子代理',
       advancedDesktop: '桌面與啟動',
-      gatewayConnection: '目前視窗',
+      gatewayConnection: '主要閘道',
       gatewayDevices: '已儲存的連線',
       gatewayManagedUpdates: '遠端更新',
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
@@ -87,6 +90,14 @@ export const zhHantSettings = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。` : '自你審閱後儲存庫已變更。正在讀取新版本…'),
+        legacyBackendConfirm:
+          '此後端比本應用程式舊，無法保證安裝的就是你審閱過的版本：如果儲存庫之後有變更，安裝的會是較新的版本。更新後端即可獲得這項保證。',
+        installAnyway: '仍要安裝',
+        partialInstall: sha =>
+          sha
+            ? `外掛只安裝了一部分：代理部分已安裝在提交 ${sha}，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。`
+            : '外掛只安裝了一部分：代理部分已安裝，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。',
         nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
@@ -233,11 +244,24 @@ export const zhHantSettings = {
           description: 'Hermes 在背景時，桌面外掛傳送了通知。'
         }
       },
+      browserPermission: {
+        title: '瀏覽器通知',
+        allow: '允許',
+        states: {
+          default: '分頁在背景時由此瀏覽器顯示提醒。在你允許之前，只有分頁標題會閃爍。',
+          granted: '已允許。此分頁在背景時會顯示提醒，分頁標題也會閃爍。',
+          denied: '已在此瀏覽器的網站設定中被封鎖。分頁標題仍會閃爍。',
+          insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
+          unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
+        }
+      },
       test: '傳送測試通知',
       testTitle: 'Hermes',
       testBody: '通知運作正常。',
       testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
       testUnsupported: '此系統不支援原生通知。',
+      muteSoundsTitle: '靜音介面提示音',
+      muteSoundsDesc: '關閉自動完成、喚醒詞和思考提示音、觸感回饋以及系統通知聲音。聲音預覽和語音回覆仍會播放。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
@@ -799,6 +823,9 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
+      desktopReadAloudTitle: '在此應用程式中朗讀回覆',
+      desktopReadAloudDesc:
+        '在 Desktop 中朗讀每則完成的回覆。與輸入框按鈕是同一個開關；對所有開啟的視窗生效，關閉後會立即停止正在朗讀的回覆。下方的「朗讀回覆」用於訊息平台和 CLI。',
       showOptions: '顯示選項'
     },
     hudModifier: {
@@ -866,6 +893,16 @@ export const zhHantSettings = {
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
+      webappHostTitle: 'Hermes 主機',
+      webappHostDesc:
+        'Webapp 一律在提供它的 Hermes 主機上執行。下方已儲存的連線是這台機器的清單，與 Hermes Desktop 應用程式共用；其他閘道透過此主機連線。',
+      webappOauthPaste: {
+        title: '完成登入',
+        description: '如果登入分頁停在無法開啟的位址（此瀏覽器不在閘道所在的機器上），請將該位址貼到這裡。',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: '完成',
+        failed: '無法完成登入'
+      },
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
@@ -968,7 +1005,47 @@ export const zhHantSettings = {
       sshErrUpdateRequired: '使用 Desktop SSH 連線前，請更新遠端主機上的 Hermes。',
       sshErrInteractiveAuth:
         'Tailscale SSH 需要互動式瀏覽器驗證。請在終端機執行 `ssh <host> true` 完成驗證後重試——Hermes 以非互動方式執行 SSH。',
-      sshErrUnknown: 'SSH 連線失敗。'
+      sshErrUnknown: 'SSH 連線失敗。',
+      webAccess: {
+        title: '網頁存取',
+        intro: '用手機或其他電腦，以你的 Nous 帳戶登入並開啟這台電腦上的 Hermes。登入的人可以在這台電腦上執行指令。',
+        failed: '無法變更網頁存取',
+        running: '執行中',
+        stopped: '已停止',
+        starting: '正在啟動',
+        stopping: '正在停止',
+        restartNeeded: '需要重新啟動',
+        unavailable: '無法使用',
+        notRunningDetail: '啟動後即可從其他裝置開啟 Hermes。',
+        needsNous: '請先在「供應商」中登入你的 Nous 帳戶。',
+        runningLan: '在同一網路中的裝置上開啟此網址。',
+        runningPublic: '透過你的網址提供服務。',
+        runningLocal: '只有這台電腦可以開啟。要從其他裝置開啟，請先停止，再重新啟動。',
+        pendingOn: '已儲存。閘道重新啟動後將提供網頁應用程式。',
+        pendingOff: '已關閉，但閘道在重新啟動前仍會繼續提供網頁應用程式。',
+        unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,
+        restartBusy: '已儲存。有對話正在進行，因此閘道沒有重新啟動。對話結束後請選擇「重新啟動閘道」。',
+        restartFailed: '已儲存，但閘道無法重新啟動。請選擇「重新啟動閘道」重試。',
+        restartFailedBecause: reason => `閘道無法重新啟動：${reason}`,
+        startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
+        stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
+        startStages: {
+          preparing: '正在準備網頁應用程式。建置可能需要幾分鐘。',
+          building: '正在建置網頁應用程式，可能需要幾分鐘。',
+          registering: '正在為此位址設定 Nous 登入。',
+          restarting: '正在重新啟動閘道以提供網頁應用程式。'
+        },
+        startElapsed: time => `已經過 ${time}`,
+        start: '啟動',
+        stop: '停止',
+        restartGateway: '重新啟動閘道',
+        modeLan: '目前網路',
+        modeLanDetail: url => `你的 Wi-Fi 中的裝置可開啟 ${url}。僅在你信任的網路中使用。`,
+        lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
+        noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
+        modePublic: '我自己的網址',
+        modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
+      }
     },
     keys: {
       loading: '正在載入 API 金鑰和憑證...',
@@ -1069,7 +1146,6 @@ export const zhHantSettings = {
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
-        skills_hub: { label: '技能中心', hint: '技能搜尋' },
         approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
@@ -1079,6 +1155,23 @@ export const zhHantSettings = {
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
         profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
+      },
+      subagents: {
+        inherit: '繼承主代理設定',
+        modelOnly: '自訂模型（沿用主代理憑證）',
+        providerLabel: '子代理提供方',
+        modelLabel: '子代理模型',
+        direct: '直接端點覆寫',
+        customProvider: '自訂提供方...',
+        customProviderLabel: '自訂子代理提供方',
+        parentModel: '使用主代理模型',
+        parentModelWarning:
+          '所選提供方必須支援主代理模型。模型不相容時，僅指定提供方的路由可能失敗。若該提供方設定了自己的預設模型，子代理會改用該模型。',
+        directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
+        directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
+        catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
+        draftHint: '套用前，變更只保留在本機。',
+        routing: zhHantDelegationRouting
       }
     },
     localModels: {
@@ -1128,6 +1221,8 @@ export const zhHantSettings = {
       updateTitle: '引擎有可用更新',
       updateDetail: (next, current) =>
         `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
+      updateSameBuildDetail: tag =>
+        `Hermes 現在為 llama.cpp ${tag} 附帶執行所需的檔案。更新會重新下載引擎，下載期間模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
@@ -1279,6 +1374,15 @@ export const zhHantSettings = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `變更為 ${targetName}，於 ${effectiveAt} 生效。現在不扣款；在此之前保留目前方案。${creditsDelta ? `每月額度變化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用額度繼續',
+        description: '包含的用量用完後，使用你的額度。關閉時，Hermes 等待重設。',
+        approveInBrowser: '請在瀏覽器中核准 Remote Spending 以變更此設定。核准後立即生效。',
+        openAgain: '再次開啟',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已核准，但變更未儲存。',
+        tryAgain: '重試'
+      },
       autoReload: {
         threshold: '門檻',
         thresholdAria: '自動儲值門檻',
@@ -1349,6 +1453,20 @@ export const zhHantSettings = {
             captionDefault: '預設上限',
             captionSpending: '每月遠端支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本週',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暫停：訂閱付款失敗',
+            captionPausedOther: '已暫停：請在 Portal 的帳單頁查看',
+            captionTopTierUsedUp: '每月額度已用完，剩餘部分由你的額度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月額度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}後重設`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -1453,7 +1571,7 @@ export const zhHantSettings = {
       autoArchiveFailed: '無法更新自動封存設定',
       defaultDirTitle: '預設專案目錄',
       defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
-      defaultDirUpdated: '預設專案目錄已更新',
+      defaultDirUpdated: () => '預設專案目錄已更新',
       defaultsTo: label => `預設使用 ${label}。`,
       change: '變更',
       choose: '選擇',
@@ -1541,15 +1659,20 @@ export const zhHantSettings = {
       browserRealProfile: {
         label: '使用我的真實瀏覽器設定檔',
         description:
-          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
+          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽，應用程式內瀏覽器也會用它們登入。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
         enabledTitle: '真實設定檔瀏覽：已開啟',
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
-        disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
+        disabledMessage: '設定檔快照將被刪除，應用程式內瀏覽器也會登出這些登入；新工作階段使用乾淨的瀏覽器。',
         failedSave: '無法儲存真實設定檔設定',
+        reimportSignins: '重新匯入登入資訊',
+        signinsImportedTitle: '應用程式內瀏覽器登入',
+        signinsImported: count => `已使用瀏覽器設定檔中的 ${count} 個 Cookie 登入應用程式內瀏覽器。`,
+        signinsRemote: '此後端在另一台機器上執行，因此不會將其瀏覽器設定檔匯入應用程式內瀏覽器。',
+        signinsFailed: '無法將登入資訊匯入應用程式內瀏覽器',
         prompt: {
           title: '讓網站保持登入狀態',
-          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',
+          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，無論是代理還是應用程式內瀏覽器，網站開啟時即已登入。',
           bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
           bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
           bulletLocal: '所有資料都不會離開這台電腦。',
@@ -1580,7 +1703,27 @@ export const zhHantSettings = {
     wasPrice: '原價',
     customModel: '自訂模型',
     addCustomModelAction: '新增自訂模型…',
-    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本週',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暫停：續費未到帳',
+    pausedOther: '已暫停',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已達${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每週' },
+    limitThenCredits: '付費模型現在使用你的額度（按量付費）',
+    limitThenCreditsLarge: '大型模型現在使用你的額度（按量付費）',
+    limitThenWait: '在此之前僅可使用免費模型',
+    limitThenWaitLarge: '在此之前大型模型已暫停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}後重設`,
+    usageLevels: { free: '免費', top_tier: '大' },
+    sectionRecommended: '推薦',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也會消耗你的每月大型模型額度。'
   },
 
   modelVisibility: {

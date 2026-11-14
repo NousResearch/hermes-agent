@@ -184,8 +184,9 @@ def _apply_mcp_change(config: dict, targets: list[str], action: str) -> set[str]
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
-    """Print a summary of enabled/disabled toolsets and MCP tool filters."""
+def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli", stripped: dict | None = None):
+    """Print a summary of enabled/disabled toolsets and MCP tool filters. ``stripped`` is
+    ``tools_config.toolsets_partially_stripped`` output: enabled rows that agent.disabled_toolsets cuts down."""
     from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_effective_configurable_toolsets
 
     effective_all = _get_effective_configurable_toolsets()
@@ -196,6 +197,10 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         for ts_key, label in entries:
             status = color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets else color("✗ disabled", Colors.RED)
             print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            if ts_key in (stripped or {}) and ts_key in enabled_toolsets:
+                tools, by, hint = stripped[ts_key]
+                print(color(f"      ⚠ {', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)} ({hint})",
+                            Colors.YELLOW))
 
     print(f"Built-in toolsets ({platform}):")
     _print_rows((k, l) for k, l, _ in effective if k in builtin_keys)
@@ -246,14 +251,16 @@ def tools_disable_enable_command(args):
     platform = getattr(args, "platform", "cli")
     config = load_config()
 
-    valid_platforms = _known_tool_platforms()
+    from hermes_cli.tools_config import PLATFORMS
+    valid_platforms = PLATFORMS if platform in PLATFORMS else _known_tool_platforms()  # built-ins load no plugin
     if platform not in valid_platforms:
         _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(sorted(valid_platforms))}")
         return
 
     if action == "list":
-        _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
-                          config.get("mcp_servers") or {}, platform)
+        from hermes_cli.tools_config import toolsets_partially_stripped
+        enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
+        _print_tools_list(enabled, config.get("mcp_servers") or {}, platform, toolsets_partially_stripped(config, enabled))
         return
 
     targets: list[str] = args.names

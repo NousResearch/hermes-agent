@@ -1,0 +1,38 @@
+name: csharp-game-editor
+repo: https://github.com/TakeshiTGAL/hermes-plugin-csharp-game-editor
+sha: 87f7217f4baae369dbf1df405418c0f7ad711336
+version: "0.6.0"
+requires_hermes: ">=0.21.6"
+description: "Give it one feature for the Unity project open in your editor, and it builds the scripts, objects and scene in one plan, stops that plan when the compile reports an error CS line, and plays the scene when the compile is clean. Disclosure — Needs MCP for Unity pinned to v10.3.0, plus git and uv. Hermes starts mcpforunityserver==10.3.0 through uvx with telemetry and the update check off. Disk reads run at once. apply_plan asks once and puts back a file the plan did not name. A plan that deletes, runs editor code, can lose unsaved work or writes outside the project asks again, and that summary is sent only when every line fits the approval card; otherwise nothing is sent and confirm_risky_plan asks. unity_docs sends the query to docs.unity3d.com after Hermes asks. unity_generate can call paid providers you configured in MCP for Unity; that call was not part of the check. Tools are on by default on every surface, including the gateway. Only users the gateway admits can reach the tools, and this plugin keeps no user list of its own. Cron and a session with nobody to answer decline. Logs stay in <HERMES_HOME>/plugin-data/agent-plugin-csharp-game-editor-<hash>/logs. Stop with hermes plugins disable csharp-game-editor, or hermes tools for one surface. macOS only."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-csharp-game-editor
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - mcp__csharp_game_editor__unity_editor
+    - mcp__csharp_game_editor__unity_scene
+    - mcp__csharp_game_editor__unity_object
+    - mcp__csharp_game_editor__unity_script
+    - mcp__csharp_game_editor__unity_asset
+    - mcp__csharp_game_editor__unity_look
+    - mcp__csharp_game_editor__unity_ui
+    - mcp__csharp_game_editor__unity_vfx
+    - mcp__csharp_game_editor__unity_animation
+    - mcp__csharp_game_editor__unity_graphics
+    - mcp__csharp_game_editor__unity_physics
+    - mcp__csharp_game_editor__unity_probuilder
+    - mcp__csharp_game_editor__unity_profiler
+    - mcp__csharp_game_editor__unity_build
+    - mcp__csharp_game_editor__unity_packages
+    - mcp__csharp_game_editor__unity_code
+    - mcp__csharp_game_editor__unity_tests
+    - mcp__csharp_game_editor__unity_docs
+    - mcp__csharp_game_editor__unity_generate
+    - mcp__csharp_game_editor__plan_batch
+    - mcp__csharp_game_editor__apply_plan
+    - mcp__csharp_game_editor__confirm_risky_plan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -9,6 +9,7 @@ import path as a package) and exercises the provider behaviour + the
 from __future__ import annotations
 
 import secrets
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -116,6 +117,18 @@ class TestProvider:
         assert r.user_id == "admin"
         assert p.verify_session(access_token=r.access_token) is not None
 
+
+    def test_sessions_minted_in_one_second_get_their_own_tokens(self, basic, monkeypatch):
+        # A listener that drops a session's tokens (the Webapp's sign-out) must not see them come
+        # back from a later login or refresh, even one in the same second.
+        monkeypatch.setattr(basic, "time", SimpleNamespace(time=lambda: 1_700_000_000))
+        p = self._make(basic)
+        first = p.complete_password_login(username="admin", password="hunter2")
+        second = p.complete_password_login(username="admin", password="hunter2")
+        renewed = p.refresh_session(refresh_token=first.refresh_token)
+        sessions = (first, second, renewed)
+        assert len({s.access_token for s in sessions}) == len({s.refresh_token for s in sessions}) == 3
+        assert all(p.verify_session(access_token=s.access_token) is not None for s in sessions)
 
     def test_cross_secret_token_does_not_verify(self, basic):
         p1 = self._make(basic)

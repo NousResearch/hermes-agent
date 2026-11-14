@@ -1,0 +1,25 @@
+name: sessioncrew
+title: SessionCrew
+repo: https://github.com/harukaxxxx/hermes-session-crew
+sha: "6fa9883b1842ca0db01ca05aa4f3e662387b9c69"
+version: "0.1.0"
+description: "Browse sessions and related projects across profiles in a Hermes Desktop side panel, with observed activity, completion reminders, and project creation. Disclosure — the backend reads every profile under the Hermes data root, not only profiles that enabled the plugin: profile.yaml display fields, gateway_state.json, processes.json and each state.db opened read-only (session, turn-lease, admission, worker and delegation metadata plus token/cost aggregates; only the profile label is kept from delegation task JSON; no conversation message bodies). Folder browsing, folder creation and non-overwriting IDEA.md writes run on the gateway filesystem from the user's own dialog and are not confined to the Hermes root (the Hermes root and common credential directories are refused). Creating sessions or generating a project idea runs on the selected profile and sends the project name to that profile's configured model provider. On macOS a liveness fallback may run `ps -o state= -p <pid>` without a shell. No credential-store reads, telemetry, self-updater or separate listener."
+maintainer: harukaxxxx
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+platforms: [linux, macos]
+docs_url: https://github.com/harukaxxxx/hermes-session-crew/blob/6fa9883b1842ca0db01ca05aa4f3e662387b9c69/README.md
+screenshots:
+  - https://raw.githubusercontent.com/harukaxxxx/hermes-session-crew/6fa9883b1842ca0db01ca05aa4f3e662387b9c69/assets/sessioncrew-webapp.png
+readme: true
+known_issues:
+  - "Status and completion coverage is bounded; interrupted or incomplete sources may miss completions."
+  - "Gateway folder operations currently support POSIX paths only."
+  - "Controlled compatibility tests use Hermes 0.23.0 source; final-pin live owner RPC/REST routing acceptance remains incomplete."
+  - "Screenshot uses synthetic demonstration data in the real Webapp, from the pre-submission demo installation; it is not final-pin live acceptance evidence."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

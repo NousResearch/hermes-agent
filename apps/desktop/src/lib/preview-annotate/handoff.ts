@@ -1,3 +1,5 @@
+import { randomUuid } from '@hermes/shared'
+
 import { queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $workspaceOwnerKey } from '@/components/pane-shell/workspace-scope'
 
@@ -72,8 +74,7 @@ export interface PreviewAnnotateHandoffResult {
   ok: boolean
 }
 
-const randomId = () =>
-  globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+const randomId = () => randomUuid()
 
 /** One id per renderer window. sessionStorage is deliberately window-scoped. */
 export function previewAnnotateWindowId(): string {

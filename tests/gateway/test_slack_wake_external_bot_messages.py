@@ -159,7 +159,7 @@ async def test_bot_authored_thread_root_fetches_on_cache_miss():
     from the Slack API."""
     adapter = _make_adapter()
 
-    async def _fake_fetch(channel_id, thread_ts, current_ts, team_id=""):
+    async def _fake_fetch(channel_id, thread_ts, current_ts, team_id="", chat_type=""):
         adapter._thread_context_cache[f"{channel_id}:{thread_ts}:{team_id}"] = (
             _ThreadContextCache(
                 content="ctx",

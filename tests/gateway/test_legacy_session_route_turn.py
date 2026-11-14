@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
 SID = '20261012_122515_721bf6'
@@ -33,7 +33,7 @@ def _adopt_and_resolve(home, legacy_route, source='tui', billing=None):
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = asyncio.run(initialize_session_authority(runner, profile_id=str(home), instance_id='fixture'))
-    actor = Principal('uid:1000', str(home), frozenset({'session:read', 'session:create'}), 'native')
+    actor = SessionActor('uid:1000', str(home), frozenset({'session:read', 'session:create'}), 'native')
     bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': str(home), 'instance_id': 'fixture'})
     reasoning = {'enabled': True, 'effort': 'xhigh'}
     authority.db.create_session(SID, source=source, model='legacy-model', model_config={
@@ -190,6 +190,28 @@ def test_unchanged_route_keeps_the_profile_credential_for_that_endpoint(monkeypa
         assert result['final_response'] == 'legacy ok'
         assert [r['model'] for r in legacy.main_requests()] == ['legacy-model']
         assert {r['auth'] for r in legacy.requests} == {'Bearer sk-profile-only'}
+
+
+@pytest.mark.parametrize('source', ['cli', 'tui', 'oneshot'])
+def test_billing_only_custom_endpoint_the_profile_moved_off_resumes_on_the_profile_route(monkeypatch, source):
+    """T21/F1: a pre-upgrade row whose only route is the ``billing_provider='custom'`` +
+    ``billing_base_url`` usage stamp, at an endpoint no configured entry serves any more (the server
+    moved; config.yaml now points elsewhere). The pre-merge resume ignored that bare ``custom`` stamp
+    and used the profile route; adoption must too, instead of freezing the dead endpoint into the
+    policy, where every turn retries until it gives up."""
+    with FakeLLMServer([Text('profile')], api_key='sk-profile-only') as profile, \
+            FakeLLMServer([Text('stale')]) as old:
+        home = Path(os.environ['HERMES_HOME'])
+        monkeypatch.setattr('gateway.run._hermes_home', home)
+        _write_profile(home, profile.base_url)  # no entry serves the old endpoint
+        policy, (model, runtime) = _adopt_and_resolve(home, {}, source=source, billing={
+            'billing_provider': 'custom', 'billing_base_url': old.base_url})
+        result = _run_turn(policy, model, runtime)
+        assert old.requests == []
+        assert result['final_response'] == 'profile'
+        assert runtime['base_url'].rstrip('/') == profile.base_url.rstrip('/')
+        assert {r['auth'] for r in profile.requests} == {'Bearer sk-profile-only'}
+        assert old.base_url not in policy.config_json
 
 
 @pytest.mark.parametrize('shape', ['desktop-custom', 'auto-base-url', 'stored-api-key', 'cli-billing-auto'])

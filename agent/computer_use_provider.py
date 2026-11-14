@@ -87,6 +87,40 @@ class ComputerUseProvider(abc.ABC):
         deliberately pointed at a backend of their own.
         """
 
+    def routing_identity(self) -> str:
+        """Which machine a backend from this provider is pointed at, as a key.
+
+        The dispatcher caches one started backend per Hermes session and
+        rebuilds it when this string changes, so a provider that can retarget —
+        a lease that moved, a Desktop that reconnected as somebody else — must
+        fold whatever it retargets on into the answer. Providers with exactly
+        one target (the host's display) need not override.
+        """
+        return self.name
+
+    def unavailable_reason(self) -> str:
+        """Why :meth:`is_available` said no, in one sentence for the model.
+
+        The dispatcher refuses the call before building a backend, and the
+        generic default names only the provider. A provider whose absence has
+        a specific, actionable cause — nobody has connected a desktop, the
+        lease expired — should say so, because that string is the whole of
+        what the model gets to reason about.
+        """
+        return f"computer_use provider {self.name!r} is not available"
+
+    def get_status(self) -> Dict[str, Any]:
+        """Readiness detail for the Desktop / dashboard Computer Use card.
+
+        Defaults to the host's own report. A provider that drives some other
+        machine must override this — a container pool answering with the
+        gateway's Accessibility grants describes a display nobody is looking
+        at. Payload shape: :func:`tools.computer_use.permissions.computer_use_status`.
+        """
+        from tools.computer_use.permissions import computer_use_status
+
+        return computer_use_status()
+
     def emergency_cleanup(self) -> None:
         """Best-effort teardown of anything the provider owns outside a backend.
 

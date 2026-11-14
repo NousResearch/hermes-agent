@@ -119,6 +119,29 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=14,
     ),
+    # Nano Banana 2.1 (Google, Oct 6 2026) lives under fal's `google/` namespace. Same parameter
+    # surface as Nano Banana 2 minus the 0.5K tier; billing moves to tokens (~$0.04 at 1K, ~$0.13
+    # at 4K in fal's tests), so 1K stays the default. The edit endpoint's pdf_url/video_url
+    # context inputs are not on the tool surface and are filtered out by `edit_supports`.
+    "google/nano-banana-2.1": _model(
+        "Nano Banana 2.1", "~4s", "Gemini Flash image update: design, text/infographics, 14-ref consistency", "~$0.04/image (1K, token-billed)",
+        style="aspect_ratio",
+        defaults={
+            "num_images": 1, "output_format": "png", "safety_tolerance": "4",
+            "resolution": "1K", "limit_generations": True,
+        },
+        supports={
+            "prompt", "aspect_ratio", "num_images", "output_format", "safety_tolerance", "seed", "sync_mode",
+            "system_prompt", "resolution", "enable_web_search", "limit_generations", "thinking_level",
+        },
+        edit_endpoint="google/nano-banana-2.1/edit",
+        edit_supports={
+            "prompt", "image_urls", "aspect_ratio", "num_images", "output_format", "safety_tolerance", "seed",
+            "sync_mode", "system_prompt", "resolution", "enable_web_search", "limit_generations",
+            "thinking_level",
+        },
+        max_reference_images=14,
+    ),
     "fal-ai/gpt-image-1.5": _model(
         "GPT Image 1.5", "~15s", "Prompt adherence", "$0.034/image",
         style="gpt_literal", sizes={

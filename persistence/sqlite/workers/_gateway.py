@@ -13,7 +13,7 @@ import secrets
 import time
 
 from persistence.authority.coordination import (
-    DELEGATION_COMPLETION_STATUSES, DELEGATION_EVENT_KEYS,
+    COMPLETION_DELIVERIES, DELEGATION_COMPLETION_STATUSES, DELEGATION_EVENT_KEYS,
     DELEGATION_MAX_DELIVERY_ATTEMPTS, DELEGATION_ORIGIN_SOURCES, DELEGATION_ROUTE_KEYS, DELEGATION_TASK_KEYS,
 )
 from persistence.authority.vocabulary import admission_fingerprint
@@ -233,11 +233,12 @@ def _dispatch(holder, conn, session_id, payload, *, execution_id, worker_pid, ow
     return {'value': None}
 
 
-# ``delegation.complete``: the finished state, event and result of a running delegation.
+# ``delegation.complete``: the finished state, event, result and delivery of a running delegation. ``delivery``
+# 'delivered': every child waits on a promised automatic resume, so nothing is published.
 def _complete(holder, conn, session_id, payload, *, execution_id):
-    _shape(payload, {'event', 'result'})
-    event = payload['event']
-    if (not isinstance(event, dict) or set(event) - DELEGATION_EVENT_KEYS
+    _shape(payload, {'event', 'result'} | ({'delivery'} if 'delivery' in payload else set()))
+    event, delivery = payload['event'], payload.get('delivery', 'pending')
+    if (delivery not in COMPLETION_DELIVERIES or not isinstance(event, dict) or set(event) - DELEGATION_EVENT_KEYS
             or not isinstance(payload['result'], dict) or event.get('type') != 'async_delegation'
             or event.get('status') not in DELEGATION_COMPLETION_STATUSES):
         raise AuthorityRefusal('invalid_params')
@@ -247,9 +248,9 @@ def _complete(holder, conn, session_id, payload, *, execution_id):
     _number(event.get('completed_at'))
     if row['state'] != 'running':
         raise AuthorityRefusal('admission_conflict')
-    conn.execute('''UPDATE async_delegations SET state=?,completed_at=?,updated_at=?,event_json=?,result_json=?
-        WHERE delegation_id=?''', (event['status'], event['completed_at'], time.time(),
-        json.dumps(event), json.dumps(payload['result']), event['delegation_id']))
+    conn.execute('''UPDATE async_delegations SET state=?,completed_at=?,updated_at=?,event_json=?,result_json=?,
+        delivery_state=? WHERE delegation_id=?''', (event['status'], event['completed_at'], time.time(),
+        json.dumps(event), json.dumps(payload['result']), delivery, event['delegation_id']))
     return {'value': None}
 
 

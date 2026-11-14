@@ -1169,6 +1169,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
+from plugins.platforms.discord.adapter_auto_thread import DiscordAutoThreadMixin
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.standalone_rest import api_url as _rest_url, post_paced as _post_paced
 from plugins.platforms.discord.adapter_opus import load_opus_codec
@@ -1181,7 +1182,7 @@ from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 
 
 class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, DiscordReactionsMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordAutoThreadMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -5349,40 +5350,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             pass
         return thread
 
-    async def _auto_create_thread(self, message: DiscordMessage) -> Optional[Any]:
-        """Create an auto-thread from a user message; returns the thread or ``None``.
-        Primary path and seed-message fallback each retry once after a short backoff (transient errors).
-
-        ``Cannot connect to host discord.com:443``) don't immediately burn through to the caller's failure
-        path (#20243).
-        """
-        thread_name = self._derive_auto_thread_name(message.content or "")
-        display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
-        reason = f"Auto-threaded from mention by {display_name}"
-        last_direct_error: Exception | None = None
-        last_fallback_error: Exception | None = None
-        for attempt in range(2):
-            try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
-                return self._stamp_auto_thread_name(thread, thread_name)
-            except Exception as direct_error:
-                last_direct_error = direct_error
-                try:
-                    seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
-                    return self._stamp_auto_thread_name(thread, thread_name)
-                except Exception as fallback_error:
-                    last_fallback_error = fallback_error
-                    if attempt == 0:
-                        # Brief backoff: most failures here are transient connect errors.
-                        await asyncio.sleep(0.75)
-                        continue
-        logger.warning(
-            "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",
-            self.name, last_direct_error, last_fallback_error,
-        )
-        return None
-
     async def rename_thread(
         self, thread_id: str, name: str, *, only_if_current_name: Optional[str] = None,
     ) -> bool:
@@ -6078,7 +6045,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
+                thread = await self._auto_create_thread_or_notify(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
                     is_thread = True
@@ -6091,22 +6058,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                     auto_threaded_channel = thread
                     await self._threads.mark_async(thread_id)
                 else:
-                    # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
-                    # reply (dumps the task into a shared channel). Surface an error and skip the run.
-                    try:
-                        # That breaks thread-first Discord workflows by dumping a new task into a shared
-                        # channel. Surface a short visible error so the user can retry once Discord
-                        # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            self.warning_text(
-                                t("platform.discord.thread.auto_create_failed"),
-                                t("platform.discord.thread.auto_create_failed_generic"))
-                        )
-                    except Exception as notify_error:
-                        logger.warning(
-                            "[%s] Failed to notify user of auto-thread failure: %s", self.name,
-                            notify_error,
-                        )
                     return False
         referenced_attachments = []
         reference = getattr(message, "reference", None)

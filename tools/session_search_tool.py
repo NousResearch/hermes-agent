@@ -349,6 +349,43 @@ def _bookend(view: dict[str, Any], key: str) -> list[dict[str, Any]]:
             if not _is_compaction_summary(m.get("content", ""))]
 
 
+_SNIPPET_MARK_RE = re.compile(r">>>(.*?)<<<", re.DOTALL)
+_SNIPPET_BEFORE, _SNIPPET_AFTER = 100, 200
+
+
+def _derived_snippet(fts_snippet: Any, anchor: Optional[dict[str, Any]]) -> str:
+    """Rebuild the hit snippet from the strictly-redacted anchor message.
+
+    FTS ``snippet()`` output can't be redacted after the fact: a highlight marker inside a
+    token (``>>>ghp<<<_...``) or the window crop (``...<token body>``) breaks the vendor-prefix
+    patterns. So the FTS row only contributes its highlighted terms; the text comes from the
+    redacted anchor body (or tool-call arguments), windowed and re-highlighted here (#113165).
+    """
+    if not anchor:
+        return ""
+    terms = [t for t in dict.fromkeys(_SNIPPET_MARK_RE.findall(str(fts_snippet or ""))) if t.strip()]
+    sources = [redact_derived_text(anchor.get("content"))]
+    calls = anchor.get("tool_calls")
+    if calls:
+        sources.append(redact_derived_text(calls if isinstance(calls, str) else json.dumps(calls, ensure_ascii=False)))
+    # LIKE-fallback snippets carry no markers: locate by their leading text instead.
+    probes = terms or [str(fts_snippet or "").strip(". ")[:20]]
+    text, pos = sources[0], -1
+    for candidate in sources:
+        lowered = candidate.lower()
+        pos = min((i for i in (lowered.find(t.lower()) for t in probes if t) if i >= 0), default=-1)
+        if pos >= 0:
+            text = candidate
+            break
+    start = max(0, pos - _SNIPPET_BEFORE) if pos >= 0 else 0
+    end = min(len(text), max(pos, 0) + _SNIPPET_AFTER)
+    window = text[start:end]
+    if terms:
+        window = re.sub("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)),
+                        lambda m: f">>>{m.group(0)}<<<", window, flags=re.IGNORECASE)
+    return ("..." if start else "") + window + ("..." if end < len(text) else "")
+
+
 def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detail: str) -> Optional[dict[str, Any]]:
     """Discovery result from a surviving FTS row; None (dropped) if the view can't load."""
     hit_sid, msg_id = match_info.get("session_id") or lineage_root, match_info.get("id")
@@ -358,6 +395,7 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
         return None
     session_meta, full = _get_session_meta(db, lineage_root), result_detail == "full"
+    anchor = next((m for m in (view.get("window") or []) if m.get("id") == msg_id), None)
     return _discovery_entry(
         lineage_root, session_id=hit_sid,
         when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
@@ -365,7 +403,7 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         model=session_meta.get("model") or match_info.get("model") or "unknown",
         title=redact_derived_text(session_meta.get("title")) or None,
         matched_role=match_info.get("role"), match_message_id=msg_id,
-        snippet=redact_derived_text(match_info.get("snippet")),
+        snippet=_derived_snippet(match_info.get("snippet"), anchor),
         bookend_start=_bookend(view, "bookend_start") if full else [],
         messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000, derived=True)
                   for m in (view.get("window") or []) if full or m.get("id") == msg_id],

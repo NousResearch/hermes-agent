@@ -744,7 +744,7 @@ def test_home_credential_stores_hidden_and_unreadable(local_files_client):
         ".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC",
         ".ssh/id_custom", ".aws/config", ".gnupg/private-keys-v1.d/k.key",
         ".kube/config", ".docker/config.json", ".azure/msal_token_cache.json",
-        ".config/gh/hosts.yml", ".config/gcloud/credentials.db",
+        ".config/gh/hosts.yml", ".config/gcloud/credentials.db", ".Config/GH/hosts.yml",
     ]
     for rel in stores:
         path = home / rel

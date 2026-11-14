@@ -13,6 +13,7 @@ import {
   REVIEW_FILE_CAP,
   reviewCreatePr,
   reviewList,
+  reviewUntracked,
   simpleGitHostEnv
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
@@ -288,6 +289,30 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
+})
+
+// lastTurn's baseline snapshot: paths only, and every untracked path is
+// reported (not just the ones a turn created — that distinction is the
+// renderer's, which holds the baseline).
+test('reviewUntracked reports every untracked path', async () => {
+  const dir = makeRepo()
+
+  fs.writeFileSync(path.join(dir, 'old-scratch.ts'), 'export {}\n')
+  fs.mkdirSync(path.join(dir, 'generated'))
+  fs.writeFileSync(path.join(dir, 'generated', 'deep.txt'), 'generated\n')
+
+  const paths = await reviewUntracked(dir, 'git')
+
+  // `normal` keeps an untracked directory as a single row, like reviewList.
+  assert.deepEqual(paths.sort(), ['generated/', 'old-scratch.ts'])
+})
+
+test('reviewUntracked answers empty when the path is not a repo', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-not-a-repo-'))
+
+  tempDirs.push(dir)
+
+  assert.deepEqual(await reviewUntracked(dir, 'git'), [])
 })
 
 const mockExecFile = vi.mocked(await import('node:child_process')).execFile

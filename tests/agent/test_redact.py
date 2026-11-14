@@ -120,7 +120,9 @@ class TestKnownPrefixes:
             for out in (redact_sensitive_text(f"$ printf '%s' \"$GRAFANA_TOKEN\"\n{token}\n"),
                         redact_terminal_output(f"{token}\n", "printenv GRAFANA_TOKEN")):
                 assert body not in out, f"{token!r} survived redaction: {out!r}"
-        for benign in ["glsa_short", "glc_config_loader", "myglsa_" + sa_body]:
+        for benign in ["glsa_short", "glc_config_loader", "myglsa_" + sa_body,
+                       "src/glc_renderer/backend/opengl/shaders/main.frag",  # a glc_* path is not a token
+                       "cd /home/u/glc_project/build/release/artifacts/output"]:
             assert redact_sensitive_text(benign) == benign
 
     def test_context7_api_key_prefix(self):

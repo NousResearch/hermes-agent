@@ -940,6 +940,8 @@ def _restore_bridge_claims(home_key: str, claims: dict, keep, owned_by_dotenv: s
 def _revoke_value_writes(home_key: str, writes: dict, keep, owned_by_dotenv: set) -> None:
     if not writes:
         return
+    from tui_gateway.launch_profile_policy import revoke_launch_env_write
+
     kept: dict[str, tuple[str, str, str | None]] = {}
     for name, (source, value, prior) in writes.items():
         if keep(name, source):
@@ -950,6 +952,7 @@ def _revoke_value_writes(home_key: str, writes: dict, keep, owned_by_dotenv: set
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = prior
+        revoke_launch_env_write(name, value, prior)  # activation froze a copy of the write too
         still_attributed = any(
             other.get(name, ("",))[0] == source
             for key, other in _SECRET_SOURCE_WRITES_BY_HOME.items() if key != home_key)
@@ -1112,7 +1115,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         if name in os.environ:
             values[name] = os.environ[name]
             _release_bridge_claim(name)  # a value a source supplies is the operator's, even one it skipped
-    _record_secret_source_writes(home_key, report, supplied, environ_before)
+    _record_secret_source_writes(home_key, report, supplied, environ_before, staged)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
@@ -1148,10 +1151,25 @@ def _record_released_bridge_claims(home_key: str, report, supplied: set[str], en
         _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
 
 
-def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict) -> None:
+def _published_value(name: str, staged: dict) -> str | None:
+    """The value this pass published for *name*, in the form ``_sanitize_loaded_credentials`` leaves it."""
+    value = staged.get(name)
+    if value is None or value.isascii() or not name.endswith(_CREDENTIAL_SUFFIXES):
+        return value
+    return value.encode("ascii", errors="ignore").decode("ascii")
+
+
+def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict,
+                                 staged: dict) -> None:
     """Refresh ``_SECRET_SOURCE_WRITES_BY_HOME`` after one process-global pass, revoking a write its
     still-enabled source has stopped supplying (rotated out, mapping removed). A source whose fetch
-    FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation."""
+    FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation.
+
+    The frozen launch env follows a re-applied write only to the value the source published
+    (*staged*): another thread may write the same name into os.environ during the fetch, and that
+    value must never enter the snapshot."""
+    from tui_gateway.launch_profile_policy import revoke_launch_env_write
+
     failed = {src.name for src in report.sources if not src.result.ok}
     previous = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {})
     _revoke_secret_source_writes(
@@ -1165,7 +1183,11 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         before = environ_before.get(name)
         earlier = previous.get(name)
         # Re-applied over our own earlier write: the pre-source value is the one recorded then.
-        prior = earlier[2] if earlier is not None and earlier[1] == before else before
+        reapplied = earlier is not None and earlier[1] == before
+        prior = earlier[2] if reapplied else before
+        # The frozen launch env follows a rotated write, so a later revoke still matches it.
+        if reapplied and os.environ[name] == _published_value(name, staged):
+            revoke_launch_env_write(name, before, os.environ[name])
         writes[name] = (applied.source, os.environ[name], prior)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes

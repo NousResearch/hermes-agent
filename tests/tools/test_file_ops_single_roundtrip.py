@@ -341,7 +341,7 @@ class TestNativeRead:
         # file recovery's directory listing; the tilde probe is a fixed
         # ``echo $HOME`` that never embeds the path. Nothing else runs.
         for c in calls:
-            assert c == "echo $HOME" or c.startswith("ls -1 '~; echo PWNED"), c
+            assert c == "echo $HOME" or c.startswith("ls -1 -- '~; echo PWNED"), c
 
     def test_fifo_refused_without_a_shell_and_without_blocking(self, native, tmp_path):
         if not hasattr(os, "mkfifo"):

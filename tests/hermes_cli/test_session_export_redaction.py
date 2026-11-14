@@ -116,3 +116,14 @@ class TestRenderedExportIsClean:
         token = _fake_botfather_token()
         md = render_session_markdown(redact_session_data(_session_fixture()), fmt="md")
         assert token not in md
+
+
+def test_keys_that_redact_to_the_same_mask_keep_every_entry():
+    """Two credential-shaped keys masking to the same text must not collapse into one entry."""
+    from hermes_cli.session_export_md import redact_session_data
+
+    first, second = "sk-" + "A" * 12, "sk-" + "B" * 12
+    out = redact_session_data({"tool_result": {first: "one", second: "two"}})["tool_result"]
+
+    assert sorted(out.values()) == ["one", "two"]
+    assert first not in str(out) and second not in str(out)

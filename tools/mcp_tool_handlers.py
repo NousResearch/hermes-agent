@@ -313,12 +313,37 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     return _record_call_outcome(server_name, result)
 
 
+def _take_call_auth_failure(server_name: str):
+    """``(exception, step_up_scope)`` when this server's OAuth flow failed during the current call, else None.
+
+    mcp 2.x runs the auth flow inside the transport's request task: when it raises (a 401 that needs a
+    browser sign-in, a 403 ``insufficient_scope`` step-up) the session is torn down and the pending
+    ``tools/call`` only sees ``MCPError: Connection closed``, which the session-expired recoverer then
+    reported as an uncertain write. The provider records the failure; this reads it back for the call
+    that started at the server's ``_last_tool_call_at``."""
+    from tools.mcp_oauth_manager import get_manager
+    srv = _lookup_reconnectable_server(server_name)
+    since = getattr(srv, "_last_tool_call_at", None)
+    return get_manager().take_call_auth_failure(server_name, since) if isinstance(since, float) else None
+
+
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
-    failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
+    failure returns the structured ``needs_reauth`` error so the model stops refreshing. A 403
+    ``insufficient_scope`` skips recovery: a refreshed token carries the same scopes."""
+    step_up_scope = None
     if not _is_auth_error(exc):
-        return None
+        failure = _take_call_auth_failure(server_name)
+        if failure is None or not (failure[1] is not None or _is_auth_error(failure[0])):
+            return None
+        exc, step_up_scope = failure
+    if step_up_scope is not None:
+        wanted = f" '{step_up_scope}'" if step_up_scope else ""
+        detail = (f" The server refused this call for a missing OAuth scope{wanted} (403 insufficient_scope); "
+                  "the call did not run, and signing in again grants the scope.")
+        return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name, detail=_sanitize_error(detail)),
+                       needs_reauth=True, insufficient_scope=True, server=server_name)
     from tools.mcp_oauth_manager import get_manager
     try:
         recovered = _loop._run_on_mcp_loop(lambda: get_manager().handle_401(server_name, None), timeout=10)

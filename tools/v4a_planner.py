@@ -659,7 +659,7 @@ def apply_whole(pieces, site, hunk, added, eol, consumed, ids):
                 last = out[-1]
                 out[-1] = Piece(last.kind, last.text, eol, last.origin, last.ins_id)
             out.append(Piece("ins", text, this_eol, None, next(ids)))
-    if removed_eols and removed_eols[-1] == "" and idx == len(pieces) and out[-1].kind == "ins":
+    if removed_eols and removed_eols[-1] == "" and idx == len(pieces) and out and out[-1].kind == "ins":
         # The removed run ended an unterminated file: the last added line ends it too.
         last = out[-1]
         out[-1] = Piece(last.kind, last.text, "", last.origin, last.ins_id)

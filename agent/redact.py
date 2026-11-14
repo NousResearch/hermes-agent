@@ -11,7 +11,6 @@ import re
 import shlex
 import threading
 import unicodedata
-from collections import OrderedDict
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -45,44 +44,31 @@ REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
-_MIN_SECRET_LINE_CHARS = 24
-_VAULT_REDACTION_VALUES: dict = {}  # profile home key → ordered {value: tuple of exact fragments}
+_VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
 _VAULT_REDACTION_LOCK = threading.Lock()
 
 
-def _vault_scope(home=None) -> str:
-    from hermes_constants import hermes_home_key
-    return hermes_home_key(home)
+def _vault_scope() -> str:
+    from hermes_constants import get_hermes_home
+    return str(get_hermes_home())
 
 
-def register_vault_redaction_value(value, *, home=None) -> None:
-    """Register an exact secret value for model-facing redaction.
+def register_vault_redaction_value(value) -> None:
+    """Register an exact vault secret value for model-facing redaction.
 
     Called by the vault fill path BEFORE the injection happens, so no later browser tool result
-    can echo the value back into model context, and by the secret-source apply funnel. Also
-    registers the form a text input normalizes it to (CR/LF stripped), since that is what the
-    page holds, and each line of a multi-line value: line-oriented output (``env | sort``,
-    ``grep -v key``, ``sed -n 2,4p`` of a key file) separates a PEM body from its markers, so
-    only the exact line can still be recognised. Armor lines (``-----BEGIN …``) and lines under
-    ``_MIN_SECRET_LINE_CHARS`` are never registered on their own: the scrub is an unanchored
-    substring replace, and those would blank out innocent text (key body lines are 64 chars).
-
-    All fragments form ONE unit for the per-profile bound, so a 50-line key never evicts its own
-    early lines or older entries one at a time. ``home`` scopes the unit to a profile that is not
-    the ambient one (multiplex hydration resolves profile B with no home override bound).
+    can echo the value back into model context. Also registers the form a text input normalizes
+    it to (CR/LF stripped), since that is what the page holds.
     """
     if not isinstance(value, str) or not value:
         return
-    lines = [line.strip() for line in value.splitlines()] if ("\n" in value or "\r" in value) else []
-    fragments = tuple(dict.fromkeys(
-        f for f in (value, value.replace("\r", "").replace("\n", ""),
-                    *(ln for ln in lines if len(ln) >= _MIN_SECRET_LINE_CHARS and not ln.startswith("-----")))
-        if f
-    ))
+    normalized = value.replace("\r", "").replace("\n", "")
     with _VAULT_REDACTION_LOCK:
-        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(home), OrderedDict())
-        bucket.pop(value, None)  # re-registering refreshes recency
-        bucket[value] = fragments
+        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), {})
+        for v in (value, normalized):
+            if v:
+                bucket.pop(v, None)  # re-registering refreshes recency
+                bucket[v] = None
         while len(bucket) > _VAULT_REDACTION_MAX_PER_PROFILE:
             del bucket[next(iter(bucket))]
 
@@ -99,11 +85,7 @@ def redact_registered_vault_values(text: str) -> str:
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
-        values = sorted(
-            (value for unit in bucket.values() for value in unit),
-            key=len,
-            reverse=True,
-        ) if bucket else ()  # longest first: a substring never shadows its superstring
+        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
     for value in values:
         if value in text:
             text = text.replace(value, "«redacted-vault-secret»")
@@ -720,7 +702,8 @@ def _is_b64_pem_key(blob: str) -> bool:
 # A partial print keeps only one armor line: ``head`` of a key file has BEGIN + body, ``tail``
 # has body + END. The full-block pattern needs both, so those body lines leaked verbatim.
 _PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
-_PEM_BODY_LINE_RE = re.compile(r"[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*")
+# A pure-hex line is a digest in docs, not key material: a base64 body line is never all hex.
+_PEM_BODY_LINE_RE = re.compile(r"[ \t]*(?![0-9A-Fa-f]+[ \t]*$)[A-Za-z0-9+/=]{16,}[ \t]*")
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a

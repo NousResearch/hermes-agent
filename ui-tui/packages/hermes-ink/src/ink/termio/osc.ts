@@ -375,7 +375,8 @@ function copyNative(text: string): boolean {
 
   switch (process.platform) {
     case 'darwin':
-      void execFileNoThrow('pbcopy', [], opts)
+      // pbcopy decodes stdin in the locale's charset; LANG unset or LC_ALL=C stores CJK/emoji as mojibake.
+      void execFileNoThrow('pbcopy', [], { ...opts, env: { ...process.env, LC_ALL: 'en_US.UTF-8' } })
 
       return true
     case 'linux': {

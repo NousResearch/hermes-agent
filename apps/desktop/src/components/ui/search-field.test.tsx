@@ -25,6 +25,17 @@ describe('SearchField', () => {
     expect(input.className).toContain('min-w-0')
   })
 
+  it('opts out of password-manager autofill so saved usernames never land in filter boxes', () => {
+    const { getByRole } = render(<SearchField onChange={() => {}} placeholder="Search" value="" />)
+
+    const input = getByRole('textbox') as HTMLInputElement
+
+    expect(input.getAttribute('autocomplete')).toBe('off')
+    expect(input.getAttribute('name')).toBe('hermes-search')
+    expect(input.hasAttribute('data-1p-ignore')).toBe(true)
+    expect(input.getAttribute('data-lpignore')).toBe('true')
+  })
+
   it('keeps clear wired to the value reset', () => {
     const onChange = vi.fn()
 

@@ -89,6 +89,11 @@ export function SearchField({
       {leadingContent}
       <input
         aria-label={ariaLabel ?? placeholder}
+        // Keep Chrome's password manager from filling a saved login username
+        // into filter boxes. Chrome ignores autocomplete="off" on its own, so
+        // also use a non-credential name and the common password-manager
+        // opt-out attributes (#152079).
+        autoComplete="off"
         className={cn(
           // `field-sizing: content` sizes the input to its placeholder/typed
           // text, so a width-less caller's row stays compact; `flex-1` +
@@ -103,6 +108,11 @@ export function SearchField({
           boxed && 'h-auto w-full flex-1 text-sm leading-5 [field-sizing:initial]',
           inputClassName
         )}
+        data-1p-ignore=""
+        data-bwignore="true"
+        data-form-type="other"
+        data-lpignore="true"
+        name="hermes-search"
         onChange={event => onChange(event.target.value)}
         onKeyDown={onKeyDown}
         placeholder={effectivePlaceholder}

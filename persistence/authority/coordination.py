@@ -6,7 +6,7 @@ What each group of verbs does:
 2. Turn lease (``session_turn_leases``, keyed by the conversation: the lineage root reached by walking compression parents while the row is a plain continuation): one write sweeps rows expired more than a day ago, resolves the key, reclaims an expired (``expires_at <= now``) or dead-holder row and inserts; the TTL is clamped to at least 0.1 s; an empty id or holder is False with no write. :func:`acquire_turn_lease_waiting` is a wait loop over the single attempt, polling only on :class:`persistence.StoreContention`.
 3. Hygiene streak: an atomic ``+1`` returning the new value; reset deletes the row; an empty key answers 1 (or does nothing) without a write.
 4. Handoffs (the ``handoff_*`` columns of the session row): request arms from no state, ``completed`` or ``failed``, and with ``require_settled`` refuses first, in the same write, while durable work owns the session (:class:`persistence.core.errors.HandoffUnsettled`); the watcher re-checks that condition before it repoints; claim moves ``pending`` to ``running`` once; fail stores the error cut to 500 characters, optionally only from ``only_states``; the stale-running reclaim fails every ``running`` row in one write and never raises.
-5. Delegation ledger (``async_delegations``): dispatch is an insert-or-replace of a ``running`` row with a ``pending`` delivery; the delivery claim admits one consumer, spends one attempt, and is settled by complete, release (dropped once the budget is spent), defer (refunds the attempt) or drop; a claim on an id with no row is True with no write. The sweeps take the caller's owner probe and the copies it lost as data (``dead_owners``, ``lost_ids``) and offer nothing themselves: the helpers in tools/async_delegation.py offer the returned rows after the commit.
+5. Delegation ledger (``async_delegations``): dispatch is an insert-or-replace of a ``running`` row with a ``pending`` delivery; the delivery claim admits one consumer, spends one attempt, and is settled by complete, release (dropped once the budget is spent), defer (refunds the attempt) or drop; a claim on an id with no row is True with no write. The sweeps take the caller's owner probe and the copies it lost as data (``dead_owners``, ``lost_ids``) and offer nothing themselves: the helpers in tools/async_delegation.py offer the returned rows after the commit. The ledger also keeps the durable subagent records (``resumable_subagents``, :mod:`persistence.authority.subagents`); the boot recovery writes both in one transaction.
 6. Delivery obligations (``delivery_obligations``): record is an insert-or-replace of a ``pending`` row followed by the retention prune in the same write; the sweeps take the owner probe as data and claim each row guarded on its previous owner stamp.
 """
 
@@ -23,6 +23,7 @@ from typing import Any, Callable, Literal, Optional, Protocol, runtime_checkable
 
 from ..core.errors import StoreContention
 from ..core.identity import DelegationId, JsonValue, SessionId
+from .subagents import SubagentLedger, SubagentLimits, SubagentRecovery
 
 logger = logging.getLogger(__name__)
 
@@ -455,8 +456,8 @@ class RetryDue:
 
 
 @runtime_checkable
-class CoordinationRepository(Protocol):
-    """The coordination verbs (module docstring); the runtime check is an assembly diagnostic only, never contract coverage."""
+class CoordinationRepository(SubagentLedger, Protocol):
+    """The coordination verbs (module docstring) and the delegation ledger's subagent records (:class:`persistence.authority.subagents.SubagentLedger`); the runtime check is an assembly diagnostic only, never contract coverage."""
 
     # ── compression lock ──
 
@@ -540,8 +541,8 @@ class CoordinationRepository(Protocol):
         """Only for a running row: merges the caller-redacted ``entry`` by ``task_index`` into the stored partial and writes ``{results, partial: true}``; a missing or non-running row writes nothing; the stored partial is not re-redacted."""
         ...
 
-    def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery]) -> int:
-        """One write: each recovery whose row still has its expected state and ``updated_at`` becomes ``unknown`` with the given event, result and completion time, ``updated_at`` now and the recovery's delivery; others are skipped. Returns the rows written."""
+    def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery], subagent_recoveries: Sequence[SubagentRecovery] = (), limits: Optional[SubagentLimits] = None) -> int:
+        """Boot recovery in one write. First each subagent recovery whose record is still ``running`` or ``claimed`` and stamped with its dead owner is written as given, with ``limits`` applied after each when given (:meth:`persistence.authority.subagents.SubagentLedger.apply_subagent_limits`); others are skipped. Then each delegation recovery whose row still has its expected state and ``updated_at`` becomes ``unknown`` with the given event, result and completion time, ``updated_at`` now and the recovery's delivery; others are skipped. Returns the delegation rows written."""
         ...
 
     def take_replayable_completions(self) -> tuple[PendingCompletion, ...]:

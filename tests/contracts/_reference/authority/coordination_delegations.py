@@ -33,6 +33,7 @@ from persistence.authority.coordination import (
     PendingCompletion,
     RecordedOwner,
 )
+from persistence.authority.subagents import SubagentLimits, SubagentRecovery
 
 from ..workers.delegations import _dispatch_row
 
@@ -137,10 +138,14 @@ class DelegationLedger:
         results.append(stored_entry)
         row.update(result={"results": results, "partial": True}, updated_at=time.time())
 
-    def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery]) -> int:
+    def _recover_subagents(self, recoveries: Sequence[SubagentRecovery], limits: Optional[SubagentLimits], now: float) -> None:
+        raise NotImplementedError
+
+    def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery], subagent_recoveries: Sequence[SubagentRecovery] = (), limits: Optional[SubagentLimits] = None) -> int:
         ledger, now, written = self._ledger(), time.time(), 0
-        for recovery in recoveries:
-            event, result = _json_value(recovery.event), _json_value(recovery.result)
+        stored = [(recovery, _json_value(recovery.event), _json_value(recovery.result)) for recovery in recoveries]  # an unencodable payload refuses before any write
+        self._recover_subagents(subagent_recoveries, limits, now)
+        for recovery, event, result in stored:
             row = ledger.get(str(recovery.delegation_id))
             if row is None or row["state"] != recovery.expected_state or row["updated_at"] != recovery.expected_updated_at:
                 continue

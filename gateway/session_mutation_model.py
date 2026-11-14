@@ -11,6 +11,22 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 
+def persist_global_selection(authority, ref, result):
+    """Repair publication on exact retries, unless a newer profile selection superseded it."""
+    from pathlib import Path
+    from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+    with authority.db._read_ctx() as conn:
+        latest = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                              ('gateway.global_model_selection.v1',)).fetchone()
+    if latest is None or json.loads(latest[0]) != [ref.session_id, result['execution_generation']]:
+        return
+    selection = result['global_selection']
+    persist_model_selection(ModelSwitchResult(
+        success=True, new_model=selection['default'], target_provider=selection['provider'],
+        base_url=selection.get('base_url') or '', api_mode=selection.get('api_mode') or ''),
+        Path(authority.db.db_path).resolve().parent / 'config.yaml')
+
+
 class _Route(NamedTuple):
     provider: str
     model: str
@@ -73,7 +89,7 @@ async def prepare_model(authority, live, payload, prepared):
     result, alias_credential = await asyncio.to_thread(switch, raw_input=payload['model'],
         current_provider=current.provider, current_model=current.model, current_base_url=current.base_url,
         current_api_key=current.api_key, explicit_provider=payload.get('provider', ''),
-        is_global=False, user_providers=resolution.get('providers'),
+        is_global=payload.get('scope') == 'global', user_providers=resolution.get('providers'),
         custom_providers=get_compatible_custom_providers(resolution))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')

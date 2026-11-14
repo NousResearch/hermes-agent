@@ -86,7 +86,7 @@ it('canonical model, branch and compression use generation-fenced owner mutation
   ).toBe(false)
 })
 
-it('ambiguous mutations retry the frozen identity while unsupported model scopes never mutate', async () => {
+it('ambiguous mutations retry the frozen identity while global model scope stays distinct', async () => {
   const { request, slash } = harness()
   request.mockImplementation(async (method: string) => {
     if (method === 'session.resume') {
@@ -104,7 +104,7 @@ it('ambiguous mutations retry the frozen identity while unsupported model scopes
   expect(calls[0]![1]).toEqual(calls[1]![1])
   slash('/model picked --global')
   await flush()
-  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(2)
+  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(3)
 })
 
 it('late model or compression replies cannot replace a newer execution snapshot', async () => {
@@ -329,9 +329,9 @@ it('a pick deferred by a running turn says it applies from the next turn', async
   expect(getUiState().info?.model).toBe('old')
 })
 
-it('a picker-issued --reasoning rides in the one canonical model selection, deferred or not', async () => {
+it.each(['--tui-session', '--global'])('a picker-issued --reasoning rides with model scope %s', async flag => {
   const { request, slash } = harness()
-  slash('/model picked --provider custom --reasoning HIGH --tui-session')
+  slash(`/model picked --provider custom --reasoning HIGH ${flag}`)
   await flush()
   await flush()
 
@@ -339,8 +339,8 @@ it('a picker-issued --reasoning rides in the one canonical model selection, defe
     .filter(([method]) => method === 'session.mutate')
     .map(([, params]) => [params.operation, params.payload])
 
-  // One request: a busy session defers it and commits model + level together at the boundary.
-  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high' }]])
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high',
+    ...(flag === '--global' ? { scope: 'global' } : {}) }]])
   expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
 })
 

@@ -1058,7 +1058,7 @@ def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> N
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash, target_ref=None, pre_sync_sha=None, rollback_branch=None, sync_upstream=False, assume_yes=False,
-    in_place_update=False, _windows_gateway_resume=None, expected_sha=None):
+    in_place_update=False, stay_on_branch=False, _windows_gateway_resume=None, expected_sha=None):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> rescue ref then reset; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns the SHA HEAD had to move off."""
@@ -1149,6 +1149,15 @@ def _pull_updates(
                 print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
                 print("  Restore manually with: git stash apply")
                 _clear_pending_autostash()  # named just above; a later boundary must not repeat it
+            elif stay_on_branch:
+                # Desktop product update: we intentionally end on the tracked
+                # branch (main). Auto-applying a feature-branch stash here would
+                # contaminate main with WIP that belongs on the developer's
+                # branch — keep it for manual recovery (#80041).
+                print()
+                print("  ℹ Local changes preserved in stash (not auto-restored because")
+                print("    the update stayed on the target branch).")
+                print(f"    Restore manually on your branch with: git stash apply {auto_stash_ref}")
             elif discard_local_changes:
                 # Non-interactive + updates.non_interactive_local_changes: discard.
                 _m()._discard_stashed_changes(git_cmd, _m().PROJECT_ROOT, auto_stash_ref)
@@ -1483,6 +1492,10 @@ class _UpdateOptions:
     switch_branch: bool
     discard_local_changes: bool
     no_gateway_restart: bool = False
+    # --stay-on-branch (#80041): end the update on the target branch instead of
+    # switching back; the desktop app needs the checkout left on main so the
+    # packaged rebuild does not pick up a stale feature branch.
+    stay_on_branch: bool = False
 
 
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
@@ -1500,6 +1513,14 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     # branch's history; only meaningful with parked_branch_strategy "update_in_place".
     # See #89507.
     switch_branch = bool(getattr(args, "switch_branch", False))
+    # Stay on the update target branch after the update finishes instead of
+    # switching back to the pre-update branch. The desktop app passes this so
+    # a product update always ends on the tracked branch (default main) — the
+    # packaged desktop app is rebuilt from the checkout AFTER this update
+    # returns, so leaving HEAD on a stale feature branch would rebuild the
+    # desktop from the old code (field report: desktop stuck at old version
+    # while CLI reported "already up to date").
+    stay_on_branch = bool(getattr(args, "stay_on_branch", False))
     # --no-gateway-restart (cron inside the gateway's own cgroup): update code
     # and dependencies but defer the fleet restart so the updater is not killed
     # by its own restart. The pending-restart marker is kept for catch-up.
@@ -1517,7 +1538,7 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes,
-        no_gateway_restart=no_gateway_restart)
+        no_gateway_restart=no_gateway_restart, stay_on_branch=stay_on_branch)
 
 
 def _begin_update_receipt_and_plan(args):
@@ -1705,7 +1726,7 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None, held_message: str | None = None) -> None:
+    _windows_gateway_resume=None, held_message: str | None = None, stay_on_branch: bool = False) -> None:
     """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
     ``held_message`` replaces "Already up to date!" when the channel's release was held, not reached.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
@@ -1713,9 +1734,18 @@ def _finish_already_up_to_date(
     # recreates the incident. No other checkout left current_branch (in-place and release updates
     # never switch), so there is nothing to switch back to.
     if _plan.auto_stash_ref is not None:
-        _m()._restore_stashed_changes(
-            git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
-            input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
+        if stay_on_branch:
+            # --stay-on-branch (#80041): the desktop product update ends on the
+            # target branch; auto-restoring a feature-branch stash onto it would
+            # contaminate the tracked branch — keep the stash for manual recovery.
+            print()
+            print("  ℹ Local changes preserved in stash (not auto-restored because")
+            print("    the update stayed on the target branch).")
+            print(f"    Restore manually on your branch with: git stash apply {_plan.auto_stash_ref}")
+        else:
+            _m()._restore_stashed_changes(
+                git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
+                input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
     if _plan.parked_branch_switched:
         if _plan.switch_block_reason.startswith("unmerged:"):
             _count = _plan.switch_block_reason.split(":", 1)[1]
@@ -1927,7 +1957,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
                 completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume,
-                held_message=held_message)
+                held_message=held_message, stay_on_branch=opts.stay_on_branch)
             return
 
         if release_sha:
@@ -1944,7 +1974,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         movement_baseline = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
+            keep_stash=opts.keep_stash, stay_on_branch=opts.stay_on_branch,
+            target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
             rollback_branch=_plan.rollback_branch,
             sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
             in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume,

@@ -313,19 +313,32 @@ def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> list
 
 
 def _resolve_name_collisions(name: str, candidates: list[_Candidate]) -> list[_Candidate]:
-    """Preflight name collisions: exact duplicates dropped silently; a utility normalizing onto
-    a native tool's name is shadowed (native wins); any other multi-origin collision skips every
-    colliding entry (fail closed). Returns survivors in order."""
+    """Preflight name collisions: identical duplicates dropped silently; a utility normalizing onto
+    a native tool's name is shadowed (native wins); any other collision, including one name listed
+    with different declarations, skips every colliding entry (fail closed). Returns survivors in order."""
     unique: list[_Candidate] = []
     origins_by_name: dict[str, set[str]] = {}
+    first_schema: dict[tuple[str, str], dict] = {}
+    listings: dict[str, int] = {}
+    conflicting: set[str] = set()
     for c in candidates:
+        listings[c.registry_name] = listings.get(c.registry_name, 0) + 1
         origins = origins_by_name.setdefault(c.registry_name, set())
         if c.origin in origins:
+            # Calls carry only the name and the server picks the command, so advertising one of
+            # two different declarations can describe a command other than the one that runs.
+            if c.schema != first_schema[(c.registry_name, c.origin)]:
+                conflicting.add(c.registry_name)
             logger.debug("MCP server '%s': duplicate registration candidate %s for '%s'; keeping one",
                          name, c.origin, c.registry_name)
             continue
         origins.add(c.origin)
+        first_schema[(c.registry_name, c.origin)] = c.schema
         unique.append(c)
+    for registry_name in sorted(conflicting):
+        logger.warning("MCP server '%s' lists '%s' %d times with different declarations; skipping it instead of "
+                       "advertising one (a call sends only the name, so the server picks which command runs)",
+                       name, registry_name, listings[registry_name])
     ambiguous: dict[str, list[str]] = {}
     shadowed: set[tuple[str, str]] = set()
     # A generated resource/prompt utility that normalizes onto a server-native tool's name must not knock
@@ -352,7 +365,8 @@ def _resolve_name_collisions(name: str, candidates: list[_Candidate]) -> list[_C
     for registry_name, origins in sorted(ambiguous.items()):
         logger.error("MCP server '%s': name normalization collision for '%s' from %s; skipping every colliding "
                      "entry instead of choosing an arbitrary handler", name, registry_name, ", ".join(origins))
-    return [c for c in unique if c.registry_name not in ambiguous and (c.registry_name, c.origin) not in shadowed]
+    return [c for c in unique if c.registry_name not in ambiguous and c.registry_name not in conflicting
+            and (c.registry_name, c.origin) not in shadowed]
 
 
 def _register_candidates(name: str, candidates: list[_Candidate], *, check_fn: Callable,

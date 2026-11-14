@@ -37,6 +37,13 @@ _TOOL_METADATA_TAG = "<tool-result-metadata>"
 _TOOL_METADATA_CLOSING_TAG = "</tool-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+# Tools whose payload is executable policy, not data: a byte-prefix preview of one can drop a
+# binding clause while still reading like a complete answer, so their spill notice has to say the
+# rules are incomplete instead of the generic "this result was too large" text (#151283).
+RULE_BEARING_TOOLS: frozenset[str] = frozenset({"skill_view"})
+_SKILL_HEADING_RE = re.compile(r"^##\s+(\S.*?)\s*$")
+_MAX_OUTLINE_SECTIONS = 20
+_MAX_OUTLINE_TITLE_CHARS = 80
 
 _spillover_prune_lock = threading.Lock()
 _spillover_pruned_homes: set = set()  # profile home keys already swept this process
@@ -390,9 +397,44 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     return False
 
 
+def _rule_bearing_outline(text: str, *, max_sections: int = _MAX_OUTLINE_SECTIONS) -> str:
+    """Every ``##`` section of a rule-bearing payload with its LINE range in the saved file
+    (``read_file`` pages by ``\\n`` lines, so a character offset could not fetch the section it
+    names). Headings inside fenced code are examples, not sections; titles are clipped so the
+    outline stays bounded. Name/description need no row: the preview's metadata block has them."""
+    lines, starts, fenced = text.removesuffix("\n").split("\n"), [], False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and (m := _SKILL_HEADING_RE.match(line)):
+            starts.append((i, m.group(1)[:_MAX_OUTLINE_TITLE_CHARS]))
+    rows = []
+    for pos, (start, title) in enumerate(starts[:max_sections]):
+        end = starts[pos + 1][0] if pos + 1 < len(starts) else len(lines)
+        rows.append(f"  - ## {title} — lines {start + 1}–{end}")
+    if len(starts) > max_sections:
+        rows.append(f"  … {len(starts) - max_sections} more sections")
+    return "\n".join(rows)
+
+
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,
-                             file_path: str) -> str:
-    """Build the <persisted-output> replacement block."""
+                             file_path: str, *, tool_name: str | None = None,
+                             outline: str = "") -> str:
+    """Build the <persisted-output> replacement block. A rule-bearing tool (``RULE_BEARING_TOOLS``)
+    gets a notice saying its rules are incomplete; every other tool keeps the generic text."""
+    if tool_name in RULE_BEARING_TOOLS:
+        sections = f"Sections (page with read_file offset/limit):\n{outline}\n" if outline else ""
+        return (
+            f"{PERSISTED_OUTPUT_TAG}\n"
+            f"⚠️ SKILL RULES INCOMPLETE — showing {len(preview):,} of {original_size:,} characters.\n"
+            "Do NOT act on this skill from the preview: the binding rules live in the saved file.\n"
+            f"Full output saved to: {file_path}\n"
+            + sections
+            + "Recovery: read the sections you need from the saved file with read_file before acting; "
+              "the archive is kept while this session's transcript references it.\n\n"
+            f"Preview (first {len(preview)} chars):\n"
+            + preview + ("\n..." if has_more else "")
+            + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
     size_kb = original_size / 1024
     size_str = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
     return (
@@ -436,11 +478,15 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    # Rule-bearing payloads get a structural outline built from the UNWRAPPED text, so the notice can
+    # name the sections the preview dropped instead of leaving the model to page blindly (#151283).
+    outline = _rule_bearing_outline(persisted_content) if tool_name in RULE_BEARING_TOOLS else ""
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
                     tool_name, tool_use_id, len(persisted_content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(persisted_content), path)
+        return _build_persisted_message(preview, has_more, len(persisted_content), path,
+                                        tool_name=tool_name, outline=outline)
 
     if (hosted_path := _persist_hosted(persisted_content, tool_use_id, env)) is not None:
         return _persisted(hosted_path) if hosted_path else _inline_truncated(preview, tool_name, content)
@@ -544,9 +590,12 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
                 tool_messages[idx]["content"] = parts
                 logger.info("Budget enforcement: persisted a text part of tool result %s (%d chars)", tool_use_id, saved)
             continue
+        # threshold=0 forces the spill; a rule-bearing tool keeps its own name so the aggregate
+        # layer cannot strip the "rules incomplete" notice the per-result layer would add (#151283).
+        own_name = tool_messages[idx].get("tool_name") or tool_messages[idx].get("name")
         replacement = maybe_persist_tool_result(
-            content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
-            env=env, config=config, threshold=0)
+            content=content, tool_use_id=tool_use_id, env=env, config=config, threshold=0,
+            tool_name=own_name if own_name in RULE_BEARING_TOOLS else _BUDGET_TOOL_NAME)
         if replacement != content:
             total_size += len(replacement) - size
             tool_messages[idx]["content"] = replacement

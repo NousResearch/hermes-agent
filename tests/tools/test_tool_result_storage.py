@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -804,3 +805,51 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+
+# ── Rule-bearing tools: skill_view spill notice (#151283) ─────────────
+
+
+def _skill_view_result(sections: int = 30) -> str:
+    # A fenced example heading, a U+2028 inside a rule and a 300-char title: none may skew the outline.
+    body = ["```markdown", "## Example heading", "```"]
+    for n in range(sections):
+        body += [f"## Section {n}" + (" x" * 150 if n == 1 else "")]
+        body += [f"rule {n}.{k}: never do X\u2028without Y." for k in range(12)]
+    return json.dumps({"success": True, "name": "prod-ops", "description": "Ops runbook",
+                       "content": "\n".join(body), "linked_files": {"references/a.md": "x"}})
+
+
+class TestRuleBearingSpill:
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+
+    def test_skill_view_spill_says_rules_incomplete_and_outline_lines_hit_headings(self):
+        result = maybe_persist_tool_result(content=_skill_view_result(), tool_name="skill_view",
+                                           tool_use_id="tc_skill", env=None, threshold=1_000)
+        generic = maybe_persist_tool_result(content=_skill_view_result(), tool_name="terminal",
+                                            tool_use_id="tc_term", env=None, threshold=1_000)
+
+        assert "SKILL RULES INCOMPLETE" in result and "too large" not in result
+        assert "too large" in generic and "RULES INCOMPLETE" not in generic
+        assert extract_persisted_path(result) == str(get_spillover_dir() / "tc_skill.txt")
+        rows = re.findall(r"- ## (.+?) — lines (\d+)–(\d+)", result)
+        assert len(rows) == 20 and "10 more sections" in result
+        spill = (get_spillover_dir() / "tc_skill.txt").read_text(encoding="utf-8").split("\n")
+        assert "Example heading" not in result.split("Preview (")[0]
+        assert max(len(title) for title, _f, _l in rows) <= 80
+        for n, (title, first, last) in enumerate(rows):
+            assert spill[int(first) - 1].startswith(f"## {title}")
+            assert spill[int(last) - 1].startswith(f"rule {n}.11:")
+
+    def test_turn_budget_spill_keeps_the_skill_rules_notice(self):
+        msgs = [{"role": "tool", "name": "skill_view", "tool_name": "skill_view",
+                 "tool_call_id": "tc_budget_skill", "content": _skill_view_result()}]
+
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=5_000))
+
+        assert "SKILL RULES INCOMPLETE" in msgs[0]["content"]
+        assert "- ## Section 0 — lines" in msgs[0]["content"]

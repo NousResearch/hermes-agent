@@ -673,6 +673,49 @@ class TestCleanupTempRecordings:
 # play_beep
 # ============================================================================
 
+class TestSystemPlayerTimeout:
+    """The system player wait follows the file's duration, not a flat 300 s cap."""
+
+    def _wait_timeout(self, tmp_path, monkeypatch, duration, probe_envs=None):
+        import tools.voice_mode as vm
+
+        audio = tmp_path / "long.mp3"
+        audio.write_bytes(b"ID3fake")
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            proc = MagicMock()
+            proc.wait.side_effect = lambda timeout=None: captured.setdefault("timeout", timeout)
+            proc.returncode = 0
+            return proc
+
+        def fake_probe(path, env=None):
+            if probe_envs is not None:
+                probe_envs.append(env)
+            return duration
+
+        monkeypatch.setattr("tools.transcription_audio._probe_audio_duration", fake_probe)
+        with patch.object(vm, "platform") as plat, patch.object(
+            vm.shutil, "which", return_value="/usr/bin/ffplay"
+        ), patch.object(vm.subprocess, "Popen", side_effect=fake_popen):
+            plat.system.return_value = "Linux"
+            assert vm.play_audio_file(str(audio)) is True
+        return captured["timeout"]
+
+    def test_wait_covers_probed_duration(self, tmp_path, monkeypatch):
+        assert self._wait_timeout(tmp_path, monkeypatch, 420.0) == 450.0
+
+    def test_wait_falls_back_when_probe_fails(self, tmp_path, monkeypatch):
+        assert self._wait_timeout(tmp_path, monkeypatch, None) == 300.0
+
+    def test_probe_gets_scrubbed_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        envs = []
+        self._wait_timeout(tmp_path, monkeypatch, 60.0, probe_envs=envs)
+        assert envs and envs[0] is not None
+        assert "OPENAI_API_KEY" not in envs[0]
+
+
 class TestPlayBeep:
     def test_beep_calls_sounddevice_play(self, mock_sd):
         np = pytest.importorskip("numpy")

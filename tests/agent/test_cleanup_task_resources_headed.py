@@ -1,7 +1,7 @@
-"""Per-turn browser cleanup skips headed sessions by ``browser.headed`` (config) alone.
+"""Per-turn browser cleanup preserves only locally launched headed browsers.
 
-The idle reaper owns a headed browser the user may be watching; the retired ``AGENT_BROWSER_HEADED``
-env var no longer keeps a headless session alive past the turn.
+The idle reaper owns a headed local browser the user may be watching; configured CDP and cloud
+backends still clean up per turn. The retired ``AGENT_BROWSER_HEADED`` env var does not override config.
 """
 
 from types import SimpleNamespace
@@ -39,3 +39,14 @@ def test_headed_config_keeps_the_browser_for_the_reaper(run):
 def test_headless_session_closes_even_with_the_retired_env_var(run, monkeypatch):
     monkeypatch.setenv("AGENT_BROWSER_HEADED", "1")
     assert run("browser:\n  headed: false\n") == ["task-1"]
+
+
+def test_headed_config_with_cdp_override_still_cleans_browser(run):
+    """Headed is local-only: a configured external CDP supervisor must not outlive the turn."""
+    assert run("browser:\n  headed: true\n  cdp_url: http://127.0.0.1:9333\n") == ["task-1"]
+
+
+def test_headed_config_with_cloud_provider_still_cleans_browser(run, monkeypatch):
+    """Cloud sessions do not become persistent just because local headed mode is enabled."""
+    monkeypatch.setattr("tools.browser_session_cloud.get_cloud_provider", lambda: object())
+    assert run("browser:\n  headed: true\n") == ["task-1"]

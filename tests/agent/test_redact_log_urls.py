@@ -16,3 +16,54 @@ def test_penpot_style_user_token_param_is_masked_in_logs():
     line = _format(f"HTTP Request: POST http://127.0.0.1:9001/mcp/stream?userToken={secret}&v=1 200")
     assert secret not in line
     assert "?userToken=***&v=1" in line
+
+class TestRedactingFormatterUrls:
+    """Moved from test_redact.py (over its size cap)."""
+
+    @staticmethod
+    def _record(message: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            name="test", level=logging.INFO, pathname="", lineno=0,
+            msg=message, args=(), exc_info=None,
+        )
+
+    def test_log_path_masks_sensitive_url_query_params(self):
+        # issue #133713: a remote MCP URL with token auth must not reach disk verbatim
+        formatter = RedactingFormatter("%(message)s")
+        result = formatter.format(
+            self._record(
+                'HTTP Request: POST https://mcp.example.com/mcp?token=SECRETVALUE "HTTP/1.1 200 OK"'
+            )
+        )
+        assert "SECRETVALUE" not in result
+        assert "token=***" in result
+        assert "https://mcp.example.com/mcp" in result
+
+    def test_log_path_masks_url_userinfo(self):
+        formatter = RedactingFormatter("%(message)s")
+        result = formatter.format(
+            self._record("connect failed: https://user:hunter2@mcp.example.com/mcp")
+        )
+        assert "hunter2" not in result
+        assert "//***:***@mcp.example.com" in result
+
+    def test_log_path_keeps_public_query_params_and_url_free_lines(self):
+        formatter = RedactingFormatter("%(message)s")
+        url_line = "GET https://example.com/list?page=2&sort=name done"
+        assert formatter.format(self._record(url_line)) == url_line
+        plain = "state codes like A=1;B=2 survive when no URL is present"
+        assert formatter.format(self._record(plain)) == plain
+
+
+def test_apostrophe_inside_query_credential_is_masked_whole():
+    # An apostrophe inside the value used to end the match and leave the tail on disk.
+    tail = "opaque" + "Tail0123456789"
+    line = _format(f"connect https://mcp.example/mcp?token=abc'{tail}&v=1 failed")
+    assert tail not in line
+    assert "?token=***&v=1 failed" in line
+
+
+def test_quoted_url_keeps_its_closing_apostrophe():
+    line = _format("url='https://mcp.example/mcp?token=" + "SECRET" + "value123' next")
+    assert "SECRETvalue123" not in line
+    assert line.endswith("?token=***' next")

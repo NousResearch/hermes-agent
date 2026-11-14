@@ -8,9 +8,12 @@ already called that gateway "separate checkout, not updated by this run".
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -71,12 +74,31 @@ def test_scratch_home_update_never_rewrites_the_account_unit_or_another_checkout
     update_launch_files.refresh_launch_files()
     assert unit.read_text(encoding="utf-8").endswith(STALE) and events == []
 
-    # The account's own home, but the unit launches another checkout: left alone, named.
+    # The account's own home, but the unit launches another checkout: left alone, named. Both the
+    # published-launcher form and the ``python -c "sys.path.insert(0, '<root>')"`` form, whose
+    # checkout path may contain spaces.
     monkeypatch.setenv("HERMES_HOME", str(root))
+    spaced = _checkout(tmp_path / "Hermes Live")
     unit = _unit(tmp_path, other, root)
     update_launch_files.refresh_launch_files()
     assert unit.read_text(encoding="utf-8").endswith(STALE) and events == []
     assert f"another Hermes checkout ({other.resolve()})" in capsys.readouterr().out
+    unit.write_text(f'[Service]\nExecStart="/usr/bin/python3" "-I" "-c" "import sys; sys.path.insert(0, \'{spaced}\')" '
+                    f'"gateway" "run"\nEnvironment="HERMES_HOME={root}"\n{STALE}', encoding="utf-8")
+    update_launch_files.refresh_launch_files()
+    assert unit.read_text(encoding="utf-8").endswith(STALE) and events == []
+    assert f"another Hermes checkout ({spaced.resolve()})" in capsys.readouterr().out
+
+    # The launchd restart applies the same checkout rule before ``launchd_restart`` refreshes the plist.
+    import plistlib
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_bytes(plistlib.dumps({"Label": "ai.hermes.gateway", "EnvironmentVariables": {"HERMES_HOME": str(root)},
+                                      "ProgramArguments": [str(other / ".hermes" / "bin" / "hermes"), "gateway", "run"]}))
+    monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(gateway_cli, "launchd_restart", lambda: events.append(("launchd_restart",)))
+    assert fleet._restart_launchd_gateway_after_update(supervision_verify=False) == ([], [])
+    assert events == [] and "launchd job of another Hermes checkout" in capsys.readouterr().out
 
     # Control: this checkout's own stale unit is still rewritten and reloaded.
     unit = _unit(tmp_path, _updater_code_root(), root)
@@ -90,6 +112,7 @@ def test_scratch_home_update_never_rewrites_the_account_unit_or_another_checkout
 def test_ancestor_gateway_of_another_checkout_is_never_signalled(tmp_path, monkeypatch, own):
     code_root = _updater_code_root() if own else _checkout(tmp_path / "runtime-checkout")
     gateway = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", str(code_root / "hermes_cli" / "main.py")])
+    real_kill = os.kill  # the test records os.kill below; the stand-in gateway still has to die
     try:
         signalled: list[int] = []
         monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == gateway.pid)
@@ -97,9 +120,27 @@ def test_ancestor_gateway_of_another_checkout_is_never_signalled(tmp_path, monke
         monkeypatch.setattr("hermes_cli.update_fleet_scope.gateway_pid_home", lambda pid: None)
 
         result = fleet._drain_or_signal_gateway_for_update(gateway.pid, 5.0, "hermes-gateway")
-
         assert (result, signalled) == ((True, [gateway.pid]) if own else (False, []))
-        assert fleet._scoped_manual_gateway_pids([gateway.pid], keep={gateway.pid}) == ([gateway.pid] if own else [])
+
+        # The manual restart pass: a profile-mapped gateway of another checkout is neither armed for
+        # a relaunch nor SIGTERMed.
+        signalled.clear()
+        armed: list[int] = []
+        killed: list[int] = []
+        proc = SimpleNamespace(pid=gateway.pid, profile="default")
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda **k: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda **k: [gateway.pid])
+        monkeypatch.setattr(gateway_cli, "find_profile_gateway_processes", lambda **k: [proc])
+        monkeypatch.setattr(gateway_cli, "_prepare_profile_gateway_update_restart",
+                            lambda profile, pid: armed.append(pid) or "watcher")
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda **k: None)
+        monkeypatch.setattr(fleet.os, "kill", lambda pid, sig: killed.append(pid))
+        out = fleet._GatewayRestartOutcome(
+            incomplete=False, phase_errors=[], pre_restart_gateway_pids=[], restarted_services=[],
+            failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set())
+        fleet._restart_manual_gateways(out, 5.0)
+        assert (armed, signalled, killed, out.killed_pids) == (
+            ([gateway.pid], [gateway.pid], [], {gateway.pid}) if own else ([], [], [], set()))
     finally:
-        gateway.kill()
+        real_kill(gateway.pid, signal.SIGKILL)
         gateway.wait()

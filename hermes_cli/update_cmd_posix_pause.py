@@ -159,11 +159,11 @@ def _discover_launchd() -> list[dict]:
         _locate_launchd_gateway_service, get_launchd_plist_path, launchd_gateway_labels_for_install,
         legacy_launchd_labels_for_install,
     )
-    from hermes_cli.update_fleet_scope import launchd_label_foreign_home
+    from hermes_cli.update_fleet_scope import launchd_label_skip_notice
     derived = launchd_gateway_labels_for_install()
     jobs = []
     for label in derived + legacy_launchd_labels_for_install(exclude=set(derived)):
-        if launchd_label_foreign_home(label) is not None:
+        if launchd_label_skip_notice(label) is not None:
             continue
         domain, pid = _locate_launchd_gateway_service(label)
         if domain is None or not pid or pid <= 0:

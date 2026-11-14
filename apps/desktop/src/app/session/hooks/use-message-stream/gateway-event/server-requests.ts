@@ -99,7 +99,7 @@ export interface ServerRequestContext {
   request: ScopedServerRequest
   /** The session the request names ('' when unscoped). */
   sessionId: string
-  /** The named session is the one on screen. */
+  /** The named session is active, or hosted in this window for preview.act. */
   isActiveSession: boolean
 }
 
@@ -204,8 +204,8 @@ export function windowHostsSession(
  * for that runtime, so a stale entry still maps within its own conversation.
  * No shown conversation — nothing claimed, as before.
  *
- * Scoped to window.read only. preview.act and tour refuse unless
- * isActiveSession (raw id equality), so a tolerated claim there would turn
+ * Scoped to window.read only. Browser actions require a hosted session and
+ * tour still requires the active session, so a tolerated claim there would turn
  * another window's silence into a false refusal that wins the multi-window
  * race — and a tour refusal latches session["tour_bridge"] = "answered",
  * converting every later tour action in the session into a full 45s wait.
@@ -538,20 +538,19 @@ const previewRead: Handler = ({ request, sessionId }) => {
   // A browser host has no pop-out and no readable surface to forward to, so
   // asking would only wait out the pop-out timeout before the same answer.
   void (async () => {
-    const result = hasLivePreviewSurface(owner) || !hostHas('webviewPreview')
-      ? await readActivePreview(opts, owner)
-      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+    const result =
+      hasLivePreviewSurface(owner) || !hostHas('webviewPreview')
+        ? await readActivePreview(opts, owner)
+        : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
 
     answerValue(request, result)
   })()
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
-  // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn (including one in a tile this window hosts)
-  // must never reach into the page the user is working in (desktop AGENTS.md:
-  // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
-  // before this runs, so a refusal here reaches the tool instead of stalling it.
+  // Every open session in this window may drive its own page, including a
+  // background tile. Window hosting grants permission, never another session's
+  // page or the focused conversation as an unscoped fallback.
   const p = request.params
 
   if (str(p.action) === 'vault') {
@@ -666,7 +665,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
 
   if (!isActiveSession) {
     answerValue(request, {
-      error: 'The in-app browser only takes actions in the session the user is looking at.',
+      error: 'The in-app browser requires an open session in this window.',
       success: false
     })
 
@@ -939,6 +938,13 @@ export function handleServerRequest(
   const storedIdForRuntimeId = (runtimeId: string) =>
     deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
 
+  // Only browser actions opt into all open session tabs. Other methods keep
+  // their existing active-session policy; the requested page owner is unchanged.
+  const namesActiveSession = (primarySessionId: null | string) =>
+    request.method === 'preview.act'
+      ? Boolean(sessionId) && windowHostsSession(sessionId, primarySessionId, storedIdForRuntimeId)
+      : requestNamesActiveSession({ activeSessionId: primarySessionId, sessionId, storedIdForRuntimeId })
+
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
     // Route window.read through the tolerant claim (see windowReadClaimsSession);
     // every other window-owned request keeps the strict host check.
@@ -978,7 +984,7 @@ export function handleServerRequest(
             storedIdForRuntimeId
           }) === 'run'
         ) {
-          handler({ deps, request, sessionId, isActiveSession: true })
+          handler({ deps, request, sessionId, isActiveSession: namesActiveSession(deps.activeSessionIdRef.current) })
         } else {
           declineNotShown(request)
         }
@@ -992,7 +998,7 @@ export function handleServerRequest(
     deps,
     request,
     sessionId,
-    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+    isActiveSession: namesActiveSession(activeSessionId)
   })
 
   return true

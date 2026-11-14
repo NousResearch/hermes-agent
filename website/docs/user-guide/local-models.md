@@ -197,7 +197,10 @@ Selecting a local model as your main model uses the standard
   GPU is found). Behind a Vulkan or HIP engine, a discrete card is sized from
   its own memory (system RAM is spill space) and each launch subtracts what
   other programs hold on it; an integrated GPU shares system RAM and is sized
-  from that. Quickstart installs the engine before choosing the model, so the
+  from that. On Apple Silicon and Linux integrated GPUs, each launch is sized
+  from the RAM free at that moment, and a model that cannot fit even a 64K
+  window is refused with the amount it needs, rather than started into swap.
+  Quickstart installs the engine before choosing the model, so the
   pick reflects the card.
 - A GPU with 8 GB+ of memory runs the small catalog models comfortably;
   16 GB+ runs the 27–35B models at high quality.

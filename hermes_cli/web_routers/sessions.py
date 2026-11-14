@@ -670,7 +670,7 @@ def _is_untyped_scaffold_notice(message) -> bool:
 
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
     """Replace compaction summaries with their display-only projection and hide untyped
-    gateway-scaffold notices.
+    gateway-scaffold notices plus the compressor's stamped in-flight-task restatement.
 
     Recovery scaffolding (e.g. the stream-timeout nudge appended when a tool call's stream
     is cut) persists as a ``[System: …]`` ``role=user`` row with no ``display_kind``. This
@@ -684,7 +684,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     from agent.context_compressor import is_compaction_summary_message
     from agent.conversation_compression import _extract_steer_text_from_message
     from agent.history_commentary import project_history_commentary
-    from agent.message_metadata import withheld_prompt_text
+    from agent.message_metadata import is_inflight_restatement, withheld_prompt_text
     from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, untyped_failed_turn_display_kind
 
@@ -714,6 +714,11 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             projected = message.copy()
             projected["display_kind"] = "hidden"
             projected_messages.append(projected)
+            continue
+        # The compressor's in-flight-task restatement is display-only too: the flag says the row is the
+        # model's copy of a still-running request, never something the person typed (#155495).
+        if is_inflight_restatement(message):
+            projected_messages.append({**message, "display_kind": "hidden"})
             continue
         # Mid-turn steer: the user's own words, not the model-facing marker (same as session.resume).
         if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (

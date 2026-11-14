@@ -290,6 +290,18 @@ def is_compaction_scaffolding(msg: Mapping[str, Any]) -> bool:
     return bool(scaffolding_replay_fields(msg))
 
 
+def is_inflight_restatement(msg: Mapping[str, Any]) -> bool:
+    """The compressor's standalone in-flight-task restatement row, which no transcript may paint.
+
+    ``mark_inflight_restatement`` stamps it on the copied ``role=user`` row whose content leads with the
+    ``[STILL IN PROGRESS — …]`` header: model-facing scaffolding that keeps the active task across the
+    handoff boundary. The flag, not the header text, is the signal — a human pasting that header carries
+    no ``display_metadata`` and renders as their own turn (#155495).
+    """
+    metadata = msg.get("display_metadata")
+    return isinstance(metadata, dict) and bool(metadata.get(INFLIGHT_TASK_RESTATEMENT))
+
+
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
 
 

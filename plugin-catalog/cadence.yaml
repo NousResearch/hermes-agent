@@ -9,6 +9,7 @@ category: desktop
 requires_hermes: ">=0.21.7"
 docs_url: https://github.com/abundantbeing/cadence
 version: "1.1.0"
+image: https://raw.githubusercontent.com/abundantbeing/cadence/35ff6a7bdccee1319b61b881cd17771425080e3d/assets/catalog-cover.jpg
 screenshots:
   - https://raw.githubusercontent.com/abundantbeing/cadence/2e7920ce066696b37544cde10ada39ef0323fda1/assets/cadence-preview.png
 readme: true

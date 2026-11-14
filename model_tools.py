@@ -947,7 +947,13 @@ def handle_function_call(
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:
-            return _emit(result, duration_ms=_elapsed_ms(start))
+            # Catalog reads and tool_call resolution/validation errors are final
+            # results this call returns to the model; they get the same
+            # transform_tool_result pass as the dispatched-tool path, under the
+            # bridge name (#151243).
+            duration_ms = _elapsed_ms(start)
+            return _apply_transform_tool_result_hook(
+                function_name, function_args, _emit(result, duration_ms=duration_ms), duration_ms, ids)
         from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
         if underlying[0] == CONNECTOR_BATCH_SENTINEL:
             return _emit(dispatch_connector_batch(

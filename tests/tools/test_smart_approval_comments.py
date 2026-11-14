@@ -100,7 +100,7 @@ def test_smart_guard_reviews_the_command_after_a_literal_hash(tmp_path, monkeypa
     # Exercise real config -> command guard -> smart reviewer; replace only the
     # model call, so no provider key or command execution is needed.
     import agent.auxiliary_client as auxiliary
-    import hermes_cli.config as config
+    from hermes_cli import config
     from tools.approval import check_all_command_guards
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

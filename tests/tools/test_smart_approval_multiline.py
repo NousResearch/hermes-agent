@@ -57,7 +57,7 @@ def test_real_guards_review_complete_multiline_input(tmp_path, monkeypatch, rout
     from types import SimpleNamespace
 
     import agent.auxiliary_client as auxiliary
-    import hermes_cli.config as config
+    from hermes_cli import config
     from tools.approval import check_all_command_guards, check_execute_code_guard
     from tools.approval_context import reset_current_session_key, set_current_session_key
 

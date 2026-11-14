@@ -1022,7 +1022,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
-            decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
+            decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway", identity=command)
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed", noun=spec.noun)

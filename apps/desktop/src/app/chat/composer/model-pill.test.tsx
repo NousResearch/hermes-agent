@@ -151,6 +151,7 @@ describe('ModelPill per-surface model label', () => {
       $reasoningEffortWire: atom(''),
       $runtimeId: atom('tile-runtime'),
       $storedId: atom('stored-tile'),
+      $transcriptStoredId: atom('stored-tile'),
       $turnStartedAt: atom<number | null>(null)
     }
 

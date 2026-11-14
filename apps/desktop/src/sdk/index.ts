@@ -692,6 +692,8 @@ export const host = {
     // unrelated local pool and leaving the warmed remote backend to recreate
     // the deleted profile.
     const ambientConnectionId = route ? null : String(activeGatewayConnectionId() || '').trim()
+    // Bind appearance cleanup to the owning gateway before the request can outlive a switch.
+    const appearanceOwnerId = route?.connectionId || ambientConnectionId || undefined
 
     const ambientRemoteConnectionId =
       ambientConnectionId && ambientConnectionId !== 'local' ? ambientConnectionId : null
@@ -734,7 +736,8 @@ export const host = {
       route ? route.profile : name,
       route
         ? { connectionId: route.connectionId, profile: route.profile, targetProfile: route.targetProfile }
-        : undefined
+        : undefined,
+      appearanceOwnerId
     )
 
     // The profile rail paints from the shared $profiles cache; without a

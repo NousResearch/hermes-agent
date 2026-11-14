@@ -1,9 +1,10 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { skinPref } from './appearance-prefs'
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { readableInk } from './color'
-import { skinPref, ThemeProvider, useTheme } from './context'
+import { ThemeProvider, useTheme } from './context'
 import { everforestTheme, midnightTheme } from './presets'
 import type { DesktopTheme } from './types'
 import { installUserTheme } from './user-themes'

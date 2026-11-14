@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestLocalMode } from '@/api/client'
+import type { HermesConnection } from '@/global'
 import type { DesktopTheme } from '@/themes/types'
 import type { ProfileDesktopOverlay } from '@/types/hermes'
 
@@ -22,12 +24,15 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
-const { applyDesktopOverlay, buildDesktopOverlay, exportProfileBundle } = await import('./profile-share')
+const { applyDesktopOverlay, buildDesktopOverlay, exportProfileBundle, importProfileBundle } =
+  await import('./profile-share')
+
 const { $profileColors, setProfileColor } = await import('./profile')
-const { modePref, skinPref } = await import('@/themes/context')
+const { modePref, skinPref } = await import('@/themes/appearance-prefs')
 const { $userThemes } = await import('@/themes/user-themes')
 const { $layoutTree } = await import('@/components/pane-shell/tree/store')
-const { exportProfileArchive } = await import('@/hermes')
+const { $connection } = await import('./session')
+const { exportProfileArchive, importProfileArchive } = await import('@/hermes')
 
 // isValidTheme only requires background/foreground/primary at runtime; the
 // static type wants the full palette, hence the cast.
@@ -42,13 +47,31 @@ beforeEach(() => {
   window.localStorage.clear()
   $userThemes.set({})
   $profileColors.set({})
+  $connection.set(null)
+  setApiRequestConnection(null)
+  setApiRequestLocalMode(true)
 })
 
 afterEach(() => {
+  setApiRequestConnection(null)
   vi.clearAllMocks()
 })
 
 describe('buildDesktopOverlay', () => {
+  it('shares the request-owning gateway appearance even while the painted connection lags', () => {
+    skinPref.assign('glam', 'catppuccin', 'local')
+    modePref.assign('glam', 'dark', 'local')
+    skinPref.assign('glam', 'nous', 'remote')
+    modePref.assign('glam', 'light', 'remote')
+    $connection.set({ connectionId: 'local', profile: 'glam' } as HermesConnection)
+    setApiRequestConnection('remote')
+    const overlay = buildDesktopOverlay('glam')
+    expect([overlay.skin, overlay.mode]).toEqual(['nous', 'light'])
+    applyDesktopOverlay('glam', { version: 1, skin: 'ember', mode: 'system' })
+    expect([skinPref.resolve('glam', 'remote'), modePref.resolve('glam', 'remote')]).toEqual(['ember', 'system'])
+    expect([skinPref.resolve('glam', 'local'), modePref.resolve('glam', 'local')]).toEqual(['catppuccin', 'dark'])
+  })
+
   it('snapshots skin, mode, rail color, and the layout tree for the profile', () => {
     skinPref.assign('glam', 'mono')
     modePref.assign('glam', 'dark')
@@ -76,6 +99,49 @@ describe('buildDesktopOverlay', () => {
 })
 
 describe('applyDesktopOverlay', () => {
+  it('persists legacy remote overlays without borrowing local or registered preferences', () => {
+    skinPref.assign('glam', 'catppuccin', 'local')
+    modePref.assign('glam', 'dark', 'local')
+    skinPref.assign('glam', 'nous', 'remote')
+    setApiRequestConnection(null)
+    setApiRequestLocalMode(false)
+    applyDesktopOverlay('glam', { version: 1, skin: 'ember', mode: 'light' })
+    const overlay = buildDesktopOverlay('glam')
+    expect([overlay.skin, overlay.mode]).toEqual(['ember', 'light'])
+    expect([skinPref.resolve('glam', 'local'), modePref.resolve('glam', 'local')]).toEqual(['catppuccin', 'dark'])
+    expect(skinPref.resolve('glam', 'remote')).toBe('nous')
+  })
+
+  it('binds an in-flight import to its initiating gateway', async () => {
+    let release!: () => void
+
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    vi.mocked(importProfileArchive).mockImplementationOnce(async () => {
+      await gate
+
+      return {
+        desktop: { version: 1, skin: 'ember', mode: 'dark' } as ProfileDesktopOverlay,
+        name: 'imported',
+        ok: true,
+        path: '/x'
+      }
+    })
+    $connection.set({ connectionId: 'local', profile: 'default' } as HermesConnection)
+    setApiRequestConnection('remote')
+    const pending = importProfileBundle('/x/archive.tar.gz')
+    $connection.set({ connectionId: 'local', profile: 'default' } as HermesConnection)
+    setApiRequestConnection('local')
+    skinPref.assign('imported', 'catppuccin', 'local')
+    release()
+    await pending
+    expect(skinPref.resolve('imported', 'remote')).toBe('ember')
+    expect(modePref.resolve('imported', 'remote')).toBe('dark')
+    expect(skinPref.resolve('imported', 'local')).toBe('catppuccin')
+  })
+
   it('installs bundled themes and assigns skin/mode/color to the new profile', () => {
     applyDesktopOverlay('glam-copy', {
       version: 1,
@@ -118,7 +184,10 @@ describe('runExportProfileFlow', () => {
     const { runExportProfileFlow } = await import('./profile-share')
     const { $notifications } = await import('./notifications')
     seedWebappSession('served-token')
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}'))
+    )
 
     try {
       expect(installBrowserDesktopBridge()).toBe(true)

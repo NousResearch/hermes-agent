@@ -38,6 +38,11 @@ import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messa
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import {
+  appearanceConnectionId,
+  dropAppearanceForProfile,
+  migrateAppearanceForProfile
+} from '@/themes/appearance-prefs'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropQueuedLaunchPicksForProfile, migrateQueuedLaunchPicksForProfile } from './composer-queued-pick'
@@ -2699,7 +2704,8 @@ export function discardSessionTile(storedSessionId: string) {
  */
 export function dropTilesForProfile(
   profile: string,
-  route?: { connectionId?: string; profile?: string; targetProfile?: string }
+  route?: { connectionId?: string; profile?: string; targetProfile?: string },
+  appearanceOwnerId = appearanceConnectionId($connection.get())
 ): void {
   // A route without profile has no owner side to match: it would silently fall
   // into the local-delete branch below and require `ownerConnection === 'local'`,
@@ -2720,6 +2726,8 @@ export function dropTilesForProfile(
   const routeProfile = route?.profile ? normalizeProfileKey(route.profile) : ''
   const routeTarget = route?.targetProfile ? normalizeProfileKey(route.targetProfile) : ''
   const routeConnection = String(route?.connectionId ?? '').trim()
+  // Appearance is keyed by gateway + profile; never erase a same-named peer's.
+  dropAppearanceForProfile(routeTarget || routeProfile || name, route ? routeConnection : appearanceOwnerId)
   // A route-less deletion targets the active backend, including legacy direct
   // remotes whose tile key uses the URL fallback. Reuse the writer's resolved
   // connection scope so deletion cannot erase same-named local tabs instead.
@@ -2843,6 +2851,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   }
 
   persistTiles()
+  migrateAppearanceForProfile(from, to)
   migrateTranscriptTailsForProfile(from, to)
   migrateRememberedNavigationForProfile(from, to)
   migrateSessionOwnerHintsForProfile(from, to)

@@ -102,3 +102,54 @@ def test_presented_secret_is_compared_timing_safe_and_fails_closed(accepts, monk
     assert calls, "the secret was not compared with hmac.compare_digest"
     assert not accepts(SECRET + "x")
     assert not accepts(_HOSTILE)
+
+
+def test_bluebubbles_password_with_edge_spaces_is_kept_byte_exact():
+    """Only a whitespace-only password is "unset"; any other value is the server's own password and is
+    both sent to the server and compared on the webhook exactly as configured."""
+    pytest.importorskip("aiohttp")
+    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    spaced = " " + SECRET + " "
+    adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
+        "server_url": "http://localhost:1234", "password": spaced}))
+
+    def status(presented):
+        class _Request:
+            query = {"password": presented}
+            headers: dict = {}
+
+            async def read(self):
+                return json.dumps({"type": "typing-indicator"}).encode()
+        return asyncio.run(adapter._handle_webhook(_Request())).status
+
+    assert adapter.password == spaced
+    assert status(spaced) != 401
+    assert status(SECRET) == 401
+
+
+def test_signal_reaction_forwards_is_bot_to_the_gateway_check(monkeypatch):
+    """A ``bot_users`` sender is judged as a bot (loop-guard cooldown applies), so a refused bot gets no 👀."""
+    monkeypatch.delenv("SIGNAL_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("SIGNAL_REACTIONS", raising=False)
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+    from gateway.platforms.event import MessageEvent, MessageType
+    from plugins.platforms.signal.adapter import SignalAdapter
+    bot = "+155****7777"
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={
+        "http_url": "http://localhost:8080", "account": "+155****4567", "bot_users": [bot]}))
+    adapter.set_authorization_check(lambda user_id, chat_type, chat_id, *, is_bot=False, **_: not is_bot)
+    sent = []
+
+    async def fake_send_reaction(chat_id, emoji, target_author, target_timestamp):
+        sent.append(emoji)
+        return True
+
+    monkeypatch.setattr(adapter, "send_reaction", fake_send_reaction)
+    source = adapter.build_source(chat_id=bot, chat_type="dm", user_id=bot)
+    assert source.is_bot
+    event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source,
+                         raw_message={"sender": bot, "timestamp_ms": 1700000000000})
+
+    asyncio.run(adapter.on_processing_start(event))
+
+    assert sent == []

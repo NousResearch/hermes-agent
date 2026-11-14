@@ -972,7 +972,8 @@ class SignalAdapter(BasePlatformAdapter):
             return True
         if "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
             return False
-        return self._is_sender_authorized(sender, source.chat_type, source.chat_id) is not False
+        return self._is_sender_authorized(sender, source.chat_type, source.chat_id,
+                                          is_bot=bool(getattr(source, "is_bot", False))) is not False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 when processing begins."""

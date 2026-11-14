@@ -122,8 +122,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
         self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
-        # Whitespace-only is unset: connect() then refuses rather than accept "   " on the webhook.
-        self.password = str(extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "") or "").strip()
+        # Whitespace-only is unset (connect() then refuses rather than accept "   " on the webhook); any
+        # other value is kept byte-exact, since the same string is sent to the server on every request.
+        self.password = str(extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "") or "")
+        if not self.password.strip():
+            self.password = ""
         self.webhook_host = _extra_or_secret(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         self.webhook_port = int(_extra_or_secret(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
         path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))

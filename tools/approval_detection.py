@@ -564,14 +564,22 @@ _PS_EXE_AT_COMMAND_POSITION = (
 
 # `git` plus the global options that may sit before the subcommand (`git -C <dir> reset --hard`).
 # Value-taking options consume their separate value word; any other option is a single dash token.
-# A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as
-# one argument. Each option is an atomic group with the value-taking form tried first: the two
-# alternatives overlap (`-c x` is also two dash-or-word tokens), so a non-atomic run of option-like
-# tokens (`git -c -c -c ... x`) is re-split exponentially on a failed match. The run is capped:
-# every later `git` word starts a new search, and an uncapped run made `git -c git -c ... x` quadratic.
-_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
+# A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`) or a command substitution
+# (`-C $(git rev-parse --show-toplevel)`), which the shell passes as one argument. Each option is an
+# atomic group with the value-taking form tried first: the two alternatives overlap (`-c x` is also
+# two dash-or-word tokens), so a non-atomic run of option-like tokens (`git -c -c -c ... x`) is
+# re-split exponentially on a failed match; words are possessive for the same reason.
+# An option missing from that list still takes a separate value when another option follows it
+# (`--opt val --flag`), unless that value is a gated verb or the option is a known value-less one.
+# Every word ending in a `git` word (`-c git`, `alias.x=git`) starts its own search over the same rest
+# of the command, so no option word may end in one: the run stops there instead of rescanning what
+# that search covers, which keeps an uncapped run linear (`git -c git -c ... x`).
+_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|\$\([^()\n]*\)|`[^`\n]*`|[^\s;|&"'])++(?<!\bgit)'''
+_GIT_NO_VALUE = (r'(?:--no-pager|--paginate|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks'
+                 r'|--no-advice|--(?:literal|glob|noglob|icase)-pathspecs|--(?:html|man|info)-path|--version|--help|-[pPvh])')
 _GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env'
-        rf'|--attr-source)\s+{_GIT_WORD}|-{_GIT_WORD})){{0,64}}\s+')
+        rf'|--attr-source)\s+{_GIT_WORD}|(?!{_GIT_NO_VALUE}\s)(?:--[^\s=;|&"\'`$]++|-[^\s;|&"\'`$-])\s+'
+        rf'(?!-|(?:push|reset|clean|branch)\s){_GIT_WORD}(?=\s+-)|-(?:{_GIT_WORD}|(?=\s))))*\s+')
 _GIT_PUSH = rf'{_GIT}push\b'
 # The push's own arguments, bounded to ONE command segment: a later command's flag is never the
 # push's (`git push -q origin main && grep -f patterns.txt log` is not a force push). A quoted
@@ -962,10 +970,12 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
 # Regex edits change a pattern's regex-derived legacy key; keep each pre-change spelling resolvable so
-# approvals stored under it still match: (?-i:-D) scoping, and the optional drive letter (#38964).
+# approvals stored under it still match: (?-i:-D) scoping, the optional drive letter (#38964), and
+# `git reset --hard` accepting abbreviated `--h`/`--ha`/`--har`.
 for _canonical_key, _old_key in [
     ("git branch force delete", r"git\s+branch\s+-D"),
     ("delete in root path", r"rm\s+(-[^\s]*\s+)*/"),
+    ("git reset --hard (destroys uncommitted changes)", r"git\s+reset\s+--hard"),
 ]:
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).add(_old_key)
     _PATTERN_KEY_ALIASES.setdefault(_old_key, set()).add(_canonical_key)
@@ -1755,6 +1765,16 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
+def _join_escaped_word_chars(command: str) -> str:
+    """Turn each escaped `;`/`&`/`|`, space, tab or quote into `_`, so it stays literal text inside its
+    word after normalization strips the backslash. Inside single quotes a backslash is literal, so only
+    the separators are joined there, as before."""
+    def join(span: re.Match) -> str:
+        chars = ';&|' if span.group(0)[0] == "'" else ';&| \t"\'`'
+        return re.sub(r'\\(.)', lambda m: '_' if m.group(1) in chars else m.group(0), span.group(0))
+    return re.sub(r''''[^']*'|"(?:[^"\\]|\\[\s\S])*"|\\[\s\S]''', join, command)
+
+
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
@@ -1827,7 +1847,8 @@ def _command_detection_variants(command: str):
         yield faithful
     # An escaped separator is literal text inside its word (`git push -o ci\;skip -f`), but
     # normalization strips the backslash and leaves a real `;` that ends a segment-bounded match.
-    joined = re.sub(r'\\(.)', lambda m: '_' if m.group(1) in ';&|' else m.group(0), command)
+    # The same holds for an escaped space or quote inside an option value (`git -C my\\ repo push -f`).
+    joined = _join_escaped_word_chars(command)
     if joined != command and fresh(variant := _normalize_command_for_detection(_mask_quoted_newlines(joined))):
         yield variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped

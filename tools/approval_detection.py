@@ -106,16 +106,18 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
 # The verb is argv[1] for multi-call binaries. Options before it are not
 # applet selection (busybox --help reboot must remain harmless).
-_MULTI_CALL_PREFIX = r'(?:(?:/?(?:[^\s/]+/)*)?(?:busybox|toybox)\b\s+)?'
+# A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses
+# the `)` closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data.
+_CMD_PATH = r'(?:/?(?:[^\s/)]+/)*)?'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s+)?'
 
 _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
     + _MULTI_CALL_PREFIX
-    # A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. Other wrappers
-    # (nice, timeout, command ...) are peeled structurally by tools.approval_wrappers.
-    + r"(?:/?(?:[^\s/]+/)*)?"
+    # Other wrappers (nice, timeout, command ...) are peeled structurally by tools.approval_wrappers.
+    + _CMD_PATH
 )
 
 
@@ -166,7 +168,7 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),

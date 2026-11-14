@@ -938,10 +938,21 @@ class ClientLifecycleMixin:
         if merged:
             self._client_kwargs["default_headers"] = merged
 
-    def _swap_credential(self, entry) -> bool:
+    def _swap_credential(self, entry, *, source_base_url=...) -> bool:
         """Adopt *entry* as the live credential. Returns False, changing nothing, when the entry's
         route cannot serve this conversation's model (a conversation's model is never rewritten by a
         rotation; the caller treats a refused swap as "no entry")."""
+        pool = getattr(self, "_credential_pool", None)
+        prepare = None
+        if pool is not None and callable(getattr(type(pool), "prepare_runtime_entry", None)):
+            prepare = pool.prepare_runtime_entry
+        if callable(prepare):
+            # Rotations use the dispatched route; primary restore deliberately
+            # adopts the selected row's own endpoint instead of the snapshot's.
+            source = self.base_url if source_base_url is ... else source_base_url
+            entry = prepare(entry, source_base_url=source)
+            if entry is None:
+                return False
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         from hermes_cli.providers import is_actual_route

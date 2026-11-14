@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import fields, replace
+from copy import deepcopy
+from dataclasses import dataclass, field, fields, replace
+from urllib.parse import urlsplit
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple
 
 from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
@@ -103,3 +105,246 @@ def recover_failed_plugin_refresh(
         pool._mark_dead_refresh_grant(entry, exc)
         return True, None
     return False, None
+
+
+# --- Ephemeral runtime credentials (``prepare_pool_entry`` / ``refresh_pool_runtime_credentials``) ---
+
+
+@dataclass(frozen=True, eq=False)
+class RuntimeOverride:
+    """A derived key/endpoint bound to the durable grant it was minted from; never persisted."""
+
+    access_token: str = field(repr=False)
+    source_value: str = field(repr=False)
+    api_key: str = field(repr=False)
+    base_url: Optional[str] = None
+
+
+def durable_runtime_key(entry: PooledCredential) -> str:
+    """The row's own runtime key, ignoring any derived override."""
+    if entry.provider == "nous":
+        # Nous stores the runtime inference credential in agent_key for
+        # compatibility. It must be a NAS invoke JWT.
+        import hermes_cli.auth as auth_mod
+        for token, expires_at in (
+            (entry.agent_key, entry.agent_key_expires_at),
+            (entry.access_token, entry.expires_at),
+        ):
+            if (
+                isinstance(token, str)
+                and token.strip()
+                and auth_mod._nous_invoke_jwt_is_usable(
+                    token, scope=getattr(entry, "scope", None), expires_at=expires_at,
+                )
+            ):
+                return token.strip()
+        return ""
+    return str(entry.access_token or "")
+
+
+def active_runtime_override(entry: Any) -> Optional[RuntimeOverride]:
+    """The row's override while its durable grant and source key are unchanged, else None."""
+    override = getattr(entry, "__dict__", {}).get("_runtime_override")
+    if not isinstance(override, RuntimeOverride):
+        return None
+    if override.access_token != entry.access_token or override.source_value != durable_runtime_key(entry):
+        return None
+    return override
+
+
+def _install(entry: Any, override: Optional[RuntimeOverride]) -> None:
+    object.__setattr__(entry, "_runtime_override", override)
+
+
+def exact_https_origin(url: Any) -> Optional[str]:
+    """``https://host`` for a complete host-only HTTPS URL; None for any path, query, port, userinfo."""
+    if not isinstance(url, str) or not url or url != url.strip() or "\\" in url:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    host = parts.hostname or ""
+    if (parts.scheme != "https" or not host or port not in (None, 443) or parts.username is not None
+            or parts.password is not None or parts.path or parts.query or parts.fragment or url.endswith(("?", "#"))
+            or host.endswith(".") or host != parts.netloc.lower().removesuffix(":443")):
+        return None
+    return f"https://{host}"
+
+
+def _allowed_origins(profile: Any) -> set[str]:
+    raw = getattr(profile, "credential_pool_base_urls", ())
+    if not isinstance(raw, (tuple, list)):
+        return set()
+    origins = {exact_https_origin(url) for url in raw}
+    return set() if None in origins else {origin for origin in origins if origin is not None}
+
+
+def _overrides(profile: Any, name: str) -> bool:
+    from providers.base import ProviderProfile
+    hook = getattr(type(profile), name, None)
+    return hook is not None and hook is not getattr(ProviderProfile, name, None)
+
+
+def _tentative_override(entry: Any, result: Any, *, profile: Any, source_base_url: Any,
+                        typed_only: bool = False) -> Optional[RuntimeOverride]:
+    """Validate a hook result completely before anything is installed on the row."""
+    from hermes_cli.auth import has_usable_secret
+    from providers.base import PoolRuntimeCredential
+
+    if isinstance(result, PoolRuntimeCredential):
+        api_key, base_url = result.api_key, result.base_url
+    elif isinstance(result, str) and not typed_only:
+        api_key, base_url = result, None  # legacy: key only, the row keeps its endpoint
+    else:
+        return None
+    if not has_usable_secret(api_key):
+        return None
+    if base_url is not None:
+        allowed = _allowed_origins(profile)
+        origin = exact_https_origin(base_url)
+        if origin is None or origin not in allowed or exact_https_origin(source_base_url) not in allowed:
+            return None
+        base_url = origin
+    return RuntimeOverride(entry.access_token, durable_runtime_key(entry), api_key, base_url)
+
+
+def _serves_source(entry: Any, override: Optional[RuntimeOverride], profile: Any, source_base_url: Any) -> bool:
+    """Adopting the row from ``source_base_url`` must not move the session to a foreign endpoint."""
+    if source_base_url is None:
+        return True
+    if override is not None and override.base_url is not None:
+        return exact_https_origin(source_base_url) in _allowed_origins(profile)
+    from agent.credential_pool import credential_pool_entry_serves_endpoint
+    return credential_pool_entry_serves_endpoint(entry, source_base_url)
+
+
+def _profile(provider: str) -> Any:
+    from providers import get_provider_profile
+    return get_provider_profile(provider)
+
+
+def prepare_runtime_entry(pool: CredentialPool, entry: Any, *, source_base_url: Any = None) -> Any:
+    """The live row ready for dispatch from ``source_base_url``, or None when it must not be adopted."""
+    from hermes_cli.auth import has_usable_secret
+
+    if entry is None:
+        return None
+    profile = _profile(pool.provider)
+    with pool._lock:
+        live = pool._find(lambda e: e.id == getattr(entry, "id", None)) or entry
+        override = active_runtime_override(live)
+        if override is not None:
+            return live if _serves_source(live, override, profile, source_base_url) else None
+        if hasattr(live, "__dict__"):
+            _install(live, None)  # a populated but invalidated override never bypasses preparation
+        state = _runtime_state(live)
+        snapshot = deepcopy(live)
+        pooled = any(e is live for e in pool._entries)
+    if pool.provider == "nous" or profile is None or not _overrides(profile, "prepare_pool_entry"):
+        usable = has_usable_secret(getattr(live, "runtime_api_key", ""))
+        return live if usable and _serves_source(live, None, profile, source_base_url) else None
+    source_value = durable_runtime_key(snapshot)
+    try:
+        result = profile.prepare_pool_entry(snapshot, source_value)
+    except Exception as exc:  # health: allow BLE001 -- plugin hook boundary; exception text may carry secrets
+        logger.debug("%s could not prepare pool row %s (%s)", pool.provider, live.id, type(exc).__name__)
+        return None
+    legacy = isinstance(result, str)
+    candidate = snapshot if legacy else live
+    origin = live.runtime_base_url if source_base_url is None else source_base_url
+    tentative = _tentative_override(candidate, result, profile=profile, source_base_url=origin)
+    # Legacy hooks may mutate their endpoint without the typed-pair opt-in. Admit
+    # against the original route, then commit only their historical key/URL fields.
+    admission = None if legacy else tentative
+    if tentative is None or not _serves_source(live, admission, profile, source_base_url):
+        logger.info("%s pool row %s prepared runtime credential refused", pool.provider, live.id)
+        return None
+    with pool._lock:
+        # The hook ran unlocked: a concurrent renewal, grant rotation or removal wins over this result.
+        if pooled and not any(e is live for e in pool._entries):
+            return None
+        if _runtime_state(live) != state:
+            current = active_runtime_override(live)
+            unchanged_grant = _runtime_state(live)[:3] == state[:3]
+            return live if unchanged_grant and current is not None and _serves_source(
+                live, current, profile, source_base_url) else None
+        if legacy:
+            live.access_token, live.base_url = snapshot.access_token, snapshot.base_url
+        # Typed results declare derived credentials even when a faulty hook returns its input.
+        # Preserve that provenance so explicit-key dispatch cannot mistake them for legacy identity strings.
+        if tentative.api_key != source_value or tentative.base_url is not None or not isinstance(result, str):
+            _install(live, tentative)
+    return live
+
+
+def _runtime_state(entry: Any) -> tuple:
+    """Durable provenance and override identity form the unlocked hook transaction."""
+    return (entry.access_token, durable_runtime_key(entry), entry.base_url,
+            getattr(entry, "__dict__", {}).get("_runtime_override"))
+
+
+def _scoped_row(pool: CredentialPool, credential_id: Optional[str], api_key_hint: Optional[str]) -> Any:
+    if not credential_id or not api_key_hint:
+        return None
+    with pool._lock:
+        row = pool._find(lambda e: e.id == credential_id)
+        if row is None or row.runtime_api_key != api_key_hint:
+            return None
+        return row
+
+
+def refresh_runtime_matching(pool: CredentialPool, *, credential_id: Optional[str], api_key_hint: Optional[str],
+                             reason: str) -> Any:
+    """Re-mint the dispatched row's runtime credential; None declines without benching the row."""
+    from agent.credential_auth_recovery import pool_runtime_refresh_profile
+
+    with pool._lock:
+        row = _scoped_row(pool, credential_id, api_key_hint)
+        if row is None:
+            return None
+        state = _runtime_state(row)
+        snapshot = deepcopy(row)
+        source_base_url = row.runtime_base_url
+    profile = pool_runtime_refresh_profile(pool)
+    if profile is None:
+        return None
+    try:
+        result = profile.refresh_pool_runtime_credentials(snapshot, reason=reason)
+    except Exception as exc:  # health: allow BLE001 -- plugin hook boundary; exception text may carry secrets
+        logger.debug("%s runtime renewal for row %s failed (%s)", pool.provider, row.id, type(exc).__name__)
+        return None
+    tentative = _tentative_override(row, result, profile=profile, source_base_url=source_base_url, typed_only=True)
+    with pool._lock:
+        live = pool._find(lambda e: e.id == row.id)
+        if tentative is None or live is not row or _runtime_state(row) != state:
+            return None
+        _install(row, tentative)
+        pool._current_id = row.id
+    return row
+
+
+class PoolRuntimeCredentialMixin:
+    """CredentialPool surface for ephemeral, route-checked runtime credentials."""
+
+    def prepare_runtime_entry(self, entry: Any, *, source_base_url: Any = None) -> Any:
+        prepared = prepare_runtime_entry(self, entry, source_base_url=source_base_url)
+        if prepared is not None and active_runtime_override(prepared) is not None:
+            from agent.auxiliary_pool_recovery import remember
+            remember(self)
+        return prepared
+
+    def try_refresh_runtime_matching(self, *, credential_id: Optional[str] = None,
+                                     api_key_hint: Optional[str] = None, reason: str = "unauthorized") -> Any:
+        refreshed = refresh_runtime_matching(self, credential_id=credential_id, api_key_hint=api_key_hint, reason=reason)
+        if refreshed is not None:
+            from agent.auxiliary_pool_recovery import remember
+            remember(self)
+        return refreshed
+
+    def supports_runtime_credential_refresh(self) -> bool:
+        from agent.credential_auth_recovery import pool_runtime_refresh_profile
+        return pool_runtime_refresh_profile(self) is not None

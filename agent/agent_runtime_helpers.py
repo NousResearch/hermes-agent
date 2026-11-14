@@ -28,7 +28,7 @@ from agent.route_verdicts import ROUTE_VERDICT_FIELDS, reset_route_verdicts, res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
+    STATUS_EXHAUSTED, _parse_absolute_timestamp,
     credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
@@ -1027,14 +1027,11 @@ def recover_with_credential_pool(
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
-        if not credential_pool_entry_serves_endpoint(next_entry, getattr(agent, "base_url", None)):
-            # Mixed same-provider pool (#68237): the entry serves another endpoint and _swap_credential
-            # would rebind this session to it. Treat as no recovery, like a rotation that yields nothing.
-            _ra().logger.info(
-                "Credential %s (%s) — pool entry %s serves another endpoint; not swapping",
-                rotate_status, label, getattr(next_entry, "id", "?"),
-            )
-            return False
+        prepare = getattr(type(pool), "prepare_runtime_entry", None)
+        if callable(prepare):
+            next_entry = prepare(pool, next_entry, source_base_url=getattr(agent, "base_url", None))
+            if next_entry is None:
+                return False
         _ra().logger.info(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
@@ -1128,8 +1125,6 @@ def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
 def _rebuild_primary_client(agent, rt: dict[str, Any], *, reason: str) -> None:
     """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
     if (agent.provider or "").strip().lower() == "moa":
-        # MoA has empty client_kwargs; rebuild via the shared facade factory so the
-        # reference_callback relay survives recovery.
         from agent.moa_loop import build_moa_facade
         agent.client = build_moa_facade(agent, agent.model)
         # MoA is a virtual chat-completions provider. It never has real OpenAI client kwargs; restoring it
@@ -1162,8 +1157,6 @@ def try_recover_primary_transport(
     ):
         return False
     try:
-        # Never hard-close the shared client here: stale streaming workers may still be unwinding on
-        # the old pool; _retire_shared_openai_client defers FD release to GC.
         # Retire the existing client to release stale connections. #70773: never hard-close the shared
         # client here — this runs on the conversation-loop thread while workers from stale-killed streaming
         # attempts may still be unwinding their SSL BIOs on the old pool. ``_retire_shared_openai_client``
@@ -1304,13 +1297,21 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
     entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
+    # Inspect the declared interface, not dynamically fabricated adapter attributes.
+    prepare = None
+    if pool is not None and callable(getattr(type(pool), "prepare_runtime_entry", None)):
+        prepare = pool.prepare_runtime_entry
+    if entry is not None and callable(prepare):
+        entry = prepare(entry, source_base_url=None)
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
     if matches_primary(entry):
-        # _swap_credential rebuilds the client and reapplies base-url-scoped headers.
         # ``_swap_credential`` rebuilds the OpenAI/Anthropic client, reapplies base-url-scoped headers, and
         # carries the accumulated base_url / OAuth-detection fixes (#33163).
-        agent._swap_credential(entry)
+        swapped = (agent._swap_credential(entry, source_base_url=None) if callable(prepare)
+                   else agent._swap_credential(entry))
+        if swapped is False:
+            return
         logger.info(
             "Restore re-selected pool entry %s (%s)",
             getattr(entry, "id", "?"), getattr(entry, "label", "?"),
@@ -1343,11 +1344,12 @@ def _revert_credential_rotation(agent) -> None:
         return
     if entry is None:
         return  # still cooling down; check again next turn
-    if agent._swap_credential(entry) is not False:
-        logger.info(
-            "Credential %s (%s) available again — reverted pool rotation",
-            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
-        )
+    if agent._swap_credential(entry) is False:
+        return  # preparation may recover next turn; do not disarm the preferred entry
+    logger.info(
+        "Credential %s (%s) available again — reverted pool rotation",
+        getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+    )
     agent._credential_pool_revert_id = None
 
 
@@ -1767,8 +1769,6 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
-    # Kimi/Moonshot via OpenRouter uses the same envelope cache_control as Claude; without this it
-    # serves ~1% cache hits. Family matcher covers bare k1./k2. slugs.
     # Without this branch moonshotai/kimi-k2.6 falls through to (False, False), serving ~1% cache hits on
     # 64K-token prompts and re-billing the full prompt on every turn. Observed within-turn progression with
     # cache enabled: 1% → 67% → 84% → 97% (#25970). Reuses the canonical family matcher (covers bare
@@ -1946,8 +1946,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         _validate_proxy_env_urls,
     )
     from agent.ssl_verify import resolve_httpx_verify
-    # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
-    # leaks into later requests (a torn-down httpx transport got reused).
     # Callers pass agent._client_kwargs (or shallow copies of it) in; any in-place mutation leaks back into
     # the stored dict and is reused on subsequent requests. #10933 hit this by injecting an httpx.Client
     # transport that was torn down after the first request, so the next request wrapped a closed transport

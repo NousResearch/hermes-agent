@@ -138,6 +138,20 @@ class LazyHeaders(dict[str, str]):
         dict.update(self._resolved(), *args, **kwargs)
 
 
+@dataclass(frozen=True)
+class PoolRuntimeCredential:
+    """An ephemeral key/endpoint pair for one selected pool row, never persisted as auth state."""
+
+    api_key: str = field(repr=False)
+    base_url: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.api_key, str):
+            raise TypeError("api_key must be a string")
+        if self.base_url is not None and not isinstance(self.base_url, str):
+            raise TypeError("base_url must be a string or None")
+
+
 @dataclass
 class ProviderProfile:
     """Base provider profile — subclass or instantiate with overrides."""
@@ -633,9 +647,23 @@ class ProviderProfile:
         """Runtime base URL derived from the credential (e.g. an account endpoint); None = env or default."""
         return None
 
-    def prepare_pool_entry(self, entry: Any, api_key: str) -> str:
-        """Turn the selected pool row's secret into the runtime key (may update ``entry``); default as-is."""
+    credential_pool_base_urls: tuple[str, ...] = field(default=(), kw_only=True)
+
+    def prepare_pool_entry(self, entry: Any, api_key: str) -> str | PoolRuntimeCredential:
+        """Prepare one selected row; legacy strings keep its endpoint, pairs replace key and endpoint.
+
+        The pair is transient: do not copy it into the persisted OAuth row. Hosted plugins receive a
+        data copy of ``entry``, so return runtime changes rather than relying on row mutation.
+        """
         return api_key
+
+    def refresh_pool_runtime_credentials(self, entry: Any, *, reason: str) -> PoolRuntimeCredential | None:
+        """Re-mint runtime credentials for this selected row only; None declines recovery.
+
+        ``reason`` is ``unauthorized``, ``stale`` or ``auxiliary_unauthorized``. Error path only; I/O
+        is allowed. Unlike ``refresh_credential``, this does not rotate persisted OAuth credentials.
+        """
+        return None
 
     def seed_pool_credentials(self, *, suppressed_sources: frozenset[str],
                               explicitly_configured: bool) -> list[dict] | None:

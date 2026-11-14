@@ -59,6 +59,31 @@ const DEFAULT_TUNNEL_RESTART_LIMIT = 5
 const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
 const CONTROL_FORWARD_KEEPALIVE_MS = Math.min(60_000, Math.floor((CONTROL_PERSIST_SECONDS * 1_000) / 2))
+// `-O check` only proves the mux socket answers — a master survives a wedged
+// channel with `check` succeeding while every real exec through it times out
+// (observed on a stale SSH forward whose local listener kept accepting but
+// never delivered: Recv-Q backed up, all dispatches hung to their timeouts).
+// The keepalive therefore promotes every Nth tick to a real `exit 0` exec, so
+// a channel wedged mid-session is evicted within N * CONTROL_FORWARD_KEEPALIVE_MS
+// instead of never. Kept low-frequency so healthy connections pay ~nothing.
+const CONTROL_KEEPALIVE_VERIFY_EVERY = 5
+// `-O check` failing once can be a transient (a ControlPersist master restarting
+// under load, a socket briefly unavailable). Require it to fail this many
+// consecutive keepalive ticks before declaring the master dead — one failure
+// already evicted a healthy master once, so the guard mirrors the pooled probe
+// retry: confirm before tearing down.
+const CONTROL_KEEPALIVE_FAILURE_LIMIT = 2
+// A `CLOSE_WAIT` socket whose Recv-Q is > 0 is a zombie forwarded channel:
+// the peer already sent FIN (we are in CLOSE_WAIT) but the master never read
+// the remaining data (Recv-Q > 0) and never sent its own FIN. A healthy
+// connection passes through CLOSE_WAIT with Recv-Q = 0 — data is drained and
+// the local close follows promptly. A zombie stays in CLOSE_WAIT with a
+// non-zero Recv-Q forever, because nothing will ever read that data.
+// Forensics on a Linux box captured 1075 wedge events over
+// ~13 h: every zombie channel had CLOSE_WAIT with Recv-Q >= 90 (one full
+// HTTP response frame); no healthy connection ever showed Recv-Q > 0 in
+// CLOSE_WAIT. This is the deterministic kernel-level signature.
+const TCP_STATE_CLOSE_WAIT = '08'
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
@@ -670,7 +695,61 @@ function stopTunnelChild(child, timeoutMs = 5_000) {
   })
 }
 
-// SshConnection — the public manager
+// A zombie forwarded channel on Linux: a CLOSE_WAIT socket whose Recv-Q is
+// > 0. The peer already sent FIN (we are in CLOSE_WAIT) but the master never
+// read the remaining bytes and never sent its own FIN. A healthy connection
+// drains data before entering CLOSE_WAIT (Recv-Q = 0), so this is a
+// deterministic kernel-level signature, not a heuristic threshold.
+//
+// Scoping: only sockets whose local port matches a known forwarded port are
+// considered. Without this filter, any unrelated process on the host that
+// happens to be in CLOSE_WAIT with unread data at snapshot time would trigger
+// a false-positive eviction. The forwardedPorts set is built from
+// _forwardedSpecs at each keepalive tick.
+//
+// IPv6: /proc/net/tcp6 is scanned alongside /proc/net/tcp with the same field
+// layout. On macOS /proc is unavailable and this returns false (fail-open:
+// the `exit 0` verify path still protects those platforms).
+//
+// Test hook: tcpPaths overrides the default [tcp, tcp6] paths.
+function _hasZombieForwardChannel(forwardedPorts: Set<number>, tcpPaths: string[] = ['/proc/net/tcp', '/proc/net/tcp6']) {
+  if (process.platform !== 'linux' || forwardedPorts.size === 0) {
+    return false
+  }
+
+  for (const tcpPath of tcpPaths) {
+    try {
+      const raw = fs.readFileSync(tcpPath, 'utf8')
+
+      for (const line of raw.split('\n').slice(1)) {
+        const fields = line.trim().split(/\s+/)
+
+        // /proc/net/tcp{,6} format: sl(0) local(1) rem(2) st(3) tx:rx(4) ...
+        if (fields.length < 10 || fields[3] !== TCP_STATE_CLOSE_WAIT) {
+          continue
+        }
+
+        // Local port is the hex value after ':' in the local address field.
+        const localPortHex = fields[1]?.split(':')[1]
+        const localPort = localPortHex ? parseInt(localPortHex, 16) : 0
+
+        if (!forwardedPorts.has(localPort)) {
+          continue
+        }
+
+        // tx_queue:rx_queue - Recv-Q is the second hex value (rx bytes pending).
+        const rxQueue = fields[4]?.split(':')[1]
+        if (rxQueue && parseInt(rxQueue, 16) > 0) {
+          return true
+        }
+      }
+    } catch {
+      // Path may not exist (containers, non-Linux) - fail open.
+    }
+  }
+
+  return false
+}
 
 class SshConnection {
   host: string
@@ -694,6 +773,10 @@ class SshConnection {
   _controlMasters: ControlMasterHolders
   _forwardedSpecs: Set<string>
   _controlKeepaliveTimer: ReturnType<typeof setInterval> | null
+  _keepaliveTick: number = 0
+  _keepaliveAliveStreak: number = 0
+  _zombieStreak: number = 0
+  _procNetTcpPaths: string[]
 
   constructor(cfg, opts: any = {}) {
     if (!cfg || !cfg.host) {
@@ -736,6 +819,7 @@ class SshConnection {
     this._execTimeoutMs = opts.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
     this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
+    this._procNetTcpPaths = opts.procNetTcpPaths || ['/proc/net/tcp', '/proc/net/tcp6']
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
     this._controlKeepaliveTimer = null
     this._opened = false
@@ -954,7 +1038,84 @@ class SshConnection {
     this._controlKeepaliveTimer = setInterval(() => {
       // Remote liveness owns reconnect/teardown. Keep refreshing through a
       // transient failed check rather than turning one timeout into expiry.
-      void this.isAlive()
+      //
+      // Every Nth tick promotes `-O check` to a real `exit 0` exec: `-O check`
+      // passes on a wedged mux channel, so a channel that died mid-session
+      // would otherwise never be noticed and every dispatch through the local
+      // forward would hang to its timeout until the app restarts.
+      this._keepaliveTick += 1
+
+      if (this._mux && this._keepaliveTick % CONTROL_KEEPALIVE_VERIFY_EVERY === 0) {
+        // Two independent protections at the verify cadence:
+        //   1. Zombie channel (Linux): CLOSE_WAIT with Recv-Q > 0 is a
+        //      deterministic kernel-level signature of an abandoned channel
+        //      — the peer sent FIN but the master never read the data or
+        //      closed its end. `exit 0` cannot detect this because it opens
+        //      a NEW channel; the zombie is an EXISTING one. Caught on every
+        //      verify tick on Linux; no-op on other platforms.
+        //   2. `exit 0` exec: catches a master where every channel is hung
+        //      (no CLOSE_WAIT, but no progress either). This is the
+        //      pre-existing protection, kept unchanged.
+        const zombie = this._hasZombie()
+
+        if (zombie) {
+          this._zombieStreak += 1
+
+          if (this._zombieStreak >= CONTROL_KEEPALIVE_FAILURE_LIMIT) {
+            this._logLine('zombie forward channel detected (CLOSE_WAIT with unread data); evicting stale master')
+            void this._evictStaleMaster().then(() => {
+              this._opened = false
+              this._zombieStreak = 0
+              this._keepaliveAliveStreak = 0
+            })
+          }
+
+          return
+        }
+
+        this._zombieStreak = 0
+
+        void this._verifyMuxChannel().then(ok => {
+          if (ok) {
+            return
+          }
+
+          this._logLine('control master failed periodic exec verification; evicting stale master')
+          void this._evictStaleMaster().then(() => {
+            this._opened = false
+            this._zombieStreak = 0
+            this._keepaliveAliveStreak = 0
+          })
+        })
+
+        return
+      }
+
+      void this.isAlive().then(alive => {
+        // A `-O check` that keeps failing means the ControlPersist master died
+        // (idle-expiry or a dropped control connection): the socket is gone but
+        // nothing reconnects until the next full verify, so the forward serves
+        // ECONNREFUSED the whole time. Confirm the failure across consecutive
+        // ticks (a lone failure can be a transient), then evict so a fresh
+        // master is dialed on the next dispatch instead of waiting out the
+        // verify cycle.
+        if (alive === false) {
+          this._keepaliveAliveStreak += 1
+
+          if (this._keepaliveAliveStreak >= CONTROL_KEEPALIVE_FAILURE_LIMIT) {
+            this._logLine('control master keepalive check failed repeatedly; evicting stale master')
+            void this._evictStaleMaster().then(() => {
+              this._opened = false
+              this._zombieStreak = 0
+              this._keepaliveAliveStreak = 0
+            })
+          }
+
+          return
+        }
+
+        this._keepaliveAliveStreak = 0
+      })
     }, CONTROL_FORWARD_KEEPALIVE_MS)
     this._controlKeepaliveTimer.unref?.()
   }
@@ -966,6 +1127,22 @@ class SshConnection {
 
     clearInterval(this._controlKeepaliveTimer)
     this._controlKeepaliveTimer = null
+  }
+
+  // Zombie forwarded channel check (Linux only). Builds the forwarded-port
+  // set from _forwardedSpecs so only sockets owned by this connection's
+  // forwards are considered. Delegates to _hasZombieForwardChannel.
+  _hasZombie(tcpPaths?: string[]) {
+    const ports = new Set<number>()
+
+    for (const spec of this._forwardedSpecs) {
+      const localPort = Number(spec.split(':')[1])
+      if (localPort) {
+        ports.add(localPort)
+      }
+    }
+
+    return _hasZombieForwardChannel(ports, tcpPaths || this._procNetTcpPaths)
   }
 
   // A real exec through the master (`exit 0` works under POSIX shells and
@@ -1402,6 +1579,7 @@ function assertBootstrapNotSuperseded(signal) {
 }
 
 export {
+  _hasZombieForwardChannel,
   assertBootstrapNotSuperseded,
   baseSshOptions,
   buildControlArgs,

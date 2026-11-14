@@ -249,6 +249,93 @@ function listen(server: http.Server): Promise<string> {
   })
 }
 
+describe('withRetry default delay backoff (timeout-proportional + jitter)', () => {
+  // These tests exercise the DEFAULT delayFn (no delayFn injected), which is
+  // the fix for the retry-amplification storm: a request that timed out after
+  // 30s of queueing must not re-enter the queue 200ms later. The delay must be
+  // proportional to the timeout that triggered it, with jitter so concurrent
+  // failures do not retry in lockstep.
+  it('scales the first retry delay with the triggering timeout (30s -> ~3-4.5s)', async () => {
+    const measured: number[] = []
+    let attempts = 0
+    const started = Date.now()
+
+    await withRetry(
+      () => {
+        attempts += 1
+
+        if (attempts < 2) {
+          const e: NodeJS.ErrnoException = new Error('Timed out connecting to Hermes backend after 30000ms')
+          e.code = 'ETIMEDOUT'
+
+          return Promise.reject(e)
+        }
+
+        return Promise.resolve('ok')
+      },
+      { method: 'GET', timeoutMs: 30_000, maxRetries: 1 }
+    ).then(result => {
+      measured.push(Date.now() - started)
+      expect(result).toBe('ok')
+    })
+
+    // base = 30000 * 0.1 = 3000, jitter up to +1500 => 3000-4500ms
+    const elapsed = measured[0]
+    expect(elapsed).toBeGreaterThanOrEqual(2900)
+    expect(elapsed).toBeLessThan(5200)
+  })
+
+  it('falls back to the legacy 200ms base for fast-fail errors with no timeout', async () => {
+    const started = Date.now()
+    let attempts = 0
+
+    await withRetry(
+      () => {
+        attempts += 1
+
+        if (attempts < 2) {
+          return Promise.reject(errWithCode('ECONNRESET', 'read ECONNRESET'))
+        }
+
+        return Promise.resolve('ok')
+      },
+      { method: 'GET', maxRetries: 1 } // no timeoutMs => fast-fail path
+    )
+
+    // base = 200, jitter up to +100 => 200-300ms (well under 1s)
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeGreaterThanOrEqual(150)
+    expect(elapsed).toBeLessThan(1000)
+  })
+
+  it('caps the backoff at 5s even for very long timeouts', async () => {
+    const started = Date.now()
+    let attempts = 0
+
+    await withRetry(
+      () => {
+        attempts += 1
+
+        if (attempts < 2) {
+          const e: NodeJS.ErrnoException = new Error('Timed out connecting to Hermes backend after 120000ms')
+          e.code = 'ETIMEDOUT'
+
+          return Promise.reject(e)
+        }
+
+        return Promise.resolve('ok')
+      },
+      { method: 'GET', timeoutMs: 120_000, maxRetries: 1 }
+    )
+
+    // base = 12000 (uncapped) but backoff capped at 5000, jitter <= 2500
+    // => 5000-7500ms, never the full 12000ms
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeGreaterThanOrEqual(4900)
+    expect(elapsed).toBeLessThan(8000)
+  })
+})
+
 describe('live: GET burst against a server that resets keep-alive sockets', () => {
   it('bare attempts fail with ECONNRESET/hang-up; retried GETs all succeed', async () => {
     // Deterministic misbehavior: every other request gets its socket

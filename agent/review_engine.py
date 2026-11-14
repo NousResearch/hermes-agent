@@ -114,6 +114,13 @@ def collect_parent_loaded_skills(parent_agent, messages: list[dict[str, Any]], l
             txt = _message_text(message)
             for m_pruned in re.finditer(r"\[SKILL_PRUNED:[^\]]*skill_view\(name=['\"]([^'\"]+)['\"]\)", txt):
                 candidates.append(m_pruned.group(1))
+            for m_passive in re.finditer(r"\[SKILL_PRUNED:\s*([a-z0-9][a-z0-9_-]*)\s+\(", txt):
+                candidates.append(m_passive.group(1))
+            if role == "user":
+                for m_stack in re.finditer(r"^Skills loaded:\s*(.+)$", txt, re.MULTILINE):
+                    for s_item in m_stack.group(1).split(","):
+                        if s_item.strip():
+                            candidates.append(s_item.strip())
     for name in candidates:
         cleaned = name.strip()
         if cleaned and cleaned not in names:

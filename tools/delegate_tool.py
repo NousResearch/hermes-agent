@@ -359,7 +359,8 @@ def _build_child_agent(
     with _quiet(None):
         from agent.review_engine import collect_parent_loaded_skills
         _p_msgs = (
-            getattr(parent_agent, "_active_conversation_messages", None)
+            getattr(parent_agent, "_session_messages", None)
+            or getattr(parent_agent, "_active_conversation_messages", None)
             or getattr(parent_agent, "messages", None)
             or []
         )

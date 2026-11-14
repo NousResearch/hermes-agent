@@ -410,3 +410,23 @@ def test_format_dispatch_note_dispatched():
     )
     assert "security" not in note and "\n" not in note
     assert len(note) < 80
+
+
+def test_collect_parent_loaded_skills_stacked_and_pruned():
+    parent = _fake_parent()
+    msgs = [
+        {
+            "role": "user",
+            "content": (
+                "Skills loaded: deep-research, research-and-plan\n"
+                "- [SKILL_PRUNED: content lost in compression; reload with skill_view(name='dab')]"
+            ),
+        },
+        {
+            "role": "tool",
+            "content": "[SKILL_PRUNED: content lost in compression; reload with skill_view(name='rca')]",
+        },
+    ]
+    loaded = re_mod.collect_parent_loaded_skills(parent, msgs)
+    assert loaded == ["dab", "deep-research", "research-and-plan", "rca"]
+

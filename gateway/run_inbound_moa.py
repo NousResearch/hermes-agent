@@ -49,15 +49,15 @@ class GatewayInboundMoaMixin:
                 return True, t("gateway.moa.prepare_failed")
             event.text = moa_payload
             return False, None
+        from gateway.session_moa_turn import admit_moa_turn, moa_override
         try:
             event.text = moa_payload
+            if admit_moa_turn(self, event, source, _quick_key, moa_cfg["default_preset"]):
+                return False, None  # its own admission carries the preset (#146026)
             _moa_state = self._session_state(_quick_key)
             # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
             self._claim_one_turn_restore(_quick_key)
-            _moa_state.conversation.model_override = {
-                "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
-                "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
-            }
+            _moa_state.conversation.model_override = moa_override(moa_cfg["default_preset"])
             self._evict_cached_agent(_quick_key)
         except Exception:  # the user gets the prepare-failed notice instead of a turn on the wrong model
             logger.warning("/moa: could not bind the one-shot preset", exc_info=True)

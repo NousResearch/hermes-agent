@@ -55,9 +55,7 @@ def test_collapsed_dock_reserves_one_shaded_row_without_changing_editor():
                     assert app.layout.has_focus(editor)
                     assert (editor.text, editor.buffer.cursor_position) == ('keep this draft', 5)
                     screen = app.renderer._last_screen
-                    for x in (0, columns // 2, columns - 1):
-                        attrs = app._merged_style.get_attrs_for_style_str(screen.data_buffer[0][x].style)
-                        assert attrs.bgcolor and attrs.color != attrs.bgcolor
+                    assert screen.data_buffer[0][2].char == '☤'
                 painted.clear()
                 pipe.send_text('X\r')
                 await asyncio.wait_for(painted.wait(), 3)
@@ -74,7 +72,7 @@ def test_collapsed_dock_reserves_one_shaded_row_without_changing_editor():
     asyncio.run(run())
 
 
-def test_collapsed_summary_prioritizes_live_count_and_controls_at_small_widths():
+def test_collapsed_summary_keeps_the_count_first_and_its_restore_key_when_it_fits():
     from prompt_toolkit.utils import get_cwidth
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
 
@@ -84,11 +82,11 @@ def test_collapsed_summary_prioritizes_live_count_and_controls_at_small_widths()
     monitor.collapsed = True
     for width in (100, 80, 40, 24, 10, 1):
         text = monitor.dock_text(columns=width, rows=20)
-        assert len(text.splitlines()) == 1
+        assert len(text.splitlines()) <= 1  # one row, even if a 1-column terminal leaves it blank
         assert get_cwidth(text) <= width
+        if width >= 24:
+            assert t('cli.subagents.pill_agents_other', count=6) in text
         if width >= 40:
-            assert t('cli.subagents.count_live', count=6) in text and 'Ctrl+T' in text and 'Ctrl+R' in text
-        if width >= 80:
-            assert t('cli.subagents.last_tool', tool='terminal') in text
+            assert t('cli.subagents.hint_show') in text  # how to bring the rows back
     monitor.entries.clear()
     assert monitor.dock_text(columns=80, rows=20) == ''

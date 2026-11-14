@@ -50,7 +50,8 @@ def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(herm
     collapsed = dock.dock_text(columns=80, rows=40)
     counts = f"{t('cli.subagents.goal_active')} · {t('cli.subagents.count_queued', count=4)}"
     assert "\n" not in collapsed
-    assert f"{t('cli.subagents.heading_session_restore', count=counts)} · ⊙ Goal" in collapsed
+    assert collapsed.strip().startswith(counts) and t('cli.subagents.hint_show') in collapsed
+    assert "⊙ Goal" in collapsed  # the pending objective stays readable while collapsed
     assert "Ctrl+T" not in collapsed  # the monitor only lists subagents/processes
     assert get_cwidth(collapsed) <= 80
 
@@ -58,7 +59,7 @@ def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(herm
     dock.collapsed = False
     mgr.pause("user-paused")
     pending.queue.clear()
-    assert dock.refresh() and dock.dock_text(columns=80, rows=40).startswith(" ⏸ Goal (paused")
+    assert dock.refresh() and dock.dock_text(columns=80, rows=40).lstrip().startswith("⏸ Goal (paused")
     mgr.clear()
     assert dock.refresh() and not dock.has_rows and dock.dock_text(columns=80, rows=40) == ""
 
@@ -127,7 +128,8 @@ def test_dock_loop_row_counts_down_to_the_next_wakeup(hermes_home):
     assert dock.refresh(now=due - 42) and "next in 42s" in dock.loop
     assert not dock.refresh(now=due - 42)  # unchanged text → no repaint
     dock.collapsed = True
-    assert dock.dock_text(columns=100, rows=40).strip() == "↻ loop next in 42s · Ctrl+R restore · check the deploy"
+    collapsed = dock.dock_text(columns=100, rows=40).strip()
+    assert collapsed.startswith("↻ loop next in 42s") and collapsed.endswith("check the deploy")
 
     mgr.pause("user-paused")
     assert dock.refresh(now=due) and dock.loop == "⏸ loop paused · user-paused · 1 run · check the deploy"

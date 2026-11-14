@@ -162,3 +162,70 @@ def test_save_url_trusted_origin_skips_private_check_on_first_hop_only(monkeypat
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ── cache filename safety ────────────────────────────────────────────────────
+# Providers pass a model id straight through as the cache ``prefix``. Namespaced
+# ids ("ag/gemini-3.1-flash-image") used to interpolate their "/" into the path,
+# so every write targeted an uncreated subdirectory and died with ENOENT while
+# the provider had already returned a perfectly good image.
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "ag/gemini-3.1-flash-image",
+        "black-forest-labs/flux-1.1-pro",
+        "gemini/gemini-3-pro-image-preview",
+        "openrouter/nvidia/nemotron-3-ultra:free",
+    ],
+)
+def test_cache_path_keeps_namespaced_model_ids_inside_the_cache_dir(monkeypatch, tmp_path, model_id):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    root = provider_media.cache_dir("images")
+
+    path = provider_media.save_bytes(
+        "images", b"image-bytes", prefix=f"openai_{model_id}", extension="png",
+    )
+
+    assert path.read_bytes() == b"image-bytes"
+    assert path.parent == root
+    assert path == root / path.name  # one filename component, no stray directories
+    assert list(root.iterdir()) == [path]
+
+
+def test_cache_path_refuses_to_escape_the_cache_dir(monkeypatch, tmp_path):
+    """A hostile/odd prefix must not traverse out of the cache directory."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    root = provider_media.cache_dir("images")
+
+    path = provider_media.save_bytes(
+        "images", b"x", prefix="../../../../tmp/evil", extension="png",
+    )
+
+    assert path.parent == root
+    assert root.resolve() in path.resolve().parents
+
+
+def test_cache_path_sanitizes_extension_and_blank_prefix(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    root = provider_media.cache_dir("images")
+
+    weird = provider_media.save_bytes("images", b"x", prefix="p", extension="png/../../evil")
+    assert weird.parent == root
+    assert "/" not in weird.suffix
+
+    blank = provider_media.save_bytes("images", b"x", prefix="   ", extension="png")
+    assert blank.parent == root
+    assert blank.name.startswith("media_")
+
+
+def test_cache_path_caps_long_prefix(monkeypatch, tmp_path):
+    """Filesystem component limits (255 bytes) must not turn into a save failure."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    path = provider_media.save_bytes("images", b"x", prefix="m" * 500, extension="png")
+
+    assert path.read_bytes() == b"x"
+    assert len(path.name.encode()) < 255
+

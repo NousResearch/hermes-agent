@@ -19,6 +19,15 @@ _SENSITIVE_WRITES = (
 
 
 class TestSingleSegmentHomeFolding:
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("command", [r"rm -rf /root\*", r"rm -rf \root\*"])
+    def test_escaped_posix_backslash_does_not_fold_into_home_delete(self, monkeypatch, command):
+        from tools.approval import detect_hardline_command
+
+        monkeypatch.setenv("HOME", "/root")
+        # Both commands name literal paths rather than /root or /root/*.
+        assert detect_hardline_command(command) == (False, None)
+
     @pytest.mark.parametrize("home", ["/root", "/home/alice"])
     @pytest.mark.parametrize("template", _SENSITIVE_WRITES)
     def test_absolute_home_spelling_is_flagged(self, monkeypatch, home, template):

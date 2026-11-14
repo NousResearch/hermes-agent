@@ -39,7 +39,14 @@ def _home_prefix_fold_regex(path: str):
     # single-component home above, where the optional form would also fold relative same-named paths,
     # and anchored at a path start so a nested ``/data/root/x`` does not fold to ``/data~/x``.
     lead = r"(?<![\w.~$}/\\-])[/\\]+" if len(components) == 1 else r"[/\\]*"
-    return re.compile(lead + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    # POSIX backslashes are shell escapes, not path separators. Otherwise /root\*
+    # (literal /root*) folds to ~/* and falsely trips the non-bypassable rm gate.
+    posix_single = len(components) == 1 and os.name == "posix" and path.startswith("/")
+    if posix_single:
+        lead = r"(?<![\w.~$}/\\-])/+"
+    tail = (r"(?P<tail>(?:/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+            if posix_single else _PATH_TAIL)
+    return re.compile(lead + r"[/\\]+".join(re.escape(c) for c in components) + tail)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:

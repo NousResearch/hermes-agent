@@ -51,7 +51,8 @@ def _key_visible_in_scope(key: ServerKey, scope: Optional[str]) -> bool:
 def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool = True) -> ServerKey:
     """The connection key a call to *name* from *scope* must use: the scope's own connection
     (live, connecting or lazily registered) when it has one, else a shared connection it
-    adopted, else its own (not yet existing) key so bookkeeping lands under this scope."""
+    adopted, else -- from a bound session tool scope -- its profile's own live connection, else
+    its own (not yet existing) key so bookkeeping lands under this scope."""
     if scope is None and current:
         scope = _core._mcp_registry_scope()
     own = _server_key(name, scope, current=False)
@@ -60,6 +61,14 @@ def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool
     for key, scopes in _core._server_tool_scopes.items():
         if scope in scopes and _key_name(key) == name and key in _core._servers:
             return key
+    from tools.registry import current_session_tool_scope, session_tool_scope
+    if scope == current_session_tool_scope():
+        # A session scope overlays its profile, as the tool registry does (#143502). Live only: a
+        # lazy entry's first-use connect runs in this context and would be keyed under the session.
+        with session_tool_scope(None):
+            profile_key = _resolve_server_key(name)
+        if profile_key in _core._servers:
+            return profile_key
     return own
 
 

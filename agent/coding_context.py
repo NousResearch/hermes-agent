@@ -578,7 +578,8 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
                 " PR if appropriate.")
 
         dirty = [f"{n} {label}" for label, n in counts.items() if n]
-        lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
+        # A successful porcelain=2 --branch always prints ``# branch.oid``: empty = failed, timed out or skipped.
+        lines.append("- Status: unknown (git status failed)" if not status else f"- Status: {', '.join(dirty) if dirty else 'clean'}")
 
         recent = _git(root, "log", "-3", "--pretty=%h %s")
         if recent:

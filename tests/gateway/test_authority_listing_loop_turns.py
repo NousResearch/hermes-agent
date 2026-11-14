@@ -111,6 +111,104 @@ async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+@pytest.mark.parametrize('reason', ['compression', 'session_reset'])
+async def test_a_rotation_s_closed_parent_leaves_the_live_feed(owner, method, reason):
+    """A rotation closes the parent and continues the conversation in its child in one transaction,
+    re-pointing the receipt (and the route) at the child while nobody pops the parent's live mount:
+    the feeds must drop the ended parent themselves, or the picker offers an id every mutate refuses
+    (``session_superseded``, #143767). The nightly/``/new`` ``session_reset`` rotation produces the
+    identical shape, so the predicate is the moved-on target, never the reason string."""
+    import json
+    from hermes_state_local import POLICY_PREFIX
+    parent, live_tail = owner.sids[0], owner.sids[1]
+    owner.db.set_meta(POLICY_PREFIX + parent,
+                      json.dumps({'session_id': parent, 'entry': {'session_id': live_tail}}))
+    owner.db.end_session(parent, reason)
+    with owner.db._lock:  # newest, so session.list's 200-row window holds both
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_compression_parent_without_a_local_receipt_still_leaves_the_feed(owner, method):
+    """A messaging surface keeps no local receipt, so the moved-on target cannot be read there: the
+    compression reason is the fallback for that shape (its child owns the conversation either way)."""
+    parent, live_tail = owner.sids[0], owner.sids[1]
+    owner.db.end_session(parent, 'compression')
+    with owner.db._lock:
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_an_ended_session_with_no_successor_stays_listed(owner, method):
+    """The filter reads successors, not end reasons: a session that ended with nothing continuing it
+    (``tui_close``, a restart's ``agent_close``) is resumable and must stay in the feed — otherwise
+    the rotation fix would hide exactly the rows a picker exists for."""
+    ended = owner.sids[0]
+    owner.db.end_session(ended, 'tui_close')
+    with owner.db._lock:
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id = ?', (ended,))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert ended in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+@pytest.mark.parametrize('reason', ['session_reset', 'idle'])
+async def test_a_messaging_reset_parent_without_a_local_receipt_leaves_the_feed(owner, method, reason):
+    """A messaging ``/new`` keeps no local receipt: the child carries ``_reset_from`` and the parent ends
+    at a reset boundary, so neither the receipt read nor the compression fallback sees the successor and
+    the picker keeps offering an id every mutate refuses (#146626 review). The child row is the only
+    evidence, and it covers every reset reason — not just the ``session_reset`` one — because the feeds
+    read the picker's own reset-child definition."""
+    parent, live_tail = owner.sids[0], owner.sids[1]
+    owner.db.create_session(f'{parent}-reset', source='telegram', parent_session_id=parent,
+                            model_config={'_reset_from': parent})
+    owner.db.end_session(parent, reason)
+    with owner.db._lock:  # newest, so session.list's 200-row window holds both
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_legacy_reset_child_without_a_marker_leaves_the_feed(owner, method):
+    """Pre-marker rows carry no ``_reset_from``: the reset-child definition falls back to a child riding
+    the parent's exact non-empty session key. The feeds read that same definition, so those parents
+    leave the feed as well instead of only the marker-stamped ones."""
+    parent, live_tail = owner.sids[0], owner.sids[1]
+    with owner.db._lock:
+        owner.db._conn.execute("UPDATE sessions SET session_key = 'chat:legacy' WHERE id = ?", (parent,))
+    owner.db.create_session(f'{parent}-legacy-reset', source='telegram', parent_session_id=parent,
+                            session_key='chat:legacy')
+    owner.db.end_session(parent, 'session_reset')
+    with owner.db._lock:
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_reset_parent_without_a_successor_stays_listed(owner, method):
+    """The reset reason alone must not hide a row: a reset that left no child (or whose child was since
+    deleted) is resumable, and dropping it would hide exactly the rows a picker exists for."""
+    ended = owner.sids[0]
+    owner.db.end_session(ended, 'session_reset')
+    with owner.db._lock:
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id = ?', (ended,))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert ended in ids, method
+
+
+@pytest.mark.asyncio
 async def test_a_session_retired_during_the_read_is_not_listed_or_restored(owner, monkeypatch):
     from gateway import session_live_listing
     original = session_live_listing._store_facts

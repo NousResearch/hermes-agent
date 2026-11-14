@@ -38,18 +38,35 @@ class LiveEntry:
 def _store_facts(db, session_ids):
     """Worker thread: ``{sid: row}`` and ``{sid: [pending admission]}`` for *session_ids*, in two reads.
 
-    ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read):
-    SQLite extracts the target from the receipt, so no receipt is parsed in Python. A malformed or
-    non-local receipt reads as no target, as ``_local_target`` does."""
+    ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read) and
+    ``receipt_target_id`` is that target's id (``live_entries``' moved-on read): SQLite extracts both from
+    the receipt, so no receipt is parsed in Python. A malformed or non-local receipt reads as no target,
+    as ``_local_target`` does. The second read follows the receipt's key — a rotation re-points it under
+    the chat's logical id (``advance_local_target`` uses ``parent.chat_id``), which for a plain local
+    session is its own id. ``reset_successor`` covers the one rotation that writes no receipt at all: a
+    messaging ``/new`` stamps the child's ``_reset_from`` (or, pre-marker, reuses the parent's session
+    key) while the parent ends at a reset boundary, so the successor is read from the child row."""
+    from hermes_state_common import _RESET_CHILD_SQL, _RESET_END_REASONS_SQL
     from hermes_state_local import POLICY_PREFIX
     ids = json.dumps(list(session_ids))
+    # A reset parent with a successor continues elsewhere even though no receipt says so. Guarded by the
+    # reset end reasons so a session ended some other way (and merely holding an old reset child) stays
+    # resumable; ``_RESET_CHILD_SQL`` is the picker's own definition of a reset child, legacy shape included.
+    reset_successor = (
+        "s.end_reason IN (" + _RESET_END_REASONS_SQL + ") AND EXISTS ("
+        "SELECT 1 FROM sessions child WHERE child.parent_session_id = s.id AND ("
+        + _RESET_CHILD_SQL.format(a='child') + "))")
     with db._read_ctx() as conn:
         rows = conn.execute(
-            "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.message_count, s.model, s.hidden, "
+            "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.end_reason, s.message_count, s.model, s.hidden, "
             "s.archived, s.runtime_revision, s.runtime_generation, "
             "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
-            "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
-            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, ids)).fetchall()
+            "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at, "
+            "(SELECT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
+            "FROM state_meta m WHERE m.key = ? || COALESCE(NULLIF(s.chat_id, ''), s.id)) AS receipt_target_id, "
+            f"({reset_successor}) AS reset_successor "
+            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))",
+            (POLICY_PREFIX, POLICY_PREFIX, ids)).fetchall()
         pending = conn.execute(
             "SELECT target_session_id, admission_id, seq, status FROM session_admissions "
             "WHERE target_session_id IN (SELECT value FROM json_each(?)) "
@@ -106,6 +123,19 @@ async def live_entries(authority, actor) -> list[LiveEntry]:
             live, row = authority.sessions.get(sid), rows.get(sid)
             if live is None or row is None:
                 continue  # retired during the read, or its row was deleted (``_handle``'s not_found)
+            if row.get('ended_at') is not None and (
+                    row.get('end_reason') == 'compression'
+                    or row.get('receipt_target_id') not in (None, sid)
+                    or row.get('reset_successor')):
+                # The conversation continues in another session. A rotation — compression, or a
+                # ``session_reset`` / ``/new`` boundary — closes the parent, re-points the receipt
+                # (and the route) at the child and leaves this mount standing, so an unfiltered
+                # feed keeps offering an id every mutate refuses (``session_superseded``, #143767).
+                # Read the moved-on target rather than the reason string: the same shape comes out
+                # of every rotation, while an end nothing continues stays listed (those are
+                # resumable). A messaging ``/new`` writes no receipt at all, so its parent is read
+                # from the reset child instead (``reset_successor``, #146626 review).
+                continue
             masked = _masked_pending(live, pending.get(sid, []))
             state = _execution_state(masked)
             handle = SessionHandle(SessionRef(authority.profile_id, sid), authority.instance_id, authority.epoch,

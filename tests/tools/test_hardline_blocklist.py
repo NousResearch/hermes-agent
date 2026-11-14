@@ -440,6 +440,40 @@ def test_true_positive_shapes_stay_hardline_blocked(command):
     assert desc
 
 
+# eval hands its joined arguments back to the shell exactly like `sh -c`, so the
+# command-position rules must see that code too (#102317).
+@pytest.mark.parametrize("command", [
+    'eval "rm -rf /"',
+    "eval rm -rf /",
+    "eval -- 'rm -rf /'",
+    'sudo eval "rm -rf /"',
+    "ls; eval 'shutdown -h now'",
+    "bash -c \"eval 'rm -rf /'\"",
+    "eval \"eval 'mkfs.ext4 /dev/sda1'\"",
+])
+def test_eval_payload_reaches_hardline_floor(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"eval payload leaked past the hardline floor: {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", [
+    'eval "$(ssh-agent -s)"',
+    "eval \"echo 'rm -rf / is fatal'\"",
+    "echo eval rm -rf /",
+    "eval 'ls -la'",
+])
+def test_eval_payload_data_is_not_hardline(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
+def test_eval_payload_hardline_survives_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards('eval "rm -rf /"', "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+
+
 # DANGEROUS-tier duplicates of the mkfs/dd rules must be anchored the same
 # way: quoted prose must not even require approval, while real invocations
 # stay flagged (yolo can still bypass this tier — that's what yolo is for).

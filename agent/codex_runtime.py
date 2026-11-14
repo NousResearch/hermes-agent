@@ -1213,6 +1213,22 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries, model = 1, api_kwargs.get("model")
+
+    def _refresh_shared_client_for_retry() -> None:
+        """Before the single transport retry, swap a possibly poisoned shared pool for a fresh client.
+
+        A broken-pipe/connect failure can leave dead sockets in the shared httpx pool, so retrying on the
+        same client repeats the failure. Caller-owned clients are left alone; if the rebuild fails, the retry
+        proceeds on the existing client exactly as before."""
+        nonlocal active_client
+        if client is not None:
+            return
+        if agent._replace_primary_openai_client(reason="codex_stream_transport_retry"):
+            active_client = agent._ensure_primary_openai_client(reason="codex_stream_transport_retry")
+        else:
+            logger.debug("Codex transport retry: client rebuild failed; retrying on the existing client. %s",
+                         agent._client_log_context())
+
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
     # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
@@ -1445,6 +1461,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 if attempt >= max_stream_retries:
                     _log_failure(exc)
                     raise
+                _refresh_shared_client_for_retry()
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); retrying. %s error=%s" if event_stream is None
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
@@ -1465,6 +1482,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # token is claimed the inference may already be billed, so mid-stream failures still raise.
                 if (attempt < max_stream_retries and writer_token["value"] is None
                         and isinstance(exc.__cause__, _httpx.TransportError)):
+                    _refresh_shared_client_for_retry()
                     logger.debug(
                         "Codex Responses pre-stream connect failed (attempt %s/%s); retrying. %s error=%s",
                         attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,

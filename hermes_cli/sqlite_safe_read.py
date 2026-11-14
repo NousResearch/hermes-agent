@@ -17,7 +17,7 @@ import sys
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,15 @@ class _TrackingMixin:
     """
 
     _hermes_tracked_path: str | None = None
+    _hermes_authorizer_callback: Any = None
+    _hermes_authorizer_locked = False
+
+    def set_authorizer(self, authorizer_callback) -> None:  # type: ignore[misc]
+        """Install and remember the callback so scoped policies can restore it."""
+        if self._hermes_authorizer_locked:
+            raise RuntimeError("SQLite authorizer is locked by a scoped policy")
+        super().set_authorizer(authorizer_callback)  # type: ignore[misc]
+        self._hermes_authorizer_callback = authorizer_callback
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:

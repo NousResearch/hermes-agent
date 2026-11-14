@@ -303,7 +303,15 @@ export function useCatalog(kind: CatalogKind) {
 
 /** Warm a catalog while the browser is idle so switching tabs doesn't pay the fetch + parse. */
 export function prefetchCatalogWhenIdle(kind: CatalogKind) {
-  const id = requestIdleCallback(() => void queryClient.prefetchQuery(catalogQuery(kind)), { timeout: 5_000 })
+  const prefetch = () => void queryClient.prefetchQuery(catalogQuery(kind))
 
-  return () => cancelIdleCallback(id)
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(prefetch, { timeout: 5_000 })
+
+    return () => cancelIdleCallback(id)
+  }
+
+  const id = setTimeout(prefetch, 1)
+
+  return () => clearTimeout(id)
 }

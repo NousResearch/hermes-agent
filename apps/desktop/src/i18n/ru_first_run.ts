@@ -37,6 +37,14 @@ export const ruFirstRun: FirstRunCopy = {
     setUp: 'Настроить',
     notNow: 'Не сейчас'
   },
+  nextMoves: {
+    title: 'Ваши следующие 3 шага',
+    subtitle: 'Выберите любой — каждый откроется прямо здесь.',
+    palette: 'Открыть палитру команд',
+    bots: 'Познакомьтесь со своими Bots',
+    plugins: 'Каталог плагинов (Kanban здесь)',
+    done: 'Готово'
+  },
   intro: {
     greeting: 'Привет, я Hermes.',
     plan: 'Давайте всё настроим под вас. А потом сделаем что-нибудь классное.'

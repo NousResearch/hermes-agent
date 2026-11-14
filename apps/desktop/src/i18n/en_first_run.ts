@@ -36,6 +36,14 @@ export const enFirstRun: FirstRunCopy = {
     setUp: 'Set it up',
     notNow: 'Not now'
   },
+  nextMoves: {
+    title: 'Your next 3 moves',
+    subtitle: 'Pick one — each opens right here.',
+    palette: 'Summon the command palette',
+    bots: 'Meet your Bots',
+    plugins: 'Browse plugins (Kanban lives here)',
+    done: 'Done'
+  },
   intro: {
     greeting: "Hi, I'm Hermes.",
     plan: "Let's set things up for you. Then we'll get something cool done."

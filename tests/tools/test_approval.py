@@ -108,6 +108,16 @@ class TestDetectDangerousRm:
 
 
     @pytest.mark.platforms("linux")
+    @pytest.mark.parametrize("command", [
+        "rm -f /tmp/arbitrary-probe.py",
+        "git diff --check && git status --short && rm -f /tmp/arbitrary-probe.py",
+        "rm -f /var/tmp/arbitrary-probe.py",
+    ])
+    def test_nonrecursive_absolute_temp_cleanup_is_not_dangerous(self, command):
+        """A single-file temp cleanup is not a root-directory deletion."""
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.platforms("linux")
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
@@ -126,14 +136,43 @@ class TestDetectDangerousRm:
         basename = "hermes-verify-example.py"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
+            assert approval_detection._is_verification_artifact_cleanup(
+                f"rm -f {linked_temp / basename}"
+            ) is False
+            assert detect_dangerous_command(f"rm -f {linked_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
             assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
                 False,
                 None,
                 None,
             )
 
-    def test_verification_cleanup_exemption_rejects_broader_deletions(self):
+    @pytest.mark.parametrize("command", [
+        "rm -f foo.txt",
+        "rm -f build/foo.o",
+        "unlink /tmp/arbitrary-probe.py",
+        "rm foo.txt -f",
+    ])
+    def test_existing_nonrecursive_cleanup_forms_remain_unprompted(self, command):
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.parametrize("command", [
+        "rm -f /",
+        "rm -rf /",
+        "rm -rf /etc/nginx",
+        "rm -rf /home/alice/project",
+        "rm build/ -rf",
+    ])
+    def test_root_and_recursive_deletions_remain_dangerous(self, command):
+        is_dangerous, key, description = detect_dangerous_command(command)
+        assert is_dangerous is True, command
+        assert key is not None, command
+        assert "delete" in description.lower(), command
+
+    def test_verification_cleanup_exemption_still_rejects_noncanonical_shapes(self):
         commands = (
             "rm -rf /tmp/hermes-verify-example.py",
             "rm -f /tmp/hermes-verify-example.py /tmp/other.py",
@@ -146,11 +185,10 @@ class TestDetectDangerousRm:
             "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
         )
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
-            for command in commands:
-                is_dangerous, key, desc = detect_dangerous_command(command)
-                assert is_dangerous is True, command
-                assert key is not None, command
-                assert "delete" in desc.lower(), command
+            assert all(
+                approval_detection._is_verification_artifact_cleanup(command) is False
+                for command in commands
+            )
 
 
 class TestDynamicShellWordSpellings:

@@ -720,7 +720,7 @@ _DB_CONNSTR_RE = re.compile(
 _DB_URL_QUERY_RE = re.compile(
     r"(?:postgres(?:ql)?|mysql|mariadb|mongodb|rediss?|amqps?)(?:\+[a-z0-9]++)?://(?:[^\s?#:]|:(?!//))*+\?[^\s#]+",
     re.IGNORECASE)  # the authority/path run stops at the next ``://``: linear on repeated schemes
-_QUERY_PW_PARAM_RE = re.compile(r"([?&;](?:password|pwd)=)([^&;#\s\"'<>]+)", re.IGNORECASE)
+_QUERY_PW_PARAM_RE = re.compile(r"([?&;](?:(?:ssl)?password|passwd|pwd)=)([^&;#\s\"'<>]+)", re.IGNORECASE)
 
 # Bare-token URL credential ``scheme://TOKEN@host`` (``git remote set-url
 # https://PASSWORD@github.com/...``): unambiguously a secret, since round-trip

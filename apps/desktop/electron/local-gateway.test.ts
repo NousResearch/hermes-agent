@@ -37,6 +37,35 @@ test('the ensure client never hands a dev renderer origin to the long-lived loca
   expect(JSON.parse(result.stdout)).toBeNull()
 })
 
+test('a gateway started from the AppImage payload copy gets no paths into the app mount', async () => {
+  const mount = '/tmp/.mount_HermesAb12'
+  const keys = ['PATH', 'LD_LIBRARY_PATH', 'XDG_DATA_DIRS', 'GSETTINGS_SCHEMA_DIR', 'APPDIR', 'APPIMAGE']
+  const printEnv = ['-e', `process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(keys)}.map(k => [k, process.env[k] ?? null]))))`]
+
+  const result = await runGatewayEnsure(
+    { command: process.execPath, args: printEnv, env: { PATH: `${mount}:${mount}/usr/sbin:/usr/bin` }, shell: false },
+    process.cwd(),
+    '/home/x/.hermes',
+    {
+      APPIMAGE: '/home/x/Hermes.AppImage',
+      APPDIR: mount,
+      LD_LIBRARY_PATH: `${mount}/usr/lib`,
+      XDG_DATA_DIRS: `${mount}/usr/share/:/usr/share/`,
+      GSETTINGS_SCHEMA_DIR: `${mount}/usr/share/glib-2.0/schemas`
+    },
+    { execPath: `${mount}/hermes` }
+  )
+
+  expect(JSON.parse(result.stdout)).toEqual({
+    PATH: '/usr/bin',
+    LD_LIBRARY_PATH: null,
+    XDG_DATA_DIRS: '/usr/share/',
+    GSETTINGS_SCHEMA_DIR: null,
+    APPDIR: null,
+    APPIMAGE: '/home/x/Hermes.AppImage'
+  })
+})
+
 test('a shell-delegated ensure quotes a spaced Windows install path (#74064)', async () => {
   // cmd.exe cuts an unquoted `C:\Users\John Doe\...\hermes.cmd` at the first space.
   const spawned: string[] = []

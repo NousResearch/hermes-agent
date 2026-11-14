@@ -419,12 +419,12 @@ import {
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import {
-  bundledPayload,
   installIdForRoot,
   type PayloadInfo,
   payloadPythonPath,
   payloadTicketRuntime,
-  requireBundledPayload
+  requireBundledPayload,
+  runnableBundledPayload
 } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
@@ -4820,8 +4820,8 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
-async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
-  const payload = bundledPayload(process.resourcesPath)
+async function resolveHermesBackend(backendArgs: string[], progress?: typeof advanceBootProgress): Promise<ResolvedHermesBackend> {
+  const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
     if (!IS_WINDOWS) {
@@ -11656,7 +11656,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
-        return resolveHermesBackend(backendArgs)
+        return resolveHermesBackend(backendArgs, advanceBootProgress)
       },
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs

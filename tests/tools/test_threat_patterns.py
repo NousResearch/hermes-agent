@@ -257,9 +257,47 @@ class TestReDoSHardening:
         assert elapsed < 0.5
 
 
-    def test_payload_beyond_scan_cap_is_not_evaluated(self):
+    def test_payload_just_inside_cap_is_evaluated(self):
+        # A payload ending inside the first chunk is caught as before.
+        payload = "ignore previous instructions"
+        text = "x" * (MAX_SCAN_CHARS - len(payload) - 1) + " " + payload
+        assert len(text) == MAX_SCAN_CHARS
+        assert "prompt_injection" in scan_for_threats(text, scope="all")
+
+    def test_payload_beyond_cap_is_evaluated(self):
+        # Regression for the tail-scan gap: the scanner used to truncate to
+        # MAX_SCAN_CHARS, so an injection payload past the cap (which the
+        # renderer may still emit as a tail) silently escaped detection. Now
+        # the whole input is scanned in overlapping chunks, so the tail fires.
         text = ("clean " * (MAX_SCAN_CHARS // 5 + 100)) + "ignore previous instructions"
-        assert "prompt_injection" not in scan_for_threats(text, scope="all")
+        assert "prompt_injection" in scan_for_threats(text, scope="all")
+
+    def test_payload_straddling_chunk_boundary_is_evaluated(self):
+        # The chunk overlap must surface a match that straddles a chunk edge,
+        # not just one fully inside a single chunk.  Place the keyword so it
+        # begins just before a 65,536 boundary.
+        text = "x" * (MAX_SCAN_CHARS - 5) + "ignore previous instructions"
+        assert "prompt_injection" in scan_for_threats(text, scope="all")
+
+    @pytest.mark.parametrize(
+        "filler", [" " * 5000, "\n" * 5000, " \t\n" * 2000], ids=["spaces", "newlines", "mixed"]
+    )
+    def test_long_whitespace_filler_straddling_chunk_boundary_is_evaluated(self, filler):
+        # A separator wider than the chunk overlap used to split the match
+        # across two chunks so neither saw it whole.  61,440 is the first chunk
+        # edge (MAX_SCAN_CHARS - overlap); the payload starts 100 chars before it.
+        text = "x " * 30_670 + "ignore" + filler + "previous instructions" + "y " * 100_000
+        assert "prompt_injection" in scan_for_threats(text, scope="all")
+
+    def test_long_whitespace_separator_runtime_is_bounded(self):
+        start = time.perf_counter()
+        scan_for_threats("send" + " " * 4000, scope="strict")
+        scan_for_threats("translate" + " " * 4000, scope="all")
+        assert time.perf_counter() - start < 2.0
+
+    def test_invisible_unicode_beyond_cap_is_reported(self):
+        text = "x" * (MAX_SCAN_CHARS * 3) + "\u202e"
+        assert scan_for_threats(text, scope="all") == ["invisible_unicode_U+202E"]
 
 
 # =========================================================================

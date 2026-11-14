@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from contextlib import suppress
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -320,6 +321,15 @@ def fsync_directory(path: str | Path) -> None:
             os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def retention_cutoff(now: datetime, days: float) -> datetime:
+    """``now - days``: the instant a retention window of *days* starts. A window reaching back past
+    year 1 (a "keep forever" value like 10**9, ``.inf``, ``.nan``) cuts off at the earliest
+    datetime, so nothing is old enough to prune — ``timedelta`` would raise OverflowError and
+    abort the sweep (and whatever scan runs it) instead."""
+    floor = datetime.min.replace(tzinfo=now.tzinfo)
+    return now - timedelta(days=days) if days < (now - floor).days else floor
 
 
 def unlink_files_older_than(directory: str | Path, pattern: str, max_age_seconds: float, *,

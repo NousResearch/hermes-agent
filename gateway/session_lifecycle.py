@@ -306,7 +306,8 @@ class SessionLifecycleMixin:
         mapping is dropped (the transcript stays). ``max_age_days <= 0`` disables. Returns count."""
         if max_age_days is None or max_age_days <= 0:
             return 0
-        cutoff = _now() - timedelta(days=max_age_days)
+        from utils import retention_cutoff
+        cutoff = retention_cutoff(_now(), max_age_days)
         with self._lock:
             self._ensure_loaded_locked()
             removed_keys = [

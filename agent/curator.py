@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 from hermes_constants import get_hermes_home
 from agent.skill_utils import get_disabled_skill_names
 from tools import skill_usage
-from utils import atomic_json_write
+from utils import atomic_json_write, retention_cutoff
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +202,8 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     from tools import skill_usage as _u
 
     now = now or datetime.now(UTC)
-    stale_cutoff = now - timedelta(days=get_stale_after_days())
-    archive_cutoff = now - timedelta(days=get_archive_after_days())
+    stale_cutoff = retention_cutoff(now, get_stale_after_days())
+    archive_cutoff = retention_cutoff(now, get_archive_after_days())
     # Cron-referenced skills are in use by definition (usage only bumps when a
     # job fires, so paused/rare jobs would age them out). Treat as pinned.
     protected = _cron_referenced_skills()

@@ -3083,11 +3083,11 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
             )
             return None, None
         base_url = override_url
-    # Foundry rejects Claude Code OAuth tokens: never hand it the pool/legacy one, use the Azure key (#154242).
-    from hermes_cli.runtime_provider import _azure_anthropic_env_key
-    token = explicit_api_key or (_azure_anthropic_env_key(model_cfg if isinstance(model_cfg, dict) else {})
-                                 if base_url_host_matches(base_url, "azure.com") else _pool_runtime_api_key(entry) if entry is not None
-                                 else resolve_anthropic_token())  # pool absent/empty: legacy resolver so a dead entry can't wedge aux
+    from hermes_cli.runtime_provider import anthropic_foundry_key  # Foundry: never the OAuth token (#154242)
+    if explicit_api_key or base_url_host_matches(base_url, "azure.com"):
+        token = explicit_api_key or anthropic_foundry_key(entry, model_cfg, base_url)
+    else:  # pool absent/empty: legacy resolver so a dead entry can't wedge aux
+        token = _pool_runtime_api_key(entry) if entry is not None else resolve_anthropic_token()
     if not token:
         return None, None
     from agent.anthropic_credentials import _is_oauth_token

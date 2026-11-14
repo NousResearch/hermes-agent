@@ -2169,12 +2169,12 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from agent.anthropic_credentials import native_anthropic_fallback_token, anthropic_route_is_oauth
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
         effective_key = api_key or agent.api_key or (
-            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
+            native_anthropic_fallback_token(base_url or getattr(agent, "_anthropic_base_url", None), model=getattr(agent, "model", None)) if is_native_anthropic else ""
         ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).

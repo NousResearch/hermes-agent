@@ -106,3 +106,26 @@ def test_providers_entry_owning_the_foundry_url_supplies_its_own_key(claude_code
     assert runtime["api_key"] == "KAZ-ENTRY"
     assert runtime["source"] == "config:providers"
     assert runtime["base_url"] == FOUNDRY_URL
+
+
+class _ManualAzureKeyPool(_ClaudeCodePool):
+    """The anthropic pool after ``hermes auth add anthropic --api-key <azure key>``."""
+
+    def select(self, **_kwargs):
+        return type("_Manual", (), {"access_token": "KAZ-POOL", "source": "manual", "auth_type": "api_key",
+                                    "base_url": ""})()
+
+
+def test_azure_key_stored_in_the_anthropic_pool_still_serves_foundry(claude_code_credential, monkeypatch):
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: _ManualAzureKeyPool())
+    _model_config(monkeypatch, provider="anthropic", default="claude-x", base_url=FOUNDRY_URL)
+    runtime = rp.resolve_runtime_provider(requested="anthropic")
+    assert (runtime["api_key"], runtime["base_url"]) == ("KAZ-POOL", FOUNDRY_URL)
+
+
+def test_explicit_foundry_base_url_without_an_azure_key_fails_loudly(claude_code_credential, monkeypatch):
+    """``--base-url <foundry>`` with no Azure key: an empty key would be filled with the OAuth token
+    downstream, so the resolver must refuse instead."""
+    _model_config(monkeypatch, provider="anthropic", default="claude-x")
+    with pytest.raises(rp.AuthError, match="Azure Anthropic API key"):
+        rp.resolve_runtime_provider(requested="anthropic", explicit_base_url=FOUNDRY_URL)

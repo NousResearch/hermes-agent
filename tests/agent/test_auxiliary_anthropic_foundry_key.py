@@ -64,3 +64,33 @@ def test_plain_anthropic_endpoint_still_uses_the_pool(claude_code_pool, monkeypa
     _config(monkeypatch, provider="anthropic")
     aux._try_anthropic()
     assert claude_code_pool["token"] == OAUTH_TOKEN
+
+
+def test_other_providers_inline_key_never_goes_to_an_explicit_foundry_url(claude_code_pool, monkeypatch):
+    """An aux/fallback entry ``anthropic`` + Foundry URL while ``model`` belongs to OpenRouter: the
+    OpenRouter key in ``model.api_key`` is not the Foundry key; AZURE_ANTHROPIC_KEY is."""
+    monkeypatch.setattr(aux, "_select_pool_entry", lambda *_a, **_k: (False, None))
+    monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "KAZ-ENV")
+    _config(monkeypatch, provider="openrouter", api_key="OR-SECRET")
+    aux.resolve_provider_client("anthropic", model="claude-haiku-4-5", explicit_base_url=FOUNDRY_URL)
+    assert claude_code_pool == {"token": "KAZ-ENV", "base_url": FOUNDRY_URL}
+
+
+def test_azure_key_stored_in_the_anthropic_pool_still_serves_foundry(claude_code_pool, monkeypatch):
+    """``hermes auth add anthropic --api-key <azure key>``: an api-key row is not an OAuth token."""
+    entry = SimpleNamespace(provider="anthropic", access_token="KAZ-POOL", runtime_api_key="KAZ-POOL",
+                            source="manual", auth_type="api_key", base_url="")
+    monkeypatch.setattr(aux, "_select_pool_entry", lambda *_a, **_k: (True, entry))
+    _config(monkeypatch, provider="anthropic", base_url=FOUNDRY_URL)
+    aux._try_anthropic()
+    assert claude_code_pool == {"token": "KAZ-POOL", "base_url": FOUNDRY_URL}
+
+
+def test_seeded_env_row_does_not_outrank_the_foundry_model_key(claude_code_pool, monkeypatch):
+    """The pool's env:ANTHROPIC_API_KEY row is a Console key; the Foundry ``model.api_key`` wins."""
+    entry = SimpleNamespace(provider="anthropic", access_token="CONSOLE", runtime_api_key="CONSOLE",
+                            source="env:ANTHROPIC_API_KEY", auth_type="api_key", base_url="")
+    monkeypatch.setattr(aux, "_select_pool_entry", lambda *_a, **_k: (True, entry))
+    _config(monkeypatch, provider="anthropic", base_url=FOUNDRY_URL, api_key="KAZ")
+    aux._try_anthropic()
+    assert claude_code_pool == {"token": "KAZ", "base_url": FOUNDRY_URL}

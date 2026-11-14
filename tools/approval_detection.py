@@ -397,9 +397,12 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # Where a command may start, for the fallback below: separators, grouping, substitution openers,
-# quotes (so `sh -c "mkfs …"` exposes its payload) and the compound-command keywords.
+# quotes (so `sh -c "mkfs …"` exposes its payload) and the compound-command keywords. The
+# quote-free variant keeps quotes out (they are deleted) and `${` intact, so `rm -rf ${HOME}` holds.
 _FALLBACK_COMMAND_START_RE = re.compile(
     r"\$\(|[;&|(){}`'\"\n]|(?<![\w./-])(?:if|then|else|elif|do|while|until|!)(?=\s)")
+_FALLBACK_UNQUOTED_START_RE = re.compile(
+    r"\$\(|[;&|()`\n]|(?<!\$)\{|\}|(?<![\w./-])(?:if|then|else|elif|do|while|until|!)(?=\s)")
 
 
 def _hardline_fallback(command: str) -> str | None:
@@ -408,12 +411,16 @@ def _hardline_fallback(command: str) -> str | None:
     The full scan finds command positions with a quote-aware walk; when it runs out of budget, a
     verb it never reached (`true; reboot`, `(reboot)`, `sudo reboot`, `bash -c 'rm -rf /'` after a
     few hundred benign lines) must still refuse, not become an approvable prompt. Every rule runs
-    over the raw and the normalized text, as is and with every possible command start turned into a
-    line break. That treats quoted prose as code (a false refusal, never a miss) and adds no
-    super-linear pattern: one substitution and the existing rules per text."""
-    for text in (command, _normalize_command_for_detection(command)):
+    over the raw, the `$'…'`-expanded and the normalized text, each as is and with every possible
+    command start turned into a line break, and again with quote characters deleted (so `r$'m'`,
+    `"of=/dev/sda"` and `${HOME}` read as the shell reads them). That treats quoted prose as code
+    (false refusals) and adds no super-linear pattern. It is not complete: what it misses gets the
+    human-only once/deny prompt."""
+    for text in (command, expand_ansi_c_quotes(command), _normalize_command_for_detection(command)):
         lowered = text.lower()
-        for variant in (lowered, _FALLBACK_COMMAND_START_RE.sub("\n", lowered)):
+        unquoted = lowered.replace("'", "").replace('"', "")
+        for variant in (lowered, _FALLBACK_COMMAND_START_RE.sub("\n", lowered),
+                        unquoted, _FALLBACK_UNQUOTED_START_RE.sub("\n", unquoted)):
             for pattern_re, description, _quote_masked in HARDLINE_PATTERNS_COMPILED:
                 if pattern_re.search(variant):
                     return description

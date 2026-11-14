@@ -467,7 +467,10 @@ def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     """``'permanent'``, ``'session'`` or None for one key, from ONE read of both stores, so the
     decision and its provenance label cannot disagree when a grant is revoked concurrently.
     Accepts the canonical key and the legacy regex-derived key so existing command_allowlist
-    entries survive key migrations."""
+    entries survive key migrations. The scan-incomplete key is never pre-approved: only a human
+    may approve that finding, once, so a hand-edited command_allowlist or session entry is ignored."""
+    if pattern_key == _SCAN_INCOMPLETE_DESCRIPTION:
+        return None
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         permanent = _permanent_set()
@@ -485,7 +488,10 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
 
 
 def _is_permanently_approved(pattern_key: str) -> bool:
-    """Permanent approval only, with compatibility for migrated pattern keys."""
+    """Permanent approval only, with compatibility for migrated pattern keys (never the
+    scan-incomplete key, see :func:`_approval_scope`)."""
+    if pattern_key == _SCAN_INCOMPLETE_DESCRIPTION:
+        return False
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         return any(alias in _permanent_set() for alias in aliases)

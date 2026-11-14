@@ -16,7 +16,6 @@ import socket
 import shlex
 import subprocess
 import sys
-import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -1079,88 +1078,10 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             respawn_cwd = ""
             respawn_env_overlay = {}
 
-    # cwd/env overlay are embedded as JSON literals in the watcher source (no extra argv plumbing).
-    watcher = textwrap.dedent(
-        """
-        import sys
-        if sys.path[:1] == [""]: del sys.path[0]  # -c puts the cwd first: never import from it
-        import os
-        import subprocess
-        import time
-        # Stdlib-only imports: after the package-manager handoff this is the bare store Python;
-        # name the checkout explicitly.
-        sys.path.insert(0, {project_root_literal})
-        from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
-            windows_detach_flags_without_breakaway,
-        )
-        from hermes_cli.gateway_launchd_runtime import start_gateway_job
+    from hermes_cli.gateway_restart_watcher import watcher_source
 
-        pid = int(sys.argv[1])
-        cmd = sys.argv[2:]
-        _respawn_cwd = {respawn_cwd_literal}
-        _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + {watcher_timeout_literal} if sys.platform == "win32" else None
-        while deadline is None or time.monotonic() < deadline:
-            # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            if not pid_exists_stdlib(pid):
-                break
-            time.sleep(0.2)
-
-        # Respawned stdout/stderr go to _spawn_detached's sidecar log: with DEVNULL a gateway killed moments
-        # after respawn (Job Object teardown when breakaway is denied) left ZERO trace. Best-effort.
-        _stdio_target = subprocess.DEVNULL
-        _stdio_fh = None
-        try:
-            from hermes_constants import get_hermes_home
-            from pathlib import Path
-            _log_dir = Path(get_hermes_home()) / "logs"
-            _log_dir.mkdir(parents=True, exist_ok=True)
-            _stdio_fh = open(_log_dir / "gateway-stdio.log", "ab", buffering=0)
-            _stdio_target = _stdio_fh
-        except Exception:
-            pass
-
-        # Detach the respawn: POSIX setsid; Windows needs CREATE_BREAKAWAY_FROM_JOB, since the watcher may sit in a job
-        # object (Electron/Tauri parent) whose teardown would otherwise kill it (_subprocess_compat.windows_detach_flags).
-        _popen_kwargs = {{"stdout": _stdio_target, "stderr": _stdio_target}}
-        # Stable cwd + env overlay (VIRTUAL_ENV/PYTHONPATH/HERMES_HOME) the windowless interpreter needs; empty on POSIX.
-        if _respawn_cwd:
-            _popen_kwargs["cwd"] = _respawn_cwd
-        _base_env = {{**os.environ, **_respawn_env_overlay}}
-        try:
-            if sys.platform == "win32":
-                try:
-                    _popen_kwargs["creationflags"] = windows_detach_flags()
-                    # Stamp the breakaway state exactly like gateway_windows._spawn_detached so the
-                    # respawned gateway's exit-diag / lifecycle records show whether it escaped the
-                    # parent Job Object (a job-teardown kill is otherwise indistinguishable).
-                    _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}}
-                    subprocess.Popen(cmd, **_popen_kwargs)
-                except OSError:
-                    # CREATE_BREAKAWAY_FROM_JOB is rejected with ERROR_ACCESS_DENIED when the parent's
-                    # job object refuses breakaway; retry without it (mirrors _spawn_detached).
-                    _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-                    _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}}
-                    subprocess.Popen(cmd, **_popen_kwargs)
-            elif sys.platform == "darwin" and _stdio_fh and start_gateway_job(
-                    cmd, env=_base_env, cwd=os.getcwd(), log_path=_log_dir / "gateway-stdio.log"):
-                pass  # a launchd job: its LAN access outlives whoever ran this one
-            else:
-                if _respawn_env_overlay:
-                    _popen_kwargs["env"] = _base_env
-                _popen_kwargs["start_new_session"] = True
-                subprocess.Popen(cmd, **_popen_kwargs)
-        finally:
-            if _stdio_fh is not None:
-                try:
-                    _stdio_fh.close()
-                except OSError:
-                    pass
-        """
-    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
-                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
-                     project_root_literal=json.dumps(str(PROJECT_ROOT)))
+    watcher = watcher_source(old_pid, respawn_cwd=respawn_cwd, respawn_env_overlay=respawn_env_overlay,
+                             timeout_s=GATEWAY_RESTART_WATCHER_TIMEOUT_S, project_root=str(PROJECT_ROOT))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}

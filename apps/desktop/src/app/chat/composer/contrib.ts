@@ -14,6 +14,7 @@
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
  *                             composer.contextMenu   (ComposerContextMenuProvider)
+ *                             composer.voiceEngines  (ComposerVoiceEngine)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -40,7 +41,8 @@ export const COMPOSER_AREAS = {
   microActions: 'composer.microActions',
   atCompletions: 'composer.atCompletions',
   modelPill: 'composer.modelPill',
-  contextMenu: 'composer.contextMenu'
+  contextMenu: 'composer.contextMenu',
+  voiceEngines: 'composer.voiceEngines'
 } as const
 
 /** What a `composer.contextMenu` provider sees when the user right-clicks the
@@ -262,4 +264,70 @@ export function useComposerModelPillLabel({
 
     return null
   }, [contributions, compact, model, reasoningEffort])
+}
+
+/** Payload of a `composer.voiceEngines` data contribution: a voice-conversation engine a plugin
+ *  ships (its own realtime model, its own call UI). It is listed in the composer's voice-engine
+ *  picker after the core engines; when the user picks it, the start-voice button calls `start`
+ *  instead of mounting a core engine. The plugin owns everything after `start` — the call, its
+ *  surface, its credentials. Every field is a standing compatibility promise. */
+export interface ComposerVoiceEngine {
+  /** Row label in the picker, e.g. "Gemini Live (full-duplex, delegates to Hermes)". */
+  label: string
+  /** Short name for the start button's tooltip, e.g. "Gemini Live". */
+  shortLabel: string
+  /** Optional muted second line under the label (a requirement, a hint). */
+  detail?: string
+  /** Start a conversation. Called from the start-voice button's click. */
+  start: () => void
+}
+
+/** A registered voice engine with its contribution id (the picker's identity for it). */
+export interface RegisteredVoiceEngine extends ComposerVoiceEngine {
+  id: string
+}
+
+function asVoiceEngine(id: string, data: unknown): null | RegisteredVoiceEngine {
+  const engine = data as Partial<ComposerVoiceEngine> | undefined
+
+  if (!engine || typeof engine.start !== 'function') {
+    return null
+  }
+
+  const label = typeof engine.label === 'string' ? engine.label.trim() : ''
+  const shortLabel = typeof engine.shortLabel === 'string' ? engine.shortLabel.trim() : ''
+
+  if (!label || !shortLabel) {
+    return null
+  }
+
+  return {
+    detail: typeof engine.detail === 'string' && engine.detail.trim() ? engine.detail.trim() : undefined,
+    id,
+    label,
+    shortLabel,
+    start: engine.start
+  }
+}
+
+/** Plugin voice engines in registry order. Malformed payloads are dropped, so a broken plugin
+ *  can neither blank the picker nor offer a row that does nothing. */
+export function voiceEnginesFrom(contributions: readonly { data?: unknown; id: string }[]): RegisteredVoiceEngine[] {
+  const engines: RegisteredVoiceEngine[] = []
+
+  for (const contribution of contributions) {
+    const engine = asVoiceEngine(contribution.id, contribution.data)
+
+    if (engine && !engines.some(e => e.id === engine.id)) {
+      engines.push(engine)
+    }
+  }
+
+  return engines
+}
+
+export function useComposerVoiceEngines(): RegisteredVoiceEngine[] {
+  const contributions = useContributions(COMPOSER_AREAS.voiceEngines)
+
+  return useMemo(() => voiceEnginesFrom(contributions), [contributions])
 }

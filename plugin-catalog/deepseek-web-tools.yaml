@@ -1,0 +1,16 @@
+name: deepseek-web-tools
+repo: https://github.com/fedebyes/hermes-deepseek-web-tools
+sha: 2402ccd6ad21a1eaee0ba69371245e3088711334
+description: "DeepSeek's server-side web tools as one Hermes tool: the model searches, opens pages and checks facts inside a single call, then answers with structured citations. thinking is opt-in (the server default is on and bills up to ~20 searches), and page text is never returned - use web_extract when you need the content."
+maintainer: Fedebyes
+tier: community
+category: web
+requires_hermes: ">=0.22.5"
+version: "1.0.3"
+title: "DeepSeek Web Tools"
+readme: true
+capabilities:
+  provides_tools: [web_research]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [DEEPSEEK_API_KEY]

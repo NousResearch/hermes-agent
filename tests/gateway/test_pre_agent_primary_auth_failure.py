@@ -134,3 +134,27 @@ def test_the_backup_endpoint_that_runs_keeps_the_primary_failure():
     agent = _run(_runner_with_real_runtime_resolution(), _ctx(_AgentWithRoute))
     assert (agent.provider, agent.base_url) == ("anthropic", "u")
     assert agent._primary_auth_failure is not None
+
+
+def test_a_different_account_on_the_backup_endpoint_does_not_inherit_the_primary_login_failure():
+    """An explicit route can replace the backup API key without changing provider or URL.
+
+    A rejection from that different account must name its own credentials, not a previously
+    expired primary login. API model routes can supply an explicit key at the same endpoint.
+    """
+    runner = _runner_with_real_runtime_resolution()
+
+    def once_to_another_account(_turn, _policy, model, runtime_kwargs):
+        assert runtime_kwargs["api_key"] == "k"
+        return model, {**runtime_kwargs, "api_key": "another-account-key"}
+
+    agent = _run(runner, _ctx(_AgentWithRoute),
+                 patch("gateway.session_cli_turn.one_turn_route", side_effect=once_to_another_account))
+    assert (agent.provider, agent.base_url) == ("anthropic", "u")
+    assert agent._primary_auth_failure is None
+    from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth
+
+    visible = {"failed": True, "final_response": "Backup API key rejected", "failure_reason": "auth"}
+    lead_failed_turn_with_primary_auth(agent, visible)
+    assert visible["final_response"] == "Backup API key rejected"
+    assert "primary_auth_failure" not in visible

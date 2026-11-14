@@ -7,6 +7,7 @@ Telegram for Android 13.0.x sends the opener of a topic created from "All messag
 import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +18,7 @@ from tests.gateway.conftest import _ensure_telegram_mock
 _ensure_telegram_mock()
 sys.modules.pop("plugins.platforms.telegram.adapter", None)
 import plugins.platforms.telegram.telegram_topic_routing as routing
+import plugins.platforms.telegram.adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 CHAT, USER, NEW_TOPIC = 111, 42, 600
@@ -102,3 +104,27 @@ async def test_ignore_root_dm_keeps_a_thread_less_new_topic_opener(monkeypatch):
     await a._handle_text_message(_update(_msg(11, 0.2)), None)
     await a._handle_text_message(_update(_msg(12, WINDOW + 5)), None)
     assert [e.source.thread_id for e in queued] == [str(NEW_TOPIC)]
+
+
+@pytest.mark.asyncio
+async def test_registered_creation_handler_preserves_title_and_threadless_opener(adapter, monkeypatch):
+    handlers = []
+    monkeypatch.setattr(telegram_adapter, "TelegramMessageHandler",
+                        lambda filters, callback: SimpleNamespace(callback=callback))
+    app = SimpleNamespace(handlers={}, add_handler=lambda handler, **kwargs: handlers.append(handler))
+    adapter._register_handlers(app)
+    adapter._message_handler = AsyncMock()
+    adapter._dispatch_inline_reply = AsyncMock()
+    monkeypatch.setattr(adapter, "_drop_unresolved", lambda event: False)
+    created = SimpleNamespace(effective_message=_msg(10, 0, thread_id=NEW_TOPIC, created=True))
+    topic_handlers = [handler.callback for handler in handlers
+                      if getattr(getattr(handler, "callback", None), "__name__", "").startswith("_handle_forum_topic")]
+
+    await topic_handlers[0](created, None)
+
+    adapter._dispatch_inline_reply.assert_awaited_once()
+    call = adapter._dispatch_inline_reply.await_args
+    assert call is not None
+    event = call.args[0]
+    assert event.metadata["telegram_forum_topic_name"] == "New topic"
+    assert _thread(adapter, _msg(11, 0.2)) == str(NEW_TOPIC)

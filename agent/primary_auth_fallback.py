@@ -27,8 +27,10 @@ class PrimaryAuthFailure:
     backup: str = ""
 
 
-# AuthError codes whose fix is not a sign-in: an outage, a per-model cooldown, a CLI that is not installed.
-_NOT_A_LOGIN_PROBLEM = frozenset({"temporarily_unavailable", "model_rate_limited", "missing_external_process_cli"})
+# AuthError codes whose fix is not a sign-in: an outage, a per-model cooldown, a CLI that is not installed,
+# or a configuration error (no provider, an unknown one, a custom route without a base URL).
+_NOT_A_LOGIN_PROBLEM = frozenset({"temporarily_unavailable", "model_rate_limited", "missing_external_process_cli",
+                                  "no_provider_configured", "invalid_provider", "missing_base_url"})
 
 
 def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "") -> Optional[PrimaryAuthFailure]:

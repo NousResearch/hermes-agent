@@ -154,10 +154,23 @@ def _out_of_credits():
     return AuthError("Your Nous Portal account has no usable credits.", provider="nous", code="no_usable_credits")
 
 
-@pytest.mark.parametrize("make_exc", [_anthropic_model_cooldown, _missing_external_cli, _quota_exhausted, _out_of_credits])
+def _config_error(code):
+    def make():
+        from hermes_cli.auth import AuthError
+
+        return AuthError(f"configuration problem ({code})", code=code)
+
+    make.__name__ = code
+    return make
+
+
+@pytest.mark.parametrize("make_exc", [_anthropic_model_cooldown, _missing_external_cli, _quota_exhausted, _out_of_credits,
+                                      _config_error("no_provider_configured"), _config_error("invalid_provider"),
+                                      _config_error("missing_base_url")])
 def test_primary_failures_a_relogin_cannot_fix_are_not_called_lapsed_logins(make_exc):
-    """A per-model cooldown, a quota wall and an empty balance leave the login working, and a missing CLI
-    needs installing: none is a lapsed login, so a backup's later failure must not send the user to sign in."""
+    """A per-model cooldown, a quota wall and an empty balance leave the login working; a missing CLI needs
+    installing and a configuration error needs fixing: none is a lapsed login, so a backup's later failure
+    must not send the user to sign in."""
     from agent.primary_auth_fallback import primary_auth_failure_from_exc
 
     assert primary_auth_failure_from_exc(make_exc(), "anthropic", "custom") is None

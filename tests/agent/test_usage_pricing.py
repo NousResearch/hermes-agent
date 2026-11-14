@@ -947,3 +947,8 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_estimated_costs_say_they_are_a_list_price_proxy():
+    result = estimate_usage_cost("claude-sonnet-4-6", CanonicalUsage(input_tokens=1000), provider="anthropic")
+    assert result.status == "estimated" and any("list-price proxy" in n for n in result.notes)

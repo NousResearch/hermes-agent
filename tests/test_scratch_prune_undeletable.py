@@ -363,6 +363,19 @@ def test_c_unseal_refuses_symlinked_components_and_paths_outside_the_entry(tmp_p
         assert stuck._unseal_around(str(entry), str(entry) + "-sibling") == []
         assert stuck._unseal_around(str(entry), str(entry / ".." / "x")) == []
         assert _snapshot(target) == before
+        # A sibling entry whose name extends this one's ("lane" / "lane-sibling") is outside it,
+        # even when the entry holds a dir named like the suffix ("lane/-sibling").
+        sibling = entry.parent / (entry.name + "-sibling")
+        decoy = entry / "-sibling"
+        for d in (sibling, decoy):
+            d.mkdir()
+            d.chmod(0o555)
+        try:
+            assert stuck._unseal_around(str(entry), str(sibling)) == []
+            assert _mode(sibling) == 0o555 and _mode(decoy) == 0o555
+        finally:
+            for d in (sibling, decoy):
+                d.chmod(0o700)
         # The scratch root (the entry's parent) is never chmod'ed either.
         entry.parent.chmod(0o555)
         try:

@@ -1,18 +1,18 @@
 name: browser-viewer
 repo: https://github.com/vittoriocompagno/hermes-browser-viewer
-sha: 34cb35cd2cd500055ad5b40a4013317e9aa388a5
-description: "Live view and human takeover of the browser Hermes drives: stream its tabs to a web page on another device and click, type and scroll yourself to log in, pass 2FA or a CAPTCHA. Disclosure — starts a detached aiohttp server that listens on explicit IPv4 addresses (loopback plus the Tailscale address if tailscale is installed; never 0.0.0.0), over plain HTTP by default or HTTPS when the user opts in with hermes browser-viewer tls (tailscale cert contacts the Tailscale control plane and Let's Encrypt, and the machine name appears in public Certificate Transparency logs); login links are single-use (10 minutes) and are exchanged for an HttpOnly session cookie (7 days by default, Secure over HTTPS), and the start and link actions return such links to the session transcript; launches Chromium with a persistent profile (cookies and logins) and CDP on 127.0.0.1, which makes its usual background connections; the server and Chromium get a minimal environment, not the Hermes one (proxy settings and desktop-session variables are passed on); runs chromium --version, tailscale ip -4, tailscale status and tailscale cert (HTTPS mode only) and hermes config set|unset browser.cdp_url (the use action changes browser.cdp_url for every session of the profile, and browser_exec then acts with that browser's logins); status and list return each tab's origin and a truncated title to the session transcript; reads /proc, /proc/net/tcp and Chromium builds under the Hermes tools directory; no telemetry from the plugin. Linux only."
+sha: 5312bde3dcc4ddadea26033372c9962281b0e41c
+description: "Live view and human takeover of the browser Hermes drives: stream its tabs to a web page on another device and click, type and scroll yourself to log in, pass 2FA or a CAPTCHA. Disclosure — starts a detached aiohttp server that listens on explicit IPv4 addresses (loopback plus the Tailscale address if tailscale is installed; never 0.0.0.0), over plain HTTP by default or HTTPS when the user opts in with hermes browser-viewer tls (tailscale cert contacts the Tailscale control plane and Let's Encrypt, and the machine name appears in public Certificate Transparency logs); login links are single-use (10 minutes) and are exchanged for an HttpOnly session cookie (7 days by default, Secure over HTTPS), and the start and link actions return such links to the session transcript; launches Chromium with a persistent profile (cookies and logins) and CDP on 127.0.0.1, which makes its usual background connections; the server and Chromium get a minimal environment, not the Hermes one (proxy settings and desktop-session variables are passed on); runs chromium --version, tailscale ip -4, tailscale status and tailscale cert (HTTPS mode only) and hermes config set|unset browser.cdp_url (the use action changes browser.cdp_url for every session of the profile, and browser_exec then acts with that browser's logins); status and list return each tab's origin and a truncated title to the session transcript; reads /proc and /proc/net/tcp on Linux (the same process facts through psutil on macOS) and Chromium builds under the Hermes tools directory; no telemetry from the plugin. Linux and macOS (Apple Silicon)."
 maintainer: vittoriocompagno
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/vittoriocompagno/hermes-browser-viewer#readme
-image: https://raw.githubusercontent.com/vittoriocompagno/hermes-browser-viewer/34cb35cd2cd500055ad5b40a4013317e9aa388a5/docs/banner.png
+image: https://raw.githubusercontent.com/vittoriocompagno/hermes-browser-viewer/5312bde3dcc4ddadea26033372c9962281b0e41c/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/vittoriocompagno/hermes-browser-viewer/34cb35cd2cd500055ad5b40a4013317e9aa388a5/docs/screenshot-desktop.png
-  - https://raw.githubusercontent.com/vittoriocompagno/hermes-browser-viewer/34cb35cd2cd500055ad5b40a4013317e9aa388a5/docs/screenshot-phone.png
-version: "0.1.0"
-platforms: [linux]
+  - https://raw.githubusercontent.com/vittoriocompagno/hermes-browser-viewer/5312bde3dcc4ddadea26033372c9962281b0e41c/docs/screenshot-desktop.png
+  - https://raw.githubusercontent.com/vittoriocompagno/hermes-browser-viewer/5312bde3dcc4ddadea26033372c9962281b0e41c/docs/screenshot-phone.png
+version: "0.2.0"
+platforms: [linux, macos]
 known_issues:
   - "Plain HTTP unless HTTPS is enabled with hermes browser-viewer tls: without it the session cookie and the stream are not encrypted on the wire, so use a private network such as Tailscale."
   - "A cold start can block the tool call for about 75 seconds, longer if tls tailscale has to fetch a certificate."

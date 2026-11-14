@@ -1,0 +1,62 @@
+name: shadow-trial
+repo: https://github.com/akinduroifedayo/shadow
+sha: "4dc8847a10e9a77c0a03d76299d929ae5ed8c8da"
+description: >-
+  Try a model on your real Hermes conversations with blind judging in both
+  orders and switch models with undo, warning first if a saved test does not
+  back the switch. Reads recent saved conversation turns, context, and
+  working-folder metadata from the active profile. Replays read files inside
+  their original working folders and block writes, sends, and commands.
+  Replays, judging, and setup checks spend your provider tokens through
+  Hermes. Optional web lookups use Hermes web tools and are on by default.
+  Stores scrubbed test records and switch state in the plugin's profile-local
+  data folder. The live isolation check reads memory and fingerprints profile
+  data locally. It compares credential-file metadata without reading their
+  contents. To show which models are signed in it checks credential env var
+  names (not values) and uses only the logged-in flag from Hermes's read-only
+  Codex login-status check; credentials are never printed or stored. Makes no
+  network calls of its own. No telemetry. Switching writes model defaults
+  through Hermes config commands. Tests run in background Hermes controllers.
+maintainer: akinduroifedayo
+tier: community
+category: models
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+title: "Shadow"
+platforms: [macos, linux]
+docs_url: https://github.com/akinduroifedayo/shadow
+screenshots:
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/desktop-home.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/model-picker.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/judging-rule.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/verdict.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/side-by-side.png
+  - https://raw.githubusercontent.com/akinduroifedayo/shadow/38173bc9c696df3b1f87b5b9b60ccecd36a260ab/docs/images/no-verdict.png
+capabilities:
+  provides_tools:
+    - shadow_read
+    - shadow_search
+    - shadow_web
+    - shadow_clarify
+    - shadow_trial_step
+    - shadow_setup_check
+  provides_hooks:
+    - subagent_start
+    - subagent_stop
+    - pre_llm_call
+    - pre_tool_call
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+    - post_compaction
+    - on_session_start
+    - on_session_end
+    - pre_command
+    - pre_auxiliary_call
+    - post_auxiliary_call
+  provides_middleware:
+    - tool_execution
+    - llm_execution
+    - llm_request
+  requires_env: []

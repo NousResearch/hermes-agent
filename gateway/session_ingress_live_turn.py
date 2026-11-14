@@ -38,12 +38,22 @@ async def answers_live_turn(runner, event) -> bool:
     the bot loop guard charges it at execution as before. Runs inside ``producer_scope``."""
     if event.get_command() or getattr(event, 'internal', False) or getattr(event.source, 'is_bot', False):
         return False
+    # Recorded before routing: an answered approval resolves, then awaits its confirmation send, and
+    # a shutdown cancelling it there leaves the frame unACKed. Its re-send must not answer the next
+    # prompt (a replayed "yes" approving a later command), so a cancel keeps the record: fail
+    # closed, the user types it again. Not consumed, or routing raised: the re-send may retry it.
     replay = _replay_key(event)
-    consumed = await _route(runner, event)
-    if consumed and replay is not None:
+    if replay is not None:
         _consumed[replay] = None
         while len(_consumed) > _CONSUMED_MAX:
             _consumed.popitem(last=False)
+    try:
+        consumed = await _route(runner, event)
+    except Exception:
+        _consumed.pop(replay, None)
+        raise
+    if not consumed:
+        _consumed.pop(replay, None)
     return consumed
 
 
@@ -51,7 +61,8 @@ def _replay_key(event):
     source = event.source
     if not event.message_id:
         return None
-    return (getattr(source, 'profile', None), source.platform.value, source.chat_id, event.message_id)
+    return (getattr(source, 'profile', None), source.platform.value, source.chat_id, event.message_id,
+            event.edit_revision)  # an edit is its own input
 
 
 def was_consumed(event) -> bool:

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -56,18 +57,29 @@ def _archive_dir() -> Path:
     return _skills_dir() / ".archive"
 
 
-def _flock(fd, lock: bool) -> None:
+def _flock(fd, lock: bool, timeout_sec: float = 15.0) -> None:
     if fcntl:
-        return fcntl.flock(fd, fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+        if not lock:
+            return fcntl.flock(fd, fcntl.LOCK_UN)
+        deadline = time.monotonic() + max(0.05, float(timeout_sec))
+        while True:
+            try:
+                return fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, PermissionError, OSError) as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Skill lock busy after {timeout_sec:.1f}s: {getattr(fd, 'name', fd)}"
+                    ) from exc
+                time.sleep(0.05)
     fd.seek(0)
     msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
 
 
-_held_locks = threading.local()  # per thread: flock is NOT re-entrant across separate fds
+_held_locks = globals().get("_held_locks") or threading.local()  # preserve across importlib.reload
 
 
 @contextmanager
-def skill_file_lock(lock_path: Path):
+def skill_file_lock(lock_path: Path, timeout_sec: float = 15.0):
     """Exclusive cross-process lock on ``lock_path`` held across a read-modify-write cycle.
     Re-entrant within one thread (a nested acquire of the same path just runs); a no-op
     where neither fcntl nor msvcrt exists."""
@@ -82,7 +94,7 @@ def skill_file_lock(lock_path: Path):
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")  # msvcrt needs a non-empty byte range to lock
     with open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8") as fd:
-        _flock(fd, True)
+        _flock(fd, True, timeout_sec=timeout_sec)
         held.add(lock_path)
         try:
             yield

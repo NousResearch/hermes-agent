@@ -615,6 +615,37 @@ def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp
     assert entered.is_set() and other_done.is_set()
 
 
+def test_skill_file_lock_survives_module_reload_reentrant(tmp_path):
+    """importlib.reload(tools.skill_usage) while a thread holds a skill lock must not wipe
+    _held_locks and self-deadlock on the nested inner skill_file_lock acquisition."""
+    import importlib
+    import tools.skill_usage as mod
+
+    lock_path = tmp_path / ".locks" / "reload-reentrant.lock"
+    with mod.skill_file_lock(lock_path):
+        reloaded = importlib.reload(mod)
+        with reloaded.skill_file_lock(lock_path):
+            assert lock_path.resolve() in reloaded._held_locks.paths
+
+
+def test_skill_file_lock_timeout_raises_timeout_error(tmp_path):
+    """Contended _flock acquisition must raise TimeoutError after timeout_sec rather than
+    blocking indefinitely inside kernel flock(2)."""
+    import fcntl
+    from tools.skill_usage import _flock
+
+    lock_path = tmp_path / ".locks" / "contended.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as holder, open(lock_path, "a+", encoding="utf-8") as waiter:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with pytest.raises(TimeoutError, match="Skill lock busy after"):
+                _flock(waiter.fileno(), True, timeout_sec=0.05)
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+
+
+
 # ---------------------------------------------------------------------------
 # Content lock (#25083): `locked` beside `pinned`; set_locked is not curation-gated and
 # is_locked is strict so the write guard can fail closed on a corrupt sidecar.

@@ -37,10 +37,15 @@ describe('profile-id gates follow PROFILE_ID_ARG_RE', () => {
 
   it('boot preference writer', async () => {
     const { writeDesktopProfile } = await import('./desktop-boot-preference')
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'profile-id-guard-')), 'boot.json')
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-id-guard-'))
+    const file = path.join(directory, 'boot.json')
 
-    expect(writeDesktopProfile(file, NEW_ONLY)).toBe(NEW_ONLY)
-    expect(() => writeDesktopProfile(file, OLD_ONLY)).toThrow('Invalid profile name')
+    try {
+      expect(writeDesktopProfile(file, NEW_ONLY)).toBe(NEW_ONLY)
+      expect(() => writeDesktopProfile(file, OLD_ONLY)).toThrow('Invalid profile name')
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('saved SSH and URL-remote profile mappings', async () => {

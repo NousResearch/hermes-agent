@@ -83,15 +83,12 @@ benign = {
     "docker --log-level  warn ps": False,
     "docker --log-level  warn logs web": False,
     "docker compose --profile  prod config": False,
-    # compose must directly follow docker; a flag before the subcommand stays out with one space
-    # too, so the whitespace alignment does not reach it either.
-    "docker --log-level warn compose down": False,
-    "docker --log-level  warn compose down": False,
-    # podman has no lifecycle rule (its grammar feeds the remote-daemon rules, covered above);
-    # the verb stays out with one space too.
-    "podman --log-level warn stop web": False,
-    "podman --log-level  warn stop web": False,
 }
 for command, expected in {**dangerous, **benign}.items():
     assert detect_dangerous_command(command)[0] is expected, command
+# Known gaps, not pinned as safe: a flag before `compose`, and podman stop/kill/restart, have no
+# lifecycle rule yet. The spacing fix must not make them any MORE reachable than one space is.
+for one, two in (("docker --log-level warn compose down", "docker --log-level  warn compose down"),
+                 ("podman --log-level warn stop web", "podman --log-level  warn stop web")):
+    assert detect_dangerous_command(one)[0] == detect_dangerous_command(two)[0], two
 ''')

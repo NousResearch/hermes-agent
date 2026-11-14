@@ -239,6 +239,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 | `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker`/`podman` `rm`, `container rm/remove`, `compose rm`, `volume rm/remove/prune`, `container/system prune` | Container and volume destruction (`image rm`/`rmi`/`network rm` stay ungated: a pull or recreate restores them) |
 | `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
 | `docker context use` | Switches the default daemon for all future docker commands |
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |

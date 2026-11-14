@@ -46,16 +46,18 @@ def test_unquoted_heredoc_keeps_command_substitution_visible_to_hardline():
 
 @pytest.mark.parametrize("command", [
     "cat <<-'EOF'\n\tit's data\n\tEOF\nrm -rf /",
-    "cat <<'A' > a; cat <<'B' > b\nit's data\nA\nok\nB\nrm -rf /",
+    "cat <<'A' > a\nit's data\nA\ncat <<'B' > b\nok\nB\nrm -rf /",
 ])
 def test_heredoc_forms_resume_hardline_scanning_after_their_bodies(command):
     assert detect_hardline_command(command)[0] is True
 
 
-def test_unterminated_heredoc_is_data_until_eof(floors_off):
+def test_unterminated_heredoc_body_stays_visible(floors_off):
+    # Without a terminator line the parse is unproven (`$((a<<b))` looks the same), so nothing is
+    # dropped: a false positive is acceptable, hiding a command from the floors is not.
     command = "cat > notes.txt <<'EOF'\nNever run `rm -rf`."
 
-    assert approval.check_all_command_guards(command, "local")["approved"] is True
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
 
 
 @pytest.mark.parametrize("delimiter,blocked", [("EOF", True), ("'EOF'", False)])

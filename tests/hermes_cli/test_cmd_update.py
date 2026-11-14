@@ -121,9 +121,12 @@ class TestGitTrampolineSelfHeal:
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
         candidates = _portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
+        # 2.56+ ships git-core under ucrt64/; older trees still use mingw64/.
+        assert candidates[:2] == [
+            root / "git" / prefix / "libexec" / "git-core" / "git.exe"
+            for prefix in ("ucrt64", "mingw64")
+        ]
+        assert candidates[2:] == [
+            profile_home / "git" / prefix / "libexec" / "git-core" / "git.exe"
+            for prefix in ("ucrt64", "mingw64")
+        ]

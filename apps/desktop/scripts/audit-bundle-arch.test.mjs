@@ -105,6 +105,7 @@ test.each([
   ['resources\\agent-payload\\tools\\git-2.53.0-win32-x64\\mingw64\\libexec\\git-core\\GitHub.dll', true],
   ['resources\\agent-payload\\tools\\git-2.53.0-win32-x64\\usr\\libexec\\getprocaddr32.exe', true],
   ['resources/agent-payload/tools/git-2.54.0-win32-arm64/clangarm64/libexec/git-core/msalruntime.dll', true],
+  ['resources/agent-payload/tools/git-2.56.1+1-win32-x64/ucrt64/libexec/git-core/Avalonia.dll', true],
   ['resources/agent-payload/tools/git-2.53.0-linux-x64/bin/git', false],
   ['resources/agent-payload/tools/git-2.53.0-darwin-arm64/libexec/git-core/git-remote-https', false],
   ['resources/agent-payload/tools/python-3.11.16+20260814-linux-x64/lib/python3.11/site-packages/pip/_vendor/distlib/t32.exe', true],

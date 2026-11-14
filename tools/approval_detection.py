@@ -379,12 +379,28 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 
 def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description); a scan over budget fails closed."""
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description). The size
+    and real-nesting limits refuse. A scan that runs out of its step budget is NOT a refusal: it returns
+    (False, None) and :func:`detect_dangerous_command` reports it as a one-shot approval finding."""
+    complete = True
     try:
         with _parser_budget.parser_budget(command):
-            return _detect_hardline_command(command)
-    except (_parser_budget.ParserBudgetExceeded, RecursionError):
-        return (True, _PARSER_LIMIT_DESCRIPTION)
+            verdict = _detect_hardline_command(command)
+    except RecursionError:
+        verdict = (True, _PARSER_LIMIT_DESCRIPTION)
+    except _parser_budget.ParserBudgetExceeded:
+        verdict, complete = (False, None), False
+    _parser_budget.record_scan(command, complete)
+    return verdict
+
+
+def hardline_scan_incomplete(command: str) -> bool:
+    """True when the hardline scan of *command* ran out of budget before reading all of it."""
+    complete = _parser_budget.recorded_scan(command)
+    if complete is None:
+        detect_hardline_command(command)
+        complete = _parser_budget.recorded_scan(command)
+    return complete is False
 
 
 def _detect_hardline_command(command: str) -> tuple:
@@ -959,8 +975,13 @@ _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
 _MAX_SUBSTITUTION_DEPTH = 32
+# A backslash-newline that an even run of backslashes precedes (so the backslash is not itself escaped).
+_LINE_CONTINUATION_RE = re.compile(r"(?<!\\)((?:\\\\)*+)\\\r?\n")
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+# A scan that ran out of its step budget: approval, never remembered (a session or always grant
+# would wave every later unscanned command through), and not a hardline refusal.
+_SCAN_INCOMPLETE_DESCRIPTION = "command too complex to scan fully; review before running"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
 
@@ -976,10 +997,14 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
     # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
     # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed. Measured
-    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`); comments and quoted-heredoc
-    # bodies are data. Nesting that only the escape strip mints (`\$\(`, `$\<newline>(`, `\")\"`)
-    # is bounded by the scan budget instead (`$''(` nests too, but its scan stays linear).
-    if _parser_budget.substitution_depth(unicodedata.normalize("NFKC", command)) > _MAX_SUBSTITUTION_DEPTH:
+    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`), with and without line
+    # continuations (`$\<newline>(` is `$(` to bash, but not in a quoted heredoc body); comments and
+    # quoted-heredoc bodies are data. Nesting that only the escape strip mints (`\$\(`, `\")\"`) is
+    # not nesting in bash: the scan budget bounds it, and a trip asks for approval (`$''(` nests
+    # too, but its scan stays linear).
+    folded = unicodedata.normalize("NFKC", command)
+    if max(_parser_budget.substitution_depth(text) for text in {folded, _LINE_CONTINUATION_RE.sub(r"\1", folded)}) \
+            > _MAX_SUBSTITUTION_DEPTH:
         return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
 
@@ -1910,8 +1935,12 @@ def detect_dangerous_command(command: str) -> tuple:
     try:
         with _parser_budget.parser_budget(command):
             description = next(_iter_dangerous_descriptions(command), None)
-    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+    except _parser_budget.ParserBudgetExceeded:
+        description = _SCAN_INCOMPLETE_DESCRIPTION
+    except RecursionError:
         description = _PARSER_LIMIT_DESCRIPTION
+    if description is None and hardline_scan_incomplete(command):
+        description = _SCAN_INCOMPLETE_DESCRIPTION
     if description is None:
         return (False, None, None)
     return (True, description, description)
@@ -1925,6 +1954,6 @@ def detect_content_rule_keys(command: str) -> list[str]:
         with _parser_budget.parser_budget(command):
             return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
     except (_parser_budget.ParserBudgetExceeded, RecursionError):
-        # Safe only because the hardline floor runs first on the same command, walks every variant
-        # under an equal budget and refuses it, so no gate acts on this [] (pinned by a test).
+        # Safe only because the hardline scan walks every variant under an equal budget, so it ran
+        # out too, and the gates then require a one-shot approval for the whole command (pinned).
         return []

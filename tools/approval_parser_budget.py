@@ -1,9 +1,11 @@
 """Work bounds for :mod:`tools.approval_detection`'s shell scanners, and the budgeted lexer itself.
 
-Two limits, both failing closed as ``command parser limit exceeded``:
+Two limits:
 
-- the real ``$(`` nesting of the command as its author quoted it (``substitution_depth``), and
-- the steps the shell scanners take during one detection call (``parser_budget``). Normalization
+- the real ``$(`` nesting of the command as its author quoted it (``substitution_depth``), a
+  hardline ``command parser limit exceeded`` refusal, and
+- the steps the shell scanners take during one detection call (``parser_budget``), which ends the
+  scan unfinished; the approval gates then ask for a one-shot approval (``record_scan``). Normalization
   strips escapes (``\\$\\(`` becomes ``$(``, ``\\"`` a bare quote), so the text the scanners walk
   can nest, or fail to close, far deeper than the shell ever would. Counting that nesting
   syntactically either hardline-blocks ordinary scripts (one ``\\"`` per line stacked a level) or
@@ -17,7 +19,9 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import re
+import threading
 
 from tools.approval_ansi_c import _is_shell_comment_start
 
@@ -85,6 +89,32 @@ def memo(fn, *args):
         budget.memo[key] = fn(*args)
     budget.spend(1)
     return budget.memo[key]
+
+
+# Whether the last hardline scan of a command finished, so the dangerous scan and the approval
+# gate that follow it in the same guard pass need not repeat that (up to ~1.5 s) scan.
+_scans: dict[bytes, bool] = {}
+_scans_lock = threading.Lock()
+_MAX_RECORDED_SCANS = 256
+
+
+def _scan_key(command: str) -> bytes:
+    return hashlib.sha256(command.encode("utf-8", "surrogatepass")).digest()
+
+
+def record_scan(command: str, complete: bool) -> None:
+    """Remember whether the hardline scan of *command* read all of it."""
+    with _scans_lock:
+        _scans.pop(_scan_key(command), None)
+        _scans[_scan_key(command)] = complete
+        while len(_scans) > _MAX_RECORDED_SCANS:
+            del _scans[next(iter(_scans))]
+
+
+def recorded_scan(command: str) -> bool | None:
+    """What :func:`record_scan` last stored for *command*, or None."""
+    with _scans_lock:
+        return _scans.get(_scan_key(command))
 
 
 _HEREDOC_RE = re.compile(r"""<<(-?)[ \t]*((?:'[^'\n]*'|"[^"\n]*"|\\.|[^\s;&|<>()'"\\])+)""")

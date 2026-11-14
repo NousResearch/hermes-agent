@@ -320,6 +320,26 @@ ctx.registerMany([
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
 
+Routes have no path params; a page that takes a deep link reads its query with
+`useRouteQuery(path)`. It returns the route's `params` while the app is on that
+page (null elsewhere), and `take()` acts on the link once: it is true for the
+first mounted copy of the page that asks (a page can be open in the workspace
+and in a split tile at once), and it drops the query from the URL so Back does
+not replay it and the same link can be sent again.
+
+```javascript
+import { useRouteQuery } from '@hermes/plugin-sdk'
+
+function MyPage() {
+  const query = useRouteQuery('/my-page')        // host.navigate('/my-page?item=42')
+  const item = query?.params.get('item')
+  useEffect(() => {
+    if (item && query.take()) setOpenItem(item)  // keep it in your own state
+  }, [item, query])
+  // …
+}
+```
+
 ### Status bar and title bar
 
 Status-bar items render into the left or right cluster of the bottom bar.
@@ -943,6 +963,27 @@ reads of the Kanban plugin's query cache. The whole decoration becomes the
 `board.tenants` instead of the query-cache snapshot, and its color pins map to
 `KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
 set, in the same order).
+
+#### Opening a Kanban card {#kanban-deep-link}
+
+To send the user to a card (a plugin that lists cards needing attention, a
+notification action), navigate to the board page with a query:
+
+```ts
+host.navigate(`/kanban?board=${encodeURIComponent(slug)}&task=${encodeURIComponent(taskId)}`)
+// also: ctx.os.notify({ …, activate: 'hermes://open/kanban?board=ops&task=t_1a2b' })
+```
+
+The board switches to `board` and the drawer opens on `task` once that board
+has loaded. Either part may be left out: `?task=` alone opens the card on the
+board the user already has selected, `?board=` alone only switches boards.
+`board` is a board slug on the active connection. An unknown slug leaves the
+current board selected and shows a notice; a task that isn't on the board
+shows the board and a notice. Selecting a board this way is the same as
+picking it in the board switcher: it is remembered for that connection. The
+query is removed once handled, so sending the same link again opens the card
+again. Navigate only when the user asked for it (a click), never from a
+background event.
 
 ### Appearance settings
 
@@ -2488,7 +2529,7 @@ pipeline as a trust boundary.
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
-| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
+| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `useRouteQuery` (+ `RouteQuery`), `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |

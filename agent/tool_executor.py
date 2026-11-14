@@ -58,9 +58,10 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
-from tools.terminal_tool_lifecycle import get_active_env
+from tools.terminal_tool_lifecycle import ensure_task_env, get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
+    _content_text_size,
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
@@ -1079,6 +1080,17 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
         )
 
 
+def _result_storage_env(task_id: str, *, needs_persistence: bool):
+    """Active sandbox for a spill; started only when a spill is needed (a remote reader can't open host paths)."""
+    if (env := get_active_env(task_id)) is not None or not needs_persistence:
+        return env
+    try:
+        return ensure_task_env(task_id)
+    except Exception:  # health: allow BLE001 -- a bad terminal config must not lose a finished result; storage then truncates inline
+        logger.warning("Sandbox start for tool-result spill failed", exc_info=True)
+        return None
+
+
 def _commit_tool_result(
     agent,
     messages: list,
@@ -1136,16 +1148,20 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
-    if _is_multimodal_tool_result(persisted_result):
+    multimodal = _is_multimodal_tool_result(persisted_result)
+    texts = [p.get("text") for p in (persisted_result.get("content") or []) if isinstance(p, dict)] if multimodal else [persisted_result]
+    threshold = budget.resolve_threshold(function_name)
+    storage_env = _result_storage_env(effective_task_id, needs_persistence=any(isinstance(t, str) and len(t) > threshold for t in texts))
+    if multimodal:
         persisted_result = _persist_multimodal_text_parts(
-            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+            persisted_result, function_name, tool_call_id, storage_env, budget,
         )
     else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
             tool_use_id=tool_call_id,
-            env=get_active_env(effective_task_id),
+            env=storage_env,
             config=budget,
         )
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
@@ -1233,7 +1249,9 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
         return
     batch = messages[-num_tools:]
     contents_before = [message.get("content") for message in batch]
-    enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
+    batch_chars = sum(_content_text_size(message.get("content")) for message in batch)
+    storage_env = _result_storage_env(effective_task_id, needs_persistence=batch_chars > budget.turn_budget)
+    enforce_turn_budget(batch, env=storage_env, config=budget)
     plugin_live_notes.keep_after_turn_budget(agent, batch)
     sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)

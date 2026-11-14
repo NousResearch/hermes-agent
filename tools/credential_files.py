@@ -254,6 +254,8 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
+    # Terminal spills must be visible to read_file on the configured backend.
+    ("cache/terminal-output", "cache/terminal-output"),
     # Unswept generated image/video deliverables (#126445) need their own mount/sync
     # entry or remote backends never see them. No legacy alias exists.
     (_GENERATED_CACHE, _GENERATED_CACHE),

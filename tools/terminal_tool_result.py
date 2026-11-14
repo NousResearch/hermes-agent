@@ -167,7 +167,7 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _redact_spill_file(path, total_chars, command, env=None) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -187,10 +187,19 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         with _quiet("spill unlink"):
             Path(path).unlink()
         return []
+    # The host file was redacted above; remote read_file runs in the backend,
+    # so expose only the corresponding mounted/synced path.
+    from tools.credential_files import to_agent_visible_cache_path
+    visible_path = to_agent_visible_cache_path(str(path))
+    # SSH's next pre-command sync can still be inside its five-second throttle.
+    # Publish the redacted bytes before handing the model the remote path.
+    sync_manager = getattr(env, "_sync_manager", None)
+    if sync_manager is not None:
+        sync_manager.sync(force=True)
     note = ("Output exceeded the capture window (head+tail shown). "
-            f"Full output ({total_chars:,} chars) saved to {path} — search it with "
+            f"Full output ({total_chars:,} chars) saved to {visible_path} — search it with "
             "search_files or page it with read_file instead of re-running the command.")
-    return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
+    return [("output_total_chars", total_chars), ("full_output_path", visible_path), ("truncation_note", note)]
 
 
 def _verification_evidence(command, cwd, session_id, returncode, output, pipeline_status=None) -> Optional[dict]:
@@ -262,7 +271,7 @@ def finalize_foreground_result(
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command, env),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output, result.get("pipeline_status"))),

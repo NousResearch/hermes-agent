@@ -435,6 +435,14 @@ def _short_command(command) -> str:
     return cmd[:77] + "..." if len(cmd) > 80 else cmd
 
 
+def _notice_command(command, head: int = 400, tail: int = 200) -> str:
+    # Every heartbeat/match/exit notice repeats the command: keep its start and end, not all of it.
+    cmd = str(command)
+    if len(cmd) <= head + tail + 40:
+        return cmd
+    return f"{cmd[:head]} ...({len(cmd) - head - tail} chars omitted)... {cmd[-tail:]}"
+
+
 def process_completion_display_text(events: list) -> str:
     """Compact UI title for one or more process completions; the model text keeps the full output."""
     if len(events) != 1:
@@ -551,7 +559,7 @@ def format_process_notification(evt: dict) -> str | None:
         return f"[IMPORTANT: {evt.get('message', '')}]"
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
-    _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")
+    _sid, _cmd = evt.get("session_id", "unknown"), _notice_command(evt.get("command", "unknown"))
     _attribution = _delegation_attribution_line(evt)
     if evt.get("handoff_note"):
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"

@@ -111,3 +111,16 @@ def test_pid_check_is_scoped_to_local_supervised_gateway(run, monkeypatch):
     assert scan_gateway_lifecycle(f"kill {PID}") == (False, None)
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
     assert run(f"kill {PID}") is None
+
+
+@pytest.mark.parametrize("command", [
+    "Stop-Process -Id {pid} -WhatIf",
+    "Stop-Process -Id {pid} -wi",
+    "Stop-Process -Id {pid} -WhatIf:$true",
+    "powershell -c 'Stop-Process -Id {pid} -WhatIf'",
+])
+def test_stop_process_whatif_preview_is_safe_but_disabled_switch_is_blocked(run, command):
+    # A preview must be allowed without weakening the literal-PID guard for real kills.
+    assert run(command.format(pid=PID)) is None
+    assert run(f"Stop-Process -Id {PID} -WhatIf:$false") is not None
+    assert run(f"powershell -c 'Stop-Process -Id {PID} -WhatIf:$false'") is not None

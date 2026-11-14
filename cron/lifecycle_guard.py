@@ -878,6 +878,12 @@ def _windows_killer_targets_pid(name: str, args: list[str], pid: int) -> bool:
     # `-Id 1, 2` tokenizes as `1,` `2`: rejoin comma lists before reading values.
     args = re.sub(r"\s*,\s*", ",", " ".join(args)).split()
     lowered = [arg.lower() for arg in args]
+    # PowerShell's WhatIf switch previews Stop-Process without signaling the target.
+    # An explicit -WhatIf:$false does execute, so it must still reach the PID check.
+    if name == "stop-process" and any(
+        arg in {"-whatif", "-wi", "-whatif:$true", "-wi:$true"} for arg in lowered
+    ):
+        return False
     if name == "taskkill" and "/s" in lowered:
         return False
     flags = ("/pid", "-pid") if name == "taskkill" else ("-id",)

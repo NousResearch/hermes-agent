@@ -772,6 +772,76 @@ def test_idle_true_when_all_work_sources_quiet(monkeypatch):
     assert r._scale_to_zero_is_idle() is True
 
 
+@pytest.mark.asyncio
+async def test_relay_reply_blocks_idle_after_turn_slot_is_released(monkeypatch):
+    from gateway.config import Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.session import SessionSource
+    from tests.gateway.relay.stub_connector import StubConnector
+    from tests.gateway.relay.test_relay_adapter import make_desc
+
+    r = _work_count_runner(monkeypatch, agents=1)
+    descriptor = make_desc(platform="slack", markdown_dialect="mrkdwn")
+    transport = StubConnector(descriptor)
+    relay = RelayAdapter(PlatformConfig(), descriptor)
+    monkeypatch.setattr(relay, "_transport", transport)
+    r.adapters[Platform.RELAY] = relay
+    event = MessageEvent(text="hello", source=SessionSource(platform=Platform.SLACK, chat_id="dm1"))
+    slot_released, allow_response = asyncio.Event(), asyncio.Event()
+    send_started, allow_send = asyncio.Event(), asyncio.Event()
+    send_outbound = transport.send_outbound
+
+    async def handle_message(event):
+        r._running_agents.clear()
+        slot_released.set()
+        await allow_response.wait()
+        return "reply"
+
+    async def send(action, *, platform=None):
+        if action.get("op") == "send":
+            send_started.set()
+            await allow_send.wait()
+        return await send_outbound(action, platform=platform)
+
+    relay.set_message_handler(handle_message)
+    monkeypatch.setattr(transport, "send_outbound", send)
+    assert relay._start_session_processing(event, "session")
+    task = relay._session_tasks["session"]
+    try:
+        await asyncio.wait_for(slot_released.wait(), 5)
+        assert r._scale_to_zero_is_idle() is False
+        allow_response.set()
+        await asyncio.wait_for(send_started.wait(), 5)
+        assert r._scale_to_zero_is_idle() is False
+    finally:
+        allow_response.set()
+        allow_send.set()
+        await asyncio.wait_for(task, 5)
+    assert any(action.get("op") == "send" for action in transport.sent)
+    assert r._scale_to_zero_is_idle() is True
+
+
+@pytest.mark.asyncio
+async def test_durable_reply_settlement_blocks_idle_after_turn_slot_is_released(monkeypatch):
+    from types import SimpleNamespace
+
+    from gateway.session_runtime_workers import track_mutation
+
+    r = _work_count_runner(monkeypatch, agents=1)
+    authority = r.session_authority = SimpleNamespace(sessions={})
+    allow_delivery = asyncio.Event()
+    # The durable session drain owns this task until settlement and reply delivery finish.
+    task = track_mutation(authority, allow_delivery.wait())
+    r._running_agents.clear()
+    try:
+        assert r._scale_to_zero_is_idle() is False
+    finally:
+        allow_delivery.set()
+        await asyncio.wait_for(task, 5)
+    assert r._scale_to_zero_is_idle() is True
+
+
 def test_unreadable_cron_source_fails_awake(monkeypatch):
     """A transient failure reading the cron work source must count as WORK
     (stay awake), not as idle — fail-open accounting would reopen the

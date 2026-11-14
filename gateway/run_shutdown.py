@@ -462,32 +462,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
 
     def _scale_to_zero_is_idle(self) -> bool:
-        from gateway.scale_to_zero import is_idle
-        # FULL work aggregate with fail-AWAKE reads: the drain counters swallow errors to 0, which a
-        # suspend predicate would read as idle, so an unreadable source counts as work here.
+        from gateway.scale_to_zero import gateway_is_idle
 
-        def _read_or_awake(label: str, fn: Callable[[], Any], busy_sentinel: Any) -> Any:
-            try:
-                return fn()
-            except Exception:
-                logger.debug("scale-to-zero: %s unreadable — staying awake", label, exc_info=True)
-                return busy_sentinel
-
-        cron_count = _read_or_awake("cron work count", self._running_cron_job_count, 1)
-        api_count = _read_or_awake("api work count", lambda: self._api_server_hook("active_agent_work_count"), 1)
-        # An attached dashboard/desktop/TUI client (heartbeat mtime) is inbound activity — folded into
-        # the inbound clock, not a conjunct, so a lingering marker cannot pin the box.
-        last_inbound = self._last_inbound_at
-        from gateway.scale_to_zero import dashboard_client_last_seen
-        seen = _read_or_awake("dashboard heartbeat", dashboard_client_last_seen, time.time())
-        if seen is not None and seen > last_inbound:
-            last_inbound = seen
-        return is_idle(
-            active_work_count=self._running_agent_count() + cron_count + api_count,
-            seconds_since_last_inbound=time.time() - last_inbound,
-            idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
-            has_live_background_work=self._scale_to_zero_has_live_background_work(),
-        )
+        return gateway_is_idle(self)
 
     def _scale_to_zero_note_real_inbound(self) -> None:
         """Stamp real inbound and flip status back to running after a dormant wake.

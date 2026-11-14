@@ -537,6 +537,42 @@ def test_a_rotated_write_the_ascii_sweep_rewrote_is_still_followed(launch_home):
         set_multiplex_active(False)
 
 
+@pytest.mark.parametrize("rotate", [False, True])
+def test_an_activation_landing_after_the_tracking_step_still_lets_removal_revoke_the_write(
+        launch_home, monkeypatch, rotate):
+    """Activation lands after the pass tracked the source's write (no snapshot yet) but before it
+    published its write record: capture must still learn of the write, or removal leaves it frozen."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import get_plugin_manager
+    import tui_gateway.launch_profile_policy as policy
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    if rotate:
+        _rotating_override_source(launch_home)
+    manager = get_plugin_manager()
+    if rotate:
+        manager.discover_and_load()  # boot: the source writes v1, recorded before any activation
+        (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+    real_track = policy._track_launch_env_write
+
+    def track_then_activate(*args, **kwargs):
+        real_track(*args, **kwargs)
+        if args[1] == "VAULT_ONLY_KEY":
+            activate_multi_profile_hosting()
+
+    monkeypatch.setattr(policy, "_track_launch_env_write", track_then_activate)
+    try:
+        if rotate:
+            manager.discover_and_load(force=True)
+        else:
+            manager.discover_and_load()  # boot: the source's first write
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == ("v2" if rotate else "from-plugin")
+        monkeypatch.setattr(policy, "_track_launch_env_write", real_track)
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
 def test_a_refresh_for_one_home_never_replaces_another_homes_installed_scope(launch_home):
     """A scope stamped for a secondary (no home override) is not the launch home's to refresh: the
     launch profile's files and frozen env must not replace it."""

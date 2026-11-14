@@ -1199,6 +1199,7 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         keep=lambda name, source: name in report.provenance or name in supplied or source in failed)
     writes = {name: rec for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
               if name not in report.provenance and os.environ.get(name) == rec[1]}
+    held: list[str] = []  # names whose published value os.environ still holds
     for name, applied in report.provenance.items():
         if name not in os.environ:
             continue
@@ -1206,16 +1207,18 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         earlier = previous.get(name)
         # Re-applied over our own earlier write: the pre-source value is the one recorded then.
         prior = earlier[2] if earlier is not None and earlier[1] == before else before
-        published = _published_value(name, staged)
-        policy = _launch_policy()
-        if policy is not None and os.environ[name] == published:
-            policy._track_launch_env_write(home_key, name, applied.source, published, prior,
-                                           adopt=not launch_env_captured)
-        writes[name] = (applied.source, published, prior)
+        writes[name] = (applied.source, _published_value(name, staged), prior)
+        if os.environ[name] == writes[name][1]:
+            held.append(name)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes
     else:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
+    # Tracked only once the record is published: an activation landing before this point adopts the
+    # writes (adopt=), one landing after it finds them in the record at capture.
+    policy = _launch_policy()
+    for name in held if policy is not None else ():
+        policy._track_launch_env_write(home_key, name, *writes[name], adopt=not launch_env_captured)
 
 
 def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope: str | None = None) -> str:

@@ -2941,6 +2941,24 @@
       }
     },
     {
+      "name": "projects.set_default",
+      "summary": "The default project for FUTURE chats (independent of active); accepts id or null, refuses unknown (5062) or archived (5063) projects.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectsSetActiveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DefaultIdResult"
+        }
+      }
+    },
+    {
       "name": "projects.set_primary",
       "summary": "Make one attached folder the project's primary path.",
       "params": [
@@ -17066,6 +17084,25 @@
           "cancel_at_period_end"
         ],
         "title": "CurrentSubscription",
+        "type": "object"
+      },
+      "DefaultIdResult": {
+        "additionalProperties": false,
+        "properties": {
+          "default_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Id"
+          }
+        },
+        "title": "DefaultIdResult",
         "type": "object"
       },
       "DelegationPauseParams": {
@@ -33068,6 +33105,18 @@
             ],
             "default": null,
             "title": "Active Id"
+          },
+          "default_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Id"
           }
         },
         "required": [
@@ -33314,6 +33363,18 @@
             ],
             "default": null,
             "title": "Active Id"
+          },
+          "default_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Id"
           },
           "scoped_session_ids": {
             "items": {

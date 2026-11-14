@@ -53,7 +53,7 @@ import { $gateway } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
+import { $projectTree, projectIdForCwd, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -84,6 +84,7 @@ import type { FreeTierStatus, StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
+import { WorkspaceSwitcherMenu } from '../workspace-switcher-menu'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
@@ -153,6 +154,7 @@ export function useStatusbarItems({
   const copy = t.shell.statusbar
   const freeTierCopy = t.freeTier
   const fileMenu = t.fileMenu
+  const projectsCopy = t.sidebar.projects
   const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   // What the button paints and flips is whether the terminal is ON SCREEN —
@@ -304,6 +306,69 @@ export function useStatusbarItems({
     focusedRuntimeId,
     primaryFocused
   })
+
+  // The project the focused workspace belongs to (longest path match over the
+  // cached tree) — the switcher marks it on the list. Cheap derivation over
+  // the already-subscribed tree, same as `projectName` above.
+  const currentProjectId = currentCwd ? projectIdForCwd(currentCwd) : null
+
+  const workspaceMenuContent = useMemo(
+    () => (close: () => void) => (
+      <WorkspaceSwitcherMenu
+        busy={busy}
+        changeWorkspaceItem={changeWorkspaceItem}
+        copyPathItem={{
+          id: 'copy-workspace-path',
+          label: fileMenu.copyPath,
+          onSelect: () => void copyFilePath(currentCwd),
+          title: displayPath(currentCwd)
+        }}
+        currentCwd={currentCwd}
+        currentProjectId={currentProjectId}
+        onClose={close}
+        profile={activeGatewayProfile}
+        projectsCopy={projectsCopy}
+        revealItems={[
+          // The OS file manager needs the local filesystem; a remote
+          // backend's workspace is not on this computer (the sidebar
+          // trees already hide reveal the same way), and a row tagged
+          // with another gateway is never local either.
+          ...(focusedWorkspaceRemote || !offerLocalReveal
+            ? []
+            : [
+                {
+                  id: 'reveal-workspace-finder',
+                  label: fileMenu.revealFileManager,
+                  onSelect: () => void revealFile(currentCwd),
+                  title: displayPath(currentCwd)
+                }
+              ]),
+          {
+            id: 'reveal-workspace-sidebar',
+            label: fileMenu.revealInSidebar,
+            onSelect: () => revealFileInTree(currentCwd),
+            title: displayPath(currentCwd)
+          }
+        ]}
+        sessionId={focusedStoredSessionId}
+        sessionRemote={focusedWorkspaceRemote}
+      />
+    ),
+    [
+      activeGatewayProfile,
+      busy,
+      changeWorkspaceItem,
+      currentCwd,
+      currentProjectId,
+      fileMenu.copyPath,
+      fileMenu.revealFileManager,
+      fileMenu.revealInSidebar,
+      focusedStoredSessionId,
+      focusedWorkspaceRemote,
+      offerLocalReveal,
+      projectsCopy
+    ]
+  )
 
   const sessionStartedAt = resolveSessionTimerSince({
     focusedStoredSessionId,
@@ -587,37 +652,8 @@ export function useStatusbarItems({
         // the shared display formatter (home → ~) so statusbar and branch bar
         // agree on how a path looks.
         label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
-        menuItems: currentCwd
-          ? [
-              changeWorkspaceItem,
-              {
-                id: 'copy-workspace-path',
-                label: fileMenu.copyPath,
-                onSelect: () => void copyFilePath(currentCwd),
-                title: displayPath(currentCwd)
-              },
-              // The OS file manager needs the local filesystem; a remote
-              // backend's workspace is not on this computer (the sidebar
-              // trees already hide reveal the same way), and a row tagged
-              // with another gateway is never local either.
-              ...(focusedWorkspaceRemote || !offerLocalReveal
-                ? []
-                : [
-                    {
-                      id: 'reveal-workspace-finder',
-                      label: fileMenu.revealFileManager,
-                      onSelect: () => void revealFile(currentCwd),
-                      title: displayPath(currentCwd)
-                    }
-                  ]),
-              {
-                id: 'reveal-workspace-sidebar',
-                label: fileMenu.revealInSidebar,
-                onSelect: () => revealFileInTree(currentCwd),
-                title: displayPath(currentCwd)
-              }
-            ]
-          : undefined,
+        menuClassName: 'w-72',
+        menuContent: workspaceMenuContent,
         title: currentCwd ? displayPath(currentCwd) : undefined,
         toggleLabel: copy.toggleWorkspace,
         variant: 'menu'
@@ -668,16 +704,10 @@ export function useStatusbarItems({
     [
       agentsOpen,
       botsShowing,
-      changeWorkspaceItem,
       commandCenterOpen,
       copy,
       currentCwd,
-      focusedWorkspaceRemote,
       freeTierCopy,
-      fileMenu.copyPath,
-      fileMenu.revealFileManager,
-      fileMenu.revealInSidebar,
-      offerLocalReveal,
       trialModel,
       freeTierSignInOpen,
       gatewayMenuContent,
@@ -692,7 +722,8 @@ export function useStatusbarItems({
       sessionsShowing,
       subagentsFailed,
       subagentsRunning,
-      toggleCommandCenter
+      toggleCommandCenter,
+      workspaceMenuContent
     ]
   )
 

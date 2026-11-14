@@ -56,9 +56,20 @@ vi.mock('@/store/settings-scope', () => ({
 
 vi.mock('@/store/projects', () => ({
   $worktreeRefreshToken: atom(0),
+  $projects: atom([]),
+  $defaultProjectId: atom(null),
+  $projectsRpcAvailable: atom(true),
   repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
-  scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
+  scanAndRecordRepos: vi.fn().mockResolvedValue(undefined),
+  openProjectCreate: vi.fn(),
+  openProjectRename: vi.fn(),
+  openProjectAddFolder: vi.fn(),
+  setDefaultProject: vi.fn(),
+  setProjectAppearance: vi.fn(),
+  deleteProject: vi.fn(),
+  removeProjectFolder: vi.fn(),
+  setProjectFolderPrimary: vi.fn()
 }))
 
 // The module graph behind ConfigSettings is large (1.5s cold here, >10s on a
@@ -82,14 +93,14 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderConfigSettings(activeSectionId = 'safety') {
+function renderConfigSettings(activeSectionId = 'safety', subpage?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
+        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} subpage={subpage} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -172,5 +183,39 @@ describe('ConfigSettings autosave', () => {
     ;(await screen.findByRole('switch', { name: 'Read Responses Aloud' })).click()
     await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
     expect($autoSpeakReplies.get()).toBe(false)
+  })
+})
+
+describe('ConfigSettings workspace projects page', () => {
+  beforeEach(() => {
+    getHermesConfigRecord.mockResolvedValue({})
+    getHermesConfigSchema.mockResolvedValue({ fields: {} })
+  })
+
+  it('renders the Projects manager on workspace+projects without the empty-state regression', async () => {
+    renderConfigSettings('workspace', 'projects')
+
+    // The panel owns the page's top …
+    expect(await screen.findByText('Projects & discovery')).toBeTruthy()
+    // … and the page must not fall through to the section empty state even
+    // though this subpage matches no schema fields here.
+    expect(screen.queryByText('Nothing to configure')).toBeNull()
+  })
+
+  it('keeps the terminal.cwd field below the Projects manager', async () => {
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'terminal.cwd': { type: 'string' } } })
+    getHermesConfigRecord.mockResolvedValue({ terminal: { cwd: '/work/app' } })
+
+    renderConfigSettings('workspace', 'projects')
+
+    expect(await screen.findByText('Projects & discovery')).toBeTruthy()
+    expect(window.document.getElementById('setting-field-terminal.cwd')).toBeTruthy()
+  })
+
+  it('does not render the Projects manager on other workspace subpages', async () => {
+    renderConfigSettings('workspace', 'shell')
+
+    await screen.findByText('Nothing to configure')
+    expect(screen.queryByText('Projects & discovery')).toBeNull()
   })
 })

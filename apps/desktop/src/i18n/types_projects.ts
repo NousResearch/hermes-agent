@@ -76,4 +76,20 @@ export interface SidebarProjectsTranslations {
   toggle: (label: string, open: boolean) => string
   showAllCount: (count: number) => string
   back: string
+  // Shared project-workspace surfaces: the statusbar switcher and the
+  // Settings → Workspace projects manager. Statusbar wave uses these for
+  // switching the current chat / opening a project / starting a new chat and
+  // marking the default; Settings reuses them for folder picking, empty
+  // states, and the remove/primary/default actions.
+  switchCurrentChat: string
+  openProject: string
+  newChat: string
+  defaultForNewChats: string
+  setDefaultFailed: string
+  manageProjects: string
+  chooseFolder: string
+  noProjects: string
+  removeFolderConfirm: string
+  removeFolderFailed: string
+  setPrimaryFailed: string
 }

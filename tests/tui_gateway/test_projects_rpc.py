@@ -759,3 +759,83 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+
+
+def _call_expect_error(method, params=None):
+    return server._methods[method](1, params or {})
+
+
+def test_set_default_roundtrip_and_validation(tmp_path):
+    pid = _call("projects.create", {"name": "Demo", "folders": [str(tmp_path)]})["project"]["id"]
+
+    # Fresh installs expose a null default and untouched active pointer.
+    listing = _call("projects.list")
+    assert listing["default_id"] is None
+
+    result = _call("projects.set_default", {"id": pid})
+    assert result["default_id"] == pid
+    assert _call("projects.list")["default_id"] == pid
+
+    # Default is independent of active: set_active leaves default alone.
+    _call("projects.set_active", {"id": pid})
+    assert _call("projects.list")["default_id"] == pid
+
+    # Clearing default leaves active alone.
+    result = _call("projects.set_default", {"id": None})
+    assert result["default_id"] is None
+    assert _call("projects.list")["active_id"] == pid
+
+    # Unknown project -> 5062; archived project is not usable as default.
+    assert "error" in _call_expect_error("projects.set_default", {"id": "nope"})
+    _call("projects.archive", {"id": pid})
+    resp = _call_expect_error("projects.set_default", {"id": pid})
+    assert "error" in resp
+    assert resp["error"]["code"] == 5063
+
+
+def test_tree_exposes_default_id_and_mutation_clears_it(tmp_path):
+    pid = _call("projects.create", {"name": "Tree", "folders": [str(tmp_path)]})["project"]["id"]
+
+    tree = _call("projects.tree")
+    assert tree["default_id"] is None
+
+    _call("projects.set_default", {"id": pid})
+    tree = _call("projects.tree")
+    assert tree["default_id"] == pid
+    assert any(p["id"] == pid for p in tree["projects"])
+
+    payload = _call("projects.archive", {"id": pid})
+    assert payload["default_id"] is None
+    tree = _call("projects.tree")
+    assert tree["default_id"] is None
+
+
+def test_delete_clears_default_id(tmp_path):
+    pid = _call("projects.create", {"name": "Doomed", "folders": [str(tmp_path)]})["project"]["id"]
+    _call("projects.set_default", {"id": pid})
+
+    payload = _call("projects.delete", {"id": pid})
+    assert payload["default_id"] is None
+
+
+def test_set_default_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", tmp_path / "launch-repo")
+    coder_project = _create_project(coder_home, "Coder", tmp_path / "coder-repo")
+
+    with _serving_launch_profile(launch_home):
+        _call("projects.set_default", {"profile": "coder", "id": coder_project["id"]})
+        launch_listing = _call("projects.list")
+        coder_listing = _call("projects.list", {"profile": "coder"})
+        # The override must not leak back into the launch profile.
+        launch_again = _call("projects.list")
+
+    assert coder_listing["default_id"] == coder_project["id"]
+    assert launch_listing["default_id"] is None
+    assert launch_again["default_id"] is None
+    assert coder_listing["active_id"] is None
+    assert launch_listing["active_id"] is None
+    assert launch_project["id"] != coder_project["id"]

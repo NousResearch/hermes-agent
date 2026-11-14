@@ -80,5 +80,16 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `Изменить порядок ${label}`,
   toggle: (label, open) => `${open ? 'Показать' : 'Скрыть'} сеансы ${label}`,
   showAllCount: count => `Показать все сессии (${count})`,
-  back: 'Все проекты'
+  back: 'Все проекты',
+  switchCurrentChat: 'Переключить текущий чат',
+  openProject: 'Открыть проект',
+  newChat: 'Новый чат',
+  defaultForNewChats: 'По умолчанию для новых чатов',
+  setDefaultFailed: 'Не удалось задать проект по умолчанию',
+  manageProjects: 'Управление проектами…',
+  chooseFolder: 'Выбрать папку',
+  noProjects: 'Нет проектов',
+  removeFolderConfirm: 'Убрать эту папку из проекта? Файлы на диске не затрагиваются.',
+  removeFolderFailed: 'Не удалось убрать папку',
+  setPrimaryFailed: 'Не удалось назначить основную папку'
 }

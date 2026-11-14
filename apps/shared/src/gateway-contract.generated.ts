@@ -2524,6 +2524,7 @@ export interface SubagentTailResult {
 export interface ProjectsPayload {
   projects: ProjectInfo[]
   active_id?: string | null
+  default_id?: string | null
 }
 /** ``hermes_cli/projects_db.py::Project.to_dict`` — one stored project with its folders. */
 export interface ProjectInfo {
@@ -2605,6 +2606,9 @@ export interface ProjectsSetActiveParams {
 export interface ActiveIdResult {
   active_id?: string | null
 }
+export interface DefaultIdResult {
+  default_id?: string | null
+}
 /** Absent ``cwd`` resolves the gateway's default completion cwd. */
 export interface ProjectsForCwdParams {
   profile?: string | null
@@ -2669,6 +2673,7 @@ export interface ProjectsTreeParams {
 export interface ProjectsTreeResult {
   projects: ProjectTreeNode[]
   active_id?: string | null
+  default_id?: string | null
   scoped_session_ids?: string[]
 }
 /** ``project_tree._project_node`` — explicit, auto (git root) or the synthetic Home bucket. */
@@ -6632,6 +6637,8 @@ export interface RpcMethods {
   'projects.remove_folder': { params: ProjectFolderParams; result: ProjectResult }
   /** Switch (or clear) the active project for the profile. */
   'projects.set_active': { params: ProjectsSetActiveParams; result: ActiveIdResult }
+  /** The default project for FUTURE chats (independent of active); accepts id or null, refuses unknown (5062) or archived (5063) projects. */
+  'projects.set_default': { params: ProjectsSetActiveParams; result: DefaultIdResult }
   /** Make one attached folder the project's primary path. */
   'projects.set_primary': { params: ProjectFolderParams; result: ProjectResult }
   /** Project → repo → lane overview with counts and a few preview sessions per project. */
@@ -6996,6 +7003,7 @@ export const RPC_METHODS = [
   'projects.record_repos',
   'projects.remove_folder',
   'projects.set_active',
+  'projects.set_default',
   'projects.set_primary',
   'projects.tree',
   'projects.update',

@@ -16,8 +16,6 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth, uses Codex models) |
-| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
-| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env`, or `hermes auth add openrouter --type oauth` (browser login via OpenRouter's PKCE flow; stores a key in the credential pool) |
 | **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
@@ -60,7 +58,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
-Both built-in OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression, titles, approval checks, skills-hub lookups and `/btw` side questions — including the ones that run in the background after the turn has ended; headless Kanban `specify`/`decompose` and dashboard estimate calls use a per-task key; one-shots with no live session at all, such as Desktop commit-message generation from the review panel, send a fresh ephemeral key). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id (or the Kanban task id) and carries no personal data.
+Both built-in OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression, titles, approval checks and `/btw` side questions — including the ones that run in the background after the turn has ended; headless Kanban `specify`/`decompose` and dashboard estimate calls use a per-task key; one-shots with no live session at all, such as Desktop commit-message generation from the review panel, send a fresh ephemeral key). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id (or the Kanban task id) and carries no personal data.
 
 The two built-in OpenCode providers each pin their own relay on `opencode.ai` (`opencode-zen` → `/zen/v1`, `opencode-go` → `/zen/go/v1`). A `model.base_url` left behind by the other relay is healed to the selected provider's relay, and the model you pick (`-m`, `/model`, a fallback entry or a channel override) decides which relay is used — so switching from a Zen model to a Go-only one never sends the request to Zen. The same per-model routing is re-applied when a session is resumed (`hermes --resume`, `/resume`, the TUI and desktop resume paths): a wire format or relay URL recorded while the session ran a different OpenCode model never carries over to the model the session is reopened on. OpenCode models whose id carries a `-vision` marker (for example `deepseek-v4-flash-vision-exp`) are treated as vision-capable even before models.dev lists them, so `agent.image_input_mode: auto` attaches images natively without a `supports_vision` override. A custom provider you define under `providers:` whose name extends a family slug (for example `opencode-go-bridge`) still gets the family's per-model API-mode routing and `/v1` handling, but its `base_url` is taken as declared: name it after the relay it actually points at. Auxiliary tasks (`auxiliary.compression`, titles, vision, MoA) pointed at an OpenCode provider follow the same per-model table, so a Responses-only model such as `gpt-5.6-luna` or an Anthropic-wire one such as `minimax-m2.5` works there exactly as it does for the main conversation.
 
@@ -112,7 +110,7 @@ Groups = x25519:secp256r1:secp384r1:x448
 :::
 
 :::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model. By default (`auxiliary.*.provider: "auto"`), Hermes routes these tasks to your **main chat model** — the same model you picked in `hermes model`. You can override each task individually to route it to a cheaper/faster model (e.g. Gemini Flash on OpenRouter) — see [Auxiliary Models](../user-guide/configuration.md#auxiliary-models).
+Even when using Nous Portal, Codex, or a custom endpoint, some features (vision, compression, MoA) use a separate "auxiliary" model. By default (`auxiliary.*.provider: "auto"`), Hermes routes these tasks to your **main chat model** — the same model you picked in `hermes model`. You can override each task individually to route it to a cheaper/faster model (e.g. Gemini Flash on OpenRouter) — see [Auxiliary Models](../user-guide/configuration.md#auxiliary-models).
 :::
 
 :::tip Nous Tool Gateway
@@ -207,70 +205,19 @@ model:
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
-### GitHub Copilot
+### GitHub Copilot (labs plugin)
 
-Hermes supports GitHub Copilot as a first-class provider with two modes:
-
-**`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
+The GitHub Copilot providers (`copilot` for the Copilot API, `copilot-acp` for the Copilot CLI over ACP) are no longer built into Hermes. They ship as the `github-copilot` **labs plugin** — built by Nous Research, but not supported:
 
 ```bash
-hermes chat --provider copilot --model gpt-5.4
+hermes plugins install github-copilot
 ```
 
-**Authentication options** (checked in this order):
+Profiles that already use `copilot` or `copilot-acp` (main model, fallback, auxiliary, delegation, MoA or cron) get the plugin installed automatically by `hermes update` or at their next agent or gateway start.
 
-1. `COPILOT_GITHUB_TOKEN` environment variable
-2. `GH_TOKEN` environment variable
-3. `GITHUB_TOKEN` environment variable
-4. `gh auth token` CLI fallback
+Sign in with `hermes auth add copilot` (device-code login), or set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN`. Logins made with the `gh` CLI or the Copilot CLI are no longer read: if you relied on them, run `hermes auth add copilot`.
 
-If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
-
-:::warning Token types
-The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
-
-| Type | Prefix | How to get |
-|------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
-| Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
-| GitHub App token | `ghu_` | Via GitHub App installation |
-
-If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
-:::
-
-:::info Copilot auth behavior in Hermes
-Hermes sends a supported GitHub token (`gho_*`, `github_pat_*`, or `ghu_*`) directly to `api.githubcopilot.com` and includes Copilot-specific headers (`Editor-Version`, `Copilot-Integration-Id`, `Openai-Intent`, `x-initiator`).
-
-On HTTP 401, Hermes now performs a one-shot credential recovery before fallback:
-
-1. Re-resolve token via the normal priority chain (`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`)
-2. Rebuild the shared OpenAI client with refreshed headers
-3. Retry the request once
-
-Some older community proxies use `api.github.com/copilot_internal/v2/token` exchange flows. That endpoint can be unavailable for some account types (returns 404). Hermes therefore keeps direct-token auth as the primary path and relies on runtime credential refresh + retry for robustness.
-:::
-
-**API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
-
-**`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
-
-```bash
-hermes chat --provider copilot-acp --model copilot-acp
-# Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
-```
-
-**Permanent config:**
-```yaml
-model:
-  provider: "copilot"
-  default: "gpt-5.4"
-```
-
-| Environment variable | Description |
-|---------------------|-------------|
-| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
-| `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
-| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+Setup, models and environment variables: [github-copilot plugin docs](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot).
 
 ### First-Class API-Key Providers
 
@@ -565,29 +512,66 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 ### NVIDIA NIM
 
-Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
+Use the NVIDIA NIM provider to access Nemotron and other open-source models through NVIDIA’s hosted service or a local NIM endpoint. Model identifiers for hosted endpoints and instructions for local deployment are available at [build.nvidia.com/models](https://build.nvidia.com/models).
+
+:::note Nemotron 3.5 Super VL
+The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+:::
+
+#### Cloud (build.nvidia.com)
+
+Create an account and a free API key at [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys) and add it to `~/.hermes/.env`:
 
 ```bash
-# Cloud (build.nvidia.com)
-hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
-# Requires: NVIDIA_API_KEY in ~/.hermes/.env
-
-# Local NIM endpoint — override base URL
-NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+NVIDIA_API_KEY=nvapi-...
 ```
 
-Or set it permanently in `config.yaml`:
+Then start a chat:
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+:::info BILLING
+Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+:::
+
+#### Local NIM
+
+For local or on-premises deployments, such as DGX Spark, DGX Station, or a local GPU, set `NVIDIA_BASE_URL` to your NIM endpoint in `~/.hermes/.env`:
+
+```bash
+NVIDIA_API_KEY=local-no-auth
+NVIDIA_BASE_URL=http://localhost:8000/v1
+```
+
+Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
+
+Then start a chat using the model served by your endpoint:
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+Local NIM endpoints expose the same OpenAI-compatible chat completions API as NVIDIA’s hosted service. To switch endpoints, update `NVIDIA_BASE_URL` and adjust the API key and model name as needed.
+
+:::info VISION
+If your local NIM model isn't in models.dev catalog and supports vision, set `model.supports_vision: true` for native image support — see [Native vision for custom-provider models](#named-custom-providers).
+:::
+
+#### Set the default model
+
+For either deployment, save the provider and model identifier in `config.yaml` to avoid specifying them on every invocation:
+
 ```yaml
 model:
   provider: "nvidia"
-  default: "nvidia/nemotron-3-super-120b-a12b"
+  default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
 
-:::tip Local NIM
-For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
+:::info CONTACT
+For issues with the Nemotron models themselves, see the [NVIDIA Nemotron developer forum](https://forums.developer.nvidia.com/c/ai-data-science/nvidia-nemotron/669).
 :::
-
-Hermes automatically attaches the NIM billing-origin header on every request to `build.nvidia.com` — no configuration needed. This routes consumption against the correct origin in NVIDIA's billing dashboard.
 
 ### GMI Cloud
 
@@ -1270,6 +1254,10 @@ Hermes no longer reads `model.max_tokens`, `HERMES_MAX_TOKENS`, provider output-
 settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settings.
 Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
 Their server defaults apply; these can be lower than the model maximum.
+A reply that degenerates into a repetition loop is still stopped: within about 130,000
+characters of the loop starting (visible or reasoning text), Hermes closes the stream
+and ends the turn with a "Repetition Detected" notice, so an uncapped endpoint cannot keep a
+looping model running.
 
 Native Anthropic Messages (including the native Anthropic Bedrock path) requires
 `max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate
@@ -1294,7 +1282,7 @@ Hermes uses a multi-source resolution chain to detect the correct context window
 8. **[models.dev](https://models.dev)** — community-maintained registry with provider-specific context lengths for 3800+ models across 100+ providers
 9. **Fallback defaults** — broad model family patterns (128K default)
 
-For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
+For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but smaller through some resellers and aggregators).
 
 To set the context length explicitly, add `context_length` to your model config:
 
@@ -1348,6 +1336,12 @@ providers:
 ```
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
+
+An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key`, `key_env` or `key_cmd`), that key is used and the built-in's own key is never sent. An entry with no key gets the built-in's env and pooled keys only while its address is on the built-in's own host (scheme, host and port); anywhere else (a proxy, a mirror, another region's host such as Kimi's `.cn` endpoint) it sends no key, because a built-in's key is never sent to a host other than its own unless you say so. To use the built-in's key on your endpoint, name it: `key_env: DEEPSEEK_API_KEY` (the built-in's variable), or add the endpoint's key with `hermes auth add deepseek` while the entry is configured, which records the entry's address. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
+
+:::note Migration: built-in keys and same-named entries
+Earlier releases sent the built-in's env key (for example `DEEPSEEK_API_KEY`) to a key-less `providers.deepseek` entry on any address. Now that key stays on the built-in's own host. If such an entry now gets `401`, add `key_env: DEEPSEEK_API_KEY` (use your provider's variable) to the entry. Hermes logs one warning per entry naming the remedy when this happens. Pooled keys added before addresses were recorded (`hermes auth add`, the dashboard) for a built-in's pool belong to the built-in's own address. To use one on the entry's host, re-add it with `hermes auth add <name>` while the entry is configured.
+:::
 
 #### Command-minted credentials (`key_cmd`)
 
@@ -1696,7 +1690,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

@@ -1,0 +1,21 @@
+name: dress-rehearsal
+title: "Dress Rehearsal"
+repo: https://github.com/kawsthingz/hermes-dress-rehearsal
+sha: "392fc16e7b7057e71f8dfd42b90eefc9cb1b3b28"
+description: "Rehearse a task before it touches anything: /rehearse on, then give Hermes the job. Reads run for real; every side effect (file writes and edits, modifying shell commands, messages, schedules, any tool not on a read-only list) is recorded into a numbered script instead of running. /rehearse shows the script with diffs and risk flags, /rehearse drop strikes steps, /rehearse go replays the kept calls exactly as recorded with no model in the loop, in the folder they were rehearsed in, stops at the first failure (resumable) and refuses any file that changed since the rehearsal. Disclosure — hooks pre_tool_call (blocks and records side-effecting calls only while armed) and pre_llm_call (a short rehearsal note only while armed); one slash command; stores one script per profile, including tool arguments, in its plugin state; on /rehearse go dispatches the approved calls, plus read_file on files it is about to overwrite, through Hermes's tool registry, where Hermes's own approval and write guards still apply but other plugins' pre_tool_call hooks do not run; read-only git commands still honour the repository's own diff.external/textconv config while armed; no network calls, no subprocesses, no dependencies."
+maintainer: kawsthingz
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+platforms: []
+docs_url: https://github.com/kawsthingz/hermes-dress-rehearsal
+image: https://raw.githubusercontent.com/kawsthingz/hermes-dress-rehearsal/392fc16e7b7057e71f8dfd42b90eefc9cb1b3b28/screenshots/rehearsal-script.png
+screenshots:
+  - https://raw.githubusercontent.com/kawsthingz/hermes-dress-rehearsal/392fc16e7b7057e71f8dfd42b90eefc9cb1b3b28/screenshots/rehearsal-script.png
+  - https://raw.githubusercontent.com/kawsthingz/hermes-dress-rehearsal/392fc16e7b7057e71f8dfd42b90eefc9cb1b3b28/screenshots/rehearsal-go.png
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

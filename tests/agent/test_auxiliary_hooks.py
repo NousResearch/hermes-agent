@@ -24,7 +24,7 @@ def manager(monkeypatch):
 
 
 @pytest.fixture
-def aux_client(monkeypatch):
+def aux_client(request, monkeypatch):
     client = MagicMock()
     client.base_url = "https://openrouter.ai/api/v1"
     client.chat.completions.create.return_value = SimpleNamespace(
@@ -33,13 +33,16 @@ def aux_client(monkeypatch):
                                  finish_reason="stop")],
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
     )
+    api_mode = getattr(request, "param", None)
     monkeypatch.setattr("agent.auxiliary_client._resolve_task_provider_model",
-                        lambda *a, **k: ("openrouter", "mock-model", None, None, None))
+                        lambda *a, **k: ("openrouter", "mock-model", None, None, api_mode))
     monkeypatch.setattr("agent.auxiliary_client._get_cached_client", lambda *a, **k: (client, "mock-model"))
     monkeypatch.setattr("agent.auxiliary_client._validate_llm_response", lambda resp, _task, **_kw: resp)
     return client
 
 
+# Native adapters hand back chat-shaped usage whatever wire they speak to the provider.
+@pytest.mark.parametrize("aux_client", [None, "codex_responses", "anthropic_messages"], indirect=True)
 def test_call_llm_emits_auxiliary_events_not_api_request_events(manager, aux_client):  # manager: PluginContext
     fired = []
     for name in ("pre_auxiliary_call", "post_auxiliary_call", "pre_api_request", "post_api_request"):

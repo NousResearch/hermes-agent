@@ -1,0 +1,17 @@
+name: hermes-vision-inline
+repo: https://github.com/BrokeSkill/hermes-vision-inline
+sha: 281bce608e799834cd1b60929d3f9b44756cb7c2
+description: "Attach an image inline to the session model when it can see one, instead of letting an explicit auxiliary.vision backend describe it. Core already attaches images natively by default; what this plugin changes is an explicit auxiliary.vision setting, which it overrides so the model reads the pixels directly. The image stays in context, so follow-ups do not reprocess it. The model's modality comes from the local models.dev cache; no network calls and nothing to configure. Disclosure — replaces the vision_analyze handler through tool_execution middleware: when the local models.dev cache says the main model takes images and its provider carries images in tool results, it attaches the image itself even if you configured an auxiliary.vision backend (agent.image_input_mode: text still turns this off); the image stays in the conversation and is resent on later turns; relies on Hermes private vision helpers, so after a Hermes update it may silently fall back to the normal path."
+maintainer: BrokeSkill
+tier: community
+category: tools
+docs_url: https://github.com/BrokeSkill/hermes-vision-inline#readme
+version: "1.1.0"
+image: https://raw.githubusercontent.com/BrokeSkill/hermes-vision-inline/281bce608e799834cd1b60929d3f9b44756cb7c2/docs/banner.png
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+  - tool_execution
+  requires_env: []

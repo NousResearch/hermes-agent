@@ -80,16 +80,27 @@ describe('resolveRemoteOauthTicket', () => {
 
   it('distinguishes transport failure classes in user-facing copy (timeout vs refused vs other)', async () => {
     const mintThrowing = (cause: unknown) =>
-      resolveRemoteOauthTicket('https://gateway.example.com', {}, {
-        hasNativeSession: () => false,
-        mintGatewayWsTicket: async () => {
-          throw cause
+      resolveRemoteOauthTicket(
+        'https://gateway.example.com',
+        {},
+        {
+          hasNativeSession: () => false,
+          mintGatewayWsTicket: async () => {
+            throw cause
+          }
         }
-      }).catch((failure: Error) => failure)
+      ).catch((failure: Error) => failure)
 
     const timeout = await mintThrowing(Object.assign(new Error('timeout of 8000ms exceeded'), { code: 'ETIMEDOUT' }))
-    const refused = await mintThrowing(Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:8446'), { code: 'ECONNREFUSED' }))
-    const dns = await mintThrowing(Object.assign(new Error('getaddrinfo ENOTFOUND gw.example.com'), { code: 'ENOTFOUND' }))
+
+    const refused = await mintThrowing(
+      Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:8446'), { code: 'ECONNREFUSED' })
+    )
+
+    const dns = await mintThrowing(
+      Object.assign(new Error('getaddrinfo ENOTFOUND gw.example.com'), { code: 'ENOTFOUND' })
+    )
+
     const ambiguous = await mintThrowing(new Error('socket hang up'))
     const http500 = await mintThrowing(Object.assign(new Error('500: upstream'), { statusCode: 500 }))
 
@@ -99,7 +110,13 @@ describe('resolveRemoteOauthTicket', () => {
     expect(ambiguous).toBeInstanceOf(Error)
     expect(http500).toBeInstanceOf(Error)
 
-    if (!(timeout instanceof Error && refused instanceof Error && dns instanceof Error && ambiguous instanceof Error && http500 instanceof Error)) {
+    if (!(
+      timeout instanceof Error &&
+      refused instanceof Error &&
+      dns instanceof Error &&
+      ambiguous instanceof Error &&
+      http500 instanceof Error
+    )) {
       throw new Error('Expected transport rejections')
     }
 
@@ -123,5 +140,4 @@ describe('resolveRemoteOauthTicket', () => {
       expect((err as Error & { needsOauthLogin?: boolean }).needsOauthLogin).toBeUndefined()
     }
   })
-
 })

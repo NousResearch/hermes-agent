@@ -102,7 +102,7 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
-  max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
+  max_message_length: 15000       # Outbound chunk size in UTF-8 bytes (default and max: 15000)
 ```
 
 Or via environment variables:
@@ -321,6 +321,15 @@ Only enable notices when a trusted human workflow really sends `m.notice`:
 ```bash
 MATRIX_PROCESS_NOTICES=true
 ```
+
+Processed notices count as bot messages: they use the gateway's bot loop guard
+and never get a pairing reply. Any Matrix user can send `m.notice`, so it grants
+no access: a notice sender still needs `MATRIX_ALLOWED_USERS` (or another human rung).
+The loop guard also ends the exchange: by default, after Hermes answers a notice
+sender, that sender's next notice gets no reply until someone sends a regular
+message in the room or the room has gone 10 minutes without a notice. Set
+`gateway.bot_loop_guard.bot_replies_expect_reply: true` in `config.yaml` for a
+workflow that needs back-and-forth (still capped at `max_hops`, default 4).
 
 Outbound whole-room notifications are disabled by default. Keep
 `MATRIX_ALLOW_ROOM_MENTIONS=false` unless the bot is explicitly allowed to wake

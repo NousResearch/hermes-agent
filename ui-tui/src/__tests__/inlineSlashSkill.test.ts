@@ -1,6 +1,6 @@
+import { inlineSlashTrigger } from '@hermes/shared/slash-input'
 import { describe, expect, it } from 'vitest'
 
-import { inlineSlashTrigger } from '../domain/slash.js'
 import { completionRequestForInput } from '../hooks/useCompletion.js'
 
 describe('inlineSlashTrigger', () => {

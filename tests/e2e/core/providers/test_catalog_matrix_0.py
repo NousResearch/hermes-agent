@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
 from tests.e2e.core.providers._catalog_helpers import (
     SHARDS, Row, TurnResult, check_row, discover_catalog, drive_shard, shard_of, shard_params,
 )
@@ -36,7 +37,7 @@ def test_provider_row(row: Row, turns: dict[str, TurnResult]) -> None:
 def test_catalog_is_discovered_not_listed() -> None:
     """Every bundled plugin dir registers a provider that some shard runs (or skips with a
     reason): the matrix follows discovery, so a new plugin can never silently fall out of it."""
-    root = Path(__file__).resolve().parents[4] / "plugins" / "model-providers"
+    root = Path(__file__).resolve().parents[4] / current_path("plugins") / "model-providers"
     dirs = {d.name for d in root.iterdir() if (d / "__init__.py").exists()}
     names = {r.name for r in discover_catalog()}
     assert dirs, "no bundled model-provider plugins found"

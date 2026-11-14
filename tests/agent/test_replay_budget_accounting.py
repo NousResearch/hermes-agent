@@ -81,7 +81,7 @@ class TestChargeStaleThinking:
 
     def test_codex_sidecar_is_not_thinking_text(self):
         """The Codex sidecar is not stale thinking: the stale path drops nothing from it. Its
-        ciphertext is priced only by real usage (#104462), so the row costs the same as a bare one."""
+        replayed reasoning is billed on every request (#125920), so it is charged either way."""
         msg = _assistant(codex=True)
         full = _estimate_msg_budget_tokens(msg, charge_stale_thinking=True)
         stale = _estimate_msg_budget_tokens(msg, charge_stale_thinking=False)
@@ -89,7 +89,7 @@ class TestChargeStaleThinking:
         bare = _estimate_msg_budget_tokens(
             {"role": "assistant", "content": "done"}, charge_stale_thinking=False
         )
-        assert stale < bare + 100
+        assert stale > bare
 
     def test_default_is_conservative_full_charge(self):
         msg = _assistant(thinking=True)

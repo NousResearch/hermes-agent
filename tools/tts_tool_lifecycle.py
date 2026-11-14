@@ -39,7 +39,7 @@ _keep_warm_timer: Optional[threading.Timer] = None
 _keep_warm_generation = 0
 
 
-def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
+def _local_tts_warmers() -> dict[str, Callable[[dict[str, Any]], Any]]:
     """Provider name → loader populating that engine's cache slot (same key synthesis uses)."""
     return {
         "piper": lambda cfg: _load_piper_voice_for_config(cfg)[0],
@@ -50,7 +50,7 @@ def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
 _LAZY_SDK_FEATURES = {"edge": "edge-tts", "elevenlabs": "tts-premium", "mistral": "mistral"}
 
 
-def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) -> Optional[str]:
+def _signal_user_tts_provider(name: str, tts_config: dict[str, Any], hook: str) -> Optional[str]:
     """Forward a lease ``hook`` (``"warm"``/``"release"``) to a user-declared provider; returns the action.
     Command providers run their optional ``<hook>_command`` (same template/env/timeout rules as
     ``command``) on a background thread so a toggle never waits on a model server; plugins get
@@ -73,7 +73,7 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
                     tts_command_provider.run_command_provider(
                         command, _get_command_tts_timeout(cfg),
                         env_passthrough=_command_provider_env_passthrough(cfg))
-                except Exception as exc:  # noqa: BLE001 — best-effort hook
+                except Exception as exc:
                     logger.debug("[TTS] %s_command for %s failed: %s", hook, name, exc)
             # ctx_bound: env_passthrough resolves through the caller's profile secret scope.
             threading.Thread(target=ctx_bound(_run), name=f"tts-{hook}-{name}", daemon=True).start()
@@ -83,12 +83,12 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
             return None
         getattr(plugin_provider, hook)()
         return hook
-    except Exception as exc:  # noqa: BLE001 — best-effort hook
+    except Exception as exc:
         logger.debug("[TTS] %s hook for %s failed: %s", hook, name, exc)
         return "error"
 
 
-def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Optional[str] = None) -> Dict[str, Any]:
+def warm_tts_provider(tts_config: Optional[dict[str, Any]] = None, provider: Optional[str] = None) -> dict[str, Any]:
     """Pre-load the configured TTS provider so the next synthesis starts hot (blocking; never raises).
     Local engines fill the same LRU slot synthesis reads (including first-use download); lazily
     installed cloud SDKs are made importable; user-declared providers get their warm hook;
@@ -96,7 +96,7 @@ def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Opt
     if tts_config is None:
         tts_config = _origin()._load_tts_config()
     name = (provider or _origin()._get_provider(tts_config) or "").lower().strip()
-    result: Dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
+    result: dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
     warmer = _local_tts_warmers().get(name)
     if warmer is not None:
         cache = _LOCAL_TTS_MODEL_CACHES.get(name, {})
@@ -132,7 +132,7 @@ def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Opt
     return result
 
 
-def release_tts_provider(provider: Optional[str] = None) -> Dict[str, Any]:
+def release_tts_provider(provider: Optional[str] = None) -> dict[str, Any]:
     """Drop resident local models -> ``{"released": <count>}``. With ``provider`` only that engine's
     cache is cleared; otherwise every cache is, and the configured user provider is signalled."""
     name = (provider or "").lower().strip()
@@ -192,7 +192,7 @@ def _release_after_keep_warm(generation: int) -> None:
         release_tts_provider()
 
 
-def acquire_tts_lease(lease: str, tts_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def acquire_tts_lease(lease: str, tts_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Register ``lease`` (e.g. ``"desktop:read-aloud"``) and warm the provider. Re-acquiring is
     idempotent but still re-warms (cheap on a cache hit; heals a cache cleared elsewhere). An
     acquire inside the keep-warm window cancels the pending unload."""
@@ -208,7 +208,7 @@ def acquire_tts_lease(lease: str, tts_config: Optional[Dict[str, Any]] = None) -
     return {**result, "leases": holders}
 
 
-def release_tts_lease(lease: str) -> Dict[str, Any]:
+def release_tts_lease(lease: str) -> dict[str, Any]:
     """Drop ``lease``; the last one out unloads resident local models once the keep-warm window
     passes with no new acquire. A never-acquired lease is a no-op (still reports the holder count)
     so surfaces can call this unconditionally. ``released`` counts models unloaded inline."""
@@ -220,7 +220,7 @@ def release_tts_lease(lease: str) -> Dict[str, Any]:
     return {"leases": holders, "released": released}
 
 
-def tts_lease_holders() -> List[str]:
+def tts_lease_holders() -> list[str]:
     """Snapshot of live lease names (diagnostics / tests)."""
     with _tts_lease_lock:
         return sorted(_tts_leases)

@@ -58,6 +58,8 @@ from tools.code_execution_tool import (
     _TOOL_DOC_LINES,
     _execute_remote,
     _format_interrupted_output,
+    _sandbox_tools_for,
+    _sandbox_failure_hint,
 )
 from tools.registry import registry
 
@@ -149,7 +151,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["stdout_truncated"])
-        self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
+        self.assertEqual(result["stdout_bytes_total"], len(b"hello\n"))
         # The session-kernel path runs first and fails open on this fake env
         # (no PID from nohup), so search for the per-call sandbox commands
         # rather than pinning positions.
@@ -283,7 +285,7 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, True)
         local = root + sandbox
         sh = lambda c: subprocess.run(["bash", "-c", c.replace(sandbox, local)],
-                                      capture_output=True, text=True)
+                                      capture_output=True, text=True, check=False)
         self.assertEqual(sh(mkdir_cmd).returncode, 0)
         for d in (local, f"{local}/rpc"):
             self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
@@ -491,8 +493,8 @@ class TestStubSchemaDrift(unittest.TestCase):
 
         # Import the registry and trigger tool registration
         from tools.registry import registry
-        import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
-        import tools.web_tools  # noqa: F401 - registers web_search, web_extract
+        import tools.file_tools
+        import tools.web_tools
 
         for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
@@ -733,21 +735,104 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
 
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
-        code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
-        )
+    def test_empty_enabled_tools_denies_all(self):
+        """``enabled_tools=[]`` is an explicit deny-all: no sandbox tool stubs
+        are generated, so ``from hermes_tools import terminal`` raises
+        ImportError. Previously ``[]`` was conflated with ``None`` and
+        broadened to every sandbox tool (#84271)."""
+        code = "from hermes_tools import terminal\nprint('should not reach')\n"
         with patch("model_tools.handle_function_call",
-                    return_value=json.dumps({"ok": True})):
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-empty-deny-all",
+                enabled_tools=[],
+            ))
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_nonoverlapping_tools_deny_all(self):
+        """A non-empty ``enabled_tools`` with no sandbox overlap must not fall
+        back to every sandbox tool — the exact authenticated manifest is used,
+        and an empty intersection denies all (#84271)."""
+        code = "from hermes_tools import terminal\nprint('fallback')\n"
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_none_enabled_tools_legacy_default(self):
+        """``enabled_tools=None`` keeps the documented legacy default (every
+        sandbox tool) — the mode is explicit (``is None``), not derived from
+        truthiness, so the empty-list deny-all does not shadow it (#84271)."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "r = terminal('echo hi')\n"
+            "print(r.get('output', ''))\n"
+        )
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-none-default",
+                enabled_tools=None,
+            ))
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("mock output for: echo hi", result["output"])
+
+
+class TestResolveSandboxTools(unittest.TestCase):
+    """Shared helper used by both the local UDS and remote file-RPC paths."""
+
+    def test_none_is_legacy_default(self):
+        self.assertEqual(_sandbox_tools_for(None), SANDBOX_ALLOWED_TOOLS)
+
+    def test_empty_list_is_deny_all(self):
+        self.assertEqual(_sandbox_tools_for([]), frozenset())
+
+    def test_nonoverlapping_is_deny_all(self):
+        self.assertEqual(
+            _sandbox_tools_for(["vision_analyze", "browser_snapshot"]),
+            frozenset(),
+        )
+
+    def test_intersection_keeps_only_sandbox_tools(self):
+        self.assertEqual(
+            _sandbox_tools_for(["terminal", "vision_analyze"]),
+            frozenset(["terminal"]),
+        )
+
+
+class TestSandboxFailureHints(unittest.TestCase):
+    _IMPORT_ERROR = "ImportError: cannot import name 'terminal' from 'hermes_tools'"
+
+    def test_empty_grant_does_not_advertise_sandbox_tools(self):
+        hint = _sandbox_failure_hint(self._IMPORT_ERROR, enabled_tools=[])
+
+        assert hint is not None
+        self.assertIn("Importable tools here: none.", hint)
+
+    def test_partial_grant_advertises_only_the_intersection(self):
+        hint = _sandbox_failure_hint(
+            self._IMPORT_ERROR,
+            enabled_tools=["terminal", "vision_analyze"],
+        )
+
+        assert hint is not None
+        self.assertIn("Importable tools here: terminal.", hint)
+        self.assertNotIn("write_file", hint)
 
 
 # ---------------------------------------------------------------------------
@@ -902,7 +987,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
             def accept(self):
                 if self._served:
-                    raise socket.timeout()
+                    raise TimeoutError()
                 self._served = True
                 return self._conn, ("peer", 0)
 

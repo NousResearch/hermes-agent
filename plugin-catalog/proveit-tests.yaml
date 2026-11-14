@@ -1,0 +1,23 @@
+name: proveit-tests
+title: ProveIt Tests
+repo: https://github.com/KellerAI/proveit-tests-hermes
+sha: 2412a18441611c988ec426b5c40b2b829ebb84d1
+description: "Flags recognizable ways an agent weakens tests to reach green: removed or loosened asserts, skip/xfail/.only, deleted tests, expected literals rewritten to match failing output, assert True and tautologies, try/except pass wrappers, and test-runner escape hatches (pytest || true, -k \"not ...\", --deselect, --passWithNoTests, CI continue-on-error), and pytest config / conftest.py narrowing (addopts -k/-m/--deselect/--ignore, testpaths, collect_ignore, deselecting hooks). Net-new only: each edit is compared with the file as it was before, so pre-existing skips are not blamed on the edit. Deterministic AST + regex, no model calls. Modes: observe (default), escalate to the human-approval gate, or block on unattended/cron runs. SHA-256 receipts and a /proveit ledger. Python-strong; JS/TS coverage is heuristic and limited. Disclosure — no network calls and no model calls. Reads edited test, CI, pytest-config and conftest.py files and tool arguments to compare before/after; appends warnings into tool results; may escalate or block tool calls when configured. Ledger is written only under the Hermes plugin data dir (in-memory if none); terminal findings keep a short, secret-redacted command excerpt locally. Not a sandbox and not unbypassable: an agent can still rewrite via shell, disable the plugin, or invent new weakenings. No findings is not proof that tests were preserved."
+maintainer: KellerAI
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/KellerAI/proveit-tests-hermes#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_verify
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

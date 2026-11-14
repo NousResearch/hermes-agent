@@ -1,0 +1,36 @@
+name: art98
+title: "art98 (Windows 98)"
+repo: https://github.com/StanLukuvka/98artware-hermes
+sha: ecc0aa2733bf2f95a14087f9d169691e2687a5c6
+description: "Drive a real Windows 98 SE VM through art98 (screenshots, pointer, keys, windows, Win32 calls) and render scene scripts to video, with a dashboard tab that has a live view. Disclosure — art98_render runs the agent's scene script as Python on the Hermes machine, in a child process outside the terminal backend and not sandboxed (it can read HOME and the VM token); it refuses unless the allow_render setting is on (off by default) and the user approves that script content through Hermes's approval gate: a pre_tool_call hook asks for approval naming the scripts and the sha256 of the scene and its imported animations/ modules, and the tool re-hashes its snapshot and refuses on a mismatch. Unattended runs (-q, cron, unattended platforms) are refused unless the matching approvals.*_mode is set to approve; --yolo and approvals.mode: off approve without a prompt; \"always\" covers only that exact script content, and content approved with \"always\" also runs unprompted in unattended runs. The dashboard's own Render button skips that approval. art98_win32 is off unless allow_win32 is on. Network is loopback only: the art98 VM's control API (token-authenticated) and optionally its view-only VNC port. One stored credential, the VM token, kept by Hermes as the vm_token secret. Needs ffmpeg and ffprobe for art98_combine, and the user's own Windows 98 SE install via the art98 repo; no Windows files ship with the plugin."
+maintainer: StanLukuvka
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: "https://github.com/StanLukuvka/98artware-hermes/blob/ecc0aa2733bf2f95a14087f9d169691e2687a5c6/README.md"
+platforms: [linux]
+known_issues:
+  - "Needs a running art98 VM (github.com/StanLukuvka/98artware) and your own Windows 98 SE disc and key; the art98-install skill walks through it."
+  - "The art98_render approval hash covers the scene and its static animations/ imports; data files beside them are linked in unhashed."
+  - "Render approvals are held in process memory, so a Hermes restart between the prompt and the render refuses it (not_approved)."
+capabilities:
+  provides_tools:
+    - art98_status
+    - art98_media
+    - art98_screenshot
+    - art98_click
+    - art98_type
+    - art98_key
+    - art98_windows
+    - art98_open
+    - art98_win32
+    - art98_revert
+    - art98_save_scene
+    - art98_render
+    - art98_combine
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

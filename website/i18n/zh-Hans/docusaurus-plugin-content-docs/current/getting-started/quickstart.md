@@ -120,8 +120,6 @@ hermes setup --portal
 | **OpenCode Go** | $10/月订阅，访问开源模型 | 设置 `OPENCODE_GO_API_KEY` |
 | **DeepSeek** | 直接访问 DeepSeek API | 设置 `DEEPSEEK_API_KEY` |
 | **NVIDIA NIM** | 通过 build.nvidia.com 或本地 NIM 使用 Nemotron 模型 | 设置 `NVIDIA_API_KEY`（可选：`NVIDIA_BASE_URL`） |
-| **GitHub Copilot** | GitHub Copilot 订阅（GPT-5.x、Claude、Gemini 等） | 通过 `hermes model` 进行 OAuth，或设置 `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
-| **GitHub Copilot ACP** | Copilot ACP agent 后端（在本地启动 `copilot` CLI） | `hermes model`（需要 `copilot` CLI + `copilot login`） |
 | **Vercel AI Gateway** | Vercel AI Gateway 路由 | 设置 `AI_GATEWAY_API_KEY` |
 | **Custom Endpoint** | VLLM、SGLang、Ollama 或任何兼容 OpenAI 的 API | 设置 base URL + API key |
 
@@ -235,7 +233,7 @@ Agent 会代你执行终端命令并显示结果。
 hermes gateway setup    # 交互式平台配置
 ```
 
-接入 [Telegram](../user-guide/messaging/telegram.md)、[Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md)、[WhatsApp](../user-guide/messaging/whatsapp.md)、[Signal](../user-guide/messaging/signal.md)、[Email](../user-guide/messaging/email.md)、[Home Assistant](../user-guide/messaging/homeassistant.md) 或 [Microsoft Teams](../user-guide/messaging/teams.md)。
+接入 [Telegram](../user-guide/messaging/telegram.md)、[Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md)、[WhatsApp](../user-guide/messaging/whatsapp.md)、[Signal](../user-guide/messaging/signal.md)、[Email](../user-guide/messaging/email.md)、[Home Assistant](../user-guide/messaging/homeassistant.md)（插件）或 [Microsoft Teams](../user-guide/messaging/teams.md)。
 
 ### 自动化与工具
 

@@ -271,6 +271,111 @@ describe('useProjectTree', () => {
     expect(readDir).toHaveBeenCalledTimes(2)
   })
 
+  it.each((['child', 'targeted', 'full'] as const).flatMap(read => [false, true].map(refresh => ({ read, refresh }))))(
+    'keeps $read results within the root generation (refresh=$refresh)',
+    async ({ read, refresh }) => {
+      const src = { name: 'src', path: '/p/src', isDirectory: true }
+      const fresh = { name: 'fresh.txt', path: '/p/fresh.txt', isDirectory: false }
+      let resolveOld!: (value: HermesReadDirResult) => void
+
+      const oldRead = new Promise<HermesReadDirResult>(resolve => {
+        resolveOld = resolve
+      })
+
+      readDir.mockResolvedValueOnce(ok([src]))
+      readDir.mockImplementationOnce(() => oldRead)
+      readDir.mockImplementation(async path =>
+        ok(path === '/p/src' ? [{ ...fresh, path: '/p/src/fresh.txt' }] : [src, fresh])
+      )
+      const { result } = renderHook(() => useProjectTree('/p'))
+      await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['src']))
+
+      act(() => {
+        if (read === 'child') {
+          void result.current.loadChildren('/p/src')
+        } else {
+          notifyWorkspaceChanged(read === 'targeted' ? '/p/changed.txt' : undefined)
+        }
+      })
+      await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+
+      if (refresh) {
+        await act(async () => {
+          await result.current.refreshRoot()
+        })
+        expect(result.current.data.map(node => node.name)).toEqual(['src', 'fresh.txt'])
+
+        if (read === 'child') {
+          await act(async () => {
+            await result.current.loadChildren('/p/src')
+          })
+        }
+      }
+
+      await act(async () => {
+        resolveOld(
+          ok([{ name: 'stale.txt', path: read === 'child' ? '/p/src/stale.txt' : '/p/stale.txt', isDirectory: false }])
+        )
+      })
+
+      if (refresh) {
+        expect(result.current.data.map(node => node.name)).toEqual(['src', 'fresh.txt'])
+
+        if (read === 'child') {
+          expect(result.current.data[0]?.children?.map(node => node.name)).toEqual(['fresh.txt'])
+        }
+      } else if (read === 'child') {
+        expect(result.current.data[0]?.children?.map(node => node.name)).toEqual(['stale.txt'])
+      } else {
+        expect(result.current.data.map(node => node.name)).toEqual(['stale.txt'])
+      }
+    }
+  )
+
+  it('keeps a refreshed folder read in flight when its predecessor finishes', async () => {
+    const src = { name: 'src', path: '/p/src', isDirectory: true }
+    let finishOld!: (value: HermesReadDirResult) => void
+    let finishNew!: (value: HermesReadDirResult) => void
+
+    const oldRead = new Promise<HermesReadDirResult>(resolve => {
+      finishOld = resolve
+    })
+
+    const newRead = new Promise<HermesReadDirResult>(resolve => {
+      finishNew = resolve
+    })
+
+    readDir.mockResolvedValueOnce(ok([src]))
+    readDir.mockImplementationOnce(() => oldRead)
+    readDir.mockResolvedValueOnce(ok([src]))
+    readDir.mockImplementationOnce(() => newRead)
+    readDir.mockResolvedValue(ok([]))
+    const { result } = renderHook(() => useProjectTree('/p'))
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('src'))
+    act(() => {
+      void result.current.loadChildren(src.path)
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await result.current.refreshRoot()
+    })
+    act(() => {
+      void result.current.loadChildren(src.path)
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(4))
+    await act(async () => {
+      finishOld(ok([]))
+    })
+    act(() => {
+      void result.current.loadChildren(src.path)
+    })
+    await act(async () => {
+      finishNew(ok([{ name: 'new.txt', path: '/p/src/new.txt', isDirectory: false }]))
+    })
+    expect(readDir).toHaveBeenCalledTimes(4)
+    expect(result.current.data[0]?.children?.map(node => node.name)).toEqual(['new.txt'])
+  })
+
   it('refreshRoot reloads the root and clears prior error', async () => {
     readDir.mockResolvedValueOnce({ entries: [], error: 'EACCES' })
     readDir.mockResolvedValueOnce(ok([{ name: 'README.md', path: '/p/README.md', isDirectory: false }]))

@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Render the release download tables into <!-- HERMES_BUILDS_TABLE -->, and
 the same rows as standalone pages in the bucket.
 
@@ -53,7 +53,8 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable, versioning  # noqa: E402
+from scripts.releases import handoff, r2, semver, stable, versioning
+from scripts.releases.desktop_targets import TARGETS as DESKTOP_TARGETS
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
@@ -71,14 +72,13 @@ _ASSET_RE = re.compile(
 _OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux (AppImage)"}
 _ARCH_LABEL = {
     ("mac", "arm64"): "Apple Silicon (M-series)",
-    ("mac", "x64"): "Intel",
     ("win", "x64"): "x86 (64-bit)",
     ("win", "arm64"): "ARM (arm64 / aarch64)",
     ("linux", "x64"): "x86 (64-bit)",
     ("linux", "arm64"): "arm64",
 }
 _KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
-_ROW_ORDER = [("mac", "arm64"), ("mac", "x64"), ("win", "x64"), ("win", "arm64"),
+_ROW_ORDER = [("mac", "arm64"), ("win", "x64"), ("win", "arm64"),
               ("linux", "x64"), ("linux", "arm64")]
 
 
@@ -183,12 +183,8 @@ _COMMIT_EXPECTED = [
      r"^HermesBundled-[^-]+-win\.msixbundle$"),
     ("macOS Apple Silicon (DMG)", "darwin-arm64",
      r"^HermesBundled-[^-]+-mac-arm64\.dmg$"),
-    ("macOS Intel (DMG)", "darwin-x64",
-     r"^HermesBundled-[^-]+-mac-x64\.dmg$"),
     ("macOS Apple Silicon (ZIP)", "darwin-arm64",
      r"^HermesBundled-[^-]+-mac-arm64\.zip$"),
-    ("macOS Intel (ZIP)", "darwin-x64",
-     r"^HermesBundled-[^-]+-mac-x64\.zip$"),
     ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
@@ -199,7 +195,7 @@ _COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
 COMMIT_RECEIPT_NAMES = sorted({leg for _label, leg, _pattern in _COMMIT_EXPECTED})
 _COMMIT_JOBS = {
     "win32-x64": "build-win32-x64", "win32-arm64": "build-win32-arm64",
-    "darwin-x64": "build-darwin-x64", "darwin-arm64": "build-darwin-arm64",
+    "darwin-arm64": "build-darwin-arm64",
     "windows-universal": "assemble-win32-bundle", "termux": "termux-deb",
 }
 
@@ -574,17 +570,16 @@ def splice(body: str, block: str) -> str:
 def render_channel_summary(manifest: dict) -> str:
     request = manifest["request"]
     rows = []
-    for platform in ("darwin", "win32"):
-        for arch in ("arm64", "x64"):
-            selected = [row for row in manifest["packages"] if row["platform"] == platform
-                        and row["arch"] == arch and row["variant"] == "bundled"]
-            label = f"{platform} {arch}"
-            if len(selected) != 1:
-                rows.append(f"| {label} | Unavailable | — |")
-                continue
-            item = selected[0]
-            url = r2.public_url_for(request["publicBase"], item["artifact"]["key"])
-            rows.append(f"| {label} | {item['version']} | [Download]({url}) |")
+    for platform, arch in DESKTOP_TARGETS:
+        selected = [row for row in manifest["packages"] if row["platform"] == platform
+                    and row["arch"] == arch and row["variant"] == "bundled"]
+        label = f"{platform} {arch}"
+        if len(selected) != 1:
+            rows.append(f"| {label} | Unavailable | — |")
+            continue
+        item = selected[0]
+        url = r2.public_url_for(request["publicBase"], item["artifact"]["key"])
+        rows.append(f"| {label} | {item['version']} | [Download]({url}) |")
     return (f"## Channel `{request['channel']}` build `{request['buildId']}`\n\n"
             f"Source `{request['commit']}` ({request['sourceVersion']}); sequence {request['sequence']}.\n\n"
             "| Native package | Version | Download |\n|---|---|---|\n" + "\n".join(rows) + "\n")
@@ -618,6 +613,10 @@ def main() -> int:
                         help="Actual workflow run URL for incomplete-build diagnostics")
     parser.add_argument("--r2-base-url", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"),
                         help="Public base URL of the R2 bucket (default: $CLOUDFLARE_R2_PUBLIC_URL)")
+    parser.add_argument("--no-channel-page", action="store_true",
+                        help="Render the attempt page and release table but leave the shared channel "
+                             "downloads page alone (a release that did not build every desktop package "
+                             "the channel serves)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the spliced body instead of editing the release "
                              "(writes nothing, including the channel page)")
@@ -724,13 +723,14 @@ def main() -> int:
         ["gh", "release", "view", args.tag, "--repo", args.repo,
          "--json", "body"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
     )
     if view.returncode != 0:
         print(f"::error::gh release view failed: {view.stderr.strip()}")
         return 1
     release = json.loads(view.stdout)
     body = release.get("body") or ""
-    if not args.pending_run_url and not args.dry_run and not incomplete and names:
+    if not args.pending_run_url and not args.dry_run and not incomplete and names and not args.no_channel_page:
         write_channel_page(args.tag, assets, args.r2_base_url, repo=args.repo, smoke_results=smoke_results)
     if MARKER not in body:
         print("::warning::release body has no HERMES_BUILDS_TABLE marker; leaving it unchanged")
@@ -746,6 +746,7 @@ def main() -> int:
          "--notes-file", "-"],
         input=new_body, capture_output=True, text=True, encoding="utf-8",
         errors="replace",
+        check=False,
     )
     if edit.returncode != 0:
         print(f"::error::gh release edit failed: {edit.stderr.strip()}")

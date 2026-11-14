@@ -34,7 +34,7 @@ class ChronosCronScheduler(CronScheduler):
 
     def __init__(self) -> None:
         # Best-effort job_id -> fire_at cache; a cold process simply re-arms (idempotent).
-        self._armed: Dict[str, str] = {}
+        self._armed: dict[str, str] = {}
         self._lock = threading.Lock()
         self._client = None  # lazily constructed (no network in is_available)
         # Set when NAS answered 403 invalid_client: the Nous token in auth.json is not this
@@ -42,7 +42,7 @@ class ChronosCronScheduler(CronScheduler):
         # the process. Once set, NAS is left alone and the built-in ticker fires jobs (#97494).
         self._identity_rejected = False
         self._stop_event = None
-        self._ticker_kwargs: Dict[str, Any] = {}
+        self._ticker_kwargs: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -89,7 +89,7 @@ class ChronosCronScheduler(CronScheduler):
         if not self._identity_rejected:
             self._reconcile_logged(logger.debug, "on_jobs_changed")
 
-    def register_job(self, job: Dict[str, Any]) -> None:
+    def register_job(self, job: dict[str, Any]) -> None:
         """Arm the first one-shot for a new job; may raise so creation can report it."""
         try:
             self._arm_one_shot(job)
@@ -98,7 +98,7 @@ class ChronosCronScheduler(CronScheduler):
                 raise
             self._note_identity_rejected()  # the job is stored; the ticker fires it
 
-    def _arm_one_shot(self, job: Dict[str, Any]) -> None:
+    def _arm_one_shot(self, job: dict[str, Any]) -> None:
         """Arm one one-shot at next_run_at (agent computes the time; NAS executes).
         dedup_key=(job_id, fire_at) makes re-arming the same fire a no-op."""
         if self._identity_rejected:
@@ -137,7 +137,7 @@ class ChronosCronScheduler(CronScheduler):
             InProcessCronScheduler().start, name="cron-scheduler-chronos-fallback",
             args=(self._stop_event,), kwargs=self._ticker_kwargs).start()
 
-    def _arm_logged(self, job: Dict[str, Any], what: str) -> None:
+    def _arm_logged(self, job: dict[str, Any], what: str) -> None:
         """Best-effort arm: log a warning instead of raising (reconcile/fire must not die)."""
         try:
             self._arm_one_shot(job)
@@ -154,7 +154,7 @@ class ChronosCronScheduler(CronScheduler):
             with self._lock:
                 self._armed.pop(job_id, None)
 
-    def _list_armed(self) -> Dict[str, str]:
+    def _list_armed(self) -> dict[str, str]:
         """Armed one-shots (job_id -> fire_at): in-memory map when warm, else ask NAS ({} on
         failure — reconcile then re-arms idempotently)."""
         with self._lock:
@@ -173,7 +173,7 @@ class ChronosCronScheduler(CronScheduler):
     def reconcile(self) -> None:
         """Converge NAS one-shots toward jobs.json: arm missing/changed, cancel orphans."""
         from cron.jobs import get_job, load_jobs
-        desired: Dict[str, str] = {
+        desired: dict[str, str] = {
             j["id"]: j["next_run_at"] for j in load_jobs()
             if j.get("enabled") and j.get("next_run_at") and j.get("state") != "paused"}
         observed = self._list_armed()

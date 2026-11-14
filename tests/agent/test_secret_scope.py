@@ -186,11 +186,9 @@ class TestRoutedForeignHomeScope:
             # The reader adapters actually call takes the same fail-closed path.
             assert get_scoped_secret("OPENAI_API_KEY") is None
 
-    def test_worker_profile_scope_bind_home_false_e2e(self, monkeypatch, tmp_path):
-        """The kanban spawn-env build binds the assignee's secret scope with
-        ``bind_home=False`` — no home override, because the passthrough POLICY
-        belongs to the dispatcher. The profile_home stamp must still make scoped
-        misses fail closed, or the dispatcher's env leaks into B's worker env."""
+    def test_worker_profile_scope_fails_closed_on_a_scoped_miss_e2e(self, monkeypatch, tmp_path):
+        """The kanban spawn-env build binds the assignee's whole scope. The profile_home stamp
+        must make scoped misses fail closed, or the dispatcher's env leaks into B's worker env."""
         from hermes_cli.kanban_db_dispatch import _worker_profile_scope
 
         foreign = tmp_path / "profiles" / "assignee"
@@ -198,7 +196,7 @@ class TestRoutedForeignHomeScope:
         (foreign / ".env").write_text("ASSIGNEE_KEY=from-assignee\n", encoding="utf-8")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-dispatcher")
 
-        with _worker_profile_scope(str(foreign), bind_home=False):
+        with _worker_profile_scope(str(foreign)):
             assert ss.serves_routed_profile() is True
             assert ss.get_secret("OPENAI_API_KEY") is None
             assert ss.get_secret("ASSIGNEE_KEY") == "from-assignee"
@@ -238,16 +236,15 @@ class TestScopeSetupRecovery:
 
         monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
         with pytest.raises(RuntimeError):
-            with _worker_profile_scope(str(foreign), bind_home=True):
+            with _worker_profile_scope(str(foreign)):
                 pass
         assert get_hermes_home_override() is None
         assert ss.current_secret_scope() is None
 
     def test_model_switch_bind_releases_partial_scopes_on_raise(self, monkeypatch, tmp_path):
-        """The scopes object never reaches the caller when the bind raises, so the
-        bind must release what it already bound (home override + secret scope).
-        Driven through ``server`` — the split module's functions run rebound on
-        server.py's globals (``bind_module``)."""
+        """The token never reaches the caller when the bind raises, so nothing may be left
+        bound (home override + secret scope). Driven through ``server`` — the split module's
+        functions run rebound on server.py's globals (``bind_module``)."""
         from tui_gateway import server
         from hermes_constants import get_hermes_home_override
 
@@ -257,7 +254,7 @@ class TestScopeSetupRecovery:
         def boom(home, env_overlay=None):
             raise RuntimeError("terminal policy unreadable")
 
-        monkeypatch.setattr("tools.terminal_scope.install_profile_terminal_scope", boom)
+        monkeypatch.setattr("tools.terminal_scope.prepare_profile_terminal_scope", boom)
         with pytest.raises(RuntimeError):
             server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
         assert get_hermes_home_override() is None
@@ -422,6 +419,44 @@ class TestEnvFileParsing:
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_build_profile_secret_scope_drops_planted_launch_only_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """#135200: a planted launch-only key in the user-writable ``.env`` must not
+        survive into the mapping. ``get_secret`` consults ``_is_global_env`` first, but
+        direct ``scope.get`` readers (e.g. ``platform_gate_env`` under multiplexing)
+        do not — they would read the planted value as if it were a profile secret."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        (profile / ".env").write_text(
+            "HERMES_MANAGED_DIR=/nonexistent/user-choice\n"
+            "SLACK_ALLOWED_USERS=legit-profile-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
+
+        scope = ss.build_profile_secret_scope(profile)
+
+        assert "HERMES_MANAGED_DIR" not in scope
+        assert scope["SLACK_ALLOWED_USERS"] == "legit-profile-value"  # control: others survive
+
+        # The direct-reader threat: an installed scope must answer `.get` miss for the
+        # planted key instead of the planted value.
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(dict(scope))
+        try:
+            assert ss.current_secret_scope().get("HERMES_MANAGED_DIR") is None
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_build_profile_secret_scope_drops_lowercase_launch_only_entry(self, tmp_path):
+        """Windows env names are case-insensitive, so the filter folds case."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        (profile / ".env").write_text(
+            "hermes_managed_dir=/user/choice\nHermes_Home=/x\nOTHER=1\n", encoding="utf-8")
+        assert ss.build_profile_secret_scope(profile) == {"OTHER": "1"}
 
 
 class TestApiServerListenerGlobals:

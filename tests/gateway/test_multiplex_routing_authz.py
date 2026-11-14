@@ -151,3 +151,57 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
         return unscoped, scoped
 
     assert asyncio.run(_run()) == ("terminal", "deliver")
+
+
+@pytest.mark.parametrize(("launch_policy", "served_policy"), [(False, True), (True, False)])
+def test_raw_api_server_child_notice_follows_the_served_profile_policy(
+    tmp_path, monkeypatch, private_db_probe_cleanup, launch_policy, served_policy,
+):
+    """A served profile's raw api_server session names no profile: the child-process notice policy
+    of the profile whose own store holds the session decides, not the launch profile's."""
+    import queue
+    from typing import cast
+
+    from gateway import run as run_module
+    from hermes_state import SessionDB
+
+    home = tmp_path / "home"
+    served = home / "profiles" / "builder"
+    served.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    policy = "delegation:\n  surface_child_process_notifications: {}\ndisplay:\n  background_process_notifications: all\n"
+    (home / "config.yaml").write_text(policy.format(str(launch_policy).lower()))
+    (served / "config.yaml").write_text(policy.format(str(served_policy).lower()))
+    db = SessionDB(db_path=served / "state.db")
+    db.create_session(session_id="raw-session", source="api_server", profile_name="builder")
+    turns = []
+
+    async def api_turn(**kw):
+        turns.append((kw["session_id"], kw["profile"]))
+
+    evt = {"type": "watch_match", "session_id": "proc_abcd1234", "session_key": "raw-session",
+           "platform": "api_server", "chat_id": "raw-session", "owner_task_id": "sa-child",
+           "pattern": "READY", "command": "build", "output": "READY"}
+
+    async def _run():
+        with run_module._profile_runtime_scope(home), patch.object(
+            run_module, "_multiplex_profile_homes", return_value=[("builder", served)],
+        ):
+            runner = run_module.GatewayRunner(GatewayConfig(multiplex_profiles=True, sessions_dir=home / "sessions"))
+            runner.adapters[Platform.API_SERVER] = cast(BasePlatformAdapter, SimpleNamespace(
+                supports_async_delivery=False, run_internal_session_turn=api_turn))
+            runner._primary_profile_name = "default"
+            runner._profile_adapters = {"builder": {}}
+            completions = queue.Queue()
+            completions.put(evt)
+            try:
+                await runner._drain_watch_notifications(completions)
+            finally:
+                runner.session_store.close_all_db_handles()
+                runner.close_all_session_db_handles()
+
+    try:
+        asyncio.run(_run())
+    finally:
+        db.close()
+    assert turns == ([("raw-session", "builder")] if served_policy else [])

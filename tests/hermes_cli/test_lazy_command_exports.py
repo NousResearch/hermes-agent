@@ -37,6 +37,7 @@ def test_importing_main_does_not_import_command_modules():
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
 

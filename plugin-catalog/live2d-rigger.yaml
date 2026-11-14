@@ -1,15 +1,15 @@
 name: live2d-rigger
 title: Live2D Rigger
 repo: https://github.com/flabanabba8/live2d-rigger
-sha: e784859395f43e2c9550a7cd06c7117d5238158d
+sha: 06a6706453297f1485b79dc75b90ca8705a17dec
 version: 0.6.3
 description: "Create a provisional Live2D character from a brief with complete image parts, local cutout, placement, an experimental Umamo/JDK rig and Core motion review; also inspect and adjust a copy of an existing model. XY head turns, independent limbs and polished eyes are not provided. Disclosure — runs the Java (JDK) and Kotlin/Umamo classpath, the Python with Playwright and the Cubism SDK viewer folder that you set in the plugin settings (the model cannot name a program, classpath or command), plus FFmpeg and a local headless browser against a viewer served only on a temporary loopback port, each with a minimal environment; on first use it scans PATH and the hardware (read-only) and asks which routes to use; opening an existing model copies its folder into the plugin's data directory; on request it downloads official Live2D sample archives from cubism.live2d.com after you agree to Live2D's licence; the host image tool may use its configured provider; no Cubism SDK, Core, viewer, sample model, layers or textures are bundled, and the catalog thumbnail contains character artwork."
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: ">=0.22.3"
-docs_url: https://github.com/flabanabba8/live2d-rigger/blob/e784859395f43e2c9550a7cd06c7117d5238158d/README.md
-image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/e784859395f43e2c9550a7cd06c7117d5238158d/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/live2d-rigger/blob/06a6706453297f1485b79dc75b90ca8705a17dec/README.md
+image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/06a6706453297f1485b79dc75b90ca8705a17dec/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:

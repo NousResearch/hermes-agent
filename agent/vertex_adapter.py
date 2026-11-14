@@ -191,9 +191,28 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Opti
 
 
 def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
-    """OpenAI-compatible Vertex base URL; ``global`` uses the bare host (Gemini 3.x preview is global-only)."""
+    """Native Gemini (``generateContent``) Vertex base URL; ``global`` uses the bare host (Gemini 3.x
+    preview and Gemini 4 are global-only)."""
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
-    return f"https://{host}/v1beta1/projects/{project_id}/locations/{region}/endpoints/openapi"
+    return f"https://{host}/v1beta1/projects/{project_id}/locations/{region}/publishers/google"
+
+
+def vertex_base_url_for_model(base_url: str, model: Optional[str]) -> str:
+    """Keep the native ``…/publishers/google`` base for Gemini (and no model: the default is Gemini);
+    any other Model Garden slug (``meta/…``) gets the OpenAI-compatible ``…/endpoints/openapi``
+    sibling, since the Google publisher path 404s it. Bidirectional: a base already pointing at the
+    wrong sibling (e.g. a config default for one model family, overridden with a model from the
+    other) is swapped back, so a model override always gets a base URL that actually serves it."""
+    from agent.gemini_native_adapter import bare_gemini_model_id
+
+    trimmed = str(base_url or "").strip().rstrip("/")
+    if not model or bare_gemini_model_id(model).lower().startswith("gemini"):
+        if trimmed.lower().endswith("/endpoints/openapi") and "aiplatform.googleapis.com" in trimmed.lower():
+            return trimmed[: -len("/endpoints/openapi")] + "/publishers/google"
+        return trimmed
+    if trimmed.lower().endswith("/publishers/google"):
+        return trimmed[: -len("/publishers/google")] + "/endpoints/openapi"
+    return trimmed
 
 
 def get_vertex_config(

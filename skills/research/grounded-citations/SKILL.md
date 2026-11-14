@@ -19,10 +19,14 @@ Every claim taken from an outside source gets an inline numbered citation and a
 so the numbers and URLs come from retrieval, never from memory — the model only
 ever emits small integers it was handed.
 
-For high-stakes work the same ledger doubles as a fact-checking chain: verbatim
+For high-stakes work the same ledger adds a source-level evidence gate: verbatim
 quotes are attached to each source (rejected unless they literally appear in
 the fetched page text), claims from model knowledge are flagged `[unverified]`,
-and `verify --evidence` fails any draft whose cited sources carry no evidence.
+and `verify --evidence` fails any draft whose cited sources carry no evidence
+quote. The gate checks presence per source, not fit: it never tests whether a
+given quote supports a given sentence, so claim-to-quote fit still needs manual
+review. Do not present a passing `--evidence` run as proof that each claim is
+supported.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
 slides), and research reports. It does not cover academic BibTeX pipelines —

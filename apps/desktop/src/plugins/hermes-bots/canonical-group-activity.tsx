@@ -37,7 +37,8 @@ const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
   statuses.get(member.member_id) ?? { kind: 'idle' }
 
-export function CanonicalGroupRoster({ members = [], label, labels, statuses, peerBadges }: {
+export function CanonicalGroupRoster({ connectionId, members = [], label, labels, peerBadges, statuses }: {
+  connectionId?: null | string
   members?: CanonicalRoomMember[]; label: string; labels: RoomStatusLabels & { lead: string }; statuses: Map<string, MemberStatus>
   peerBadges?: ReadonlyMap<string, string | undefined>
 }) {
@@ -47,7 +48,7 @@ export function CanonicalGroupRoster({ members = [], label, labels, statuses, pe
     {members.map(member => {
       const status = statusOf(statuses, member)
 
-      return <MemberStatusChip avatar={<RoomBotAvatar name={avatarName(member)} size={18} />}
+      return <MemberStatusChip avatar={<RoomBotAvatar connectionId={connectionId} name={avatarName(member)} size={18} />}
         badge={[(member as { lead?: unknown }).lead && labels.lead, peerBadges?.get(member.member_id)].filter(Boolean).join(' · ') || undefined} key={member.member_id}
         labels={labels} name={canonicalMemberName(member)} phase={PHASE[status.kind] ?? 'idle'} status={status} />
     })}
@@ -55,14 +56,15 @@ export function CanonicalGroupRoster({ members = [], label, labels, statuses, pe
 }
 
 /** A typing-style row per working member at the end of the transcript. */
-export function CanonicalGroupTyping({ members = [], labels, statuses }: {
+export function CanonicalGroupTyping({ connectionId, members = [], labels, statuses }: {
+  connectionId?: null | string
   members?: CanonicalRoomMember[]; labels: RoomStatusLabels; statuses: Map<string, MemberStatus>
 }) {
   return <>{members.map(member => {
     const status = statusOf(statuses, member)
 
     return isBusyStatus(status)
-      ? <RoomTypingRow avatar={<RoomBotAvatar name={avatarName(member)} size={ROOM_AVATAR_SIZE} />} key={member.member_id} labels={labels}
+      ? <RoomTypingRow avatar={<RoomBotAvatar connectionId={connectionId} name={avatarName(member)} size={ROOM_AVATAR_SIZE} />} key={member.member_id} labels={labels}
         name={canonicalMemberName(member)} status={status} />
       : null
   })}</>

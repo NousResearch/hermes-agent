@@ -637,7 +637,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))
-  const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
+  const avatarFor = (name: string, size: number) => <RoomBotAvatar connectionId={binding.connectionId} name={name} size={size} />
 
   // The Bots list row reads this room's live state while it is open, and forgets it once it closes.
   useEffect(() => holdCanonicalRoomLive(binding), [binding])
@@ -677,7 +677,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-        canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
+        canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} connectionId={binding.connectionId} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
         onChanged={() => void refreshAfterChange().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
@@ -689,7 +689,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
           <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
             pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }} />
-          <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
+          <CanonicalGroupTyping connectionId={binding.connectionId} labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)
             const name = member ? canonicalMemberName(member) : action.member_id

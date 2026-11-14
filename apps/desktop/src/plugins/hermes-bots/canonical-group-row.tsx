@@ -95,7 +95,7 @@ export function CanonicalGroupRow({ active, onOpen, room }: CanonicalGroupRowPro
                   <AvatarStack
                     avatars={room.members.map(member => ({
                       key: member.member_id,
-                      node: <RoomBotAvatar name={member.profile || member.handle} size={14} />
+                      node: <RoomBotAvatar connectionId={room.binding.connectionId} name={member.profile || member.handle} size={14} />
                     }))}
                     max={4}
                   />

@@ -1,0 +1,40 @@
+name: universal-plugin-port
+repo: https://github.com/friendly-neighborhood-coding-man/hermes-universal-plugin-port
+sha: e8999dbbb7c23b7ef1e447db9b5803c54c498a35
+description: >-
+  Inspect user-selected Claude Code/Cowork, Codex, and OpenClaw plugin sources;
+  disclose unsupported capabilities; and stage Hermes-compatible packages while
+  preserving original source files. Verified deterministic mappings are applied
+  before an approval-gated, single-edit model candidate path. Fetching or
+  installing requires an explicit user action. The /universal-port URL command
+  can make model calls; its install <run_id> --confirm route copies a portable-only
+  package into the active Hermes profile without enabling it and refuses overwrite.
+  OpenClaw foreign JavaScript inspection is separately opt-in and NOT sandboxed.
+  The optional bounded arXiv GET is disabled by default and requires fresh approval.
+  No credential storage, telemetry, or self-update. v0.7.0 adds a Migration Doctor for
+  Skills imported by the official agent-importers: it finds what Hermes cannot resolve,
+  proposes only deterministic repairs, applies the exact approved candidate in a disposable
+  home with backup and rollback, and re-verifies in a fresh Hermes process.
+maintainer: friendly-neighborhood-coding-man
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/friendly-neighborhood-coding-man/hermes-universal-plugin-port#readme
+version: "0.7.0"
+readme: true
+platforms: []
+known_issues:
+  - "The v0.7.0 Migration Doctor applies one deterministic rule (RES-LOCAL-1) and targets disposable Hermes homes only."
+  - "Pilot is SKILLS_ONLY_PARTIAL: MCP/OAuth connectors, hooks and other source-host features are not ported."
+  - "Cross-host semantic equivalence is NOT_ESTABLISHED; one Anthropic product-management package has a verified Hermes workflow."
+  - "Experimental Safebox is not a sandbox, has known bypasses, and is not registered in the release."
+  - "Plugin ctx.llm max_tokens is not enforced on the tested native Anthropic route in Hermes v0.22.7 (upstream issue #153099)."
+capabilities:
+  provides_tools:
+    - port_probe
+    - port_fetch
+    - port_stage
+    - uvp_route
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

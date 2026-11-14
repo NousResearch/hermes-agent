@@ -123,3 +123,17 @@ def test_repeated_heredoc_lines_stay_linear(home):
     started = time.monotonic()
     assert detect_dangerous_command(command)[0] is True
     assert time.monotonic() - started < 6
+
+
+@pytest.mark.parametrize("template", (
+    "echo wiped > {h}/vault/vault.key",
+    "cp /dev/null {h}/vault/vault.json.enc",
+    "echo revoked | tee {h}/mcp-tokens/fixture.json",
+))
+def test_credential_tree_overwrites_prompt(home, template):
+    # The file tools deny writes anywhere inside these protected credential trees;
+    # an equivalent terminal overwrite must not silently bypass approval.
+    command = template.format(h=home)
+    dangerous, key, _ = detect_dangerous_command(command)
+    assert dangerous is True, command
+    assert key is not None

@@ -19,10 +19,14 @@ _HERMES_STORE_FILE = (
         re.escape(sub) + (r'(?:-wal|-shm|-journal)?' if sub.endswith('.db') else r'(?:/[^\s"\'`;|&<>()]*)?')
         for sub in HERMES_PROTECTED_SUBPATHS) + r')' + _PATH_WORD_END
 )
-# The store itself, for the overwrite rules: a new file written into sessions/ (`> sessions/x`) stays clean.
+# Overwrites inside credential directories must prompt (vault.key, MCP OAuth tokens, browser cookies).
+# New session transcript files stay clean, as before; only the sessions/ root is an overwrite target.
 _HERMES_STORE_ROOT = (
     _HERMES_HOME_ROOT + r'/(?:' + '|'.join(
-        re.escape(sub) + (r'(?:-wal|-shm|-journal)?' if sub.endswith('.db') else r'/?')
+        re.escape(sub) + (
+            r'(?:-wal|-shm|-journal)?' if sub.endswith('.db')
+            else r'/?' if sub == 'sessions' else r'(?:/[^\s"\'`;|&<>()]*)?'
+        )
         for sub in HERMES_PROTECTED_SUBPATHS) + r')' + _PATH_WORD_END
 )
 _HERMES_HOME_BARE = rf'{_HERMES_HOME_ROOT}/?\*?{_PATH_WORD_END}'

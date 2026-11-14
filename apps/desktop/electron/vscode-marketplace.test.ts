@@ -112,6 +112,13 @@ test('extractThemes skips a decompression-bomb theme entry instead of inflating 
   assert.strictEqual(themes.length, 0) // bomb entry skipped, not inflated
 })
 
+test('extractThemes refuses a decompression-bomb package manifest', () => {
+  // package.json is always inflated first, so it needs the same per-entry cap.
+  const zip = makeZip([{ name: 'extension/package.json', data: Buffer.alloc(17 * 1024 * 1024, 0x20), method: 8 }])
+
+  assert.throws(() => extractThemes(zip), { code: 'ERR_BUFFER_TOO_LARGE' })
+})
+
 test('extractThemes skips an oversized stored theme entry instead of decoding it', () => {
   // A stored (uncompressed) theme entry larger than MAX_ENTRY_BYTES (16 MB)
   // must be rejected by the length check before it is decoded to a string —
@@ -172,8 +179,7 @@ test('extractThemes bounds the number of contributed themes processed', () => {
   ])
 
   const themes = extractThemes(zip)
-  assert.ok(themes.length > 0)
-  assert.ok(themes.length <= 64, `processed ${themes.length} themes`)
+  assert.strictEqual(themes.length, 64)
 })
 
 test('extractThemes bounds the total inflated bytes across theme entries', () => {
@@ -195,6 +201,29 @@ test('extractThemes bounds the total inflated bytes across theme entries', () =>
 
   const total = extractThemes(zip).reduce((sum, theme) => sum + theme.contents.length, 0)
   assert.ok(total <= 64 * 1024 * 1024, `inflated ${total} bytes`)
+})
+
+test('extractThemes charges the manifest against the total extraction budget', () => {
+  // A 15 MB manifest (whitespace-padded JSON) plus four 15 MB theme listings
+  // would total 75 MB if the manifest weren't counted against the 64 MB budget.
+  const big = Buffer.alloc(15 * 1024 * 1024, 0x41)
+
+  const manifest = JSON.stringify({
+    name: 'fat-manifest',
+    contributes: {
+      themes: Array.from({ length: 5 }, (_, i) => ({ label: `F${i}`, uiTheme: 'vs-dark', path: './themes/big.json' }))
+    }
+  })
+
+  const pkg = Buffer.concat([Buffer.from(manifest, 'utf8'), Buffer.alloc(15 * 1024 * 1024, 0x20)])
+
+  const zip = makeZip([
+    { name: 'extension/package.json', data: pkg, method: 8 },
+    { name: 'extension/themes/big.json', data: big, method: 8 }
+  ])
+
+  const themed = extractThemes(zip).reduce((sum, theme) => sum + theme.contents.length, 0)
+  assert.ok(pkg.length + themed <= 64 * 1024 * 1024, `extracted ${pkg.length + themed} bytes`)
 })
 
 test('extractThemes stops re-inflating a bomb listed many times', () => {

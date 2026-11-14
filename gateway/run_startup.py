@@ -22,7 +22,10 @@ from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id, prime_revived_egress
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.relay.obligation_replay import relay_obligation_adapter, resolve_obligation_adapter, send_relay_obligation
+from gateway.relay.obligation_replay import (
+    record_delivered, relay_fronted_platforms, relay_obligation_adapter, relay_refused_before_sending,
+    resolve_obligation_adapter, send_relay_obligation,
+)
 from gateway.session import SessionSource, build_session_key
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
@@ -386,7 +389,8 @@ class GatewayStartupMixin:
             _profile_adapters = getattr(self, "_profile_adapters", None) or {}
             _pval = lambda p: getattr(p, "value", str(p))
             _deliverable_targets: set[tuple[str, str | None]] = {(_pval(p), "default") for p in self.adapters}
-            _relay_targets = {str(p.value) for p in Platform if relay_obligation_adapter(self, p) is not None}
+            _relay_targets = {str(p.value) for p in relay_fronted_platforms(self.adapters.get(Platform.RELAY))
+                              if relay_obligation_adapter(self, p) is not None}
             _deliverable_targets.update((p, "default") for p in _relay_targets)
             # Legacy rows (no adapter_profile) are unambiguous only without multiplexing; else fail closed.
             if not _profile_adapters:
@@ -483,7 +487,7 @@ class GatewayStartupMixin:
         # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
         # not due yet, and those still need their timer armed below.
         try:
-            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
+            from gateway.delivery_ledger import RECOVERED_MARKER, mark_failed
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
@@ -511,17 +515,19 @@ class GatewayStartupMixin:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
+                error = str(getattr(result, "error", "") or "send failed")
                 if result is not None and getattr(result, "success", False):
-                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
+                    await record_delivered(row["obligation_id"])
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s (obligation %s, attempt %d)",
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
+                elif relay_refused_before_sending(adapter, row, error):
+                    await self._release_runtime_claim_quiet(
+                        row["obligation_id"], "failed to refund unsent relay obligation %s", error=error)
                 else:
-                    await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
-                    )
+                    await asyncio.to_thread(mark_failed, row["obligation_id"], error)
         # Whatever is still waiting on a flood penalty or a retry backoff (adopted at boot, skipped as not
         # yet due, refused again just now) gets a timer, so no rejected reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):

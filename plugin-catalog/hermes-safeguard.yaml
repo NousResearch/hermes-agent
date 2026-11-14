@@ -1,0 +1,29 @@
+name: hermes-safeguard
+title: Hermes SafeGuard
+repo: https://github.com/robberdom/hermes-safeguard
+sha: 0fb8d328d9ea3e3f8800d47c1370a651d68cc628
+version: "0.1.0"
+description: "Deterministic security middleware, EVM simulation guard, and prompt injection defense for on-chain agent actions."
+maintainer: robberdom
+tier: community
+category: tools
+docs_url: https://github.com/robberdom/hermes-safeguard
+requires_hermes: ">=0.22.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - safeguard_check_policy
+    - safeguard_execute_tx
+    - mint_nft
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - SAFEGUARD_RPC_URL
+    - SAFEGUARD_THREAT_POLL_INTERVAL
+    - TELEGRAM_BOT_TOKEN
+    - SAFEGUARD_PASSPHRASE
+    - PECKSHIELD_API_URL
+    - SCAMSNIFFER_API_URL
+    - SLOWMIST_API_URL

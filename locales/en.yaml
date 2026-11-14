@@ -1029,6 +1029,17 @@ platform:
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
   shared:
+    # browser_vault one-time-code card (Discord, Slack): modal title / input label ≤ 45 chars (Slack modal title ≤ 24), button ≤ 75.
+    vault_code:
+      title: "🔐 Verification code for {site}"
+      body: "{site} is asking for a one-time code (text message or email). Press the button and type it in the form that opens: it goes straight into the page and is never posted here."
+      button: "Enter code"
+      modal_title: "Code for {site}"
+      input_label: "One-time code"
+      submitted: "Code submitted; entering it into the page."
+      ended: "This code request has ended; nothing was entered."
+      not_author: "Only the person who started this request can enter the code."
+      submitted_footer: "✓ Code submitted"
     response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
@@ -1093,17 +1104,6 @@ platform:
       clarify_already_answered: "This prompt has already been answered~"
       answered_by: "Answered by {user}: {choice}"
       awaiting_typed: "Awaiting typed response from {user}…"
-    # browser_vault one-time-code card: modal title / input label ≤ 45 chars, button ≤ 80.
-    vault_code:
-      title: "🔐 Verification code for {site}"
-      body: "{site} is asking for a one-time code (text message or email). Press the button and type it in the form that opens: it goes straight into the page and is never posted here."
-      button: "Enter code"
-      modal_title: "Code for {site}"
-      input_label: "One-time code"
-      submitted: "Code submitted; entering it into the page."
-      ended: "This code request has ended; nothing was entered."
-      not_author: "Only the person who started this request can enter the code."
-      submitted_footer: "✓ Code submitted"
     # Model / choice pickers (select placeholders ≤ 150, option label/description ≤ 100).
     picker:
       title: "⚙ Model Configuration"

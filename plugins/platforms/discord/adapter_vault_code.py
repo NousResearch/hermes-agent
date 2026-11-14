@@ -31,7 +31,7 @@ def build_vault_code_view(discord, base):
             self.site = site
             self.user_id = str(user_id)
             self._submit = submit
-            self._localize_buttons(enter_code="platform.discord.vault_code.button")
+            self._localize_buttons(enter_code="platform.shared.vault_code.button")
 
         def _check_auth(self, interaction) -> bool:
             if not super()._check_auth(interaction):
@@ -43,11 +43,11 @@ def build_vault_code_view(discord, base):
 
             class VaultCodeModal(discord.ui.Modal):
                 def __init__(self):
-                    super().__init__(title=_t_discord("platform.discord.vault_code.modal_title", _MODAL_TEXT_LIMIT,
+                    super().__init__(title=_t_discord("platform.shared.vault_code.modal_title", _MODAL_TEXT_LIMIT,
                                                       site=view.site), timeout=view.timeout)
                     self.code = discord.ui.TextInput(min_length=1, max_length=32)
                     self.add_item(discord.ui.Label(
-                        text=_t_discord("platform.discord.vault_code.input_label", _MODAL_TEXT_LIMIT),
+                        text=_t_discord("platform.shared.vault_code.input_label", _MODAL_TEXT_LIMIT),
                         component=self.code))
 
                 async def on_submit(self, interaction):
@@ -56,8 +56,8 @@ def build_vault_code_view(discord, base):
             return VaultCodeModal()
 
         async def submit_code(self, interaction, code: str) -> None:
-            if not await self._gate(interaction, resolved_msg=_t_discord("platform.discord.vault_code.ended", 2000),
-                                    unauth_msg=_t_discord("platform.discord.vault_code.not_author", 2000)):
+            if not await self._gate(interaction, resolved_msg=_t_discord("platform.shared.vault_code.ended", 2000),
+                                    unauth_msg=_t_discord("platform.shared.vault_code.not_author", 2000)):
                 return
             code = code.strip()
             if not code:
@@ -68,16 +68,16 @@ def build_vault_code_view(discord, base):
             self.resolved = True
             self._disable_all()
             self.stop()
-            notice = "platform.discord.vault_code.submitted" if accepted else "platform.discord.vault_code.ended"
+            notice = "platform.shared.vault_code.submitted" if accepted else "platform.shared.vault_code.ended"
             await interaction.response.send_message(_t_discord(notice, 2000), ephemeral=True)
-            footer = ("platform.discord.vault_code.submitted_footer" if accepted
+            footer = ("platform.shared.vault_code.submitted_footer" if accepted
                       else "platform.discord.prompt.expired_footer")
             await self._expire_embed(_t_discord(footer, 2048))
 
         @discord.ui.button(label="Enter code", style=discord.ButtonStyle.blurple)
         async def enter_code(self, interaction, button):
-            if not await self._gate(interaction, resolved_msg=_t_discord("platform.discord.vault_code.ended", 2000),
-                                    unauth_msg=_t_discord("platform.discord.vault_code.not_author", 2000)):
+            if not await self._gate(interaction, resolved_msg=_t_discord("platform.shared.vault_code.ended", 2000),
+                                    unauth_msg=_t_discord("platform.shared.vault_code.not_author", 2000)):
                 return
             await interaction.response.send_modal(self.build_modal())
 
@@ -99,11 +99,11 @@ class DiscordVaultCodeMixin:
                              allowed_role_ids=self._allowed_role_ids, timeout=timeout_s)
 
         def _build(_channel):
-            content = _t_discord("platform.discord.vault_code.body", 1500, site=site)
+            content = _t_discord("platform.shared.vault_code.body", 1500, site=site)
             if hint:
                 content += "\n" + hint[:_HINT_LIMIT]
             embed = discord.Embed(
-                title=_t_discord("platform.discord.vault_code.title", _DISCORD_EMBED_TITLE_LIMIT, site=site),
+                title=_t_discord("platform.shared.vault_code.title", _DISCORD_EMBED_TITLE_LIMIT, site=site),
                 color=discord.Color.gold())
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="vault code prompt")

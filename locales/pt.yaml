@@ -985,6 +985,16 @@ platform:
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
   shared:
+    vault_code:
+      title: "🔐 Código de verificação para {site}"
+      body: "{site} está pedindo um código de uso único (SMS ou e-mail). Toque no botão e digite-o no formulário que abrir: ele vai direto para a página e nunca é publicado aqui."
+      button: "Inserir código"
+      modal_title: "Código para {site}"
+      input_label: "Código de uso único"
+      submitted: "Código enviado; inserindo na página."
+      ended: "Este pedido de código terminou; nada foi inserido."
+      not_author: "Só quem iniciou este pedido pode inserir o código."
+      submitted_footer: "✓ Código enviado"
     response_as_file: "📎 Resposta longa: o texto completo está em anexo."
     truncated_suffix: "\n...(truncado)"
     unknown: "desconhecido"
@@ -1046,16 +1056,6 @@ platform:
       clarify_already_answered: "Este prompt já foi respondido~"
       answered_by: "Respondido por {user}: {choice}"
       awaiting_typed: "Aguardando resposta digitada de {user}…"
-    vault_code:
-      title: "🔐 Código de verificação para {site}"
-      body: "{site} está pedindo um código de uso único (SMS ou e-mail). Toque no botão e digite-o no formulário que abrir: ele vai direto para a página e nunca é publicado aqui."
-      button: "Inserir código"
-      modal_title: "Código para {site}"
-      input_label: "Código de uso único"
-      submitted: "Código enviado; inserindo na página."
-      ended: "Este pedido de código terminou; nada foi inserido."
-      not_author: "Só quem iniciou este pedido pode inserir o código."
-      submitted_footer: "✓ Código enviado"
     picker:
       title: "⚙ Configuração do modelo"
       select_provider: "Modelo atual: `{model}`\nFornecedor: {provider}\n\nSelecione um fornecedor:"

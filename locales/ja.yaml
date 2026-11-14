@@ -985,6 +985,16 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    vault_code:
+      title: "🔐 {site} の確認コード"
+      body: "{site} がワンタイムコード（SMS またはメール）を求めています。ボタンを押して、開いたフォームに入力してください。コードはページに直接入力され、ここには投稿されません。"
+      button: "コードを入力"
+      modal_title: "{site} のコード"
+      input_label: "ワンタイムコード"
+      submitted: "コードを送信しました。ページに入力しています。"
+      ended: "このコードのリクエストは終了しました。何も入力されていません。"
+      not_author: "このリクエストを開始した人だけがコードを入力できます。"
+      submitted_footer: "✓ コードを送信しました"
     response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
@@ -1046,16 +1056,6 @@ platform:
       clarify_already_answered: "このプロンプトはすでに回答済みです~"
       answered_by: "{user} の回答: {choice}"
       awaiting_typed: "{user} の入力を待っています…"
-    vault_code:
-      title: "🔐 {site} の確認コード"
-      body: "{site} がワンタイムコード（SMS またはメール）を求めています。ボタンを押して、開いたフォームに入力してください。コードはページに直接入力され、ここには投稿されません。"
-      button: "コードを入力"
-      modal_title: "{site} のコード"
-      input_label: "ワンタイムコード"
-      submitted: "コードを送信しました。ページに入力しています。"
-      ended: "このコードのリクエストは終了しました。何も入力されていません。"
-      not_author: "このリクエストを開始した人だけがコードを入力できます。"
-      submitted_footer: "✓ コードを送信しました"
     picker:
       title: "⚙ モデル設定"
       select_provider: "現在のモデル: `{model}`\nプロバイダー: {provider}\n\nプロバイダーを選択してください:"

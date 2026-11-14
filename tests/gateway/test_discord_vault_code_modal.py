@@ -197,7 +197,7 @@ def test_unanswered_card_times_out_and_a_late_submit_enters_nothing(loop, monkey
     _run(loop, view.submit_code(late, CODE))
     assert out["code"] == ""
     # The author is told the request ended, not that a code is being entered.
-    assert late.response.send_message.call_args.args[0] == _t_discord("platform.discord.vault_code.ended", 2000)
+    assert late.response.send_message.call_args.args[0] == _t_discord("platform.shared.vault_code.ended", 2000)
     assert CODE not in repr(late.response.send_message.call_args)
     release.set()
     thread.join(10)

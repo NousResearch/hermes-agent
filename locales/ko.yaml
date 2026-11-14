@@ -985,6 +985,16 @@ platform:
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
   shared:
+    vault_code:
+      title: "🔐 {site} 인증 코드"
+      body: "{site}에서 일회용 코드(문자 또는 이메일)를 요청하고 있어요. 버튼을 눌러 열리는 양식에 입력하세요. 코드는 페이지에 바로 입력되고 여기에는 절대 게시되지 않아요."
+      button: "코드 입력"
+      modal_title: "{site} 코드"
+      input_label: "일회용 코드"
+      submitted: "코드를 제출했어요. 페이지에 입력하는 중이에요."
+      ended: "이 코드 요청은 끝났어요. 아무것도 입력되지 않았어요."
+      not_author: "이 요청을 시작한 사람만 코드를 입력할 수 있어요."
+      submitted_footer: "✓ 코드 제출됨"
     response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
@@ -1046,16 +1056,6 @@ platform:
       clarify_already_answered: "이 프롬프트는 이미 답변되었어요~"
       answered_by: "{user}의 답변: {choice}"
       awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
-    vault_code:
-      title: "🔐 {site} 인증 코드"
-      body: "{site}에서 일회용 코드(문자 또는 이메일)를 요청하고 있어요. 버튼을 눌러 열리는 양식에 입력하세요. 코드는 페이지에 바로 입력되고 여기에는 절대 게시되지 않아요."
-      button: "코드 입력"
-      modal_title: "{site} 코드"
-      input_label: "일회용 코드"
-      submitted: "코드를 제출했어요. 페이지에 입력하는 중이에요."
-      ended: "이 코드 요청은 끝났어요. 아무것도 입력되지 않았어요."
-      not_author: "이 요청을 시작한 사람만 코드를 입력할 수 있어요."
-      submitted_footer: "✓ 코드 제출됨"
     picker:
       title: "⚙ 모델 설정"
       select_provider: "현재 모델: `{model}`\n제공자: {provider}\n\n제공자를 선택하세요:"

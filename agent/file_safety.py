@@ -297,6 +297,18 @@ HOME_CREDENTIAL_FILES = (".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credent
 HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
 
 
+def resolved_home_credential_stores() -> tuple[set[str], list[str]]:
+    """``(files, dirs)``: the home credential stores (HOME_CREDENTIAL_FILES / _DIRS) of every guard
+    home, realpath'd, so a caller can refuse a path whose resolved form lands in one even when a
+    symlink gave the store an innocuous name (``~/.ssh -> ~/keys``)."""
+    files: set[str] = set()
+    dirs: list[str] = []
+    for home in _guard_homes():
+        files.update(os.path.realpath(os.path.join(home, name)) for name in HOME_CREDENTIAL_FILES)
+        dirs.extend(os.path.realpath(os.path.join(home, *d.split("/"))) for d in HOME_CREDENTIAL_DIRS)
+    return files, dirs
+
+
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
     paths = [

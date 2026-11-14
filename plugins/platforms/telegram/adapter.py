@@ -5103,7 +5103,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             asyncio.get_running_loop().time() + max(0.0, budget))
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
+        """Send typing indicator.
+
+        ``typing_indicator: false`` is checked here, at the one ``sendChatAction`` call: the turn's
+        progress, proxy and follow-up paths call this directly, not through ``_keep_typing`` (#40885)."""
+        if not getattr(getattr(self, "config", None), "typing_indicator", True):
+            return
         if not self._bot or not typing_may_fire(self, chat_id):
             return
         _is_dm_topic: bool = False

@@ -1551,6 +1551,24 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+## Typing Indicator
+
+While a turn runs, the bot shows "typing…" by calling `sendChatAction` every few seconds. Some
+Telegram clients move the view while that indicator is on, so your last message can appear to
+jump up the chat until the reply arrives ([#40885](https://github.com/NousResearch/hermes-agent/issues/40885)).
+To turn the indicator off for Telegram:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        typing_indicator: false   # default true
+```
+
+With it off, the bot makes no `sendChatAction` calls at all. Replies, progress messages and
+reactions still work as before.
+
 ## Per-Channel Prompts
 
 Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.

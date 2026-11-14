@@ -1319,3 +1319,142 @@ async def test_oversized_cron_output_is_sent_as_successive_markdown_replies():
     adapter._send_request.assert_not_awaited()
     # Each chunk is its own queued send, so each draws a token from the 30 msgs/min bucket.
     assert adapter._get_token_usage("group-1")["normal"] == len(sent)
+
+
+class TestWeComInboundVideoVoice:
+    """Inbound msgtype=video / voice callbacks must extract, decrypt and cache the media
+    instead of hitting the adapter's empty-message drop path."""
+
+    @staticmethod
+    def _encrypt(raw: bytes, key: bytes) -> bytes:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        pad = 16 - len(raw) % 16
+        enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        return enc.update(raw + bytes([pad]) * pad) + enc.finalize()
+
+    @staticmethod
+    def _adapter():
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        adapter = WeComAdapter.__new__(WeComAdapter)
+        return adapter
+
+    def test_detect_av_mime_magic_bytes(self):
+        from plugins.platforms.wecom.media import WeComMediaMixin
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16
+        assert WeComMediaMixin._detect_av_mime(mp4) == ("video/mp4", ".mp4")
+        assert WeComMediaMixin._detect_av_mime(b"#!AMR\n" + b"\x00" * 8) == ("audio/amr", ".amr")
+        assert WeComMediaMixin._detect_av_mime(b"OggS" + b"\x00" * 20) == ("audio/ogg", ".ogg")
+        assert WeComMediaMixin._detect_av_mime(b"RIFF\x00\x00\x00\x00WAVEfmt ") == ("audio/wav", ".wav")
+        assert WeComMediaMixin._detect_av_mime(b"\x1aE\xdf\xa3" + b"\x00" * 8) == ("video/webm", ".webm")
+        assert WeComMediaMixin._detect_av_mime(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16) is None
+        assert WeComMediaMixin._detect_av_mime(b"") is None
+
+    def test_extract_media_video_body_downloads_decrypts_caches(self, monkeypatch):
+        """msgtype=video with url+aeskey → decrypted bytes cached as a document with a video MIME."""
+        import os as _os
+        from urllib.parse import quote
+        from plugins.platforms.wecom import media as wecom_media
+        adapter = self._adapter()
+        key = _os.urandom(32)
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16
+        stored = {}
+
+        async def _download(url, max_bytes):
+            return self._encrypt(mp4, key), {"content-type": "application/octet-stream"}
+
+        async def _cache_doc(raw, filename):
+            stored["raw"] = raw
+            stored["filename"] = filename
+            return "/tmp/cached_video.mp4"
+
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        monkeypatch.setattr(wecom_media, "cache_document_from_bytes_async", _cache_doc)
+        paths, types = asyncio.run(adapter._extract_media({
+            "msgtype": "video",
+            "video": {"url": "https://wwcdn.weixin.qq.com/v?x=1", "aeskey": quote(base64.b64encode(key).decode().rstrip("="), safe="")},
+        }))
+        assert paths == ["/tmp/cached_video.mp4"]
+        assert types == ["video/mp4"]
+        assert stored["raw"] == mp4
+        assert stored["filename"].endswith(".mp4")
+
+    def test_extract_media_voice_body_amr(self, monkeypatch):
+        from urllib.parse import quote
+        import os as _os
+        from plugins.platforms.wecom import media as wecom_media
+        adapter = self._adapter()
+        key = _os.urandom(32)
+        amr = b"#!AMR\n" + b"\x00" * 26
+        async def _download(url, max_bytes):
+            return self._encrypt(amr, key), {"content-type": "application/octet-stream"}
+        async def _cache_doc(raw, filename):
+            return "/tmp/cached_voice.amr"
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        monkeypatch.setattr(wecom_media, "cache_document_from_bytes_async", _cache_doc)
+        paths, types = asyncio.run(adapter._extract_media({
+            "msgtype": "voice",
+            "voice": {"url": "https://cdn/v", "aeskey": quote(base64.b64encode(key).decode().rstrip("="), safe="")},
+        }))
+        assert paths == ["/tmp/cached_voice.amr"]
+        assert types == ["audio/amr"]
+
+    def test_extract_media_quoted_video(self, monkeypatch):
+        adapter = self._adapter()
+        async def _download(url, max_bytes):
+            return b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16, {"content-type": "video/mp4"}
+        async def _cache_doc(raw, filename):
+            return "/tmp/q.mp4"
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        from plugins.platforms.wecom import media as wecom_media
+        monkeypatch.setattr(wecom_media, "cache_document_from_bytes_async", _cache_doc)
+        paths, types = asyncio.run(adapter._extract_media({
+            "msgtype": "text", "text": {"content": "look at this"},
+            "quote": {"msgtype": "video", "video": {"url": "https://cdn/v.mp4"}},
+        }))
+        assert paths == ["/tmp/q.mp4"] and types == ["video/mp4"]
+
+    def test_derive_message_type_video_and_voice(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.platforms.event import MessageType
+        assert WeComAdapter._derive_message_type({"msgtype": "video"}, "", ["video/mp4"]) == MessageType.VIDEO
+        assert WeComAdapter._derive_message_type({"msgtype": "video"}, "caption", ["video/mp4"]) == MessageType.TEXT
+        assert WeComAdapter._derive_message_type({"msgtype": "voice"}, "", ["audio/amr"]) == MessageType.VOICE
+        assert WeComAdapter._derive_message_type({"msgtype": "text"}, "hi", []) == MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_on_message_video_payload_not_dropped(self, monkeypatch):
+        """Full _on_message path: a video callback dispatches an event with the cached media
+        instead of being skipped as an empty message."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom import media as wecom_media
+        from gateway.platforms.event import MessageType
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={
+            "dm_policy": "open", "attachment_text_merge_delay_seconds": 0}))
+        adapter._is_dm_intake_allowed = lambda sender_id: True
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16
+        async def _download(url, max_bytes):
+            return mp4, {"content-type": "application/octet-stream"}
+        async def _cache_doc(raw, filename):
+            return "/tmp/inbound_video.mp4"
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        monkeypatch.setattr(wecom_media, "cache_document_from_bytes_async", _cache_doc)
+
+        await adapter._on_message({
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-vid-1"},
+            "body": {
+                "msgid": "vid-1",
+                "from": {"userid": "user-1"},
+                "msgtype": "video",
+                "video": {"url": "https://cdn/vid.mp4"},
+            },
+        })
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == ["/tmp/inbound_video.mp4"]
+        assert event.media_types == ["video/mp4"]
+        assert event.message_type == MessageType.VIDEO

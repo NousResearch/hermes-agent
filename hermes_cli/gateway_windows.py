@@ -1,8 +1,9 @@
 """Windows gateway service backend (Scheduled Task + Startup-folder fallback).
 
-Mirrors the ``launchd_*`` / ``systemd_*`` contract. ``schtasks /Create ... /RL LIMITED`` runs at the
-CURRENT USER's next logon without elevation. Manual starts and ``install --start-now`` use the direct
-hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior is consistent.
+Mirrors the ``launchd_*`` / ``systemd_*`` contract. ``schtasks /Create /XML`` (an InteractiveToken +
+LeastPrivilege principal) runs at the CURRENT USER's next logon without elevation. Manual starts and
+``install --start-now`` use the direct hidden-console launcher instead of ``schtasks /Run`` so
+start/restart behavior is consistent.
 """
 
 from __future__ import annotations

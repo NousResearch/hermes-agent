@@ -26,6 +26,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_worker_outcomes import exit_code_kind as _exit_code_kind
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 from hermes_cli._startup_fast import project_root_str
 
@@ -139,6 +140,7 @@ class DispatchResult:
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    provider_unavailable: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -169,8 +171,9 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             continue
         for _task_id, reason in res.respawn_guarded:
             counts[reason] = counts.get(reason, 0) + 1
-        if res.rate_limited:
-            counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        for kind in ("rate_limited", "provider_unavailable"):
+            if tasks := getattr(res, kind):
+                counts[kind] = counts.get(kind, 0) + len(tasks)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -242,17 +245,6 @@ def _classify_worker_exit(pid: int) -> tuple[str, Optional[int]]:
     if signal_number != 0x7F:
         return ("signaled", signal_number)
     return ("unknown", None)
-
-
-def _exit_code_kind(code: int) -> tuple[str, int]:
-    """``(kind, code)`` for a worker's exit code, however it was observed."""
-    if code == 0:
-        return ("clean_exit", 0)
-    if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-        return ("rate_limited", code)
-    if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
-        return ("terminal_provider", code)
-    return ("nonzero_exit", code)
 
 
 _EXIT_TRAILER_RE = re.compile(
@@ -944,8 +936,8 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     """Count the task's trailing run of clean-exit protocol violations.
 
     Walks closed runs newest-first (including the one ``detect_crashed_workers``
-    just closed). ``rate_limited`` runs are neutral and skipped (a quota wall
-    says nothing about the task); any other closed run breaks the streak, so
+    just closed). ``rate_limited`` and ``provider_unavailable`` runs are neutral
+    and skipped; any other closed run breaks the streak, so
     the budget counts ONLY protocol violations. Violations are recognized by the
     ``protocol_violation`` run-metadata marker, with the error text as fallback
     for runs recorded before the marker existed.
@@ -959,7 +951,7 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     ).fetchall()
     for row in rows:
         outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        if outcome in {"rate_limited", "provider_unavailable"}:
             continue
         head = (row["error"] or "").partition(WORKER_OUTPUT_SEP)[0]  # never the worker's own words
         if outcome == "crashed" and (
@@ -1053,9 +1045,8 @@ class _DeadWorker:
 
     @property
     def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # Retryable provider failures retain their category without a phantom crash.
+        return self.kind if self.kind in {"rate_limited", "provider_unavailable"} else "crashed"
 
 
 def _classify_dead_worker(
@@ -1113,15 +1104,15 @@ def _classify_dead_worker_exit(
             {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
             protocol_violation=True,
         )
-    if kind == "rate_limited":
-        # Quota wall — NOT a task failure. Release to the source phase and do
-        # NOT count a failure so a long quota window can't trip the breaker.
+    if kind in {"rate_limited", "provider_unavailable"}:
+        # Both retry without spending the card's failure budget; only 75 means quota.
+        reason = "rate-limited (quota wall)" if kind == "rate_limited" else "provider unavailable (transport/server error)"
         return _DeadWorker(
             kind, code,
-            f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
-            "rate_limited",
+            f"pid {pid} exited {reason} — requeued without counting a failure",
+            kind,
             {"pid": pid, "claimer": claimer, "exit_code": code},
-            rate_limited=True,
+            rate_limited=kind == "rate_limited",
         )
     if kind == "terminal_provider":
         # The worker classified its own provider failure as unhealable (credential
@@ -1153,6 +1144,7 @@ class _CrashSweep:
     """Everything ``detect_crashed_workers`` collects inside its reclaim txn."""
 
     crashed: list[str] = field(default_factory=list)
+    provider_unavailable: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
@@ -1222,18 +1214,17 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.kind in {"rate_limited", "provider_unavailable"} or dead.protocol_violation:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
-                # a rate-limited requeue must show ``check_respawn_guard`` a quota
-                # blocker; a below-budget protocol violation never reaches
+                # a provider requeue retains its failure diagnosis; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
                 # board UI and retry worker need the corrective message.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
-            if dead.rate_limited:
-                sweep.rate_limited.append(row["id"])
+            if dead.kind in {"rate_limited", "provider_unavailable"}:
+                getattr(sweep, dead.kind).append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1338,6 +1329,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_provider_unavailable = sweep.provider_unavailable
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -1601,14 +1593,14 @@ def check_respawn_guard(
             ended_at = _kb._to_epoch(latest_run["ended_at"])
             if ended_at is not None and (now - ended_at) < rl_cooldown:
                 return "infrastructure_cooldown"
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
+    if latest_run is not None and latest_run["outcome"] in {"rate_limited", "provider_unavailable"}:
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
             return None
         ended_at = _kb._to_epoch(latest_run["ended_at"])
         if ended_at is not None and (now - ended_at) < rl_cooldown:
-            return "rate_limit_cooldown"
+            return "provider_unavailable_cooldown" if latest_run["outcome"] == "provider_unavailable" else "rate_limit_cooldown"
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
@@ -2194,9 +2186,10 @@ def _run_reclaim_phase(
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
     result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
-    # went back to ``ready`` and the respawn guard defers them until quota clears.
+    # requeue to their source lane with a provider cooldown, without a task failure.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.provider_unavailable.extend(getattr(detect_crashed_workers, "_last_provider_unavailable", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

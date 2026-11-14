@@ -38,7 +38,9 @@ def _bound_claim(tmp_path, monkeypatch):
         ({"interrupted": True}, 130),
         (None, 1),
         *[({"failed": True, "failure_reason": reason}, kb.KANBAN_RATE_LIMIT_EXIT_CODE)
-          for reason in ("rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout")],
+          for reason in ("rate_limit", "upstream_rate_limit", "billing")],
+        *[({"failed": True, "failure_reason": reason}, 76)
+          for reason in ("overloaded", "server_error", "timeout")],
         *[({"failed": True, "failure_reason": reason}, kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE)
           for reason in ("auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked")],
     ],

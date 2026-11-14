@@ -33,10 +33,11 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
+def _dead_worker_with_log(conn, tid: str, pid: int, rc: int, *, review: bool = False) -> None:
     """Claim ``tid`` for a worker that already exited ``rc`` and wrote its log — never reaped here."""
     host = kb._claimer_id().split(":", 1)[0]
-    kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
+    claim = kb.claim_review_task if review else kb.claim_task
+    assert claim(conn, tid, claimer=f"{host}:w{pid}") is not None
     conn.execute(
         "UPDATE tasks SET worker_pid=?, worker_started_at=NULL, started_at=? WHERE id=?",
         (pid, int(time.time()) - 120, tid),
@@ -50,7 +51,8 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
 
 @pytest.mark.parametrize(
     "rc, event, failure_counted",
-    [(0, "protocol_violation", False), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", False)],
+    [(0, "protocol_violation", False), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", False),
+     (76, "provider_unavailable", False)],
 )
 def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, failure_counted):
     """Empty reap registry + exit trailer in the log: a clean exit is the protocol violation
@@ -80,7 +82,15 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert kbd._protocol_violation_streak(conn, tid) == 1
             assert KANBAN_WORKER_EXIT_TRAILER not in (run["error"] or "")
         else:
-            assert run["outcome"] == "rate_limited"
+            assert run["outcome"] == event
+        if rc == 76:
+            assert "quota" not in run["error"]
+            assert "provider unavailable" in run["error"]
+            assert kbd.detect_crashed_workers._last_provider_unavailable == [tid]
+            assert kbd.detect_crashed_workers._last_rate_limited == []
+            assert kbd.check_respawn_guard(conn, tid) == "provider_unavailable_cooldown"
+            conn.execute("UPDATE task_runs SET ended_at = ended_at - 301 WHERE task_id = ?", (tid,))
+            assert kbd.check_respawn_guard(conn, tid) is None
 
 
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
@@ -144,3 +154,30 @@ def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, c
         exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     assert exc.value.code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
     assert f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("rc", [75, 76])
+def test_provider_retry_does_not_reset_protocol_violation_budget(kanban_home, rc):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="retry", assignee="a")
+        _dead_worker_with_log(conn, tid, 73001, 0)
+        kbd.detect_crashed_workers(conn)
+        _dead_worker_with_log(conn, tid, 73002, rc)
+        kbd.detect_crashed_workers(conn)
+        assert kbd._protocol_violation_streak(conn, tid) == 1
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+
+
+def test_provider_outage_returns_reviewer_to_review(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="review retry", assignee="a")
+        task = kb.claim_task(conn, tid)
+        assert kb.request_review(conn, tid, summary="ready", expected_run_id=task.current_run_id)
+        # The guard orders runs by second-granularity ended_at. Keep the handoff older.
+        conn.execute("UPDATE task_runs SET ended_at = ended_at - 10 WHERE task_id = ?", (tid,))
+        conn.commit()
+        _dead_worker_with_log(conn, tid, 74001, 76, review=True)
+        kbd.detect_crashed_workers(conn)
+        assert kb.get_task(conn, tid).status == "review"
+        assert kb._resume_status_from_events(conn, tid) == "review"
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == "provider_unavailable_cooldown"

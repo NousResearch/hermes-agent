@@ -118,6 +118,23 @@ def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatc
     assert set(target.parent.iterdir()) == {target}
 
 
+def test_write_text_does_not_reuse_a_precreated_staging_name(forced_files_client):
+    """The staging file is created exclusively under an unpredictable name: a file another user
+    planted at the old ``.<name>.hermes-tmp-<pid>`` sibling is neither written through nor kept."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    planted = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    planted.write_text("planted", encoding="utf-8")
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "new"})
+
+    assert response.status_code == 200, response.text
+    assert target.read_text(encoding="utf-8") == "new"
+    assert planted.read_text(encoding="utf-8") == "planted"
+
+
 
 
 @pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])

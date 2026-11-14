@@ -153,7 +153,7 @@ _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
 _BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
 
-# read_file_raw cats the whole file into memory (no paging). Cap it so a huge
+# read_file_raw loads the whole file into memory (no paging). Cap it so a huge
 # target - reached via the write path's per-path lock, among others - can't
 # exhaust memory; callers that need a slice should use the paginated read.
 _RAW_READ_MAX_BYTES = 50 * 1024 * 1024
@@ -344,14 +344,20 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None
         return self._decode_base64_sample(segments[0])
 
-    def _read_exact_bytes(self, path: str) -> tuple[Optional[bytes], Optional[ExecuteResult]]:
+    def _read_exact_bytes(self, path: str, max_bytes: Optional[int] = None,
+                          ) -> tuple[Optional[bytes], Optional[ExecuteResult]]:
         """The file's bytes exactly, for the edit paths that write back every line they did not touch.
 
         The text transport cannot carry them: it decodes with errors="replace", so a byte UTF-8 cannot
         decode comes back as U+FFFD and the edit then persists it. A native read on the local POSIX host,
         else base64 over the transport; ``(None, result)`` hands back the failed shell read for the
         caller's message. Only a regular file gets a native open (a FIFO would block this thread); the
-        rest take the shell path and its timeout, as before."""
+        rest take the shell path and its timeout, as before. Past *max_bytes* the read is refused, and
+        the native read stops one byte after it, so a file that grew past its size probe never lands
+        in memory whole."""
+        too_large = None if max_bytes is None else ExecuteResult(
+            stdout=f"{path}: file is too large (over {max_bytes:,} bytes); read a range with offset/limit",
+            exit_code=1)
         if self._native_read_enabled():
             import stat as _stat
             full = path if os.path.isabs(path) else os.path.join(
@@ -365,7 +371,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 try:
                     if _stat.S_ISREG(os.fstat(fd).st_mode):
                         with open(fd, "rb", closefd=False) as fh:
-                            return fh.read(), None
+                            data = fh.read() if max_bytes is None else fh.read(max_bytes + 1)
+                        return (None, too_large) if max_bytes is not None and len(data) > max_bytes else (data, None)
                 finally:
                     os.close(fd)
             except OSError:
@@ -385,7 +392,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if read_rc is None:
             return None, garbled
         if read_rc == 127:  # no base64 on this backend (busybox, distroless): try the hex transport
-            return self._read_exact_bytes_hex(path)
+            data, failed = self._read_exact_bytes_hex(path)
+            return (None, too_large) if data is not None and max_bytes is not None and len(data) > max_bytes \
+                else (data, failed)
         payload, size = segments
         if read_rc != 0:
             # stderr is merged into the fenced segment, so that segment holds base64's own diagnostic
@@ -394,6 +403,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         data = self._decode_base64_sample(payload)
         if data is None or not self._matches_size(data, size):  # stray output: refuse, never echo it back
             return None, garbled
+        if max_bytes is not None and len(data) > max_bytes:
+            return None, too_large
         return data, None
 
     @staticmethod
@@ -1258,7 +1269,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 file_size=file_size,
                 error=(f"File is too large ({file_size:,} bytes, limit is "
                        f"{_RAW_READ_MAX_BYTES:,}). Read a range with offset/limit instead."))
-        data, failed = self._read_exact_bytes(path)
+        data, failed = self._read_exact_bytes(path, max_bytes=_RAW_READ_MAX_BYTES)
         if data is None:
             return ReadResult(error=f"Failed to read file: {failed.stdout}")
         # V4A writes this back, so no display cleanup (nothing has emitted the __HERMES_FENCE_ wrapper it

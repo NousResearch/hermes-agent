@@ -365,6 +365,39 @@ def test_raw_read_cap_with_real_file(tmp_path, monkeypatch, stale_size):
     assert not result.content
 
 
+def test_raw_read_cap_holds_on_the_shell_transport(tmp_path, monkeypatch):
+    """A backend without a native read (remote, sandbox) takes the base64 transport; a size probe
+    that went stale before the read must not let that whole payload through either."""
+    import tools.file_operations as operations
+
+    monkeypatch.setattr(operations, "_RAW_READ_MAX_BYTES", 64)
+    target = tmp_path / "large.log"
+    target.write_text("a" * 1024, encoding="utf-8")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
+    monkeypatch.setattr(ops, "_probe_regular_file", lambda path: (1, "ok"))
+    result = ops.read_file_raw(str(target))
+    assert result.error and "too large" in result.error
+    assert not result.content
+
+
+def test_v4a_add_does_not_overwrite_an_oversized_file(tmp_path, monkeypatch):
+    """The cap error is a read failure, not "missing": an Add over a file past the cap is refused."""
+    import tools.file_operations as operations
+    from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
+
+    monkeypatch.setattr(operations, "_RAW_READ_MAX_BYTES", 64)
+    target = tmp_path / "large.log"
+    target.write_text("a" * 1024, encoding="utf-8")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    patch = f"*** Begin Patch\n*** Add File: {target}\n+new\n*** End Patch\n"
+    operations_, err = parse_v4a_patch(patch)
+    assert err is None
+    result = apply_v4a_operations(operations_, ops)
+    assert not result.success and "too large" in result.error
+    assert target.read_text(encoding="utf-8") == "a" * 1024
+
+
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""
 

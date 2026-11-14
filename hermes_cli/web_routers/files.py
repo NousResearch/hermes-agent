@@ -1202,7 +1202,8 @@ async def fs_read_text(
     # The same staged-file exception read-data-url makes under a locked files root.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
         _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target, profile_home)
+    # Off the loop: the credential-store check resolves every guard home's stores.
+    target, st = await asyncio.to_thread(_fs_regular_file, target, profile_home)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     data = await asyncio.to_thread(
@@ -1272,7 +1273,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     )
     # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
-    _refuse_sensitive_write(target, payload.path, Path(cwd))
+    await asyncio.to_thread(_refuse_sensitive_write, target, payload.path, Path(cwd))
     # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too,
     # under the requested profile's scope so its own state.db / sessions/ count as protected. A save has
     # no approval channel, so a path the file tools gate on approval (~/.ssh/config) fails closed.
@@ -1379,7 +1380,7 @@ async def fs_read_data_url(
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
         _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target, _fs_profile_home(profile))
+    target, st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     # A transcript image is read again on every remount. The browser keeps the body in its own
@@ -1542,7 +1543,7 @@ async def fs_download(
         return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id, session=session)
     _hosted_fs_read_guard(target, request)
-    target, _st = _fs_regular_file(target, _fs_profile_home(profile))
+    target, _st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),

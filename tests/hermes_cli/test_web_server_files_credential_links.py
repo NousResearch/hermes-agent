@@ -87,3 +87,37 @@ def test_case_variant_of_symlinked_store_is_refused(home_client):
     for route in ("/api/files/read", "/api/fs/read-text"):
         resp = client.get(route, params={"path": str(home / "KEYS" / "id_rsa")})
         assert resp.status_code == 403, (route, resp.status_code)
+
+
+@pytest.mark.parametrize("route", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
+def test_file_credential_check_runs_off_the_event_loop(home_client, monkeypatch, route):
+    """Resolving every guard home's stores may stat a slow mount; it must not park the loop."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hermes_cli.web_routers import files
+
+    client, home = home_client
+    (home / "notes.txt").write_text("safe")
+    entered, release = threading.Event(), threading.Event()
+    real_stores = files.resolved_home_credential_stores
+
+    def slow_stores():
+        entered.set()
+        release.wait(timeout=5)
+        return real_stores()
+
+    monkeypatch.setattr(files, "resolved_home_credential_stores", slow_stores)
+    with TestClient(web_server.app) as loop_client, ThreadPoolExecutor(max_workers=1) as pool:
+        loop_client.headers.update(client.headers)
+        blocked = pool.submit(loop_client.get, route, params={"path": str(home / "notes.txt")})
+        try:
+            assert entered.wait(timeout=5)
+            start = time.monotonic()
+            probe = loop_client.get("/api/health")
+            elapsed = time.monotonic() - start
+        finally:
+            release.set()
+        assert blocked.result(timeout=10).status_code == 200
+    assert probe.status_code == 200 and elapsed < 2.5, elapsed

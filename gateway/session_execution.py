@@ -170,7 +170,7 @@ class GatewaySessionAgentMixin:
             ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=(session_prefill(active_authority(runner), policy, src.chat_id) if policy
                               else runner._prefill_messages) or None,
-            reasoning_config=reasoning_config, service_tier=runner._service_tier,
+            reasoning_config=reasoning_config, service_tier=turn_route.get("service_tier"),
             request_overrides=turn_route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),

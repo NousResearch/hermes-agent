@@ -93,6 +93,10 @@ class GatewayDashboardMount:
             from gateway.webapp_listener import use_own_sign_in
             self._undo_own_sign_in = use_own_sign_in(webapp)
         web._configure_auth_gate(self._state.bound_host, False, None, None)
+        if getattr(getattr(self._state, "auth_required", None), "private_for_direct", False):
+            # Sign-in comes only from the public URL: a request made directly on this machine keeps the
+            # private listener it had before (hermes_cli.web_server_boundary.PublicUrlGate).
+            web.app.state.auth_required = self._state.auth_required
         web.app.state.gateway_runner = self.runner
         web.app.state.session_authority = getattr(self.runner, "session_authority", None)
         web.app.state.bound_host = self._state.bound_host
@@ -233,13 +237,17 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         # What web_server._configure_auth_gate decides for a listener that declares its public URL.
         trusted = public_url_hosts(public_url)
         auth_required = should_require_auth(host) or public_hosts_engage_gate(trusted)
+        if auth_required and not should_require_auth(host):
+            from hermes_cli.web_server_boundary import PublicUrlGate
+            auth_required = PublicUrlGate()
     state = types.SimpleNamespace(
         bound_host=host, bound_port=None, auth_required=auth_required,
         trusted_public_hosts=trusted, gateway_runner=runner,
         session_authority=getattr(runner, "session_authority", None), webapp=webapp)
     mount = GatewayDashboardMount(runner, state)
     # Lifespan off: the dashboard's own lifespan runs when it is mounted (GatewayDashboardMount).
-    config, server = build_listener_server(mount, host, port, auth_required=state.auth_required,
+    from hermes_cli.web_server_boundary import MarkDirectLocal
+    config, server = build_listener_server(MarkDirectLocal(mount), host, port, auth_required=bool(state.auth_required),
                                            timeout_graceful_shutdown=5, lifespan="off")
     family, kind, proto, _, address = socket.getaddrinfo(
         host, port, type=socket.SOCK_STREAM,

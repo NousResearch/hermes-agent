@@ -2,7 +2,8 @@
 
 Also covers the permission posture of the credential-bearing seeds (#126950):
 auth.json and .env are owner-only from the first instant, and a failing
-re-tighten chmod does not abort the boot.
+re-tighten chmod does not abort the boot (nor does one on the
+gateway_state.json seed).
 """
 from __future__ import annotations
 
@@ -210,3 +211,41 @@ def test_env_seed_is_owner_only_under_ambient_umask(stage2_text: str, tmp_path: 
     assert proc.returncode == 0, proc.stderr
     assert (home / ".env").read_text() == "# example\n"
     assert (home / ".env").stat().st_mode & 0o777 == 0o600
+
+
+def _gateway_state_seed_block(text: str) -> str:
+    m = re.search(
+        r'(?m)^if \[ ! -f "\$HERMES_HOME/gateway_state\.json" \] && \\\n'
+        r"(?:.*\n)*?^fi\n",
+        text,
+    )
+    assert m, "stage2-hook.sh must keep the gateway_state.json first-boot seed block"
+    return m.group(0)
+
+
+@pytest.mark.platforms("posix")
+def test_gateway_state_seed_survives_failing_chmod(stage2_text: str, tmp_path: Path) -> None:
+    """A failing chmod on the seeded gateway_state.json warns and boot
+    continues under ``set -eu`` instead of aborting the hook."""
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("sh not available")
+    home = tmp_path / "home"
+    home.mkdir()
+    script = (
+        "set -eu\n"
+        "umask 022\n"
+        f'HERMES_HOME="{home}"\n'
+        "HERMES_GATEWAY_BOOTSTRAP_STATE=running\n"
+        "chmod() { return 1; }\n"
+        f"{_path_guard_functions(stage2_text)}\n"
+        f"{_gateway_state_seed_block(stage2_text)}"
+        "echo SEED_DONE\n"
+    )
+    script_path = tmp_path / "harness.sh"
+    script_path.write_text(script)
+    proc = subprocess.run([sh, str(script_path)], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert "SEED_DONE" in proc.stdout
+    assert "could not set gateway_state.json permissions" in proc.stderr
+    assert (home / "gateway_state.json").read_text() == '{"gateway_state":"running"}\n'

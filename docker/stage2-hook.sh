@@ -763,7 +763,10 @@ if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
     else
         printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
         chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
-        chmod 644 "$HERMES_HOME/gateway_state.json"
+        # Best-effort like the auth.json seed: under `set -eu` a failing chmod
+        # on this non-secret file would otherwise abort the whole boot.
+        chmod 644 "$HERMES_HOME/gateway_state.json" 2>/dev/null \
+            || echo "[stage2] Warning: could not set gateway_state.json permissions" >&2
     fi
 fi
 

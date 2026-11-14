@@ -481,7 +481,7 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 # Internal tool-call markup emitted in the agent's raw output stream.
 # Matches closed blocks and blocks left unclosed by truncation (stored
 # reply previews are capped, so a block can be cut mid-JSON).
-_TOOLCALL_BLOCK_RE = re.compile(r"<TOOLCALL>.*?(?:</TOOLCALL>|$)", re.DOTALL)
+_TOOLCALL_BLOCK_RE = re.compile(r"<TOOLCALL>.*?(?:</TOOLCALL>|$)", re.DOTALL | re.IGNORECASE)
 
 _TOOLCALL_PLACEHOLDER = "[processing...]"
 
@@ -499,24 +499,45 @@ def strip_internal_markup(text: str | None) -> str | None:
     is preserved byte-for-byte. Text without markup is returned
     unchanged, and ``None``/empty input passes through as-is.
     """
-    if not text or "<TOOLCALL>" not in text:
+    if not text or "<toolcall>" not in text.lower():
         return text
     return _TOOLCALL_BLOCK_RE.sub(_TOOLCALL_PLACEHOLDER, text)
 
 
 __all__ = [
-    "strip_internal_markup",
-    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_messages_carry_images", "_repair_tool_call_arguments",
-    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
-    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
-    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
+    "_SURROGATE_RE",
+    "_escape_invalid_chars_in_json_strings",
+    "_messages_carry_images",
+    "_repair_tool_call_arguments",
+    "_sanitize_messages_non_ascii",
+    "_sanitize_messages_surrogates",
+    "_sanitize_structure_non_ascii",
+    "_sanitize_structure_surrogates",
+    "_sanitize_surrogates",
+    "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages",
+    "_strip_non_ascii",
+    "apply_reasoning_content_policy",
+    "close_interrupted_tool_sequence",
+    "coalesce_tool_call_id",
+    "coerce_tool_name",
+    "deterministic_call_id",
+    "matches_reasoning_echo_family",
+    "needs_reasoning_echo",
+    "normalize_provider_tool_call_ids",
+    "reapply_reasoning_echo",
+    "reasoning_echo_family",
+    "reasoning_replay_route",
+    "record_reasoning_field_rejection",
+    "rejected_reasoning_carriers",
     "route_reasoning_carriers",
-    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
-    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "sanitize_outbound_kwargs",
+    "stale_thinking_reaches_wire",
+    "strip_images_for_rejecting_model",
+    "strip_internal_markup",
+    "tool_call_id_variants",
+    "tool_result_id_variants",
+    "uniquify_tool_call_ids",
 ]
 
 

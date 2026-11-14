@@ -35,18 +35,13 @@ def _home_prefix_fold_regex(path: str):
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
     if not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0])):
         return None
-    # Optional leading root separator; a Windows drive letter is a component. Mandatory for the
-    # single-component home above, where the optional form would also fold relative same-named paths,
-    # and anchored at a path start so a nested ``/data/root/x`` does not fold to ``/data~/x``.
-    lead = r"(?<![\w.~$}/\\-])[/\\]+" if len(components) == 1 else r"[/\\]*"
-    # POSIX backslashes are shell escapes, not path separators. Otherwise /root\*
-    # (literal /root*) folds to ~/* and falsely trips the non-bypassable rm gate.
-    posix_single = len(components) == 1 and os.name == "posix" and path.startswith("/")
-    if posix_single:
-        lead = r"(?<![\w.~$}/\\-])/+"
-    tail = (r"(?P<tail>(?:/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
-            if posix_single else _PATH_TAIL)
-    return re.compile(lead + r"[/\\]+".join(re.escape(c) for c in components) + tail)
+    # Optional leading root separator; a Windows drive letter is a component. Mandatory (and anchored
+    # at a path start: ``/data/root/x`` is not ``/data~/x``) for a single-component home, else ``root/file`` folds.
+    # A POSIX single-component home splits only on ``/`` or ``\/``: ``/root\*`` is the literal name ``/root*``.
+    sep = r"(?:\\?/)" if len(components) == 1 and os.name == "posix" and path.startswith("/") else r"[/\\]"
+    lead = r"(?<![\w.~$}/\\-])" + sep + "+" if len(components) == 1 else sep + "*"
+    tail = _PATH_TAIL if sep == r"[/\\]" else r"(?P<tail>(?:\\?/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+    return re.compile(lead + (sep + "+").join(re.escape(c) for c in components) + tail)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
@@ -55,7 +50,7 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)
+            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"), command)
     return command
 
 

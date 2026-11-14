@@ -28,6 +28,15 @@ class TestSingleSegmentHomeFolding:
         # Both commands name literal paths rather than /root or /root/*.
         assert detect_hardline_command(command) == (False, None)
 
+    @pytest.mark.platforms("posix")
+    def test_escaped_slash_still_folds_into_home(self, monkeypatch):
+        from tools.approval import detect_hardline_command
+
+        monkeypatch.setenv("HOME", "/root")
+        # ``\/`` is a plain ``/`` to bash, so these still name /root/* and /root/.ssh/authorized_keys.
+        assert detect_hardline_command(r"rm -rf /root\/*")[0] is True
+        assert detect_dangerous_command(r"echo k >> \/root/.ssh/authorized_keys")[0] is True
+
     @pytest.mark.parametrize("home", ["/root", "/home/alice"])
     @pytest.mark.parametrize("template", _SENSITIVE_WRITES)
     def test_absolute_home_spelling_is_flagged(self, monkeypatch, home, template):

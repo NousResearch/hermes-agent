@@ -142,6 +142,146 @@ def test_429_switch_binds_openrouter_and_continues(monkeypatch, free_only_with_c
     assert ("openrouter", MAIN_FALLBACK_TASK) in resolved
 
 
+
+# ── integration: a 429 inside an already running turn ────────────────────
+
+
+def _simulated_429():
+    """The failure shape the primary OAuth provider produced: HTTP 429 usage limit."""
+    from types import SimpleNamespace
+
+    error = Exception("Error code: 429 - usage limit reached")
+    error.status_code = 429
+    error.response = SimpleNamespace(headers={}, status_code=429)
+    error.body = {"error": {"message": "usage limit reached"}}
+    return error
+
+
+def _agent_with_openrouter_fallback():
+    """A running agent whose primary is the Codex OAuth route and whose chain is openrouter."""
+    from run_agent import AIAgent
+
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+    ):
+        agent = AIAgent(
+            api_key="primary-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model={"provider": "openrouter", "model": PAID_MODEL, "api_key": "or-key"},
+        )
+    agent.client = MagicMock(name="codex_client")
+    return agent
+
+
+def _run_turn_error_handler(agent, *, retry_count, max_retries, api_error=None,
+                            messages=None, api_messages=None):
+    """Drive the real turn error handler instead of the fallback primitive."""
+    from agent.turn_api_error import handle_api_error
+    from agent.turn_retry_state import TurnRetryState
+
+    return handle_api_error(
+        agent,
+        api_error=api_error or _simulated_429(),
+        _retry=TurnRetryState(),
+        thinking_spinner=None,
+        messages=messages if messages is not None else [{"role": "user", "content": "repariere bitte die Sicherung"}],
+        api_messages=api_messages if api_messages is not None else [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "repariere bitte die Sicherung"},
+        ],
+        api_kwargs={"model": agent.model, "messages": api_messages or []},
+        system_message="sys",
+        active_system_prompt="sys",
+        conversation_history=[],
+        approx_tokens=0,
+        retry_count=retry_count,
+        max_retries=max_retries,
+        compression_attempts=0,
+        max_compression_attempts=1,
+        api_call_count=1,
+        api_request_id="req-1",
+        api_start_time=0.0,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+    )
+
+
+def test_turn_continues_after_429_without_a_new_user_request(free_only_with_client):
+    """The running job survives the primary 429: the same turn continues on OpenRouter."""
+    from types import SimpleNamespace
+
+    agent = _agent_with_openrouter_fallback()
+    codex_client = agent.client
+    codex_client.chat.completions.create = MagicMock(side_effect=_simulated_429())
+    messages = [{"role": "user", "content": "repariere bitte die Sicherung"}]
+    api_messages = [{"role": "system", "content": "sys"}] + messages
+    before = list(messages)
+
+    # The turn's first attempt fails on the primary exactly once.
+    with pytest.raises(Exception):
+        codex_client.chat.completions.create(model="gpt-5.6-sol", messages=api_messages)
+    assert codex_client.chat.completions.create.call_count == 1
+
+    verdict = _run_turn_error_handler(agent, retry_count=3, max_retries=3,
+                                      messages=messages, api_messages=api_messages)
+
+    # "break" is the loop's "fallback bound, rebuild and retry the same turn" signal.
+    assert verdict.action == "break"
+    assert agent.provider == "openrouter"
+    assert agent.model == PAID_MODEL
+    assert agent._provider_fallback_active is True
+    # Continuation, not a new request: the conversation is untouched and retries restarted.
+    assert messages == before
+    assert verdict.retry_count == 0
+    assert codex_client.chat.completions.create.call_count == 1, "Codex must not be retried after the switch"
+
+    # The next attempt of the same turn is served by the fallback client.
+    agent.client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Sicherung repariert."))],
+    ))
+    response = agent.client.chat.completions.create(model=agent.model, messages=api_messages)
+
+    assert response.choices[0].message.content == "Sicherung repariert."
+    assert agent.client is free_only_with_client, "the bound client must be the fallback one"
+
+
+def test_no_repeated_primary_request_after_the_switch(free_only_with_client):
+    """A second 429 must not send the turn back to Codex: no loop, no repeated primary call."""
+    agent = _agent_with_openrouter_fallback()
+    codex_client = agent.client
+    codex_client.chat.completions.create = MagicMock(side_effect=_simulated_429())
+    with pytest.raises(Exception):
+        codex_client.chat.completions.create(model="gpt-5.6-sol", messages=[])
+    assert codex_client.chat.completions.create.call_count == 1
+
+    first = _run_turn_error_handler(agent, retry_count=3, max_retries=3)
+    assert first.action == "break"
+    assert codex_client.chat.completions.create.call_count == 1  # the turn never re-asks Codex
+
+    # The fallback provider now fails too: the turn must end, not bounce back to the primary.
+    second = _run_turn_error_handler(agent, retry_count=3, max_retries=3)
+
+    assert second.action == "return"
+    assert codex_client.chat.completions.create.call_count == 1
+    assert agent.provider == "openrouter"
+
+
+def test_missing_or_unknown_task_context_keeps_the_cost_gate(free_only_without_client):
+    """No task, empty task and an unknown task name all stay on the gated auxiliary lane."""
+    assert _try_openrouter() == (None, None)
+    assert _try_openrouter(task="") == (None, None)
+    assert _try_openrouter(task="some_unknown_task") == (None, None)
+    assert resolve_provider_client("openrouter", model=PAID_MODEL) == (None, None)
+    assert resolve_provider_client("openrouter", model=PAID_MODEL, task="") == (None, None)
+
+
 # ── fixtures ─────────────────────────────────────────────────────────────
 
 

@@ -130,6 +130,7 @@ class StopReplayWindow:
             if state.get("version") != _STATE_VERSION:
                 raise ValueError(f"version {state.get('version')!r}")
             state["opened_at"] = float(state["opened_at"])
+            state["withdrawn_at"] = None if state.get("withdrawn_at") is None else float(state["withdrawn_at"])
             state["floor"] = float(state["floor"])
             state["deferred"] = {str(k): str(v) for k, v in dict(state.get("deferred") or {}).items()}
             state["skip"] = {str(v) for v in state.get("skip") or ()}
@@ -271,9 +272,10 @@ class DiscordRecoveryMixin:
         if not self._stop_replay_enabled():
             window.clear()
             return
-        age = time.time() - state["opened_at"]
+        # From the stop, not the first refusal: a restart drain can refuse for up to 30 min first.
+        age = time.time() - (state["withdrawn_at"] or state["opened_at"])
         if not 0 <= age <= _MAX_AGE_SECONDS:
-            logger.info("[%s] Stop-replay window skipped: it opened %.0fs ago (bound %.0fs)",
+            logger.info("[%s] Stop-replay window skipped: the stop was %.0fs ago (bound %.0fs)",
                         self.name, age, _MAX_AGE_SECONDS)
             window.clear()
             return

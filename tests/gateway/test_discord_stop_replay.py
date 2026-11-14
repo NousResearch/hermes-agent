@@ -381,3 +381,25 @@ async def test_switch_off_at_start_ignores_a_window_left_by_the_previous_process
 
     assert dispatched_ids(restarted) == []
     assert not state_path(_env).exists()
+
+
+@pytest.mark.asyncio
+async def test_refusal_early_in_a_long_restart_drain_is_replayed(_env, monkeypatch):
+    """The age bound is "down too long", not "the drain was long": a restart drain may wait up to
+    30 min for a long turn, refusing new messages the whole time."""
+    from plugins.platforms.discord import adapter_recovery
+
+    clock = {"now": dt.datetime.now(dt.UTC).timestamp() - 31 * 60}
+    monkeypatch.setattr(adapter_recovery, "time", SimpleNamespace(time=lambda: clock["now"]))
+    channel = FakeChannel()
+    stopping = make_adapter(channel)
+    stopping.set_message_handler(AsyncMock(return_value=None))
+    refused = make_message(681, channel)
+    stopping.defer_refused_inbound(live_event(stopping, refused))  # the drain's first refusal
+    clock["now"] += 29 * 60
+    await stop(stopping)  # admission withdrawn 29 min later, inside the drain's 30 min cap
+    clock["now"] += 2 * 60  # 31 min after the refusal, 2 min after the stop
+
+    restarted = await restart(channel)
+
+    assert dispatched_ids(restarted) == [refused.id]

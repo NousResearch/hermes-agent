@@ -24,6 +24,20 @@ def _handle_is_free() -> bool:
         return False
 
 
+def _prefix_names_served_profile(profile: str) -> bool:
+    """True when a /p/<profile>/ prefix names the profile this gateway serves. Fail closed: a
+    single-profile gateway answering /p/<x>/ served the owner's toolsets under another URL.
+
+    Lives here (not in ``api_server.py``) because the facade is over its line cap; the prefix
+    middleware is its only caller.
+    """
+    try:
+        from hermes_cli.profiles import profile_matches_home
+        return profile_matches_home(profile)
+    except Exception:
+        return False
+
+
 def _prefix_profile(request: Any) -> str:
     """The prefix as a canonical profile id. Profile ids are lowercase on disk and every other
     reader (``get_profile_dir``, ``profile_exists``, the peer client) normalizes case, so
@@ -52,7 +66,7 @@ def resolve_request_profile(adapter: Any, request: Any):
     (-> 404). Fail closed: a foreign prefix must never be ignored. The default profile's handle
     ``hermes`` reaches the default profile, because peers address the mirror by the handle their
     roster shows (#118076), unless the host has a profile literally named ``hermes``."""
-    from gateway.platforms.api_server import _PROFILE_REJECTED, _prefix_names_served_profile
+    from gateway.platforms.api_server import _PROFILE_REJECTED
     profile = _prefix_profile(request)
     if not profile:
         return None

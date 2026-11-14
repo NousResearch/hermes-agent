@@ -279,6 +279,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
     ) = ({} for _ in range(7))
+    # Session-stream runs keep their SSE queue here so a clarify prompt (published on the live
+    # session event stream) can reach the browser that asked it. Keyed by run_id.
+    self._run_event_queues = {}  # run_id -> _SessionEventQueue (session-stream SSE)
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -1431,7 +1434,22 @@ async def _handle_run_clarify(self, request, *, _api_server):
     body, err = await self._read_json_body(request)
     if err is not None:
         return err
-    return await _respond_authority_run(self, run_id, body, kind='clarify', _api_server=_api_server)
+    response = await _respond_authority_run(self, run_id, body, kind='clarify', _api_server=_api_server)
+    if response.status == 200:
+        return response
+    # A /api/sessions/{id}/chat/stream turn has no admission row, so the authority projection
+    # refuses the answer; the question still blocks in tools.clarify_gateway, so resolve that
+    # registry directly by request id (the id is exact — it can never answer a different prompt).
+    request_id = body.get("request_id") if isinstance(body, dict) else None
+    answer = body.get("answer") if isinstance(body, dict) else None
+    if not isinstance(request_id, str) or not request_id or not isinstance(answer, str):
+        return response
+    from tools.clarify_gateway import resolve_gateway_clarify
+    if not resolve_gateway_clarify(request_id, answer):
+        return response
+    _mark_run_event(self, run_id, "clarify.responded", request_id=request_id)
+    return web.json_response({"object": "hermes.run.clarify_response", "run_id": run_id,
+                              "request_id": request_id, "resolved": True})
 
 
 def _steer_refused(_openai_error, run_id):

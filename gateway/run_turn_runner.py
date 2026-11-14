@@ -639,6 +639,19 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway import local_viewer_events
             authority.register_clarify(session_id, generation, entry,
                                        timeout_s=local_viewer_events.prompt_timeout_s(self, "clarify"))
+            # A session-stream client (API server) does not subscribe to the live event stream,
+            # so hand the prompt to its SSE queue explicitly; without this the turn parks on the
+            # clarify wait until it times out and the question is never seen.
+            notify = getattr(self._ctx._status_adapter, "notify_clarify_prompt", None)
+            if callable(notify):
+                try:
+                    notify(session_id=session_id, entry=entry, generation=generation,
+                           session_key=self._ctx.session_key or "")
+                except Exception as err:
+                    # Best-effort by design: a failed hand-off degrades to the old silent-park
+                    # behaviour rather than failing the turn, but it must be diagnosable when a
+                    # client reports "no card arrived".
+                    logger.debug("clarify SSE notify failed for session %s: %s", session_id, err)
         return result
 
     def _clarify_callback_sync(self, questions) -> dict:

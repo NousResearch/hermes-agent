@@ -347,7 +347,10 @@ describe('profile creation warnings', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show.*more/ }))
     expect(screen.getByText(text => text.includes(warnings[0]))).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Configure model' })).toBeTruthy()
+    const { notify } = await import('@/store/notifications')
+    act(() => void notify({ kind: 'success', message: 'transient', placement: 'bottom-right' }))
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }))
+    // Clear all still clears the transient bottom-right toasts too.
     expect($notifications.get()).toEqual([])
     await waitFor(() => expect(screen.queryByText(text => text.includes(warnings[0]))).toBeNull())
     expect(screen.queryByRole('button', { name: 'Configure model' })).toBeNull()

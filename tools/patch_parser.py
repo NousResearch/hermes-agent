@@ -618,8 +618,13 @@ def _commit_one(commit: _Commit, file_ops: Any) -> tuple[ApplyResult, str, str]:
     """Dispatch a planned mutation. Update never re-enters the planner."""
     op = commit.op
     if op.operation is OperationType.DELETE and commit.snapshot is None and commit.read_sha:
-        if file_ops.file_sha256(op.file_path) != commit.read_sha:
-            return _fail("oversized source changed or cannot be verified"), "delete", "deleted"
+        try:
+            result = file_ops.delete_file(op.file_path, expected_sha256=commit.read_sha)
+        except TypeError:
+            return _fail("backend cannot bind fingerprint to delete"), "delete", "deleted"
+        if result.error:
+            return _fail(result.error), "delete", "deleted"
+        return ApplyResult(True, f"# Deleted: {op.file_path}"), "delete", "deleted"
     if op.operation is OperationType.UPDATE:
         return _commit_planned_update(commit, file_ops), "update", "modified"
     handler, verb, bucket = _APPLY_DISPATCH[op.operation]

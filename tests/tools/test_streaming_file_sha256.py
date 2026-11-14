@@ -14,7 +14,47 @@ def test_streaming_hash_shell_transport(tmp_path, monkeypatch):
     assert ops.file_sha256(str(path)) == hashlib.sha256(data).hexdigest()
 
 
-def test_python_hash_fallback_when_sha256sum_missing(tmp_path, monkeypatch):
+def test_rejects_digest_with_unfenced_extra_output(tmp_path, monkeypatch):
+    from tools.file_operations_common import ExecuteResult
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
+    monkeypatch.setattr(ops, "_exec", lambda *a, **kw: ExecuteResult(stdout="a" * 64 + " banner", exit_code=0))
+    assert ops.file_sha256(str(tmp_path / "data")) is None
+
+
+def test_ignores_banner_around_fenced_digest(tmp_path, monkeypatch):
+    from tools.file_operations_common import ExecuteResult
+    path = tmp_path / "data"
+    path.write_bytes(b"hello\r\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
+    original = ops._exec_python_snippet
+
+    def noisy(*args, **kwargs):
+        result = original(*args, **kwargs)
+        return ExecuteResult(stdout="banner\n" + result.stdout + "\nnoise", exit_code=result.exit_code)
+
+    monkeypatch.setattr(ops, "_exec_python_snippet", noisy)
+    assert ops.file_sha256(str(path)) == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_rejects_nonregular_and_missing_interpreter(tmp_path, monkeypatch):
+    import os
+    import pytest
+    from tools.file_operations_common import ExecuteResult
+
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO unsupported')
+    path = tmp_path / 'pipe'
+    os.mkfifo(path)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, '_native_read_enabled', lambda: False)
+    assert ops.file_sha256(str(path)) is None
+    monkeypatch.setattr(ops, '_exec_python_snippet', lambda *a, **kw: ExecuteResult(stdout='', exit_code=127))
+    assert ops.file_sha256(str(path)) is None
+
+
+def test_streaming_hash_does_not_require_sha256sum(tmp_path, monkeypatch):
     path = tmp_path / "sample.bin"
     data = b"some raw bytes" * 10000
     path.write_bytes(data)

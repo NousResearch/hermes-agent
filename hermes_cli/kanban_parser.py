@@ -401,6 +401,9 @@ _SPECS = [
              help="Discord guild ID, used for multiplex profile routing."),
         _arg("--notifier-profile",
              help="Profile gateway that owns/delivers this subscription (default: active profile)"),
+        _arg("--allow-approvals", action="store_true",
+             help="Also route this task's approval prompts here. Telegram only; requires --user-id. "
+                  "The tap is accepted only from that user in this exact chat/thread."),
         # choices: single source of truth shared with the DB/watcher enum.
         _arg("--delivery-mode", choices=kbn._NOTIFY_DELIVERY_MODES,
              help="How the kanban-notifier reacts to terminal events for this "

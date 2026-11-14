@@ -701,7 +701,7 @@ class SessionAuthority:
         return results
 
     async def submit(self, actor: SessionActor, request: Submission, *, _authorize_write=None, queue_while_restarting=False,
-                     _replay_guard=None, _kanban_card=None):
+                     _replay_guard=None, _kanban_card=None, _kanban_approval_broker=False):
         """``queue_while_restarting``: the caller is an interactive client attached to a restart's
         after-turn wait, which commits the input queued for the next owner. Machine callers (a2a,
         kanban, hosted rooms) keep the plain ``runtime_draining`` refusal and retry against the next
@@ -718,10 +718,10 @@ class SessionAuthority:
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, _authorize_write=_authorize_write,
                                           queue_only=queue_while_restarting is True, _replay_guard=_replay_guard,
-                                          _kanban_card=_kanban_card)
+                                          _kanban_card=_kanban_card, _kanban_approval_broker=_kanban_approval_broker)
 
     async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False, _replay_guard=None,
-                      _kanban_card=None):
+                      _kanban_card=None, _kanban_approval_broker=False):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
@@ -745,6 +745,12 @@ class SessionAuthority:
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
         if _kanban_card is not None:
             payload['kanban_card_v1'] = _kanban_card
+        if _kanban_approval_broker is True:
+            # Trusted producer-only capability: public payload fields cannot mint this exception to finite
+            # single-query approval policy. It is meaningful only beside the validated card marker.
+            if _kanban_card is None:
+                raise RuntimeStoreError('invalid_params')
+            payload['kanban_approval_broker_v1'] = True
         source = self.sessions[request.ref.session_id].source
         from gateway.owner_identity import same_owner
         if source is not None and not same_owner(source.user_id, actor.subject):
@@ -1067,6 +1073,11 @@ class SessionAuthority:
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
+            admission_id = live.event_stream.execution.get('admission_id')
+            row = get_session_admission(self.db, admission_id=admission_id) if admission_id else None
+            if row is not None and row['payload'].get('kanban_approval_broker_v1') is True:
+                from gateway.kanban_approval_broker import schedule_approval_forward
+                schedule_approval_forward(self, row, data, timeout_s)
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         live = self.sessions[session_id]

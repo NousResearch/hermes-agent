@@ -1180,6 +1180,14 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     }
     user_id, user_id_alt = _caller_identity_for_target(
         args.platform, args.chat_id, args.thread_id, args.user_id, getattr(args, "user_id_alt", None))
+    if getattr(args, "allow_approvals", False):
+        if args.platform.lower() != "telegram" or not args.user_id:
+            raise ValueError("--allow-approvals requires --platform telegram and --user-id")
+        from gateway.kanban_approval_broker import (
+            APPROVAL_FORWARDING_METADATA_KEY, APPROVAL_FORWARDING_TASK_KEY, APPROVAL_FORWARDING_V1)
+        delivery_metadata[APPROVAL_FORWARDING_METADATA_KEY] = APPROVAL_FORWARDING_V1
+        # Parent subscriptions are inherited for terminal notifications, never for a new task's authority.
+        delivery_metadata[APPROVAL_FORWARDING_TASK_KEY] = args.task_id
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")

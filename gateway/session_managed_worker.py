@@ -77,7 +77,8 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy),
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
-        **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
+        **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {}),
+        **({'approval_broker_v1': True} if row['payload'].get('kanban_approval_broker_v1') is True else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id, live.source)
     config = _worker_config(authority, policy)
@@ -135,7 +136,8 @@ def worker_turn_scope(frame):
         yield
         return
     flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1')} if isinstance(turn, dict) else None
-    if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
+    if (flags is None or set(flags) - {'finite', 'unattended', 'yolo', 'approval_broker_v1'}
+            or set(flags) < {'finite', 'unattended', 'yolo'}
             or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
         raise ValueError('invalid_managed_worker_bootstrap')
     try:
@@ -146,7 +148,8 @@ def worker_turn_scope(frame):
     if turn['yolo']:
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
-    with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
+    with finite_turn_scope(turn['finite'], turn['unattended'],
+                           approval_broker=turn.get('approval_broker_v1', False)), surface_turn_scope(surface), \
             display_turn_scope(frame['scope']['execution_id'], display):
         yield
 
@@ -376,7 +379,8 @@ def _prompt_frame(authority, ref, row, worker, frame):
     if len(controls.remote_responders) >= 16:
         raise RuntimeStoreError('worker_control_backpressure')
     if kind == 'approval':
-        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
+        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit',
+                  'timeout_s'}
         data = frame.get('data')
         if set(frame) != {'type', 'data'} or not isinstance(data, dict) or set(data) - fields:
             raise RuntimeStoreError('invalid_worker_frame')
@@ -391,7 +395,8 @@ def _prompt_frame(authority, ref, row, worker, frame):
         raise RuntimeStoreError('invalid_worker_frame')
     controls.remote_responders[prompt_id] = worker.respond
     if kind == 'approval':
-        authority.register_approval(ref.session_id, row['generation'], live.route, data)
+        authority.register_approval(ref.session_id, row['generation'], live.route, data,
+                                    timeout_s=data.get('timeout_s'))
     else:
         entry = SimpleNamespace(clarify_id=prompt_id, question=frame['question'], choices=frame['choices'],
                                 multi_select=frame['multi_select'], event=threading.Event())

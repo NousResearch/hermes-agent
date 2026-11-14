@@ -595,6 +595,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._choice_picker_state: dict[str, dict] = {}
         self._approval_state: dict[int, str] = {}  # message_id → session_key
         self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
+        self._approval_forwarded: dict[int, Any] = {}  # message_id → exact Kanban authority/audience binding
+        # Sends are registered before their first await so disconnect can withdraw them. The epoch
+        # fences a late acknowledgment even after a disconnect→connect ABA transition.
+        self._approval_forwarding_inflight: dict[tuple[str, int, str], tuple[int, Any]] = {}
+        self._approval_forwarding_epoch = 0
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, ClarifyPrompt] = {}  # clarify_id → prompt bound to its sent message
         self._clarify_multi: dict[str, set[int]] = {}  # clarify_id → checked indices (multi-select only)
@@ -625,6 +630,24 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
+        self._approval_forwarding_epoch = getattr(self, "_approval_forwarding_epoch", 0) + 1
+        bindings = {}
+        inflight = getattr(self, "_approval_forwarding_inflight", {})
+        for _epoch, binding in inflight.values():
+            bindings[(binding.session_id, binding.generation, binding.request_id)] = binding
+        inflight.clear()
+        for approval_id, binding in list(getattr(self, "_approval_forwarded", {}).items()):
+            bindings[(binding.session_id, binding.generation, binding.request_id)] = binding
+            self._approval_state.pop(approval_id, None)
+            self._approval_request_ids.pop(approval_id, None)
+            self._approval_forwarded.pop(approval_id, None)
+        for binding in bindings.values():
+            try:
+                live = binding.authority.sessions[binding.session_id]
+                live.controls.withdraw(binding.session_id, binding.generation, binding.request_id,
+                                       "Telegram approval transport disconnected")
+            except Exception:
+                logger.debug("Failed to withdraw disconnected Kanban approval %s", binding.request_id, exc_info=True)
         super()._mark_disconnected()
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
@@ -3770,10 +3793,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
         return await _flood_window.send_draft(self, chat_id, draft_id, content, metadata)
 
-    async def _send_message_with_thread_fallback(self, **kwargs):
-        """Send a control-style message (approval prompts, pickers, update prompts) that can carry a stale
-        thread_id from a DM reply chain: on a missing topic, a private chat goes to the root without the anchor;
-        a forum retries without message_thread_id. ``_send_chunk_with_retries`` has its own.
+    async def _send_message_with_thread_fallback(self, *, allow_thread_fallback=True, **kwargs):
+        """Send a control-style message (approval prompt, picker, update prompt) that can carry a stale
+        thread_id from a DM reply chain. When allowed, a missing topic retries at the chat root without the
+        anchor. Forwarded approvals disable that fallback because their callback is bound to the exact thread.
         """
         if not self._bot:
             raise RuntimeError("Not connected")
@@ -3782,7 +3805,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return await _await_with_thread_deadline(
                 self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as send_err:
-            if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
+            if (allow_thread_fallback and message_thread_id is not None and self._is_bad_request_error(send_err)
+                    and self._is_thread_not_found_error(send_err)):
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
                 # Same prune as the text send path; an anchor into the dead topic must not steer the retry.
@@ -3804,7 +3828,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         kwargs["reply_to_message_id"] = reply_to_id
         kwargs.update(self._thread_kwargs_for_send(
             chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
-        return await self._send_message_with_thread_fallback(**kwargs)
+        from gateway.kanban_approval_broker import FORWARDING_METADATA_KEY
+        return await self._send_message_with_thread_fallback(
+            allow_thread_fallback=FORWARDING_METADATA_KEY not in (metadata or {}), **kwargs)
 
     async def _send_prompt(self, what: str, chat_id: str, metadata: Optional[dict[str, Any]], build, *,
                            parse_mode: Any = None, thread_id: Any = None, reply_to_mode: Any = None) -> SendResult:
@@ -3884,21 +3910,54 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
+        forwarded_key: tuple[str, int, str] | None = None
+        forwarded_epoch: int | None = None
+        binding: Any = None
+
         def build():
+            nonlocal forwarded_key, forwarded_epoch, binding
+            from gateway.kanban_approval_broker import FORWARDING_METADATA_KEY
+            binding = (prompt.metadata or {}).get(FORWARDING_METADATA_KEY)
+            if binding is not None and not self.is_connected:
+                return SendResult(success=False, error="Not connected")
             # Short ids in callback_data map back to session_key; restart-unique (prompt_id_counter).
             if not hasattr(self, "_approval_counter"):
                 self._approval_counter = prompt_id_counter()
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
+            if binding is not None:
+                forwarded_key = (binding.session_id, binding.generation, binding.request_id)
+                forwarded_epoch = int(getattr(self, "_approval_forwarding_epoch", 0))
+                self._approval_forwarding_inflight[forwarded_key] = (forwarded_epoch, binding)
+
             def on_sent(_msg):
+                if binding is not None:
+                    assert forwarded_key is not None
+                    record = self._approval_forwarding_inflight.get(forwarded_key)
+                    if (not self.is_connected
+                            or forwarded_epoch != getattr(self, "_approval_forwarding_epoch", 0)
+                            or record != (forwarded_epoch, binding)):
+                        raise RuntimeError("Telegram approval transport disconnected")
                 self._approval_state[approval_id] = prompt.session_key
                 if prompt.request_id:
                     self._approval_request_ids[approval_id] = prompt.request_id
+                if binding is not None:
+                    assert forwarded_key is not None
+                    self._approval_forwarded[approval_id] = binding
+                    self._approval_forwarding_inflight.pop(forwarded_key, None)
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), on_sent
-        return await self._send_prompt(
-            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
+
+        assert ParseMode is not None
+        try:
+            return await self._send_prompt(
+                "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
+                thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
+        finally:
+            if forwarded_key is not None:
+                record = self._approval_forwarding_inflight.get(forwarded_key)
+                if record == (forwarded_epoch, binding):
+                    self._approval_forwarding_inflight.pop(forwarded_key, None)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -4329,13 +4388,26 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
             "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
 
-    async def _callback_authorized(self, query, cb: dict[str, Any], denial_text: str) -> bool:
+    async def _callback_authorized(self, query, cb: dict[str, Any], denial_text: str, *, forwarded=None) -> bool:
         """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
-        if self._is_callback_user_authorized(
-            str(getattr(query.from_user, "id", "")), chat_id=cb["chat_id"],
-            chat_type=str(cb["chat_type"]) if cb["chat_type"] is not None else None,
-            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None, user_name=cb["user_name"]):
+        context = {
+            "user_id": str(getattr(query.from_user, "id", "")), "chat_id": cb["chat_id"],
+            "chat_type": str(cb["chat_type"]) if cb["chat_type"] is not None else None,
+            "thread_id": str(cb["thread_id"]) if cb["thread_id"] is not None else None,
+            "user_name": cb["user_name"],
+        }
+        if forwarded is None:
+            authorized = self._is_callback_user_authorized(**context)
+        else:
+            from gateway.kanban_approval_broker import authorize_forwarded_callback
+            authorized = authorize_forwarded_callback(self, forwarded, **context)
+        if authorized:
             return True
+        if forwarded is not None:
+            from gateway.kanban_approval_broker import log_forwarded_callback_refusal
+            log_forwarded_callback_refusal(
+                forwarded, "callback_auth_denied", user_id=context["user_id"],
+                chat_id=context["chat_id"], thread_id=context["thread_id"])
         await answer_callback(query, denial_text)
         return False
 
@@ -4375,9 +4447,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         logger.debug("[%s] unhandled callback query (data=%r)", self.name, data[:64])
         await answer_callback(query)  # no handler owns it (stale build, data-less game tap): ack anyway or it spins (#78788)
 
-    async def _claim_callback_state(self, query, cb: dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
+    async def _claim_callback_state(self, query, cb: dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True, forwarded=None):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""
-        if not await self._callback_authorized(query, cb, denial):
+        if not await self._callback_authorized(query, cb, denial, forwarded=forwarded):
             return None
         session_key = state.pop(key, None) if pop else state.get(key)
         if not session_key:
@@ -4395,22 +4467,48 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except (ValueError, IndexError):
             return await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
         resolved = _toast("platform.telegram.approval.toast_already_resolved")
+        forwarded = getattr(self, "_approval_forwarded", {}).get(approval_id)
+        if forwarded is not None:
+            caller = (str(getattr(query.from_user, "id", "")), str(cb["chat_id"]),
+                      str(cb["thread_id"]) if cb["thread_id"] is not None else None)
+            expected = (forwarded.user_id, forwarded.chat_id, forwarded.thread_id)
+            if caller != expected:
+                from gateway.kanban_approval_broker import log_forwarded_callback_refusal
+                log_forwarded_callback_refusal(
+                    forwarded, "audience_mismatch", user_id=caller[0], chat_id=caller[1], thread_id=caller[2])
+                return await answer_callback(query, _unauthorized())
         if not (session_key := await self._claim_callback_state(
-                query, cb, self._approval_state, approval_id, _unauthorized(), resolved, pop=False)):
+                query, cb, self._approval_state, approval_id, _unauthorized(), resolved,
+                pop=False, forwarded=forwarded)):
             return
-        from gateway.approval_actor import approval_refusal, refusal_text
         request_id = self._approval_request_ids.get(approval_id)
-        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id, choice=choice):
-            return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+        if forwarded is None:
+            from gateway.approval_actor import approval_refusal, refusal_text
+            if requester := approval_refusal(
+                    session_key, getattr(query.from_user, "id", ""), extra=self.config.extra,
+                    request_id=request_id, choice=choice):
+                return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
             return await answer_callback(query, resolved)
         self._approval_request_ids.pop(approval_id, None)
+        if forwarded is not None:
+            self._approval_forwarded.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id,
-                                                  actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
-            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, getattr(query.from_user, "id", None))
+            if forwarded is None:
+                count = resolve_gateway_approval_card(
+                    session_key, choice, request_id,
+                    actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
+            else:
+                from gateway.kanban_approval_broker import respond_forwarded
+                count = await respond_forwarded(
+                    forwarded, choice, user_id=str(getattr(query.from_user, "id", "")),
+                    chat_id=str(cb["chat_id"]),
+                    thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None)
+            logger.info(
+                "Telegram button resolved %d approval(s) for session %s (choice=%s)",
+                count, session_key, choice)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0

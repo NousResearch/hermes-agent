@@ -1070,12 +1070,16 @@ _canon_args_cache_bytes = 0
 
 def _canonicalize_tool_call_arguments(arg_str: str) -> str:
     """Canonical wire form of a tool-call arguments JSON string; raises on malformed input
-    (the caller falls back to ``_repair_tool_call_arguments``)."""
+    (the caller falls back to ``_repair_tool_call_arguments``). Non-ASCII stays literal:
+    ``\\uXXXX`` escapes would replay every CJK/emoji argument at several times its token
+    cost and diverge from the bytes the model generated."""
     global _canon_args_cache_bytes
     cached = _CANON_ARGS_CACHE.get(arg_str)
     if cached is not None:
         return cached
-    canonical = json.dumps(json.loads(arg_str), separators=(",", ":"), sort_keys=True)
+    canonical = json.dumps(
+        json.loads(arg_str), separators=(",", ":"), sort_keys=True, ensure_ascii=False,
+    )
     _CANON_ARGS_CACHE[arg_str] = canonical
     _canon_args_cache_bytes += len(arg_str) + len(canonical)
     while len(_CANON_ARGS_CACHE) > _CANON_ARGS_CACHE_MAX or (
@@ -1114,7 +1118,10 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                 try:
                     args = _canonicalize_tool_call_arguments(fn["arguments"])
                 except Exception:
-                    args = _repair_tool_call_arguments(fn["arguments"], fn.get("name", "?"))
+                    # Repair output always parses; canonicalizing it too decodes ``\\udXXX``
+                    # escapes so the surrogate pass after this one can see a lone half.
+                    args = _canonicalize_tool_call_arguments(
+                        _repair_tool_call_arguments(fn["arguments"], fn.get("name", "?")))
                 # Copy-on-write as defense in depth: callers may pass shallow copies, and
                 # writing into a shared tc["function"] rewrote the stored turn with "{}"
                 # on the unrepairable path (#80498).

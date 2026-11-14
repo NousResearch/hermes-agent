@@ -88,6 +88,44 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     assert resolved["base_url"]  # default codex backend URL
 
 
+def test_resolve_codex_pool_fallback_skips_dead_entries(tmp_path, monkeypatch):
+    """Regression for #123746 — a pool row terminally marked ``dead`` must not be handed out
+    by the singleton-empty fallback.
+
+    ``DEAD`` is the pool's terminal state (revoked / invalidated) and never recovers on its
+    own, so resending that row only buys a guaranteed 401. The fallback must fail closed
+    like an empty pool instead of returning the revoked credential.
+    """
+    dead_access = "codex-dead-row-value"
+    dead_refresh = "codex-dead-row-rotated"
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "providers": {},  # no openai-codex singleton at all
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "source": "manual:device_code",
+                    "access_token": dead_access,
+                    "refresh_token": dead_refresh,
+                    "last_status": "dead",
+                    "last_error_code": 401,
+                    "last_error_reason": "token_revoked",
+                    "auth_type": "oauth",
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials(refresh_if_expiring=False)
+    assert exc.value.relogin_required is True
+
+
 def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
     """Re-auth must update the credential_pool device_code entry, not just providers.
 

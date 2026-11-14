@@ -119,11 +119,9 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
     if not profiles_mod.profile_exists(canon):  # handles the virtual "default" name
         return DescribeOutcome(canon, False, "profile not found")
     try:
-        if canon == "default":
-            from hermes_constants import get_hermes_home  # type: ignore
-            profile_dir = Path(get_hermes_home())
-        else:
-            profile_dir = profiles_mod.get_profile_dir(canon)
+        # ``default`` is the install root, not this process's HERMES_HOME: under a multiplexed
+        # gateway the CLI runs inside ~/.hermes/profiles/<active> (#149281).
+        profile_dir = profiles_mod.get_profile_dir(canon)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"cannot resolve profile dir: {exc}")
     existing = profiles_mod.read_profile_meta(profile_dir)

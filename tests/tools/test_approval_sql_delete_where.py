@@ -22,6 +22,8 @@ from tools.approval import detect_dangerous_command
     'psql -c "DELETE FROM t" ; echo "WHERE"',
     'psql -c "DELETE FROM t" && echo WHERE',
     "bash -c \"psql -c 'DELETE FROM t'\"",
+    'psql -c DELETE\\ FROM\\ t >WHERE',
+    'psql -c DELETE\\ FROM\\ t <WHERE',
 ])
 def test_where_outside_the_delete_statement_does_not_clear(cmd):
     is_dangerous, _, desc = detect_dangerous_command(cmd)

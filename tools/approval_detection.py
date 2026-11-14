@@ -512,11 +512,12 @@ DANGEROUS_PATTERNS = [
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # Only a WHERE in the DELETE's own statement text clears it: the lookahead stops at a newline
     # (under DOTALL a WHERE on the *next* line would otherwise count), a statement or shell
-    # separator (; & |), a comment start (-- /* #), and any quote or dollar-quote opener, so a
-    # WHERE inside a comment, literal, identifier, later statement or later shell command cannot.
+    # separator (; & |), a redirection (< >), a comment start (-- /* #), and any quote or dollar-quote
+    # opener, so a WHERE inside a comment, literal, identifier, later statement, redirect target or
+    # later shell command cannot.
     # Bare $VAR / ${VAR} stay transparent so templated table names still clear. Tag chars mirror
     # PostgreSQL's scan.l dolq_cont ([A-Za-z\200-\377_0-9]): any non-ASCII char, so $é$ opens a quote.
-    (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#\'"`$]|\$(?![A-Za-z_0-9\x80-\U0010ffff]*\$)))*\bWHERE\b)',
+    (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#<>\'"`$]|\$(?![A-Za-z_0-9\x80-\U0010ffff]*\$)))*\bWHERE\b)',
      "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),

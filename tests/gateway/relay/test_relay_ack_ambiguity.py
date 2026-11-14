@@ -146,12 +146,8 @@ class TestTransportTagsAmbiguity:
         timeout branch carries ambiguous=True; fail-fast branches do not."""
         from gateway.relay.ws_transport import WebSocketRelayTransport
 
-        transport = WebSocketRelayTransport.__new__(WebSocketRelayTransport)
-        transport._closing = False
+        transport = WebSocketRelayTransport("ws://unused", "slack", "bot", outbound_timeout_s=0.01)
         transport._ws = object()  # non-None so we reach the pending path
-        transport._pending = {}
-        transport._outbound_timeout_s = 0.01
-        transport._bot_id_for = lambda p: None
 
         async def _send(frame):
             return None  # sent fine; ack never arrives

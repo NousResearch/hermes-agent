@@ -4,9 +4,10 @@ Inspired by Claude Cowork (desktop changelog v1.46388.1, 2026-09-04): "automatic
 (after 5, 15, and 30 minutes) for a scheduled task that could not reach the model at all,
 for example right after the computer wakes behind a VPN."
 
-The class is deliberately narrow: the run must have FAILED with a transient network /
-DNS error (``cron.scheduler_preflight._is_transient_provider_resolve_error``) AND the
-agent must have completed zero API calls. Nothing was executed and nothing was spent, so
+The class is deliberately narrow: the run must have FAILED without reaching the model — a
+transient network / DNS error (``cron.scheduler_preflight._is_transient_provider_resolve_error``)
+or a fire the gateway refused to admit (``GatewayUnavailableError``: "Nothing was submitted") —
+AND the agent must have completed zero API calls. Nothing was executed and nothing was spent, so
 re-running cannot double a side effect — unlike a generic failure retry (see PR #16512),
 which has to answer for one-shot dispatch accounting and mid-run side effects. Recurring
 jobs only: finite one-shots are pre-claimed by ``claim_dispatch`` (at-most-times, #38758)
@@ -55,11 +56,33 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
     return cron_cfg.get("retry_unreachable") is not False
 
 
+def _is_refused_fire(exc: BaseException) -> bool:
+    """True when the gateway refused the fire, so nothing was submitted.
+
+    ``GatewayUnavailableError`` documents exactly that ("No ready owner to dial … Nothing was
+    submitted"), and a fire lost to a drain (``hermes update``) reached neither the gateway nor
+    the model — the spend-neutral shape this ladder exists for (#151585). The cause chain is
+    walked because the dial path wraps the verdict."""
+    from hermes_cli.gateway_client import GatewayUnavailableError
+
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, GatewayUnavailableError):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
-    """True when *exc* is a transient network/DNS failure and *agent* (may be ``None``)
-    never completed a model call — the run consumed nothing and executed nothing."""
+    """True when the run never reached the model and spent nothing: a transient network/DNS
+    failure or a fire the gateway refused to admit, and *agent* (may be ``None``) completed no
+    model call."""
     if int(getattr(agent, "session_api_calls", 0) or 0) > 0:
         return False
+    if _is_refused_fire(exc):
+        return True
     from cron.scheduler_preflight import _is_transient_provider_resolve_error
 
     return _is_transient_provider_resolve_error(exc)

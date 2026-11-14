@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from tools import file_state
 from tools.file_tools import read_file_tool, write_file_tool, patch_tool
 from tools.file_tools_read_tracking import _read_tracker, reset_file_dedup
@@ -106,6 +108,23 @@ class TestStalenessCheck(unittest.TestCase):
         result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
         self.assertNotIn("_warning", result)
         self.assertNotIn("error", result)
+
+    @pytest.mark.platforms("any")
+    def test_complete_read_matches_descriptor_snapshot_before_overwrite(self):
+        """An edited file still supports a complete read and safe overwrite."""
+        from tools.file_tools_read_tracking import _file_metadata, _file_version
+
+        # A second write exposes Windows' path/descriptor ctime disagreement.
+        with open(self._tmpfile, "w") as stream:
+            stream.write("rewritten content\n")
+        read = json.loads(read_file_tool(self._tmpfile, task_id="descriptor-read"))
+        self.assertNotIn("error", read)
+        version = _file_version(self._tmpfile)
+        assert version is not None, "unchanged real file needs a byte snapshot"
+        self.assertEqual(_file_metadata(self._tmpfile), version[:-1])
+        written = json.loads(write_file_tool(
+            self._tmpfile, "merged content\n", task_id="descriptor-read"))
+        self.assertNotIn("error", written, written)
 
     def test_write_file_refuses_before_mutation_when_modified_externally(self):
         """read → external edit → write_file: refused, external edit preserved;

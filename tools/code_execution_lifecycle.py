@@ -6,9 +6,10 @@ runs it (#146582). A cell that cannot start or signal a process cannot restart t
 treated as inert data, the way ``strip_inert_heredoc_bodies`` already treats quoted heredocs.
 
 "Cannot" is judged conservatively from the AST, never by tracing values from literals to sinks:
-the cell must parse, import only modules from a small allowlist, touch no private/dunder or
-process-shaped attribute, and load no name it does not bind itself apart from a set of plain
-builtins. The last rule matters because the session kernel persists: ``os``, ``subprocess`` or a
+the cell must parse, be straight-line top-level code (no def/lambda/class/comprehension, branch,
+loop or try), import only modules from a small allowlist, touch no private/dunder, process-shaped
+or introspection attribute, and load no name it has not bound in an earlier statement apart from a
+set of plain builtins. The last rule matters because the session kernel persists: ``os``, ``subprocess`` or a
 ``def sh(cmd)`` helper from an earlier cell is still reachable by name. Anything else is scanned as
 before. This is accident prevention for the gateway SIGTERM-ing itself, not a security boundary.
 """
@@ -23,7 +24,7 @@ from typing import Optional
 _INERT_IMPORTS = frozenset({
     "base64", "collections", "csv", "dataclasses", "datetime", "decimal", "difflib", "enum",
     "fractions", "functools", "hashlib", "html", "itertools", "json", "math", "pathlib", "pprint",
-    "random", "re", "statistics", "string", "textwrap", "time", "typing", "unicodedata",
+    "random", "re", "statistics", "string", "textwrap", "time", "unicodedata",
 })
 
 # Builtins a cell may use without binding them. No exec/eval/compile/__import__/getattr/globals/
@@ -48,75 +49,80 @@ _SINK_ATTR_PREFIXES = ("_", "exec", "spawn", "posix_spawn", "popen", "kill", "fo
 _MAX_MATCH_CHARS = 120
 
 
-_Pos = tuple[int, int]
-_ALWAYS = (0, 0)  # comprehension targets and arguments: bound before any load inside their scope
+# Only straight-line top-level code qualifies: every statement runs, in order, in module scope, so
+# "bound earlier in this cell" is exact. Nested scopes (def/lambda/class/comprehension), branches,
+# loops, try and walrus bind names a module-level read may never see, and a leftover helper from an
+# earlier kernel cell would answer instead -- such a cell keeps the normal scan.
+_STRAIGHT_LINE_STMTS = (ast.Assign, ast.AnnAssign, ast.Expr, ast.Import, ast.ImportFrom, ast.Pass, ast.With)
+_SCOPE_OR_FLOW_NODES = (
+    ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda, ast.ListComp, ast.SetComp,
+    ast.DictComp, ast.GeneratorExp, ast.NamedExpr, ast.Global, ast.Nonlocal, ast.Await, ast.Yield,
+    ast.YieldFrom, ast.AsyncWith,
+)
+# Frame / generator / coroutine / traceback introspection reaches globals and builtins by name.
+_INTROSPECTION_PREFIXES = ("gi_", "f_", "tb_", "cr_", "ag_")
+_INTROSPECTION_ATTRS = frozenset({"get_type_hints"})
 
 
-def _end(node: ast.AST) -> _Pos:
-    return (getattr(node, "end_lineno", None) or 0, getattr(node, "end_col_offset", None) or 0)
+def _statement_bindings(stmt: ast.stmt) -> set[str]:
+    targets: list[ast.AST] = []
+    if isinstance(stmt, ast.Assign):
+        targets = list(stmt.targets)
+    elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        targets = [stmt.target]
+    elif isinstance(stmt, ast.With):
+        targets = [item.optional_vars for item in stmt.items if item.optional_vars is not None]
+    elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        return {(alias.asname or alias.name).split(".")[0] for alias in stmt.names}
+    return {sub.id for target in targets for sub in ast.walk(target) if isinstance(sub, ast.Name)}
 
 
-def _binding_positions(tree: ast.AST) -> dict[str, _Pos]:
-    """Earliest point at which each name the cell binds holds the cell's own value.
-
-    Position-aware on purpose: in ``sh = sh`` or ``f()`` before ``f = ...`` the load still reads
-    whatever an earlier kernel cell left behind, so it must not count as locally bound.
-    """
-    bound: dict[str, _Pos] = {}
-
-    def bind(name: str, pos: _Pos) -> None:
-        bound[name] = min(pos, bound.get(name, pos))
-
-    def bind_targets(target: ast.AST, pos: _Pos) -> None:
-        for sub in ast.walk(target):
-            if isinstance(sub, ast.Name):
-                bind(sub.id, pos)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                bind_targets(target, _end(node))
-        elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr)):
-            bind_targets(node.target, _end(node))
-        elif isinstance(node, (ast.For, ast.AsyncFor)):
-            bind_targets(node.target, _end(node.iter))
-        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-            bind_targets(node.optional_vars, _end(node.context_expr))
-        elif isinstance(node, ast.comprehension):
-            bind_targets(node.target, _ALWAYS)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bind(node.name, (node.lineno, node.col_offset))
-        elif isinstance(node, ast.arg):
-            bind(node.arg, _ALWAYS)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                bind((alias.asname or alias.name).split(".")[0], _end(node))
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            bind(node.name, (node.body[0].lineno, 0))
-    return bound
-
-
-def _node_may_reach_process(node: ast.AST, bound: dict[str, _Pos]) -> bool:
+def _node_may_reach_process(node: ast.AST, bound: set[str]) -> bool:
+    if isinstance(node, _SCOPE_OR_FLOW_NODES):
+        return True
     if isinstance(node, ast.Import):
         return any(alias.name.split(".")[0] not in _INERT_IMPORTS for alias in node.names)
     if isinstance(node, ast.ImportFrom):
         return bool(node.level) or (node.module or "").split(".")[0] not in _INERT_IMPORTS
     if isinstance(node, ast.Name):
-        if not isinstance(node.ctx, ast.Load) or node.id in _SAFE_BUILTINS:
-            return False
-        return node.id not in bound or bound[node.id] > (node.lineno, node.col_offset)
+        return isinstance(node.ctx, ast.Load) and node.id not in _SAFE_BUILTINS and node.id not in bound
     if isinstance(node, ast.Attribute):
-        return node.attr in _SINK_ATTRS or node.attr.startswith(_SINK_ATTR_PREFIXES)
-    return isinstance(node, (ast.Global, ast.Nonlocal))
+        return (node.attr in _SINK_ATTRS or node.attr in _INTROSPECTION_ATTRS
+                or node.attr.startswith(_SINK_ATTR_PREFIXES + _INTROSPECTION_PREFIXES))
+    return False
+
+
+def _stmt_may_reach_process(stmt: ast.stmt, bound: set[str]) -> bool:
+    """Loads in *stmt* see only names bound by EARLIER top-level statements (``sh = sh`` reads the
+    leftover); a ``with`` body's statements are checked in order like the top level."""
+    if not isinstance(stmt, _STRAIGHT_LINE_STMTS):
+        return True
+    if isinstance(stmt, ast.With):
+        if any(_node_may_reach_process(node, bound) for item in stmt.items for node in ast.walk(item)):
+            return True
+        inner = bound | _statement_bindings(stmt)
+        for child in stmt.body:
+            if _stmt_may_reach_process(child, inner):
+                return True
+            inner |= _statement_bindings(child)
+        return False
+    return any(_node_may_reach_process(node, bound) for node in ast.walk(stmt))
 
 
 def _is_inert_python(code: str) -> bool:
     try:
         tree = ast.parse(code)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
         return False
-    bound = _binding_positions(tree)
-    return not any(_node_may_reach_process(node, bound) for node in ast.walk(tree))
+    bound: set[str] = set()
+    for stmt in tree.body:
+        if _stmt_may_reach_process(stmt, bound):
+            return False
+        bound |= _statement_bindings(stmt)
+        if isinstance(stmt, ast.With):
+            for child in stmt.body:
+                bound |= _statement_bindings(child)
+    return True
 
 
 def lifecycle_guard_rejection(code: str) -> Optional[str]:

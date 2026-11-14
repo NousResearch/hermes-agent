@@ -28,7 +28,7 @@ def _blocked(code: str) -> str | None:
     f'print("this script only prints; the command is: {_CMD}")',
     f'doc = "Runbook:\\n    {_CMD}\\n"\nopen("runbook.md", "w", encoding="utf-8").write(doc)',
     f'import json, pathlib\npathlib.Path("notes.md").write_text(json.dumps({{"fix": "{_CMD}"}}))',
-    f'def fmt(line):\n    return "- " + line\nprint(fmt("{_CMD}"))',
+    f'with open("runbook.md", "w") as fh:\n    fh.write("{_CMD}")',
 ])
 def test_documentation_only_cell_is_not_refused(code):
     assert _blocked(code) is None
@@ -54,3 +54,26 @@ def test_rejection_names_the_matched_command(in_gateway):
     result = json.loads(cet.execute_code(f'import os\nos.system("{_CMD}")'))
     assert "cannot restart or stop the gateway" in result["error"]
     assert "systemctl restart hermes-gateway" in result["error"]
+
+
+# Only straight-line top-level code is judged inert: a binding inside a nested scope, a branch or a
+# loop may never be the one a module-level read sees, and an earlier cell's helper would answer.
+@pytest.mark.parametrize("code", [
+    f'def g(sh): pass\nsh("{_CMD}")',
+    f'g = lambda sh: 0\nsh("{_CMD}")',
+    f'[0 for sh in []]\nsh("{_CMD}")',
+    f'def g():\n    sh = 1\nsh("{_CMD}")',
+    f'class K:\n    sh = 1\nsh("{_CMD}")',
+    f'if 0:\n    sh = None\nsh("{_CMD}")',
+    f'for sh in []:\n    pass\nsh("{_CMD}")',
+    f'g = (x for x in [0])\ng.gi_frame.f_globals["sh"]("{_CMD}")',
+    f'import typing\ndef f(x: "sh()"): pass\ntyping.get_type_hints(f)\nprint("{_CMD}")',
+    # conservative on purpose: helpers and loops keep the normal scan even when harmless
+    f'def fmt(line):\n    return "- " + line\nprint(fmt("{_CMD}"))',
+])
+def test_scoped_or_conditional_bindings_never_count_as_inert(code):
+    assert _blocked(code) is not None
+
+
+def test_parser_exhaustion_is_scanned_as_before():
+    assert _blocked("(" * 5000 + f'"{_CMD}"' + ")" * 5000) is not None

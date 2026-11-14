@@ -118,7 +118,14 @@ const ActiveThreadTimeline: FC = () => {
     ]
 
     return (history.olderAvailable || indexedEntries) && !indexComplete
-      ? [{ id: EARLIER_TIMELINE_ID, preview: t.assistant.thread.showEarlier }, ...merged]
+      ? [
+          {
+            id: EARLIER_TIMELINE_ID,
+            label: t.assistant.thread.showEarlier,
+            preview: t.assistant.thread.showEarlier
+          },
+          ...merged
+        ]
       : merged
   }, [
     entries,

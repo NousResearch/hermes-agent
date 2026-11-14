@@ -1,0 +1,65 @@
+name: look-at-this
+repo: https://github.com/Elshayib/look-at-this
+sha: 31e4b2e64595da208a18530bdcc8566bc1f4deb9
+title: Look At This
+description: >-
+  Instant active-window, region-snip, and UI-context capture for Hermes Agent and
+  Hermes Desktop. Global OS hotkeys (Ctrl+Alt+L / Ctrl+Alt+S on Windows),
+  interactive window-hover/crosshair snipping, live window picker with thumbnails,
+  composer preview banner, and ephemeral single-turn vision injection. Runs an
+  in-process Win32 RegisterHotKey listener thread and a lazy headless PowerShell
+  UIAutomation reader on Windows, spawns an isolated Win32 GDI overlay subprocess
+  only during interactive snips, mounts authenticated local routes under
+  /api/plugins/look-at-this/*, injects queued captures via pre_llm_call and
+  llm_request, and stores transient state and temporary PNGs under
+  <HERMES_HOME>/plugin-data/look-at-this/ (data.db and shots/, deleted in
+  post_llm_call, on_session_end, /look clear, or after a 5-minute TTL). Zero
+  third-party Python dependencies and zero outbound network requests.
+maintainer: Elshayib
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Elshayib/look-at-this#readme
+version: "0.2.1"
+image: https://raw.githubusercontent.com/Elshayib/look-at-this/31e4b2e64595da208a18530bdcc8566bc1f4deb9/assets/look-at-this.png
+screenshots:
+  - https://raw.githubusercontent.com/Elshayib/look-at-this/31e4b2e64595da208a18530bdcc8566bc1f4deb9/assets/look-at-this.png
+readme: true
+platforms:
+  - windows
+  - macos
+  - linux
+capabilities:
+  provides_tools:
+    - lat_grab
+    - lat_windows
+    - lat_status
+    - lat_clear
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware:
+    - llm_request
+  requires_env: []
+known_issues:
+  - >-
+    Unified git plugin note: Hermes Desktop enables the Agent half on install
+    while the Desktop UI half starts disabled by default — toggle "Look At This"
+    ON once in Settings -> Capabilities -> Plugins -> Installed to activate the
+    composer preview banner, '+' attachment items, status-bar chip, and global
+    hotkey session routing.
+  - >-
+    Secret redaction (default_redact / /look redact) masks sensitive patterns in
+    text fields (title, URL, selected text, and UI highlights/tree) only; it
+    does not blur or alter pixels inside the attached screenshot PNG.
+  - >-
+    On Windows, User Interface Privilege Isolation (UIPI) prevents a normal
+    medium-integrity Hermes process from capturing or inspecting windows running
+    elevated as Administrator.
+  - >-
+    System-wide global hotkeys (Ctrl+Alt+L / Ctrl+Alt+S) use Win32
+    RegisterHotKey on Windows. On macOS and Linux, use in-app shortcuts
+    (Mod+Alt+L / Mod+Alt+S / Mod+Alt+W), the composer '+' menu, or /look; macOS
+    requires Screen Recording and Accessibility permissions, and Linux uses
+    grim + slurp (Wayland) or imagemagick + wmctrl (X11).

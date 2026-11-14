@@ -930,6 +930,7 @@ def _get_env_config() -> dict[str, Any]:
         "ssh_user": _tenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": _tenv("TERMINAL_SSH_KEY", ""),
+        "ssh_sync_files": _tenv_bool("TERMINAL_SSH_SYNC_FILES", "true"),
         # Exported env carries across commands (cwd always does). SSH follows
         # terminal.persistent_shell; local has its own knob. Both default on.
         "ssh_persistent": _tenv_bool(

@@ -156,6 +156,45 @@ def test_a_record_that_cannot_be_written_leaves_the_update_unpaused_and_ungated(
 
 
 @pytest.mark.platforms("posix")
+def test_a_gateway_still_working_past_the_wait_is_left_running_with_its_restart_pending(tmp_path, monkeypatch,
+                                                                                        capsys):
+    """Owner ruling: a non-forced update never stops live work. Both gateways took the drain and are
+    still busy when the wait runs out: neither is stopped, SIGKILLed or relaunched beside itself by
+    the rollback, and the update continues unpaused naming what each is still running."""
+    from hermes_cli import update_cmd_posix_pause as m
+    gateways = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+                for _ in range(2)]
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "gateway_state.json").write_text(json.dumps({"active_work": [
+        {"kind": "chat", "session": "agent:main:telegram:dm:1", "elapsed_s": 75}]}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    unit = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-p2probe.service", "pid": gateways[0].pid,
+            "cgroup": None, "home": str(home)}
+    bare = {"pid": gateways[1].pid, "argv": ["hermes", "gateway", "run"], "home": str(home)}
+    touched = []
+    monkeypatch.setattr(m, "_discover_systemd", lambda: [dict(unit)])
+    monkeypatch.setattr(m, "_discover_launchd", list)
+    monkeypatch.setattr(m, "_left_running", lambda units, jobs: (units, jobs, []))
+    monkeypatch.setattr(m, "_discover_bare", lambda service_pids: ([dict(bare)], []))
+    monkeypatch.setattr(m, "_ask_to_drain", lambda entry: True)
+    monkeypatch.setattr(m, "_drain_budget", lambda: 0.5)
+    for name in ("_stop_unit", "_stop_job", "_start_unit", "_start_job", "_relaunch_bare"):
+        monkeypatch.setattr(m, name, lambda *a, _n=name, **k: touched.append(_n) or 0)
+    try:
+        assert m._pause(m._empty_token()) is None
+        assert [g.poll() for g in gateways] == [None, None], "a busy gateway was killed"
+    finally:
+        for g in gateways:
+            g.kill()
+            g.wait(timeout=10)
+    assert touched == [], f"a busy gateway was stopped or a second copy started: {touched}"
+    out = capsys.readouterr().out
+    assert out.count("still running live work (chat turn agent:main:telegram:dm:1") == 2, out
+    assert "`hermes update --force` stops it now" in out
+
+
+@pytest.mark.platforms("posix")
 def test_a_replayed_gateway_keeps_its_own_exported_token_and_no_one_elses(tmp_path):
     """A named profile's hand-started gateway, replayed by an update launched under that profile,
     starts as the restart watcher started it: with the launcher's environment (an exported bot
@@ -229,7 +268,7 @@ def _discover_probe_job(monkeypatch, tmp_path, plist_body: dict, pid: int) -> di
     monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: [label])
     monkeypatch.setattr(gateway, "legacy_launchd_labels_for_install", lambda exclude=(): [])
     monkeypatch.setattr(gateway, "_locate_launchd_gateway_service", lambda _label: ("gui/0", pid))
-    monkeypatch.setattr(update_fleet_scope, "launchd_label_foreign_home", lambda _label: None)
+    monkeypatch.setattr(update_fleet_scope, "launchd_label_skip_notice", lambda _label, scope=None: None)
     jobs = _discover_launchd()
     assert len(jobs) == 1
     return jobs[0]
@@ -256,3 +295,49 @@ def test_a_launchd_job_with_no_pinned_home_falls_back_to_its_process(monkeypatch
     from hermes_cli import update_fleet_scope
     monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda pid: f"/homes/{pid}")
     assert _discover_probe_job(monkeypatch, tmp_path, {}, 4242)["home"] == "/homes/4242"
+
+
+@pytest.mark.platforms("posix")
+def test_a_gateway_left_pending_by_the_pause_stays_pending_in_the_completion_process(tmp_path, monkeypatch, capsys):
+    """The fleet restart runs in a fresh completion interpreter: the gateways the pause left running
+    must reach it through the request's token, or it waits the full drain on the same busy gateway
+    again. Restored by (pid, start time): a PID now held by another process is dropped."""
+    from gateway.status import get_process_start_time
+    from hermes_cli import update_cmd_posix_pause as m
+    busy, recycled = (subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+                      for _ in range(2))
+    try:
+        entries = [{"pid": p.pid, "ct": get_process_start_time(p.pid), "home": str(tmp_path)} for p in (busy, recycled)]
+        entries[1]["ct"] += 1  # the pause saw an earlier process under this PID
+        token = m._empty_token()
+        m._leave_running(token, entries)
+        request = json.dumps({"windows_resume": token})  # what the completion child reads
+        probe = _child("""
+            import json, sys
+            from hermes_cli import update_cmd_posix_pause as m
+            m.adopt_left_pending(json.loads(sys.argv[1])["windows_resume"])
+            print(json.dumps(sorted(pid for pid in m.left_pending() if m.is_left_pending(pid))))
+        """, request, env={"HERMES_HOME": str(tmp_path)})
+        out, _ = probe.communicate(timeout=60)
+        assert json.loads(out.strip().splitlines()[-1]) == [busy.pid], out
+    finally:
+        for p in (busy, recycled):
+            p.kill()
+            p.wait(timeout=10)
+
+
+@pytest.mark.platforms("posix")
+def test_a_pid_recycled_during_the_drain_wait_is_never_a_pending_restart():
+    """Liveness is (pid, start time): a PID that now belongs to another process held no restart, so
+    the caller's escalation stands instead of leaving it running as "restart pending"."""
+    from gateway.status import get_process_start_time
+    from hermes_cli.update_cmd_drain_report import restart_left_pending
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+    try:
+        born = get_process_start_time(child.pid)
+        assert restart_left_pending(child.pid, start_time=born) is True, "premise: the signalled gateway is pending"
+        assert restart_left_pending(child.pid, start_time=born + 1) is False
+        assert restart_left_pending(child.pid, start_time=None) is False
+    finally:
+        child.kill()
+        child.wait(timeout=10)

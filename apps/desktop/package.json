@@ -12,7 +12,8 @@
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {
-    "node": ">=26"
+    "node": ">=26",
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
   },
   "scripts": {
     "clean": "pnpm run clean:e2e && pnpm run clean:renderer && pnpm run clean:electron",
@@ -191,7 +192,7 @@
     "bippy": "0.7.3",
     "concurrently": "10.0.6",
     "cross-env": "10.1.0",
-    "electron": "44.9.3",
+    "electron": "44.10.2",
     "electron-builder": "27.0.0-alpha.6",
     "esbuild": "0.28.2",
     "jsdom": "29.1.1",

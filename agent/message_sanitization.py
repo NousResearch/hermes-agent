@@ -689,7 +689,11 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    # "custom" is deliberately absent: it names a user-supplied endpoint, not a local one. A custom
+    # endpoint on a host no row above names falls through to the is_local_endpoint() fallback, so a
+    # localhost/LAN engine keeps both carriers while a remote gateway gets reasoning_content only --
+    # strict serde gateways alias `reasoning` to `reasoning_content` and reject both keys (#136486).
+    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
 
@@ -738,9 +742,9 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
         None,
     )
     if carriers is None:
-        from agent.model_metadata import is_local_endpoint
+        from agent.process_transport import is_local_server
 
-        carriers = _LOCAL_CARRIERS if base_url and is_local_endpoint(str(base_url)) else _DEFAULT_CARRIERS
+        carriers = _LOCAL_CARRIERS if is_local_server(base_url, provider_lower) else _DEFAULT_CARRIERS
     if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
         carriers = carriers | {RD}
     return carriers
@@ -791,25 +795,67 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return bool(route.carriers & {RC, R})
 
 
-def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
-    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
+def _orphaned_tool_calls(messages: list[Any], i: int) -> bool:
+    """True when assistant row *i* has a tool call whose result is not in the tool rows right after it:
+    the converter strips that ``tool_use`` and so invalidates the turn's signed thinking."""
+    from agent.anthropic_message_convert import _sanitize_tool_id
+
+    ids = {_sanitize_tool_id(tc.get("id") or "") for tc in messages[i].get("tool_calls") or [] if isinstance(tc, dict)}
+    if not ids:
+        return False
+    results: set = set()
+    for row in messages[i + 1:]:
+        if not (isinstance(row, dict) and row.get("role") == "tool"):
+            break
+        results.add(_sanitize_tool_id(row.get("tool_call_id") or ""))
+    return bool(ids - results)
+
+
+def _anthropic_thinking_fate(messages: list[Any]) -> list[str]:
+    """Per row, what ``convert_messages_to_anthropic`` leaves of its signed thinking: ``keep``; ``demote``
+    (an orphaned tool call killed the signature, so only the readable text ships); ``drop`` (a second
+    consecutive assistant row merged into the first loses its thinking, and an invalidated one demotes
+    the first). Mirrors ``_strip_orphaned_tool_blocks`` + ``_merge_consecutive_roles``."""
+    fate = ["keep"] * len(messages)
+    prev_role, group_head = None, None
+    for i, m in enumerate(messages):
+        role = m.get("role") if isinstance(m, dict) else None
+        if role in (None, "system"):
+            continue
+        if role == "assistant":
+            if _orphaned_tool_calls(messages, i):
+                fate[i] = "demote"
+            if prev_role == "assistant" and group_head is not None:
+                if fate[i] == "demote":
+                    fate[group_head] = "demote"
+                fate[i] = "drop"
+            else:
+                group_head = i
+        prev_role = "user" if role == "tool" else role
+    return fate
+
+
+def native_anthropic_row_costs(messages: list[Any]) -> list[tuple[Any, int]]:
+    """``(wire shadow, replayed-thinking tokens)`` for every row of *messages*, aligned with it.
 
     Canonical history may retain storage-only reasoning alongside signed replay carriers.
     Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
     never sends reasoning itself. The generic message estimator therefore receives only
-    ordinary wire-shaped fields, while readable thinking is returned separately for the
-    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
+    ordinary wire-shaped fields, while thinking is priced separately here. Signature/data bytes
+    are never priced as text: the server re-expands the FULL thinking from a signature, so a
+    signed carrier that survives conversion costs the turn's provider-reported thinking count
+    (``replayed_reasoning.signed_thinking_replay_tokens``), not its readable summary. Judged over
+    the whole list: whether a signature survives depends on the rows around it.
     """
-    if not isinstance(messages, list):
-        return messages, ()
-
     from agent.anthropic_message_convert import assistant_replay_carrier
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.replayed_reasoning import signed_thinking_replay_tokens
 
-    projected = []
-    replayed_thinking: list[str] = []
-    for message in messages:
+    fate = _anthropic_thinking_fate(messages)
+    rows: list[tuple[Any, int]] = []
+    for message, row_fate in zip(messages, fate):
         if not isinstance(message, dict) or message.get("role") != "assistant":
-            projected.append(message)
+            rows.append((message, 0))
             continue
 
         # Mirror _convert_assistant_message's actual inputs instead of starting
@@ -834,13 +880,34 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
         if carrier:
             shadow.pop("reasoning_content", None)
 
-        replayed_thinking.extend(
-            block["thinking"]
+        readable = sum(
+            estimate_tokens_rough(block["thinking"])
             for block in carrier
             if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
         )
-        projected.append(shadow)
-    return projected, tuple(replayed_thinking)
+        signed = any(
+            block.get("type") == "redacted_thinking" or (block.get("type") == "thinking" and block.get("signature"))
+            for block in carrier
+        )
+        if row_fate == "drop":
+            thinking = 0
+        elif signed and row_fate == "keep":
+            thinking = signed_thinking_replay_tokens(message, readable)
+        else:
+            thinking = readable
+        rows.append((shadow, thinking))
+    return rows
+
+
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[int, ...]]:
+    """Return the native Anthropic wire shadow plus each assistant turn's replayed-thinking token cost
+    (``native_anthropic_row_costs``)."""
+    if not isinstance(messages, list):
+        return messages, ()
+    rows = native_anthropic_row_costs(messages)
+    return [shadow for shadow, _ in rows], tuple(
+        thinking for (_, thinking), m in zip(rows, messages) if isinstance(m, dict) and m.get("role") == "assistant"
+    )
 
 
 def _replayable_reasoning_text(msg: dict) -> str | None:
@@ -939,23 +1006,38 @@ _NAMED_FIELD_RES = {
     # The bare word is also a top-level request param; only a message-path mention counts.
     R: re.compile(r"messages[^\n]{0,80}?(?<![\w])reasoning(?![\w])"),
 }
+# Alias collision: the schema reads ``reasoning`` as an alias of ``reasoning_content``, so a message
+# carrying both is rejected while either alone is accepted (#136486). serde names the duplicate
+# ("duplicate field `reasoning_content`" or "`reasoning`", with or without a ``messages[N]:`` path)
+# and only ``reasoning`` is the alias; Recursive's rec engine names nothing ("Use one reasoning field
+# per message") and rejects any second carrier, ``reasoning_details`` included.
+_DUPLICATE_FIELD_RE = re.compile(r"duplicate field[^a-z0-9_]{0,4}([a-z_][a-z0-9_]*)")
+_KEYLESS_COLLISION_PHRASES = ("use one reasoning field per message",)
 
 
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
-    """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
+    """Reasoning keys to drop after a schema rejection of a carrier this request sent.
 
-    Strict schemas report one offending key per error, so the drop is widened to the keys the
-    same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
-    other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
-    ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
+    Unknown field: strict schemas report one offending key per error, so the drop is widened to
+    the keys the same schema will reject next: a rejected ``reasoning_details`` / ``reasoning``
+    takes the other non-standard carrier too (``reasoning_content`` still carries the text); a
+    rejected ``reasoning_content`` (the most widely accepted alias) takes all three. One retry.
+
+    Alias collision is the opposite case: the schema READS ``reasoning_content``, so it is kept
+    and only the carriers that rode next to it in one message are dropped (``reasoning`` for a
+    named collision; any second carrier for the keyless one). A duplicate complaint about a key
+    that is not a carrier learns nothing.
     """
     body = str(error_body or "").lower()
+    assistant = [m for m in (sent_messages if isinstance(sent_messages, list) else ())
+                 if isinstance(m, dict) and m.get("role") == "assistant"]
+    if any(phrase in body for phrase in _KEYLESS_COLLISION_PHRASES):
+        return frozenset(key for msg in assistant if RC in msg for key in (R, RD) if key in msg)
+    if {m.group(1) for m in _DUPLICATE_FIELD_RE.finditer(body)} & {RC, R}:
+        return frozenset({R}) if any(RC in msg and R in msg for msg in assistant) else frozenset()
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
-    sent = {
-        key for msg in (sent_messages if isinstance(sent_messages, list) else ())
-        if isinstance(msg, dict) and msg.get("role") == "assistant" for key in REASONING_CARRIERS if key in msg
-    }
+    sent = {key for msg in assistant for key in REASONING_CARRIERS if key in msg}
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()

@@ -136,6 +136,18 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report%20%231%3F.html')
   })
 
+  // saveImageBuffer rejects an empty buffer; an empty remote document still opens, as a blank page.
+  it('stages an empty remote HTML document as a blank page', async () => {
+    const saveImageBuffer = vi.fn(async (_data: ArrayBuffer | Uint8Array, _ext: string) => '/tmp/empty.html')
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    window.hermesDesktop = { openPreviewInBrowser, saveImageBuffer } as never
+
+    await openPreviewTargetInBrowser({ ...remoteTarget, dataUrl: 'data:text/html;base64,' })
+
+    expect(new TextDecoder().decode(saveImageBuffer.mock.calls[0]?.[0])).toBe('<!doctype html>')
+    expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/empty.html')
+  })
+
   it('passes browser blob staging URLs through unchanged', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
     const saveImageBuffer = vi.fn(async () => 'blob:http://127.0.0.1:9119/preview')

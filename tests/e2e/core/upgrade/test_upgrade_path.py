@@ -3,7 +3,7 @@
 Class C6 (bricked installs, stale code, lost state after `hermes update`). Each leg:
 
 1. stages a local bare ``origin`` (``--shared`` onto this repository, so no network and no
-   object copy) with ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``);
+   object copy) with ``main`` parked at release N-1 (``_install_helpers.upgrade_base``);
 2. clones it as a git-mode install with its own venv (``uv sync --locked --extra all`` from N-1's
    own uv.lock and the warm uv cache: the installer's tier 0 and its editable layout; the installer
    script itself is covered by ``.github/workflows/install-e2e*.yml``);
@@ -53,6 +53,7 @@ import shutil
 import stat
 import sqlite3
 import subprocess
+import sys
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -463,7 +464,8 @@ def migrate_oracle(leg: Leg, name: str, before: bytes) -> bytes:
     if src_env.exists():
         shutil.copy2(src_env, home / ".env")
     code = "from hermes_cli.config import migrate_config; migrate_config(interactive=False, quiet=True)"
-    cp = H.run([str(H.WORKTREE / ".venv" / "bin" / "python"), "-c", code],
+    # HEAD's test interpreter, however the runner got it: <checkout>/.venv exists only in CI's checkout.
+    cp = H.run([sys.executable, "-c", code],
                env=env, cwd=H.WORKTREE, writable=[oroot], timeout=CLI_TIMEOUT)
     assert cp.returncode == 0 and TRACEBACK not in cp.stderr, H.describe(cp)
     return (home / "config.yaml").read_bytes()

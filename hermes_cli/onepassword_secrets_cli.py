@@ -28,7 +28,6 @@ from hermes_cli._secrets_common import (
     register_subcommands,
     require_enabled,
     rotate_token,
-    secret_cli_env,
     section_cfg,
     yn,
 )
@@ -380,9 +379,8 @@ def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
-    env = secret_cli_env()
-    if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    # Same allowlist as the fetch path; op itself reads OP_SERVICE_ACCOUNT_TOKEN.
+    env = op_src._op_child_env(token_value or os.environ.get(op_src._DEFAULT_TOKEN_ENV, ""))
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,

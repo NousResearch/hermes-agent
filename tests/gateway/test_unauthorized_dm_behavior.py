@@ -77,7 +77,6 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.pairing_store._is_rate_limited.return_value = False
     # Attributes required by _handle_message for the authorized-user path
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._update_prompts = {}
     runner.hooks = SimpleNamespace(dispatch=AsyncMock(return_value=None))
     runner._sessions = {}

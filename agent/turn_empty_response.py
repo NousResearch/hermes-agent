@@ -1,10 +1,11 @@
 """Empty / thinking-only final-response recovery ladder for the conversation turn loop.
 
 Runs when the model returned no visible text after ``<think>`` blocks. Ladder order is
-load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
-→ one post-tool-call nudge → thinking-only prefill continuation (×2) → empty-response
-retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
-``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
+load-bearing: partial-stream recovery → machinery-turn quiet exit → reuse prior
+turn content (housekeeping tools only) → one post-tool-call nudge → thinking-only
+completion reminder (×2) → empty-response retries (budgeted, deterministic-empty
+short-circuit) → fallback provider → terminal ``(empty)`` sentinel. Nothing here imports
+``agent.conversation_loop`` at module level.
 """
 
 from __future__ import annotations
@@ -24,13 +25,50 @@ logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
+# The persisted user-row display kinds the gateway types as machinery: the self-injected
+# internal_notification turn plus the producer-notice cards (background-process completions,
+# async delegation results). Mirrors gateway.response_filters.MACHINERY_DISPLAY_KINDS;
+# agent/ cannot import gateway/.
+_MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete", "async_delegation_complete"})
+
+# Loop exit stamped when a machinery turn ends with the model adding nothing.
+NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
+
+# Assistant row persisted for that exit: the same marker a deliberate no-reply on a human
+# turn already leaves in the transcript (gateway.response_filters.LIVE_GATEWAY_SILENT_MARKERS).
+MACHINERY_NO_REPLY_ROW = "[SILENT]"
+
+
+def _latest_user_display_kind(messages: list[dict[str, Any]]) -> str | None:
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("display_kind")
+    return None
+
+
+def _notification_turn_without_tool_round(messages: list[dict[str, Any]]) -> bool:
+    """True when the latest user row is a machinery turn no tool has followed.
+
+    Scans back to the turn's user row: a ``tool`` row first means the model already
+    acted on the notice (mid-task, keeps the full empty-response ladder), and any
+    other user row (a steer, a recovery nudge) is the message the model is answering.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool":
+            return False
+        if msg.get("role") == "user":
+            return msg.get("display_kind") in _MACHINERY_DISPLAY_KINDS
+    return False
+
 
 @dataclass
 class EmptyResponseVerdict:
     """Outcome of ``recover_empty_response``.
 
     ``action``: ``"break"`` (turn is done — ``final_response`` is set), ``"continue"``
-    (re-enter the OUTER turn loop: a nudge/prefill row was appended, a retry wait
+    (re-enter the OUTER turn loop: a request-only hint was queued, a retry wait
     elapsed, or a fallback was activated and preflight must re-run), ``"return"``
     (interrupted during a retry wait — return ``result``) or ``"fallthrough"``
     (unreachable: every path exits; kept for the contract)."""
@@ -42,6 +80,26 @@ class EmptyResponseVerdict:
     active_system_prompt: Any
     preflight_compression_blocked: bool
     api_call_count: int
+
+
+def add_empty_response_retry_hint(agent: Any, api_messages: list[dict[str, Any]]) -> str:
+    """Decorate only the outgoing tail; retain the hint across preflight rebuilds.
+
+    Canonical user/tool content and the earlier cache prefix stay unchanged. Response
+    intake clears the pending hint, so a recovered tool round cannot replay it.
+    """
+    hint = getattr(agent, "_empty_response_retry_hint", None)
+    if not hint or not api_messages or api_messages[-1].get("role") not in {"user", "tool"}:
+        return ""
+    tail = api_messages[-1]
+    content = tail.get("content")
+    suffix = "\n\n" + hint
+    if isinstance(content, list):
+        content = [*content, {"type": "text", "text": suffix}]
+    else:
+        content = (content or "") + suffix
+    api_messages[-1] = {**tail, "content": content}
+    return suffix
 
 
 def _retry_empty(
@@ -69,7 +127,8 @@ def _retry_empty(
     n = agent._empty_content_retries
     wait_time = jittered_backoff(n, base_delay=5.0, max_delay=60.0)
     logger.warning(
-        "Empty response (no content or reasoning) — retry %d/%d in %.1fs (model=%s)",
+        "Empty response (%s) — retry %d/%d in %.1fs (model=%s)",
+        "reasoning but no visible content" if observed_generation else "no content or reasoning",
         n, budget, wait_time, agent.model,
     )
     _budget_note = (
@@ -120,11 +179,13 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
             agent._empty_content_retries, agent.model,
             agent.provider,
         )
-        agent._emit_diagnostic_status(
+        # The gateway's final reply explains this turn's empty result, so a chat drops this copy.
+        from gateway.warning_notifications import TerminalFailureText
+        agent._emit_diagnostic_status(TerminalFailureText(
             "❌ Model returned no content after all retries"
             + (" and fallback attempts." if agent._fallback_chain else
                ". No fallback providers configured.")
-        )
+        ))
         return "(empty)"
 
     logger.warning(
@@ -132,9 +193,10 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
         "(model=%s provider=%s)",
         agent._empty_content_retries, agent.model, agent.provider,
     )
-    agent._emit_diagnostic_status(
+    from gateway.warning_notifications import TerminalFailureText
+    agent._emit_diagnostic_status(TerminalFailureText(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
-    )
+    ))
     return "(empty)"
 
 
@@ -165,16 +227,57 @@ def take_housekeeping_reply_line(agent: Any) -> Optional[str]:
     return final_response
 
 
+def _partial_stream_reply(agent: Any) -> Optional[str]:
+    """The visible text streamed before the connection died, as the turn's reply; None if none."""
+    partial = getattr(agent, "_current_streamed_assistant_text", "") or ""
+    if not agent._has_content_after_think_block(partial):
+        return None
+    recovered = agent._strip_think_blocks(partial).strip()
+    logger.info("Partial stream content delivered (%d chars) — using as final response", len(recovered))
+    agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
+    # A streamed fragment isn't a confirmed preview: gateway fallback delivery
+    # sends the text plus the abnormal-turn explanation.
+    agent._response_was_previewed = False
+    return recovered
+
+
+def _machinery_quiet_exit(agent: Any, assistant_message: Any, finish_reason: str, messages: Any) -> bool:
+    """End a machinery turn's empty reply quietly; True when it did.
+
+    A machinery turn (a self-injected internal_notification or a background-process /
+    delegation completion the gateway staged as its own user row) answered empty means
+    "nothing to add": no nudge, no paid retries, no provider switch, no sentinel row. Only
+    when no tool ran this turn (a model that acted on the notice is mid-task) and the reply
+    did not announce a tool call: ``finish_reason="tool_calls"`` with no payload is a dropped
+    action, so it keeps the ladder below, whose re-prompt recovers it.
+    """
+    if finish_reason == "tool_calls" or not _notification_turn_without_tool_round(messages):
+        return False
+    logger.info(
+        "Empty response on a machinery turn (%s): ending the turn without a reply",
+        _latest_user_display_kind(messages),
+    )
+    # Close the turn in the transcript. The finalizer appends an assistant row only for a
+    # non-empty final, and a user row left unanswered makes the next pre-call repair merge
+    # the following human prompt into the notice (text and display_kind both lost). The
+    # row carries the marker a deliberate no-reply already persists on human turns, so the
+    # gateway keeps treating it as silence and the wire keeps alternating.
+    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    assistant_msg["content"] = MACHINERY_NO_REPLY_ROW
+    append_message(messages, assistant_msg)
+    return True
+
+
 def recover_empty_response(
     agent: Any, assistant_message: Any, response: Any, finish_reason: str, *, final_response: Any,
     messages: list[dict[str, Any]], api_messages: Any, conversation_history: Any,
     active_system_prompt: Any, api_call_count: int, turn_exit_reason: Any,
     preflight_compression_blocked: bool,
 ) -> EmptyResponseVerdict:
-    """Recover from a final response with no visible content (see module docstring for
-    the ladder). Role alternation is preserved: the post-tool nudge appends the empty
-    assistant row BEFORE the user-level hint (APIs reject tool→user)."""
-    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message
+    """Recover without storing failed reasoning or synthetic conversation turns."""
+    from agent.conversation_loop import (
+        _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message,
+    )
 
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
@@ -189,19 +292,14 @@ def recover_empty_response(
 
     # Partial stream recovery: content streamed before the connection died becomes the
     # final response instead of fallback or retries.
-    _partial_streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    if agent._has_content_after_think_block(_partial_streamed):
+    if (_recovered := _partial_stream_reply(agent)) is not None:
         _turn_exit_reason = "partial_stream_recovery"
-        _recovered = agent._strip_think_blocks(_partial_streamed).strip()
-        logger.info(
-            "Partial stream content delivered (%d chars) — using as final response",
-            len(_recovered),
-        )
-        agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
         final_response = _recovered
-        # A streamed fragment isn't a confirmed preview: gateway fallback delivery
-        # sends the text plus the abnormal-turn explanation.
-        agent._response_was_previewed = False
+        return _verdict("break")
+
+    if _machinery_quiet_exit(agent, assistant_message, finish_reason, messages):
+        _turn_exit_reason = NOTIFICATION_NO_REPLY_EXIT
+        final_response = ""
         return _verdict("break")
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
@@ -218,12 +316,12 @@ def recover_empty_response(
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
     # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
-    # it; detect here to route to prefill.
+    # it; detect here to route to the thinking-only reminder.
     _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))
     if (
         _prior_was_tool
         and not getattr(agent, "_post_tool_empty_retried", False)
-        and not _has_inline_thinking  # thinking model still working — let prefill handle
+        and not _has_inline_thinking
     ):
         agent._post_tool_empty_retried = True
         # Clear stale narration so it doesn't resurface on a later empty response.
@@ -231,18 +329,12 @@ def recover_empty_response(
         agent._last_content_tools_all_housekeeping = False
         logger.info("Empty response after tool calls — nudging model " "to continue processing")
         agent._buffer_diagnostic_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
-        # tool → assistant("(empty)") → user keeps the sequence valid.
-        _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
-        _nudge_msg["content"] = "(empty)"
-        _nudge_msg["_empty_recovery_synthetic"] = True
-        append_message(messages, _nudge_msg)
-        append_message(messages, {
-            "role": "user", "content": _EMPTY_TOOL_RESPONSE_NUDGE, "_empty_recovery_synthetic": True
-        })
+        agent._empty_response_retry_hint = _EMPTY_TOOL_RESPONSE_NUDGE
+        final_response = None
         return _verdict("continue")
 
-    # Thinking-only prefill: append the reasoning as-is and continue so the model sees
-    # its own reasoning and writes text.
+    # A thinking-only assistant prefill is stripped by the send-time sanitizer, making
+    # that retry byte-identical. Send a completion reminder on the input instead.
     _has_structured = bool(
         getattr(assistant_message, "reasoning", None)
         or getattr(assistant_message, "reasoning_content", None)
@@ -252,20 +344,18 @@ def recover_empty_response(
     if _has_structured and agent._thinking_prefill_retries < 2:
         agent._thinking_prefill_retries += 1
         logger.info(
-            "Thinking-only response (no visible content) — prefilling to continue (%d/2)",
+            "Thinking-only response (no visible content) — requesting completion (%d/2)",
             agent._thinking_prefill_retries,
         )
         agent._buffer_diagnostic_status(
-            f"↻ Thinking-only response — prefilling to continue ({agent._thinking_prefill_retries}/2)"
+            f"↻ Thinking-only response — requesting completion ({agent._thinking_prefill_retries}/2)"
         )
-        interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-        interim_msg["_thinking_prefill"] = True
-        append_message(messages, interim_msg)
-        agent._session_messages = messages
+        agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
+        final_response = None
         return _verdict("continue")
 
     # Empty-response retries: truly empty replies AND reasoning-only replies after
-    # prefill exhaustion.
+    # completion-reminder exhaustion.
     _truly_empty = not agent._strip_think_blocks(final_response).strip()
     _empty_candidate = _truly_empty and (not _has_structured or agent._thinking_prefill_retries >= 2)
     action, interrupt_result, _deterministic_empty = _retry_empty(

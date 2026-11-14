@@ -38,16 +38,17 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import current_path, original_path
 DEFAULT_TREES = (
     "hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "acp_adapter", "pm",
     "cli.py", "utils.py", "hermes_constants.py", "hermes_logging.py", "hermes_time.py", "run_agent.py",
     "model_tools.py", "batch_runner.py")
 # The backend module itself, and the on-disk primitives it wraps.
-ALLOWED_FILES = {ROOT / "hermes_cli" / "config_backend.py", ROOT / "utils.py"}
+ALLOWED_FILES = {ROOT / current_path("hermes_cli/config_backend.py"), ROOT / current_path("utils.py")}
 # Modules whose ``config_path`` / ``path`` names are their OWN config file, never a hermes
 # config.yaml (the name heuristic would flag every line of them).
 FOREIGN_CONFIG_FILES = {
-    "plugins/memory/honcho": "Honcho's own honcho.json",
     "plugins/memory/openviking": "OpenViking's own ovcli config",
     "agent/proxy_sources/iron_proxy.py": "iron-proxy's proxy.yaml",
 }
@@ -228,7 +229,7 @@ def scan_file(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    targets = [ROOT / a for a in argv] or [ROOT / t for t in DEFAULT_TREES]
+    targets = [ROOT / a for a in argv] or [ROOT / current_path(t) for t in DEFAULT_TREES]
     files: list[Path] = []
     for t in targets:
         if t.is_dir():
@@ -243,7 +244,8 @@ def main(argv: list[str]) -> int:
         if f.resolve() in ALLOWED_FILES:
             continue
         rel = f.resolve().relative_to(ROOT).as_posix() if f.resolve().is_relative_to(ROOT) else ""
-        if any(rel == p or rel.startswith(p + "/") for p in FOREIGN_CONFIG_FILES):
+        original = original_path(rel)
+        if any(original == p or original.startswith(p + "/") for p in FOREIGN_CONFIG_FILES):
             continue
         problems.extend(scan_file(f))
     if problems:

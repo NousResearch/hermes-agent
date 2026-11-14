@@ -60,10 +60,12 @@ _MAX_CLONE_TIMEOUT_SECONDS = 3600
 _CLONE_TIMEOUT_HINT = "On a slow connection, raise plugins.clone_timeout_seconds in config.yaml."
 
 
-@functools.lru_cache(maxsize=1)
 def _resolve_git_executable() -> Optional[str]:
-    """Resolve a git binary for subprocess use when ``PATH`` may be minimal."""
-    found = shutil.which("git")
+    """The git plugin operations run: PM's pinned git, then PATH, then the usual install dirs
+    (``PATH`` may be minimal)."""
+    from hermes_cli.boot_bootstrap import _git_binary
+
+    found = _git_binary()
     if found:
         return found
     if os.name == "nt":
@@ -485,9 +487,9 @@ _get_enabled_set = functools.partial(_config_name_set, "plugins", "enabled")
 
 def _save_enabled_set(enabled: set) -> None:
     """Frozen old-updater import: never resurrect a raw plugin-selection write."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.plugins_cmd._save_enabled_set")
 
 
 def _plugin_selection_version() -> str:
@@ -1124,6 +1126,11 @@ def _action_pack(args):
     pack_command(args)
 
 
+def _action_idle_tasks(args):
+    from hermes_cli.plugins_idle_tasks import cmd_idle_tasks
+    cmd_idle_tasks(args.name, pause=args.pause, resume=args.resume)
+
+
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
 _PLUGIN_ACTIONS = {
     "install": lambda args: cmd_install(
@@ -1154,6 +1161,7 @@ _PLUGIN_ACTIONS = {
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
+    "idle-tasks": _action_idle_tasks,
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),

@@ -21,7 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _MERGE_DISPLAY_META, _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
@@ -1047,7 +1047,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         time (before the agent ran) and the turn prologue then rewrote the prompt it persists (@-file
         expansion, native image parts, a ``pre_llm_call`` veto's placeholder): the early row must show what
         the transcript will replay, not the raw keystrokes, and the turn must not append a second row for
-        the same input. ``display_metadata``, when given, replaces the row's (and clears ``api_content``)."""
+        the same input. ``display_metadata``, when given, is merge-patched in (``None`` deletes; reactions survive)."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
         if display_metadata is None:
@@ -1055,7 +1055,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
                 (self._encode_content(content), row_id, session_id))
         return self._write_rowcount(
-            "UPDATE messages SET content = ?, api_content = NULL, display_metadata = ? "
+            f"UPDATE messages SET content = ?, api_content = NULL, display_metadata = {_MERGE_DISPLAY_META} "
             "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
             (self._encode_content(content), self._encode_display_metadata(display_metadata), row_id, session_id))
 

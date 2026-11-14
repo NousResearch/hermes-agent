@@ -1,0 +1,19 @@
+name: reliability-desk
+title: Reliability Desk
+repo: https://github.com/KellerAI/hermes-plugins
+sha: 3e33c00e2b9ebcee2090970f63b948a8de1347ad
+subdir: reliability-desk
+description: "High-reliability practices on your real launches, changes and incidents: go/no-go polls with named veto owners, blameless incident reviews that fix conditions rather than people, FMEA with RPN and severity override, closed-loop readbacks, stop-the-line triggers, change-control recommendations and session checklists. Every finding cites its evidence, and every GO, NO-GO or change-control outcome is a recommendation for a named human. Disclosure: no tools, hooks, MCP servers, scripts, network calls or stored credentials; works from what the user pastes; never sends, posts or pages anything; merges, deploys, rollbacks or other changes happen only when the user confirms that exact action in their own message; never signs in."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KellerAI/hermes-plugins/tree/main/reliability-desk#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

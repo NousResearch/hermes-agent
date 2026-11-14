@@ -2,7 +2,7 @@
 
 The credential writers (auth.json, MCP OAuth tokens, secret-source cache, iron-proxy state, the
 Photon sidecar record, pairing data, the vault blob, the third-party
-credential file, the spawn ledger, the meet-node token) all funnel through ``utils.atomic_json_write`` / ``atomic_write_text`` /
+credential file, the spawn ledger, the meet-node token, node registry and Google auth state) all funnel through ``utils.atomic_json_write`` / ``atomic_write_text`` /
 ``atomic_write_bytes`` with ``mode=0o600``. The contract under test: the *temp* file is created
 with mode 0600 (``O_EXCL``) BEFORE any byte lands and the final file carries 0600 — never
 "open at umask, then chmod" (the #19673 window). POSIX-only: mode bits are not enforced on Windows.
@@ -40,6 +40,36 @@ def opens_spy(monkeypatch):
     return observed
 
 
+def _fake_playwright(monkeypatch):
+    """Install a ``playwright.sync_api`` whose context mimics ``storage_state`` (plain open at umask)."""
+    import types
+
+    class _Context:
+        def new_page(self):
+            return types.SimpleNamespace(goto=lambda *a, **k: None)
+
+        def storage_state(self, path=None):
+            state = {"cookies": [{"name": "SID", "value": "secret"}], "origins": []}
+            if path is not None:
+                Path(path).write_text(json.dumps(state), encoding="utf-8")
+            return state
+
+    browser = types.SimpleNamespace(new_context=_Context, close=lambda: None)
+    pw = types.SimpleNamespace(chromium=types.SimpleNamespace(launch=lambda **k: browser))
+
+    class _SyncPlaywright:
+        def __enter__(self):
+            return pw
+
+        def __exit__(self, *exc):
+            return False
+
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = _SyncPlaywright
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+
+
 def _writers(home: Path, monkeypatch):
     """``(label, callable, target_path)`` for every private-credential writer."""
     from agent import anthropic_credentials
@@ -50,6 +80,8 @@ def _writers(home: Path, monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import process_identity
     from tools import mcp_oauth
+    from plugins.google_meet import cli as meet_cli
+    from plugins.google_meet.node.registry import NodeRegistry
     from plugins.google_meet.node.server import NodeServer
     from plugins.platforms.photon import adapter as photon_adapter
 
@@ -60,6 +92,10 @@ def _writers(home: Path, monkeypatch):
     cache = DiskCache("probe.json", key_serializer=str)
     vault = VaultStore(home / "vault")
     meet_node = NodeServer(token_path=home / "meetings" / "node_token.json")
+    meet_registry = NodeRegistry(path=home / "meetings" / "nodes.json")
+    _fake_playwright(monkeypatch)
+    monkeypatch.setattr(meet_cli, "chromium_executable", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda *_: "")
     return [
         ("auth.json", lambda: auth_mod._save_auth_store({"version": auth_mod.AUTH_STORE_VERSION, "providers": {}}),
          auth_mod._auth_file_path()),
@@ -75,6 +111,9 @@ def _writers(home: Path, monkeypatch):
         ("vault blob", lambda: vault._write_all([]), vault._vault_path),
         ("spawn ledger", lambda: process_identity.register_self("probe"), ledger),
         ("meet node token", meet_node.ensure_token, meet_node.token_path),
+        ("meet node registry", lambda: meet_registry.add("mac", "ws://mac.local:18789", "tok"), meet_registry.path),
+        ("meet google auth state", lambda: meet_cli._cmd_auth() == 0 or pytest.fail("meet auth failed"),
+         meet_cli._auth_state_path()),
     ]
 
 

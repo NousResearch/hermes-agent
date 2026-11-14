@@ -144,6 +144,14 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
+Core's lock still takes precedence over that seed: when core's `uv.lock` moves a
+package past both the previous environment's pin and the core lock that
+environment was built from (a security release of a transitive, say), the
+package moves to core's version for the installing interpreter's fork
+(`uv lock -P name==version`), and a plugin that cannot accept it is disabled by
+an update like any other plugin that no longer builds. Pins core did not move,
+packages core's lock does not pin, and conflicts between plugins keep the
+incumbent environment's versions.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
 and the optional extras this install selects (or the plugin's own requirements name);
@@ -204,6 +212,12 @@ once the build is fixed. A carried extra that fails only for the moment (a
 download or a missing tool) is never dropped: the update fails before it
 publishes anything, so the next update scans the old venv again and retries
 it. An extra you request yourself still fails the install when it cannot build.
+Only a venv that holds Hermes and that PM did not build counts as the old
+install. Every environment PM builds carries `hermes-pm-built = true` in its
+`pyvenv.cfg`, on any interpreter (`pm.build_env --python` included); one built
+before that key existed runs PM's own Python (its `pyvenv.cfg` `home` is in
+PM's tool store). Neither is ever carried, and neither is an empty `uv venv`. Any other in-tree `venv/` or `.venv/` with Hermes
+installed is read, a developer venv built by hand with `uv` included.
 
 ### Lazy-install policy
 
@@ -438,6 +452,10 @@ pnpm --dir ui-tui run build
 pnpm --dir apps/desktop run dev
 ```
 
+`just` lists these developer commands as recipes (`just js-install`, `just desktop`,
+`just tui`, `just check`, `just test <paths>`); each recipe calls the command shown
+here. See [Developer commands](../developer-guide/contributing.md#developer-commands).
+
 Activation provides the pnpm version `pm/lock.json` pins. An install that runs
 lifecycle scripts refuses any other pnpm, a direct or filtered `pnpm install`
 included: the root `preinstall` script requires the `pm/lock.json` pnpm and refuses
@@ -448,11 +466,27 @@ update) or `pnpm fetch`, so another pnpm 12 passes those. The backstop for a
 lockfile written that way is CI: every change to `pnpm-lock.yaml` runs the JS checks,
 which install it with the pinned pnpm under `--frozen-lockfile` (with
 `--lockfile-only` when the installed tree is cached). That proves the lockfile matches
-the manifests and the release-age policy, not which pnpm wrote it. A user agent
-overridden through `pnpm_config_user_agent` is refused as well.
+the manifests and the release-age policy, not which pnpm wrote it. The preinstall
+reads the user agent pnpm reports, so a `pnpm_config_user_agent` override is
+refused unless it names the pinned version.
+
+In the repository root and the JS workspace folders, npm refuses every command that
+installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,
+`--package-lock-only` or `--force`, `npm ci`, `update`, `dedupe`, `uninstall`,
+`link`): each of these folders has an `.npmrc` with `engine-strict=true`, and its
+`package.json` declares an `engines.npm` that no npm satisfies. `npm rebuild` and
+`npm pkg set` are not refused. An explicit `--engine-strict=false` overrides the
+refusal.
+
+`npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
+But `engine-strict` applies anywhere in the checkout: in these folders, and through
+the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
 
 The website is a separate npm project: `npm ci --prefix website`, then
-`npm run build:fast --prefix website`. PM activation supplies tools, not these
+`npm run build:fast --prefix website` (`just docs-install`, `just docs-build`). PM activation supplies tools, not these
 `node_modules` directories or built assets. Native desktop builds have additional
 requirements in the [desktop build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
 

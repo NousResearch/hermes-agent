@@ -23,6 +23,8 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 Steps 2 and 3 are **per profile home**: one process that serves several profiles (the multiplex gateway a local Desktop attaches to, a `hermes serve` backend) resolves the plugins of whichever profile's `$HERMES_HOME` is bound at lookup time, and a plugin installed in one profile is not visible from another. Install the plugin in every profile that should use it (`hermes -p <profile> plugins install ...`).
 
+Updates reach a running process too. `hermes plugins update`, the dashboard and Desktop update, and the gateway's auto-apply tick all end in a forced plugin sweep, which re-scans the profile's provider plugins. A plugin whose tree changed (its catalog pin in `.hermes-catalog.json`, else the mtimes of its Python files and manifest) is dropped whole, package and submodules, then imported again, so its profiles re-register from the new version. New requests use it; a client already built keeps its objects, and anything it imports afterwards comes from the new package, never a mix of the two versions.
+
 **User plugins override bundled plugins of the same name** because `register_provider()` is last-writer-wins. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
 
 ## Directory structure

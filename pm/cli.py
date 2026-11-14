@@ -308,26 +308,6 @@ def _install_defaults(names: list[str], *, verify: bool) -> None:
                   f"`hermes pm install {name}` succeeds", flush=True)
 
 
-def _first_selection(extras: list[str]) -> tuple[list[str], list[str]]:
-    """``(extras this install's sync requests, the ones it carries)``: the caller's, else ``[all]``.
-
-    Before PM has recorded a selection (a first migration that failed before writing facts),
-    the main-era venv's extras are carried too, minus any dropped with ``--without``, exactly as
-    the launch migration would; otherwise this sync's facts would end the re-scan without them.
-    The carried ones are not a request, so they never opt a declined extra back in.
-    """
-    from pm.environments import runtime_facts_path
-    from pm.extras import legacy_selection
-
-    requested = extras or ["all"]
-    if runtime_facts_path(repo_root()).is_file():
-        return requested, []
-    carried = legacy_selection(repo_root())
-    if carried == ["all"]:
-        return requested, []
-    return sorted(set(carried) | set(extras)), sorted(set(carried) - set(requested))
-
-
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
     """Sync the venv and build the side test environment; return the failure count."""
     failed = 0
@@ -339,9 +319,9 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # `hermes update` force-syncs on every run (update_cmd.py) and
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
-            # a fresh bootstrap match what the first update would do.
-            selection, carried = _first_selection(extras)
-            sync_venv(selection, explicit=True, **({"automatic": carried} if carried else {}))
+            # a fresh bootstrap match what the first update would do. Before a selection is
+            # recorded, sync_venv carries the main-era venv's extras too (pm.carried_extras).
+            sync_venv(extras or ["all"], explicit=True)
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")
@@ -406,7 +386,10 @@ def cmd_install(args) -> int:
     # sync the venv in one breath, so a native build (Windows ARM64 source
     # wheels) resolved compilers and git from the host PATH. Publish every
     # tool first and put it on PATH; sync only after that.
-    tool_names = names if args.names else tool_roots(names)
+    from pm.testenv import developer_tools
+
+    tool_names = [*(names if args.names else tool_roots(names)),
+                  *(developer_tools(_lockfile().names()) if test_environment is not None else ())]
     if _install_names(tool_names, target=cross_target, verify=not trust_recorded):
         return 1
     if args.names and not cross_target:
@@ -465,7 +448,7 @@ def cmd_doctor(args) -> int:
             continue
         facts, store = _installed_location(package, lockfile, target) or (_facts(), _store())
         fact = facts.get(name)
-        soft = package.optional or package.internal
+        soft = package.is_optional(target) or package.internal
         identity = _identity(lockfile, name, target)
         if (
             fact is not None
@@ -506,7 +489,7 @@ def _doctor_uv_cache(*, repair: bool) -> int:
     Read-only by default like the rest of doctor. Installs already purge a
     corrupt entry they trip over; this finds them before an install does.
     """
-    from pm.environment import managed_environment
+    from pm.environment import managed_environment  # noqa: TID251
     from pm.packages import uv_cache_path
     from pm.uv_cache_health import corrupt_cached_packages
 
@@ -532,6 +515,33 @@ def _doctor_uv_cache(*, repair: bool) -> int:
     return 0
 
 
+def _live_pin(store, lockfile):
+    """Whether a tool row in ``store``'s facts is still pinned by some checkout.
+
+    A row with no owners (written before per-install history) proves nothing either way and
+    stays, as does one matching this checkout's own lock. Otherwise a checkout still pins its
+    rows while its dependency state dir exists: the orphan sweep removes that only once it
+    proves the checkout deleted, so one this process cannot see (another mount, a container
+    sharing the data root) keeps its pins."""
+    from pm.environments import installs_root
+    from pm.install import _identity
+
+    roots = {installs_root(), store.root.parent / "installs"}
+
+    def live(name: str, row: dict) -> bool:
+        owners = row.get("owners")
+        if not owners:
+            return True
+        # This checkout's own pin, judged like ``Facts.installed``: an artifact-less pin by version.
+        target = row.get("target")
+        identity = _identity(lockfile, name, target) if isinstance(target, str) else None
+        if row.get("version") == lockfile.version(name) and (
+                identity is None or (target, tuple(row.get("artifacts") or ())) == identity):
+            return True
+        return any((root / owner).is_dir() for owner in owners for root in roots)
+    return live
+
+
 def _gc_store(store, facts) -> tuple[int, int]:
     """The sweep core shared by `pm gc` and `pm bundle`.
 
@@ -553,7 +563,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         from pm.defaults import RETIRED_DEFAULTS
 
         facts.forget(RETIRED_DEFAULTS)
-        facts.reload()
+        facts.drop_dead_pins(_live_pin(store, _lockfile()))
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
         removed += _reclaim_set_aside(store)
@@ -580,6 +590,10 @@ def cmd_gc(args) -> int:
     from pm.store import Store
     store = Store(writable_store_root())
     facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
+    from pm.environments import installs_root
+    from pm.install_states import collect_orphan_install_states
+    # Orphans first: a deleted checkout's tool pins are released in this same pass.
+    orphans = collect_orphan_install_states(installs_root())
     removed, kept = _gc_store(store, facts)
     from hermes_cli.runtime_state import collect_generations
     from pm.environments import install_state_dir
@@ -587,9 +601,6 @@ def cmd_gc(args) -> int:
     from pm.runtime import collect_runtime_generations
     generations = collect_generations(repo_root())
     runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
-    from pm.environments import installs_root
-    from pm.install_states import collect_orphan_install_states
-    orphans = collect_orphan_install_states(installs_root())
     print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
           f"{len(runtimes)} PM runtime generations, {len(orphans)} install state dir(s) of deleted checkouts")
     return 0
@@ -597,7 +608,7 @@ def cmd_gc(args) -> int:
 
 def _run_live(cmd: list[str], *, cwd, env, timeout: int = 3600) -> tuple[int, str]:
     """Stream CI progress with the Python engine's bounded drain and diagnostic tail."""
-    from pm.environment import _run_streaming
+    from pm.environment import _run_streaming  # noqa: TID251
 
     try:
         result = _run_streaming(cmd, cwd=cwd, env=env, timeout=timeout, output=sys.stdout)

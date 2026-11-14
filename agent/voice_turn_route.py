@@ -19,18 +19,19 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional
 
+from agent.route_verdicts import ROUTE_VERDICT_FIELDS
+
 logger = logging.getLogger(__name__)
 
 TASK = "voice_chat"
 
 # Agent fields the route swap touches outside the ``_primary_runtime``-shaped snapshot. The
-# reasoning-rejection flags are facts about one route: the voice model starts without the main
-# model's and leaves its own behind (a learned floor is remembered per route instead).
-_REJECTION_FIELDS = ("_reasoning_disable_rejected", "_reasoning_floor_required", "_reasoning_effort_rejected")
+# rejection verdicts are facts about one route: binding the voice route clears them (route_verdicts)
+# and the main model gets its own back afterwards (a learned floor is remembered per route instead).
 _EXTRA_FIELDS = (
     "_fallback_activated", "_fallback_index", "_provider_fallback_active", "_provider_fallback_route",
     "_rate_limit_backoff_count", "_credential_pool", "_credential_pool_entry_id", "_config_context_length",
-    *_REJECTION_FIELDS,
+    *ROUTE_VERDICT_FIELDS,
 )
 
 
@@ -150,7 +151,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         reason = ""
         try:
             from agent.route_binding import bind_route_entry
-            if bind_route_entry(agent, target, target["provider"], target["model"]) is None:
+            if bind_route_entry(agent, target, target["provider"], target["model"], commit_pool_choice=False) is None:
                 reason = "provider not configured"
         except Exception as exc:  # health: allow BLE001 -- any bind failure falls back to the main model with a notice
             reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
@@ -161,10 +162,10 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
             _warn_once(agent, target, reason)
             agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
             return agent._cached_system_prompt or system_prompt
+        if (choice := getattr(agent, "_route_pool_choice", None)) is not None:
+            choice.commit()  # the voice model takes the turn: its pool key is now in use
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
-        for name in _REJECTION_FIELDS:
-            setattr(agent, name, False)
         agent._turn_route_task = TASK
         logger.info("Voice turn routed to %s (%s)", agent.model, agent.provider)
     if effort is not None:

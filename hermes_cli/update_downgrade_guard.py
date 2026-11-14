@@ -21,7 +21,7 @@ _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
 # Where a tree keeps its state-store modules: the root today, the package once they move into it.
 # Literal per-location patterns serve as git pathspecs, fnmatch patterns and Path.glob patterns alike;
 # a ``:(glob)**`` pathspec would also match tests/ and is not honoured by ``rev-list --objects``.
-STATE_MODULES = ("hermes_state*.py", "src/hermes_agent/hermes_state*.py", "src/hermes_agent/hermes_state/*.py")
+STATE_MODULES = ("hermes_state*.py", "hermes_agent/hermes_state*.py", "hermes_agent/hermes_state/*.py")
 _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
                  "OR EXISTS(SELECT 1 FROM worker_executions)")
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"
@@ -73,7 +73,10 @@ def _has_ledger_rows(db_path: Path) -> bool:
         return False
     from hermes_state_holders import read_only_db_uri
     try:
-        with closing(sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)) as conn:
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        with closing(connect_tracked(read_only_db_uri(db_path), uri=True, timeout=5.0, tracking_path=db_path,
+                                     connect_fn=sqlite3.connect)) as conn:
             return bool(conn.execute(_LEDGER_PROBE).fetchone()[0])
     except sqlite3.Error:
         return False  # no ledger tables yet, or unreadable: nothing an older release would trip on
@@ -89,7 +92,7 @@ def _pre_runtime_snapshot(home: Path) -> str | None:
         if snap.name.startswith(".") or not db.is_file():
             continue
         try:
-            with closing(sqlite3.connect(read_only_db_uri(db), uri=True)) as conn:
+            with closing(sqlite3.connect(read_only_db_uri(db), uri=True)) as conn:  # health: allow HX015 -- quick-snapshot copy, never the live store
                 if conn.execute("SELECT 1 FROM sqlite_master WHERE name='session_admissions'").fetchone() is None:
                     return snap.name
         except sqlite3.Error:

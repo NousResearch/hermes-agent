@@ -145,8 +145,12 @@ It also receives `previous_message`: the text of the person's last message befor
 from the transcript Hermes holds (`""` on a first turn, or when that message was image-only). Known
 runtime rows in the user role are skipped (continue nudges, task-list snapshots, single
 background-process completion and watch-match notices, compaction summaries, mid-turn `/steer`
-messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`. It
-is best-effort: other runtime notices a gateway replays after a restart (a cron delivery, a process
+messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`.
+On a turn with an image, Hermes appends recalled memory and plugin or gateway notes to the message as
+text; `previous_message` is the turn's own text, without them. It
+is best-effort: an image turn stored by an older Hermes, or one that repair or compaction later merged
+with another turn, still carries its plugin and gateway notes, and
+other runtime notices a gateway replays after a restart (a cron delivery, a process
 heartbeat, a watch-disabled or batched-completion notice) can still come through. A process
 that resumed a session (`hermes chat --resume`, a gateway after a restart) never ran the previous
 turn's end, so a provider that prepares recall in `queue_prefetch()` can redo that work from it, even
@@ -525,7 +529,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
 
-- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's live manager already bound, on any host that serves several profiles, multiplexed or not, and logs `memory_provider_instance_shared`.
 - **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
 - **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
 

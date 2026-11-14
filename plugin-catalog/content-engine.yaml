@@ -1,0 +1,23 @@
+name: content-engine
+title: Content Engine
+repo: https://github.com/PXMichael/content-engine
+sha: 19e5ae8cac70e34af3c849b7ed61506fef53c2f0
+version: "0.1.0"
+description: "One long video in, a week of content out. Paste a YouTube URL, get scored 45 to 60 second clips and per-platform social copy. Live in 90 seconds, no editing software."
+maintainer: PXMichael
+category: tools
+tier: community
+requires_hermes: ">=0.19"
+docs_url: https://github.com/PXMichael/content-engine/blob/19e5ae8cac70e34af3c849b7ed61506fef53c2f0/README.md
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - ce_fetch_transcript
+    - ce_score_moments
+    - ce_write_copy
+    - ce_cut_clips
+    - ce_run
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,33 @@
+# Community catalog entry: skill-hint
+#
+# Owner-submitted: the PR author (`kosmo888`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the plugin is three plain Python
+# files, there is nothing to download and nothing replaces itself at runtime.
+name: skill-hint
+repo: https://github.com/kosmo888/skill-hint
+sha: "85384d1778926f811bf49f5c5d4f258453643204"   # tag v1.0.0
+description: "Local-first skill discovery: on each user turn it runs a BM25 query over the
+  installed skill library and injects up to three candidate skill names, only when the match is
+  confident — catches colloquial phrasing, shorthand and non-English wording that a
+  description-written index misses. Pure standard library: no network, no model call, no API key,
+  ~0.03 ms per query, and at most a few lines of injected context. Says nothing when nothing fits;
+  never raises into the conversation. Disclosure — reads SKILL.md front matter and the first
+  1,000 characters of the body under the profile's skill roots (symlinked skill directories are
+  followed) and keeps the index in memory; it writes nothing and sends nothing anywhere. Skill
+  names and descriptions reach the model only when a hint is injected, exactly as they would if
+  the model had opened the skill itself."
+maintainer: kosmo888
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/kosmo888/skill-hint#readme
+version: "1.0.0"
+title: "Skill Hint"
+image: https://raw.githubusercontent.com/kosmo888/skill-hint/85384d1778926f811bf49f5c5d4f258453643204/media/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

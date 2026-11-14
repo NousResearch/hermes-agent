@@ -889,6 +889,11 @@ const sidebars: SidebarsConfig = {
         'reference/faq',
       ],
     },
+    {
+      type: 'link',
+      label: 'Compare Hermes Agent',
+      href: 'https://hermes-agent.nousresearch.com/compare',
+    },
   ],
 };
 

@@ -1,0 +1,28 @@
+name: logmine
+repo: https://github.com/rodricksz4h5/logmine
+sha: 217cc696b4d41272b391d2fd6dd3183089e44d42
+version: "1.0.2"
+title: Logmine
+description: >-
+  Exact, local intelligence over large text log files. log_summarize mines the
+  file into recurring message templates (masking numbers, IPs, UUIDs, hashes,
+  quoted strings and timestamps so near-identical lines collapse into one ranked
+  pattern with an exact count), plus a level histogram and the detected time span;
+  log_grep is regex search with line numbers and grep-style context; log_timeline
+  buckets events per minute/hour/day to find spikes. Streamed, so a log too big to
+  fit in the model's context still works. Standard library only: no network, no
+  credentials, no background processes, no self-update. Disclosure: reads the local
+  log path you pass it (read-only).
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/logmine/tree/217cc696b4d41272b391d2fd6dd3183089e44d42
+capabilities:
+  provides_tools:
+    - log_summarize
+    - log_grep
+    - log_timeline
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

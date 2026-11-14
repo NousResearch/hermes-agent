@@ -317,3 +317,24 @@ def test_snapshot_store_update_proceeds_when_the_lock_is_unavailable(tmp_path, m
     modal_module._delete_direct_snapshot("task-A", "im-AAAA")
 
     assert json.loads(modal_module._snapshot_store().read_text(encoding="utf-8")) == {}
+
+
+def test_cleanup_drops_the_sandbox_handle_even_if_stopping_the_worker_fails(tmp_path, monkeypatch):
+    """Terminate went through, then the worker's loop shutdown raced and raised: the env must
+    still read as closed and cleanup must not raise (teardown settles its processes only then)."""
+    _install_modal_test_modules(tmp_path)
+    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
+    env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-stop-race")
+    worker = env._worker
+    real_stop = worker.stop
+
+    def racing_stop():
+        real_stop()
+        raise RuntimeError("Event loop is closed")
+
+    monkeypatch.setattr(worker, "stop", racing_stop)
+
+    env.cleanup()
+
+    assert env._sandbox is None

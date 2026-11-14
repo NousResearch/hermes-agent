@@ -562,10 +562,10 @@ def _gateway_loop_exception_handler(
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
-    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
-    from agent.redact import redact_for_egress
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911)."""
+    from agent.redact_phone_policy import redact_for_chat_egress
 
-    return redact_for_egress(text)
+    return redact_for_chat_egress(text)
 
 
 def _redact_approval_command(cmd: str | None) -> str:

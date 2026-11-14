@@ -101,10 +101,15 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
 # RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.transcript"})
+_WS_CONCURRENT_READ_METHODS = frozenset(
+    {"session.context_breakdown", "session.control.read", "session.transcript"}
+)
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
+# Log slow completed dispatches by method, without parameters or response bodies. Pooled handlers
+# that return before writing their own reply are timed only through that handoff.
+_WS_SLOW_DISPATCH_LOG_MS = 5_000
 # A shared socket's frame naming a profile hot-serve is still starting (a chat opened on a profile
 # created a moment ago) waits for that start in a lane of its own: on the serial lane every later
 # control on the socket, other profiles' prompts and interrupts included, would queue behind it.
@@ -120,6 +125,16 @@ _WS_ANSWER_METHODS = frozenset({"clarify.lock"})
 def _answers_open_request(req: Any) -> bool:
     from tui_gateway.server_requests import is_response_frame
     return isinstance(req, dict) and (req.get("method") in _WS_ANSWER_METHODS or is_response_frame(req))
+
+
+def _log_slow_dispatch(peer: str, req_id: Any, req_method: Any, elapsed: float) -> None:
+    """Record a completed dispatch's duration, not a claim about its next queued request."""
+    if elapsed * 1000.0 >= _WS_SLOW_DISPATCH_LOG_MS:
+        _log.warning(
+            "ws dispatch slow peer=%s id=%r method=%r ms=%d",
+            peer, req_id, req_method, int(elapsed * 1000.0),
+        )
+
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -488,6 +503,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # dispatch() may schedule long handlers on the pool; it returns None then and the worker
         # writes the response itself via transport.write (a separate thread, so that is the safe
         # path). Inline handlers return the response dict, written here from the loop.
+        started_at = time.perf_counter()
         try:
             resp = await _dispatch_request(authority_connection, req, req_method, transport)
         # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
@@ -497,11 +513,15 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
                          "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
             return
+        else:
+            _log_slow_dispatch(peer, req_id, req_method, time.perf_counter() - started_at)
         if resp is not None:
             await _reply(resp, "send_failed_after_response",
                          "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
 
     async def _dispatch_concurrent_read(req: Any) -> None:
+        if not await _wait_for_read_profile(req):
+            return
         async with concurrent_read_slots:
             started_reads.add(asyncio.current_task())
             try:
@@ -512,6 +532,21 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 if not send_failed.done():
                     send_failed.set_result(None)
                 raise
+
+    async def _wait_for_read_profile(req: Any) -> bool:
+        start = authority_connection.awaits_profile_start(req) if authority_connection is not None else None
+        if start is None:
+            return True
+        _, started = start
+        waits = {asyncio.ensure_future(started.wait()), asyncio.ensure_future(client_gone.wait())}
+        try:
+            await asyncio.wait(waits, timeout=_WS_PROFILE_START_WAIT_S, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for wait in waits:
+                wait.cancel()
+        # These reads count against admission, but do not occupy the running slots while their
+        # profile starts. The authority returns runtime_draining if the bounded wait expires.
+        return not client_gone.is_set()
 
     def _finish_concurrent_read(task: asyncio.Task) -> None:
         # Here, not in the task: a task cancelled before its first step never runs its body.
@@ -594,14 +629,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return stop
 
     async def _dispatch_loop() -> None:
-        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        """Dispatch controls in arrival order; bounded read-only projections never enter this queue."""
         while (req := await _next_request()) is not stop:
-            req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method in _WS_CONCURRENT_READ_METHODS:
-                task = asyncio.create_task(_dispatch_concurrent_read(req))
-                concurrent_reads.add(task)
-                task.add_done_callback(_finish_concurrent_read)
-                continue
             if await _hold_for_profile_start(req):
                 continue
             await _dispatch_one(req)
@@ -611,9 +640,17 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _dispatch_one(req)
             return
         if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
+            # Unordered snapshots: callers requiring read-after-write must await the mutation's reply.
             # A read past the waiting cap parks the reader, as the serial lane did; released
-            # when its task ends (a read cancelled before it ran releases it too).
+            # when its task ends (a read cancelled before it ran releases it too). Started here, not
+            # by the serial lane: a read that queues behind a slow mutating request inherits that
+            # request's latency, and the client blames the read (a "Session controls unavailable"
+            # banner naming session.control.read) while the real blocker leaves no trace on this side.
             await _unless_dispatch_failed(read_admission.acquire())
+            task = asyncio.create_task(_dispatch_concurrent_read(req))
+            concurrent_reads.add(task)
+            task.add_done_callback(_finish_concurrent_read)
+            return
         await _unless_dispatch_failed(pending.put(req))
 
     async def _end_reads() -> None:

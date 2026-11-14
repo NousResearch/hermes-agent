@@ -346,9 +346,9 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
     Lists are comma-joined; ``None`` is skipped.
 
-    Precedence is per *value*, not just per name: a var whose current value is the one this bridge
-    wrote last time is the bridge's own leftover (a restarted gateway inherits it) and is refreshed
-    from YAML, while any other preset value is an operator's and wins.
+    Precedence: a value from ``.env`` or an external secret source wins (#109032); any other preset
+    value (the bridge's own leftover a restarted gateway inherits, or a launcher's process env) is
+    replaced by the explicit YAML key, since config.yaml wins for non-secret settings (#110295).
     """
     skip = bridge_env_skipped()
 
@@ -365,8 +365,14 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
             marker = bridged_env_marker(name)
             current = os.getenv(name)
             if current is not None and current.strip():
-                if not _is_bridge_leftover(name, os.getenv(marker)) or _supplied_by_operator(name):
-                    return  # the operator's value, not this bridge's leftover
+                if _supplied_by_operator(name):
+                    return  # ``.env`` / a secret source: the operator's deliberate value (#109032)
+                if not _is_bridge_leftover(name, os.getenv(marker)):
+                    if current == bridged:
+                        return  # already the YAML value; never claim an unmarked export
+                    # An inherited process value (a launcher's env, an older gateway's unmarked write)
+                    # loses to an explicit config.yaml key: config.yaml wins for non-secret settings.
+                    logger.info("config.yaml sets %s; replacing the inherited environment value", name)
             if load is not None:
                 load.prior.setdefault(name, (current, os.getenv(marker)))
             os.environ[name] = bridged

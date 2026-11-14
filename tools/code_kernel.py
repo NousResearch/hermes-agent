@@ -246,9 +246,13 @@ class CellAuthority:
     refused instead of running under a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, session_id: str | None = None, turn_id: str | None = None,
+                 conversation_id: str | None = None):
         import contextvars
         self.task_id = task_id
+        self.session_id = session_id
+        self.turn_id = turn_id
+        self.conversation_id = conversation_id
         self.ctx = contextvars.copy_context()
         self.active = True
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
@@ -283,8 +287,15 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
+            identity = {}
+            if self.session_id is not None:
+                identity["session_id"] = self.session_id
+            if self.turn_id is not None:
+                identity["turn_id"] = self.turn_id
+            if self.conversation_id is not None:
+                identity["conversation_id"] = self.conversation_id
             with programmatic_file_read():
-                return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+                return handle_function_call(tool_name, tool_args, task_id=self.task_id, **identity)
         finally:
             if previous is not None:
                 try:
@@ -817,10 +828,10 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_code_output
     from tools.ansi_strip import strip_ansi
     def clean(text: str) -> str:
-        return redact_sensitive_text(strip_ansi(text), code_file=True)
+        return redact_code_output(strip_ansi(text))
     if status in ("timeout", "interrupted"):
         # No safe way to interrupt one cell in place: kill the kernel, report the loss, respawn next call.
         _REGISTRY.discard(key, kernel)
@@ -887,6 +898,7 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
+    session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
@@ -897,7 +909,8 @@ def execute_in_session_kernel(
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -911,11 +924,13 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool) -> str:
+              is_interrupted, exec_start: float, state_reset: bool,
+              session_id: str | None = None, turn_id: str | None = None,
+              conversation_id: str | None = None) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(task_id, session_id, turn_id, conversation_id)
     with kernel.lock:
         try:
             if kernel.proc is None:

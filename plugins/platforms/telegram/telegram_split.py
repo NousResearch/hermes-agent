@@ -16,6 +16,17 @@ from typing import Any, Optional
 REPLY_FILE_MAX_BYTES = 45 * 1024 * 1024
 
 
+def split_reply_anchor(adapter: Any, chat_id: str, reply_to: Optional[str],
+                       metadata: Optional[dict[str, Any]], parts: int) -> Optional[str]:
+    """``reply_to`` for a reply sent as ``parts`` messages: dropped for a split reply when
+    ``extra.anchor_multipart_replies`` is false (TDLib/Desktop can hide an anchored split reply's
+    first part, #55059). DM topics keep it: the topic is routed by the anchor."""
+    if (getattr(adapter, "_anchor_multipart_replies", True) or parts <= 1
+            or adapter._is_private_dm_topic_send(chat_id, adapter._metadata_thread_id(metadata), metadata)):
+        return reply_to
+    return None
+
+
 def reply_message_count(adapter: Any, content: str, metadata: Optional[dict[str, Any]]) -> int:
     """Messages ``send(content)`` would post: its rich parts when it goes out rich, else its
     MarkdownV2 chunks (escaping can push a raw-sized text past 4,096 UTF-16 units)."""
@@ -55,6 +66,24 @@ async def send_reply_document(adapter: Any, chat_id: str, file_path: str, captio
         return await adapter._send_local_file("File", path or file_path, chat_id, reply_to, metadata, "document",
                                               build, failed, redo=redo, source=file_path)
     return await redo(None)
+
+
+_CODE_REGION_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+
+
+def quotable_text(text: str, *, mdv2: bool = False) -> str:
+    """The sent-text index entry for a chunk: ``_strip_mdv2`` outside code, code kept verbatim.
+
+    Emphasis stripping inside code would turn ``a*b*c`` into ``abc`` in the quote the model later
+    reads. ``mdv2``: *text* is already MarkdownV2, whose code escapes only a backslash and a
+    backtick, so only those unescape; raw markdown code is kept exactly."""
+    out, pos = [], 0
+    for match in _CODE_REGION_RE.finditer(text or ""):
+        out.append(_strip_mdv2(text[pos:match.start()]))
+        out.append(re.sub(r"\\([`\\])", r"\1", match.group(0)) if mdv2 else match.group(0))
+        pos = match.end()
+    out.append(_strip_mdv2((text or "")[pos:]))
+    return "".join(out)
 
 
 def _strip_mdv2(text: str) -> str:

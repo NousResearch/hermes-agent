@@ -247,7 +247,7 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
         return _refusal(
             f"Refusing {action} for skill '{name}': its lock state could not be verified because the "
             f"skills/.usage.json sidecar is unreadable. Leave the skill alone and tell the user; they "
-            f"can repair the sidecar or run `hermes curator unlock {name}`.", _locked=True)
+            f"can repair the sidecar or move it aside.", _locked=True)
     if locked:
         from tools.skill_lock import skill_refusal
         return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)

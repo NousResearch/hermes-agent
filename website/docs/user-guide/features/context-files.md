@@ -126,7 +126,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
 1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
-2. **Content is read** — each file is read as UTF-8 text
+2. **Content is read** — each file is read as UTF-8 text. A file (or symlink) whose resolved target lies outside the project (the git root, else the working directory) or is on the file read deny-list is skipped. When that root is your home directory or above (a dotfiles repo at `$HOME`, or a session started in `$HOME`), the target must instead stay inside the file's own directory. Subdirectory context files follow the same rule, with the session's working directory as the root
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000)
 5. **Assembly** — all sections are combined under a `# Project Context` header

@@ -985,6 +985,16 @@ platform:
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
   shared:
+    vault_code:
+      title: "🔐 {site} 的驗證碼"
+      body: "{site} 要求輸入一次性驗證碼（簡訊或電子郵件）。按下按鈕，在彈出的表單裡輸入：驗證碼會直接填進網頁，不會發到這裡。"
+      button: "輸入驗證碼"
+      modal_title: "{site} 的驗證碼"
+      input_label: "一次性驗證碼"
+      submitted: "驗證碼已送出，正在填入網頁。"
+      ended: "這個驗證碼請求已結束，沒有填入任何內容。"
+      not_author: "只有發起這次請求的人可以輸入驗證碼。"
+      submitted_footer: "✓ 驗證碼已送出"
     response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ 無法附加 `{filename}` — {size_mb} MB 超過 Discord 在此頻道的 {limit_mb} MB 上傳上限。請壓縮檔案或改為分享連結。"
       image_skipped_too_large: "⚠️ 已略過 `{filename}` — {size_mb} MB 超過 Discord 的 {limit_mb} MB 上傳上限。"
   telegram:
+    vault_code:
+      body: "請用驗證碼回覆此訊息。Hermes 會立即刪除你的回覆並把驗證碼填入頁面；模型不會看到它。"
+      delete_failed: "無法在此刪除你的回覆，請手動刪除。"
     approval:
       action_once: "✅ 允許一次"
       action_session: "✅ 本次工作階段"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} 個技能可用"
     added_header: "➕ 已新增的技能："
     removed_header: "➖ 已移除的技能："
+  gateway_restart:
+    waiting: "Hermes 正在重新啟動以完成更新或重新啟動；正在等待它恢復…"
+    timed_out: "Hermes 未能及時完成重新啟動。請檢查 `hermes gateway status`，然後重新啟動 `hermes`。"
+    stopped: "已停止等待 Hermes 重新啟動；未啟動任何內容。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ 工作階段儲存區無法使用[/bold yellow] — 此對話[bold]不會被儲存[/bold]，之後也無法恢復。搜尋過去的工作階段亦已停用。\n  原因：{reason}。\n  {action}\n  [dim]詳細資訊：{details}[/dim]"
     unavailable_plain: "警告：工作階段儲存區無法使用 — 此對話不會被儲存，之後也無法恢復。原因：{reason}。{action}"

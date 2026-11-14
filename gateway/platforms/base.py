@@ -448,9 +448,10 @@ from gateway.platforms.base_streaming_tts import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
+from gateway.session_dm_threads import dm_thread_batch_suffix, dm_thread_key_source, session_db_for_source
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
@@ -781,11 +782,11 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
 # agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
-# recency window); pairing/, mcp-tokens/ (live OAuth tokens) and webapp/ (the Webapp's credential) are whole trees.
+# recency window); CREDENTIAL_STORE_DIRS and webapp/ (the Webapp's credential) are whole trees.
 _ROOT_CREDENTIAL_PATHS = (
-    ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
+    *HOME_ENV_FILES, "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
-    "webhook_subscriptions.json", *SECRET_CACHE_STORES, "pairing", "mcp-tokens", "webapp",
+    "webhook_subscriptions.json", *SECRET_CACHE_STORES, *CREDENTIAL_STORE_DIRS, "webapp",
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
@@ -1906,6 +1907,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
         self._auto_tts_default: bool = False
+        self._auto_tts_mode: str = "all"  # Global scope: all (legacy) | voice_only.
         self._auto_tts_enabled_chats, self._auto_tts_disabled_chats = set(), set()
         # Turn keys where streaming TTS already delivered audio; whole-file auto-TTS skips them.
         # When the gateway streaming-TTS consumer successfully delivers audio, it adds the turn key here so
@@ -2028,12 +2030,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     fatal_error_retryable = property(lambda self: self._fatal_error_retryable)
 
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
-        """Whether auto-TTS fires for ``chat_id``: explicit ``/voice on|tts`` wins,
-        then explicit ``/voice off``, then the global ``voice.auto_tts`` default.
-
-        Decision layers (Issue #16007): 1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
-        ``voice.auto_tts`` is False). 2. 3.
-        """
+        """Explicit /voice on|tts wins over off, then fall back to voice.auto_tts (#16007)."""
         return chat_id in self._auto_tts_enabled_chats or (
             chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 
@@ -2456,15 +2453,14 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     def _source_session_key(self, source: SessionSource) -> str:
         self._canonicalize(source)  # identity FIRST; no key derivation before it
-        extra = self.config.extra
+        extra, store = self.config.extra, getattr(self, "_session_store", None)
         return build_session_key(
-            source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(source))
+            dm_thread_key_source(source, extra, lambda: session_db_for_source(store, source)), group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=self._session_key_profile(source))
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text batching (subclasses may override)."""
-        return self._event_session_key(event)
+        return self._event_session_key(event) + dm_thread_batch_suffix(event.source, self.config.extra)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
@@ -4326,13 +4322,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return footer_onto_photo_caption(self, _ExtractedResponse(text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract), _IMAGE_EXTS)  # #74547
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
-        """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
-        read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
-        would let stale runs fire a fresher run's callbacks."""
+    async def _fire_post_delivery_callback(self, session_key: str, generation: int | None) -> None:
+        """Run the turn's post-delivery slot; ``generation`` is read as its handler returns (#100061)."""
         await run_post_delivery_callback(self.pop_post_delivery_callback(
-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None)),
-            _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+            session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4374,10 +4367,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
             self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
         typing_task = self._start_typing_refresh(event, interrupt_event, _typing_metadata)
+        generation = None
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4456,6 +4451,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
+                await self._fire_post_delivery_callback(session_key, generation)  # done before the follow-up starts
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4476,7 +4472,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            await self._fire_post_delivery_callback(session_key, getattr(interrupt_event, "_hermes_run_generation", None) if generation is None else generation)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.

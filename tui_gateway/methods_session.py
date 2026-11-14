@@ -1445,9 +1445,9 @@ def _(rid, params: dict, session: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    # Nous credits are agent-independent (portal fetch); fail-open when absent.
-    from agent.account_usage import nous_credits_usage_fields  # never raises (fail-open inside)
-    usage.update(nous_credits_usage_fields(session.get("agent")))
+    from agent.account_usage import nous_credits_usage_fields  # agent-independent portal fetch; fail-open inside
+    with _session_profile_runtime_scope(session):  # the session's Portal override / auth, not the launch's (#141859)
+        usage.update(nous_credits_usage_fields(session.get("agent")))
     return _ok(rid, usage)
 
 

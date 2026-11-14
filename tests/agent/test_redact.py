@@ -409,7 +409,7 @@ class TestJsonFields:
     def test_json_field_inside_json_encoded_string_is_masked_and_stays_valid(self, depth):
         # A tool result wrapping a config dump escapes its quotes; the plain JSON rule never saw the value.
         import json
-        key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+        key = "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
         text = json.dumps({"api_key": key, "token": "CPU", "model": "gemini"})
         for _ in range(depth):
             text = json.dumps({"output": text})
@@ -529,6 +529,34 @@ class TestAuthHeaders:
         # "authorization" without a colon-delimited value is plain prose.
         text = "the authorization model is fully open"
         assert redact_sensitive_text(text) == text
+
+    def test_mixed_case_authorization_header_masked(self):
+        # Regression for #108807: the gate checked exact all-lower/all-upper
+        # substring runs, so a mixed-case header name (aUtHoRiZaTiOn) skipped
+        # the IGNORECASE header regex and leaked Bearer/Basic credentials.
+        secret = "SyntheticOpaqueCredential92837465"
+        for name in ("aUtHoRiZaTiOn", "pRoXy-AuThOrIzAtIoN", "AUTHORIZATION", "authorization"):
+            for scheme in ("Bearer", "Basic"):
+                text = f"{name}: {scheme} {secret}"
+                result = redact_sensitive_text(text)
+                assert secret not in result, text
+                assert f"{name}: {scheme}" in result, result
+
+    def test_mixed_case_header_via_logging_formatter(self):
+        # Same failure through the real formatter path the reporter used.
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="aUtHoRiZaTiOn: Bearer SyntheticOpaqueCredential92837465",
+            args=(),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert "SyntheticOpaqueCredential92837465" not in result
+        assert "aUtHoRiZaTiOn: Bearer" in result, result
 
     def test_token_flush_against_double_quote_preserves_quote(self):
         # Regression for #43083: a token sitting flush against a closing
@@ -674,6 +702,19 @@ class TestElevenLabsTavilyExaKeys:
 
 
 
+
+    def test_tavily_environment_scoped_keys_redacted(self):
+        # Current Tavily keys carry a tvly-dev-/tvly-prod- segment (#72925).
+        for env in ("dev", "prod"):
+            key = "tvly-" + env + "-Ab3dE5fG7hJ9kL1mN2pQ4rS6"
+            for text in (f"echo {key} done", f'{{"query": "{key}"}}'):
+                result = redact_sensitive_text(text)
+                assert "E5fG7hJ9kL1m" not in result, result
+
+    def test_hyphenated_tavily_names_are_not_keys(self):
+        # Package/file names starting with tvly- are not keys; only an env segment may carry a hyphen.
+        for text in ("pip install tvly-python-client", "tvly-config-file"):
+            assert redact_sensitive_text(text) == text
 
     def test_all_three_in_env_dump(self):
         env_dump = (

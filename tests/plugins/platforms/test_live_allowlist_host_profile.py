@@ -129,9 +129,9 @@ def test_a_frozen_operator_value_is_not_replaced_by_a_later_bridged_one(_home, m
     from plugins.platforms.telegram.telegram_live_gates import refresh_telegram_gates
 
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
-    _write(_home, telegram_cfg={"allow_from": ["111"]})
+    _write(_home, telegram_cfg={})
     adapter = _telegram(_home)
-    assert os.environ["TELEGRAM_ALLOWED_USERS"] == "999"  # the operator's value wins at startup
+    assert os.environ["TELEGRAM_ALLOWED_USERS"] == "999"  # no YAML list: the operator's value at startup
     _freeze()
     monkeypatch.delenv("TELEGRAM_ALLOWED_USERS")
     _write(_home, telegram_cfg={"allow_from": ["111", "222"]})

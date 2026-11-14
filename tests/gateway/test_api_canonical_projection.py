@@ -1,6 +1,7 @@
 """Canonical API admissions project the real turn: media, tool payloads, controls, outcomes."""
 import asyncio
 import base64
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -115,6 +116,85 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
     assert tool_payloads == [('read_file', {'path': '/tmp/x'}), ('read_file', {'path': '/tmp/x'})]
     assert 'run_test' not in api._stopping_run_ids
     assert 'run.cancelled' in names and 'run.completed' not in names
+
+
+@pytest.mark.asyncio
+async def test_run_sse_tool_completed_carries_the_tool_result_preview(api, owner):
+    """A canonical run's `tool.completed` preview is the tool's own result text: `/v1/runs` clients
+    have no other way to read it (#144404)."""
+    admitted = admit_api_turn(api, session_id='sse-preview', user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        args = {'command': 'echo hello; echo END-MARK'}
+        turn.combined_tool_start_callback('call-7', 'terminal', args)
+        turn.combined_tool_complete_callback('call-7', 'terminal', args, {'output': 'hello\nEND-MARK', 'exit_code': 0})
+        execution_result.get()['result'] = {'final_response': 'done'}
+        return 'done'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)  # call_soon_threadsafe projections land on the loop
+    completed = next((e for e in _events(queue) if e['event'] == 'tool.completed'), None)
+    assert completed is not None, _events(queue)
+    assert 'END-MARK' in completed['preview'], completed
+
+
+@pytest.mark.asyncio
+async def test_run_sse_tool_completed_preview_is_bounded(api, owner):
+    """The public run stream keeps the preview bounded, whatever the tool returned."""
+    admitted = admit_api_turn(api, session_id='sse-preview-long', user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        args, result = {'command': 'cat big'}, {'output': 'x' * 4000, 'exit_code': 0}
+        turn.combined_tool_start_callback('call-8', 'terminal', args)
+        turn.combined_tool_complete_callback('call-8', 'terminal', args, result)
+        execution_result.get()['result'] = {'final_response': 'done'}
+        return 'done'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)
+    completed = next((e for e in _events(queue) if e['event'] == 'tool.completed'), None)
+    assert completed is not None, _events(queue)
+    assert len(completed['preview']) == 500 and completed['preview'].endswith('...'), completed
+
+
+@pytest.mark.asyncio
+async def test_run_sse_tool_completed_times_each_call_by_its_own_id(api, owner, monkeypatch):
+    """Canonical tool sinks carry no duration, so the run stream reported 0 for every tool; each
+    completion is timed from the start recorded under its own tool call id."""
+    from gateway.platforms import api_server_runs
+    clock = [10.0]
+    monkeypatch.setattr(api_server_runs, 'time', SimpleNamespace(
+        monotonic=lambda: clock[0], time=time.time, perf_counter=time.perf_counter))
+    admitted = admit_api_turn(api, session_id='sse-duration', user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        slow, fast = {'path': 'big.xlsx'}, {'path': 'small.txt'}
+        turn.combined_tool_start_callback('call-slow', 'read_file', slow)
+        clock[0] = 11.0
+        turn.combined_tool_start_callback('call-fast', 'read_file', fast)
+        clock[0] = 11.25
+        turn.combined_tool_complete_callback('call-fast', 'read_file', fast, 'small body')
+        clock[0] = 12.5
+        turn.combined_tool_complete_callback('call-slow', 'read_file', slow, 'big body')
+        execution_result.get()['result'] = {'final_response': 'done'}
+        return 'done'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)
+    durations = {e['tool_call_id']: e['duration'] for e in _events(queue) if e['event'] == 'tool.completed'}
+    assert durations == {'call-fast': 0.25, 'call-slow': 2.5}, durations
 
 
 def _wrap(api, run_id, loop, sink):

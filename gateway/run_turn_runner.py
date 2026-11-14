@@ -1386,11 +1386,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # fallback was resolved before any agent exists (#74349); one-shot per turn.
             pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
             runner._pre_agent_fallback_notice = None
-            from agent.primary_auth_fallback import take_pending_primary_auth_failure
+            from agent.primary_auth_fallback import failure_for_route, route_snapshot, take_pending_primary_auth_failure
             pending_primary_auth = take_pending_primary_auth_failure()
-            # The backup login hint belongs to its resolved account, not merely its endpoint:
-            # API route aliases and one-turn model switches may replace the key at the same URL.
-            backup_api_key = runtime_kwargs.get("api_key") if pending_primary_auth else None
+            resolved_route = route_snapshot(runtime_kwargs)
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model and not pending_fallback_notice:
@@ -1401,8 +1399,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
             from gateway.session_cli_turn import one_turn_route
             model, runtime_kwargs = one_turn_route(self, policy, model, runtime_kwargs)
-            if pending_primary_auth and runtime_kwargs.get("api_key") != backup_api_key:
-                pending_primary_auth = None
+            # Another route runs (an API caller's or a one-turn override): its refusals are its own.
+            pending_primary_auth = failure_for_route(pending_primary_auth, resolved_route, runtime_kwargs)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1446,8 +1444,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
-        # Set every turn (None clears it): a cached agent must not keep a login failure that resolved, and
-        # a route replaced after resolution (`/model --once`, an API caller's provider) drops it.
+        # Set every turn (None clears it): a cached agent must not keep a login failure that resolved.
         from agent.primary_auth_fallback import attach_primary_auth_failure
         attach_primary_auth_failure(agent, pending_primary_auth)
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)

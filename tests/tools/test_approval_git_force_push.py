@@ -44,6 +44,11 @@ class TestGitForcePushDetected:
         # a redirection's `&`/`|` is not a command separator.
         "git push origin main 2>&1 --force",
         "git push origin main &>/dev/null -f",
+        "git push origin main >|log --force",
+        # a lone quote or backslash left by normalization does not end the segment.
+        "git push origin it\\'s -f",
+        "git push origin a\\\"b -f",
+        "git push origin a\\\\b -f",
         # path-valued global options, attached or quoted values.
         "git --git-dir /x/.git push -f",
         "git -C/repo push -f",

@@ -150,7 +150,8 @@ def strip_rejected_thinking(message: Any, rejected: set[str] | None) -> int:
     if removed and mirror is not None:
         from agent.redact import redact_sensitive_text
 
-        mirrors = (mirror, redact_sensitive_text(mirror))
+        # force=True too: a row masked before security.redact_secrets was turned off must still match.
+        mirrors = (mirror, redact_sensitive_text(mirror), redact_sensitive_text(mirror, force=True))
         for key in ("reasoning", "reasoning_content"):
             if message.get(key) in mirrors:
                 message.pop(key, None)

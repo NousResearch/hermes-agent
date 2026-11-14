@@ -11,13 +11,19 @@ BOM handling and the prompt description budget stay in one place.
 from __future__ import annotations
 
 import re
+import shutil
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter, parse_qualified_name
+from agent.skill_utils import (
+    SKILL_PROMPT_DESC_LIMIT,
+    parse_frontmatter,
+    parse_qualified_name,
+    skill_matches_platform,
+)
 
 # Shell utilities already wrapped as native tools; naming them in prose steers
 # the model to a raw shell call. banned token -> native tool to name instead.
@@ -192,7 +198,7 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     # A skill that ships its own scripts/ owns every scripts/ path it mentions; a missing one
     # sends the agent hunting for a helper that was renamed or never committed.
     if (skill_dir / "scripts").is_dir():
-        for match in re.finditer(r"(?<![\w/])scripts/[\w./-]+", body):
+        for match in re.finditer(r"(?<![\w/])scripts/[\w./-]*[\w-]", body):
             rel = match.group(0)
             if rel in seen or "*" in rel or rel.endswith("/"):
                 continue
@@ -200,6 +206,14 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
             if not (skill_dir / rel).exists():
                 yield _warn("dangling-reference", f"body references '{rel}' but that file "
                             f"does not exist in the skill's scripts/ directory.")
+    # ${HERMES_SKILL_DIR}/x is skill_view's own expansion, so x is skill-owned with or without a
+    # scripts/ dir; a missing target is a command that fails the first time the agent runs it.
+    for match in re.finditer(r"\$\{HERMES_SKILL_DIR\}/([\w./-]*[\w-])", body):
+        rel = match.group(1)
+        if rel not in seen and "*" not in rel and not (skill_dir / rel).exists():
+            seen.add(rel)
+            yield _warn("dangling-reference", f"body runs '${{HERMES_SKILL_DIR}}/{rel}' but that "
+                        f"file does not exist in the skill directory.")
 
 
 def _check_files(frontmatter: dict[str, Any], skill_dir: Path) -> Iterator[LintFinding]:
@@ -222,6 +236,16 @@ def _check_files(frontmatter: dict[str, Any], skill_dir: Path) -> Iterator[LintF
         yield _warn("platforms-gating",
                     f"scripts use POSIX-only primitives ({detail}) but no 'platforms:' frontmatter is "
                     f"declared. Fix cross-platform or gate with platforms: [linux, macos].")
+    # prerequisites.commands is advisory at load time; here it is checked against this host's PATH
+    # so a skill whose CLI was never installed (or got uninstalled) is visible before it is used.
+    prereqs = frontmatter.get("prerequisites")
+    commands = prereqs.get("commands") if isinstance(prereqs, dict) else None
+    commands = [commands] if isinstance(commands, str) else commands
+    if isinstance(commands, list) and skill_matches_platform(frontmatter):
+        missing = [str(c) for c in commands if str(c).strip() and shutil.which(str(c).strip()) is None]
+        if missing:
+            yield _warn("missing-command", f"prerequisites.commands {missing} not found on PATH; "
+                        "the skill's commands will fail until they are installed.")
     for fname in _FORBIDDEN_FILES:
         if (skill_dir / fname).exists():
             yield _warn("forbidden-file",

@@ -1,5 +1,7 @@
 """Tests for tools/skill_linter.py — the advisory SKILL.md convention linter."""
 
+import sys
+from pathlib import Path
 
 from tools.skill_linter import (
     ERROR,
@@ -238,7 +240,7 @@ def test_scripts_anchor_dangling_when_skill_ships_scripts_dir(tmp_path):
     skill_dir = tmp_path / "my-skill"
     (skill_dir / "scripts").mkdir(parents=True)
     (skill_dir / "scripts" / "present.py").write_text("print(1)\n", encoding="utf-8")
-    content = CLEAN + "\nRun scripts/present.py, then scripts/renamed.py.\n"
+    content = CLEAN + "\nRun scripts/present.py, then scripts/renamed.py. Done with scripts/present.py.\n"
     findings = [f for f in lint_content(content, skill_dir=skill_dir) if f.rule == "dangling-reference"]
     assert len(findings) == 1 and "scripts/renamed.py" in findings[0].message
 
@@ -250,6 +252,27 @@ def test_scripts_anchor_ignored_without_scripts_dir(tmp_path):
     skill_dir.mkdir()
     content = CLEAN + "\nRun scripts/run_tests.sh from the repo root.\n"
     assert "dangling-reference" not in _rules(lint_content(content, skill_dir=skill_dir))
+
+
+def test_skill_dir_token_target_dangling_without_scripts_dir(tmp_path):
+    # ${HERMES_SKILL_DIR}/x is always skill-owned, so it is checked even with no scripts/ dir.
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "run.sh").write_text("echo ok\n", encoding="utf-8")
+    content = CLEAN + "\nRun `bash ${HERMES_SKILL_DIR}/run.sh` then `${HERMES_SKILL_DIR}/bin/gone.py`.\n"
+    findings = [f for f in lint_content(content, skill_dir=skill_dir) if f.rule == "dangling-reference"]
+    assert len(findings) == 1 and "bin/gone.py" in findings[0].message
+
+
+def test_prerequisite_commands_checked_against_path(tmp_path, monkeypatch):
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent))
+    present = Path(sys.executable).name
+    content = CLEAN.replace("metadata:", f"prerequisites:\n  commands: [{present}, no-such-cli-xyz]\nmetadata:")
+    findings = [f for f in lint_content(content, skill_dir=skill_dir) if f.rule == "missing-command"]
+    assert len(findings) == 1 and "no-such-cli-xyz" in findings[0].message
+    assert present not in findings[0].message
 
 
 def test_collection_clean_pair_is_silent(tmp_path):

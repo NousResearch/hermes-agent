@@ -420,8 +420,9 @@ Per-skill rules are the [skill authoring standards](https://github.com/NousResea
 name format and name/directory match, the 60-character description budget, marketing words,
 missing `version`/`author`/`license`/`metadata.hermes`, shell utilities named in prose instead of
 the native tool, a missing `## When to Use` section, dangling `references/`, `templates/`,
-`assets/` and (when the skill ships its own) `scripts/` paths, POSIX-only scripts without a
-`platforms:` gate, scaffolding files, and incident-log-shaped bodies.
+`assets/` and (when the skill ships its own) `scripts/` paths, `${HERMES_SKILL_DIR}/...` targets
+that do not exist, `prerequisites.commands` that are not on this machine's `PATH`, POSIX-only
+scripts without a `platforms:` gate, scaffolding files, and incident-log-shaped bodies.
 
 A collection scope (no targets, `--all`, or `--dir`) adds the checks that only show up across
 the installed set — skills rarely fail alone, they fail at the seams:

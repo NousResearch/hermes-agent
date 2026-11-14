@@ -10,6 +10,7 @@ if __name__ == "__main__":
     import hermes_bootstrap
 
 import argparse
+import atexit
 import concurrent.futures
 import contextlib
 import json
@@ -20,9 +21,10 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Collection
+from typing import Any, Callable, Collection, NoReturn
 
 from hermes_cli.config_backend import ConfigBackendUnavailable
 from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
@@ -554,27 +556,77 @@ def _default_workers() -> int:
         return 8
 
 
-def run_host(stdin: Any = None, stdout: Any = None) -> None:
+# Set once the process is on its way out (a hard exit started, or the interpreter reached its
+# atexit hooks), so a late SIGTERM/SIGINT never starts a second, nested exit.
+_exit_started = False
+
+
+def _mark_exit_started() -> None:
+    global _exit_started
+    _exit_started = True
+
+
+def _exit_without_finalizing(exc: BaseException | None = None) -> NoReturn:
+    """End the process (status 0, or 1 after reporting ``exc``) without finalizing.
+
+    The daemon ``compute-host-control-reader`` is parked in a blocking stdin read that holds the
+    ``BufferedReader`` lock, so ``Py_Finalize`` closing ``sys.stdin`` dies in
+    ``_enter_buffered_busy`` (SIGABRT on POSIX, an access violation on Windows) and a clean
+    SIGTERM/SIGINT stop ends as a crash. atexit hooks still run and ``sys.stdout``/``sys.stderr``
+    are flushed (frames are flushed per write); skipped are the join of non-daemon threads
+    (``threading._shutdown``) and module teardown, as on the shutdown-frame and orphan paths.
+    """
+    _mark_exit_started()
+    code = 0
+    if exc is not None:  # escaped the main loop: report it as the interpreter would
+        traceback.print_exception(exc)
+        code = 1
+    atexit._run_exitfuncs()  # reports a failing hook itself, like the interpreter's own exit
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    os._exit(code)
+
+
+def _exit_on_late_signal(_signum, _frame) -> None:
+    """SIGTERM/SIGINT once ``run_host``'s loop is over (``python -m`` only).
+
+    Nothing polls the recorded signals any more, but the interpreter may still be joining a
+    non-daemon turn thread that outlived the drain: end the process now instead of ignoring the
+    signal. The main thread holds none of the host's locks by then and nothing is raised into it.
+    """
+    if not _exit_started:
+        _exit_without_finalizing()
+
+
+def run_host(stdin: Any = None, stdout: Any = None, *, exit_process: bool = False) -> None:
+    """Serve frames until stdin closes, the host closes, or SIGTERM/SIGINT.
+
+    ``exit_process`` (the ``python -m`` entry point) ends the process right after the shutdown
+    flush when the control reader is still parked on stdin or a signal arrived, and on any
+    SIGTERM/SIGINT after that; in-process callers get a return and their old signal handlers.
+    """
     os.environ["HERMES_COMPUTE_HOST_CHILD"] = "1"
     # JSONL framing is byte-oriented; avoid text-stream read-ahead on Windows pipes.
     stdin = stdin if stdin is not None else getattr(sys.stdin, "buffer", sys.stdin)
     host = ComputeHost(stdout=stdout or sys.stdout)
-    shutting_down = threading.Event()
+    stop_signals: list[int] = []
     # No client is connected to this process: session-less broadcasts (``broadcast_plugin_event``
     # from a plugin tool/hook running in the isolated turn) ride the host pipe to the parent
     # gateway, which fans them out to its clients (compute_host_bridge._relay_compute_host_rpc).
     from tui_gateway import server
     server.register_live_transport(host._transport)
 
-    def _signal_handler(_signum, _frame) -> None:
-        if shutting_down.is_set():
-            return
-        shutting_down.set()
-        host.shutdown(reason="sigterm")
-        raise SystemExit(0)
+    def _signal_handler(signum, _frame) -> None:
+        # Only record it: the handler runs on the main thread between two bytecodes of whatever
+        # it interrupted. ``host.shutdown()`` here self-deadlocked when that was ``_closed.wait()``
+        # holding the Event's lock, and a raised ``SystemExit`` could split ``Thread.start()``
+        # or a ``Condition.wait()``. The loop below notices within one tick.
+        stop_signals.append(signum)
+    previous_handlers: dict[int, Any] = {}
     with contextlib.suppress(Exception):
-        signal.signal(signal.SIGTERM, _signal_handler)
-        signal.signal(signal.SIGINT, _signal_handler)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[sig] = signal.signal(sig, _signal_handler)
     host.emit({
         "type": "hello", "host_pid": os.getpid(), "boot_id": host._boot_id,
         "build_sha": _build_sha(), "cwd": os.getcwd(),
@@ -600,17 +652,28 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
     reader = threading.Thread(target=_reader, name="compute-host-control-reader", daemon=True)
     reader.start()
     try:
-        while not host._closed.wait(0.2):
+        while not stop_signals and not host._closed.wait(0.2):
             if not reader.is_alive():
                 break
     finally:
+        if stop_signals:
+            host.shutdown(reason="sigterm")
         server.unregister_live_transport(host._transport)
         host.shutdown(reason="stdin_closed", wait=2.0)
+        # Nothing polls ``stop_signals`` past here: hand the signals on (the entry point exits on
+        # them, in-process callers get their old handlers back), then act on one already recorded.
+        if exit_process:
+            atexit.register(_mark_exit_started)  # LIFO: runs before the hooks registered so far
+        for sig, previous in previous_handlers.items():
+            with contextlib.suppress(Exception):
+                signal.signal(sig, _exit_on_late_signal if exit_process else previous)
+        if exit_process and (stop_signals or reader.is_alive()):
+            _exit_without_finalizing(sys.exc_info()[1])
 
 
 def main(argv: list[str] | None = None) -> int:
     argparse.ArgumentParser(description="Dashboard compute-host process").parse_args(argv)
-    run_host()
+    run_host(exit_process=True)
     return 0
 
 

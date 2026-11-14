@@ -761,7 +761,7 @@ _WEBHOOK_URL_RE = re.compile(
     r"|(https?://(?:canary\.|ptb\.|www\.)?discord(?:app)?\.com" + _WEBHOOK_HOST_END
     + r"api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
     r"|(https?://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com" + _WEBHOOK_HOST_END
-    + r"webhookb2|outlook\.office\.com" + _WEBHOOK_HOST_END + r"webhook)/)([^\s\"'<>]+)"
+    + r"webhookb2|outlook\.office\.com" + _WEBHOOK_HOST_END + r"webhook)/)([\w@/%+=-]{8,})"
     r"|(https?://[A-Za-z0-9.-]+\.(?:logic\.azure\.com|api\.powerplatform\.com)" + _WEBHOOK_HOST_END
     + r"(?:[^\s?#\"'<>/]{1,128}/){0,8}workflows/[^\s?#\"'<>]{1,512}?\?"
     r"(?:[^\s#\"'<>]{0,1024}?&)?sig=)([A-Za-z0-9_%-]{8,})",

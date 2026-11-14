@@ -149,6 +149,21 @@ class TestWebhookUrlShapes:
         assert self.SECRET[6:-4] not in out
         assert out.startswith(prefix)
 
+    @pytest.mark.parametrize("template", [
+        "[hook]({url}) next", "use `{url}` here", "url={url},status=200", "Posted to {url}.",
+    ])
+    def test_teams_connector_mask_stops_at_the_url_end(self, template):
+        """The connector path is GUIDs, ``@``, ``/``, hex and a base64url ``V2`` tail: punctuation
+        after the URL is not secret and survives, as it does after a Slack or Discord URL."""
+        url = ("https://acme.webhook.office.com/webhookb2/a1b2c3d4-e5f6@a7b8c9d0-e1f2/IncomingWebhook/"
+               + "0123456789abcdef" * 2 + "/V2" + self.SECRET)
+        text = template.format(url=url)
+        suffix = text[text.index(url) + len(url):]
+        for out in (redact_sensitive_text(text), redact_sensitive_text(text, file_read=True)):
+            assert self.SECRET[6:-4] not in out
+            assert out.endswith(suffix)
+            assert redact_sensitive_text(out) == out  # a second pass leaves the mask alone
+
     @pytest.mark.parametrize("text", [
         "https://a.logic.azure.com/workflows/" * 1400,
         "https://a.logic.azure.com/" + "workflows/" * 8000,

@@ -26,6 +26,7 @@ issue #26241 for details.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from typing import Any, Callable, Dict, Optional, Union
@@ -68,6 +69,28 @@ def import_fal_client() -> Any:
             raise ImportError(str(exc))
     import fal_client  # type: ignore  # noqa: WPS433 — intentionally lazy
     return fal_client
+
+
+_direct_clients: dict[str, tuple[Any, Any]] = {}
+_direct_clients_lock = threading.Lock()
+
+
+def direct_fal_client(fal_client: Any) -> Any:
+    """A ``fal_client.SyncClient`` built with the active profile's own ``FAL_KEY``.
+
+    Never the module-level ``fal_client.submit``: it is one process-wide ``SyncClient()`` that reads
+    ``os.environ`` on first use and keeps that key, so a routed profile's request went out signed
+    with the launch profile's key. One client per key (and per ``fal_client`` module, which tests
+    replace), reused so its ``httpx.Client`` is not leaked per call, as the managed client is."""
+    from tools.tool_backend_helpers import fal_key
+    key = fal_key()
+    if not key:
+        raise ValueError("FAL_KEY is not set")
+    with _direct_clients_lock:
+        cached = _direct_clients.get(key)
+        if cached is None or cached[0] is not fal_client:
+            cached = _direct_clients[key] = (fal_client, fal_client.SyncClient(key=key))
+        return cached[1]
 
 
 def _normalize_fal_queue_url_format(queue_run_origin: str) -> str:

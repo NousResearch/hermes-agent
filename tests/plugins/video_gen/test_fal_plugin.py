@@ -221,7 +221,7 @@ class TestFamilyRouting:
             captured["endpoint"] = endpoint
             captured["arguments"] = arguments
             return FakeHandle()
-        fake.submit = _submit  # type: ignore
+        fake.SyncClient = lambda key=None: types.SimpleNamespace(submit=_submit)  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         # Reset the lazy global so it picks up our stub
@@ -570,7 +570,7 @@ class TestUpscalePass:
         def _submit(endpoint, arguments=None, headers=None):
             captured["calls"].append((endpoint, arguments))
             return FakeHandle(endpoint)
-        fake.submit = _submit  # type: ignore
+        fake.SyncClient = lambda key=None: types.SimpleNamespace(submit=_submit)  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         from plugins.video_gen import fal as fal_plugin

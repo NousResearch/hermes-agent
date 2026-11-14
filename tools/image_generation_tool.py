@@ -30,7 +30,7 @@ def _load_fal_client() -> Any:
 
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
-    _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
+    _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error, direct_fal_client,
     _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry, wait_fal_queue_result,
 )
 from tools.image_generation_catalog import (
@@ -125,7 +125,7 @@ def _submit_fal_request(model: str, arguments: dict[str, Any]):
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
-        return fal_client.submit(model, arguments=arguments, headers=request_headers)
+        return direct_fal_client(fal_client).submit(model, arguments=arguments, headers=request_headers)
     try:
         return submit_managed_fal_with_rate_limit_retry(
             lambda headers: _get_managed_fal_client(managed_gateway).submit(

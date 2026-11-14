@@ -101,7 +101,7 @@ Read these before every investigation step. Violating them invalidates the repor
 
 **Output**: Populate `iocs.md` with extracted IOCs. Each IOC must have:
 - Type (from: COMMIT_SHA, FILE_PATH, API_KEY, SECRET, IP_ADDRESS, DOMAIN, PACKAGE_NAME, ACTOR_USERNAME, MALICIOUS_URL, OTHER)
-- Value
+- Value (for `API_KEY`/`SECRET`, the non-secret reference from guardrail 8, never the raw secret)
 - Source (user-provided, inferred)
 
 **Reference**: See [evidence-types.md](./references/evidence-types.md) for IOC taxonomy.

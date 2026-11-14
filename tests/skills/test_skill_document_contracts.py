@@ -115,6 +115,9 @@ def test_oss_forensics_raw_secrets_stay_out_of_working_files():
         "\n", 1
     )[0]
     assert "no plaintext secrets" in archive_step
+    # The Phase 1 IOC schema must not demand the raw value for secret types.
+    ioc_value = body.split("- Value", 1)[1].split("\n", 1)[0]
+    assert "never the raw secret" in ioc_value
 
 
 def test_optional_platform_declarations():

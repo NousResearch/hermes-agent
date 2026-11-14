@@ -116,7 +116,14 @@ def owned_receipt(authority, sid):
     hashes it (``local_identity``; a legacy-adopted receipt is bound by its route alone), so a
     store that moved with its profile (another machine, a moved home) still owns its rows. Its
     owner is this store; the route namespace binds the profile."""
-    receipt = local_receipt(authority.db, sid)
+    try:
+        receipt = local_receipt(authority.db, sid)
+    except RuntimeStoreError as exc:
+        from hermes_state_mutation_retirement import retired_session
+        # Deletion removes the private receipt; its fence is a terminal refusal, not a retry.
+        if exc.reason == 'storage_unavailable' and retired_session(authority.db, sid):
+            raise RuntimeStoreError('not_found') from exc
+        raise
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:

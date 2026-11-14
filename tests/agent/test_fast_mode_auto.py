@@ -143,6 +143,49 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
 
 
+def test_static_tier_request_overrides_is_the_one_translation(monkeypatch):
+    """Regression for #135672: every surface that builds an agent from a chosen tier pins
+    request_overrides through one shared helper. Normal/auto/cold and unknown tiers pin nothing; a
+    static tier on a route without fast capacity pins nothing; a broken catalog lookup must not fail
+    the build."""
+    # None / auto / cold (bounded windows) and unknown words are normal: nothing to pin.
+    for tier in (None, "", "normal", "auto", "cold", "turbo"):
+        assert fast_mode.static_tier_request_overrides(tier, "gpt-5.4") == {}
+        assert fast_mode.static_tier_request_overrides(
+            tier, "gpt-5.4", provider="openai", base_url="https://api.openai.com/v1") == {}
+
+    # A static tier never downgrades onto a route/model without fast capacity.
+    assert fast_mode.static_tier_request_overrides(
+        "priority", "gpt-5.4", provider="openrouter", base_url="https://openrouter.ai/api/v1") == {}
+    assert fast_mode.static_tier_request_overrides(
+        "ultrafast", "gpt-6-sol", provider="openai", base_url="https://api.openai.com/v1") == {}
+
+    # The real catalog answer per family.
+    assert fast_mode.static_tier_request_overrides(
+        "priority", "gpt-5.4", provider="openai", base_url="https://api.openai.com/v1") == {"service_tier": "priority"}
+    assert fast_mode.static_tier_request_overrides(
+        "priority", "claude-opus-5", provider="anthropic", base_url="https://api.anthropic.com") == {"speed": "fast"}
+
+    # A chosen tier resolves through the same seam the turn-time windows use, once, with the
+    # build's own route.
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda model_id, **route: calls.append((model_id, route)) or {"service_tier": "priority"},
+    )
+    assert fast_mode.static_tier_request_overrides(
+        "priority", "gpt-5.4", provider="openai", base_url="https://api.openai.com/v1") == {"service_tier": "priority"}
+    assert calls == [("gpt-5.4", {"provider": "openai", "base_url": "https://api.openai.com/v1", "tier": "priority"})]
+
+    # A raising resolver reads as "no fast params" — never a failed agent build.
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("catalog down")),
+    )
+    assert fast_mode.static_tier_request_overrides(
+        "priority", "claude-opus-5", provider="anthropic", base_url="https://api.anthropic.com") == {}
+
+
 class _FastRateLimitError(Exception):
     """A fast-mode 429 shaped like the live API's: documented limit headers, no retry-after."""
 

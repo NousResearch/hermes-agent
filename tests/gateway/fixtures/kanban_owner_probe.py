@@ -91,8 +91,11 @@ def main():
     os.environ['HERMES_KANBAN_CRASH_GRACE_SECONDS'] = '0'
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
+        # `skills_unavailable`: the card names a skill the profile cannot load, so the worker must
+        # die at boot naming that skill and the profile (never an opaque "execution unknown").
+        skills = ['missing-skill-sentinel'] if peer.mode == 'skills_unavailable' else ['owned-skill']
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
-            workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
+            workspace_kind='dir', workspace_path=str(workspace), skills=skills,
             goal_mode=peer.mode == 'complete', goal_max_turns=2,
             max_runtime_seconds=3600 if peer.mode == 'timeout' else None)
     env = dict(os.environ)
@@ -125,6 +128,19 @@ def main():
                     assert [s[0] for s in launched.spawned] == [tid], launched
                     task = kb.get_task(conn, tid)
                     params = dict(task_id=tid, board='owned', run_id=task.current_run_id, claim_lock=task.claim_lock)
+                    if peer.mode == 'skills_unavailable':
+                        # No model call: wait for the submitter to book the boot refusal, then
+                        # let the crash sweep write it onto the run. This is the incident exactly.
+                        wait_for(lambda: not kb._pid_alive(clients[0].pid))
+                        dispatch.reap_worker_zombies()
+                        dispatch.dispatch_once(conn, board='owned', max_spawn=0)
+                        run = dict(conn.execute('SELECT * FROM task_runs WHERE id=?', (task.current_run_id,)).fetchone())
+                        assert kb.get_task(conn, tid).status == 'ready', receipt
+                        receipt.update(run_id=task.current_run_id, run_outcome=run['outcome'], run_error=run['error'])
+                        assert 'missing-skill-sentinel' in (run['error'] or ''), receipt
+                        assert "'default'" in (run['error'] or ''), receipt
+                        assert 'execution unknown' not in (run['error'] or '').lower(), receipt
+                        return
                     assert peer.blocked.wait(55), 'model never reached'
                     active = kb.get_task(conn, tid)
                     receipt.update(client_pid=clients[0].pid, stored_pid=active.worker_pid, run_id=task.current_run_id)

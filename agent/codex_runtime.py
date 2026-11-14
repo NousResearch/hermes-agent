@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List
 from agent.display import redact_tool_args_for_display
 from agent.redact import redact_sensitive_text
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.stream_wire_activity import watch_raw_bytes
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
 from agent.stream_diag import buffer_connect_exhausted_notice
@@ -1256,6 +1257,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if _writer_is_current():
             agent._fire_stream_delta(text)
 
+    def _note_wire_bytes() -> None:
+        # Transport liveness only (comments, keepalives): the watchdogs stretch by a bounded
+        # factor while it is fresh, never treat it as a parsed event.
+        if _request_is_current():  # a retired worker's bytes must not refresh a newer request
+            watchdog_state.last_wire_ts = time.time()
+
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
         # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
@@ -1319,6 +1326,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream
+        if watchdog_state is not None:  # SSE comment keepalives are transport activity too (#151280)
+            watch_raw_bytes(_raw_stream, _note_wire_bytes)
         logger.debug("Codex stream opened (attempt=%s/%s, model=%s)",
             attempt + 1, max_stream_retries + 1, model)
 

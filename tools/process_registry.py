@@ -2359,8 +2359,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def list_sessions(self, task_id: str | None = None, session_key: str | None = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
-        cross-task entries sharing the gateway session (a forgotten preview server
-        blocking session reset) are flagged ``"session_scoped": true``.
+        cross-task entries sharing the gateway session are flagged ``"session_scoped": true``.
 
         When ``task_id`` is given, processes that task spawned (its ``owner_task_id``) are included. When
         ``session_key`` is also given, session-scoped background processes (``background: true``) registered
@@ -2392,6 +2391,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._reconcile_local_exit(s)
             entry = {
                 "session_id": s.id,
+                "session_key": s.session_key,
                 "command": s.command[:200],
                 "cwd": s.cwd,
                 "pid": s.pid,

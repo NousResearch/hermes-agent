@@ -209,7 +209,7 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     return lines
 
 
-def _agents_delegation_lines(d: dict) -> list[str]:
+def _agents_delegation_lines(d: dict, conversation_label: str = "") -> list[str]:
     """/agents rows for one background delegation. Live per-child activity comes from the
     registry's progress sampler: api calls, current tool, seconds since last activity."""
     goal = _clip(" ".join(str(d.get("goal") or "").split()), 70)
@@ -222,6 +222,8 @@ def _agents_delegation_lines(d: dict) -> list[str]:
         row += t("gateway.agents.quiet_for", seconds=f"{d['seconds_since_progress']:.0f}")
     if goal:
         row += f" · {goal}"
+    if conversation_label:
+        row += f" · {conversation_label}"
     lines = [row]
     for i, child in enumerate(d.get("children_activity") or []):
         if not isinstance(child, dict):
@@ -495,6 +497,17 @@ class GatewayStatusCommandsMixin:
             return _resolve_gateway_model_context(model_name or None, route)
         return await _quiet(lambda: asyncio.to_thread(_resolve))
 
+    def _agents_conversation_label(self, request_source, session_key: str) -> str:
+        """Resolve Discord row links by exact routing key, even after the owning turn ends."""
+        if not session_key or getattr(request_source, "platform", None) != Platform.DISCORD:
+            return ""
+        source = self._get_cached_session_source(session_key)
+        if source is not None and source.platform == Platform.DISCORD:
+            destination = source.thread_id or source.prospective_thread_id or source.chat_id
+            if destination:
+                return f"<#{destination}>"
+        return f"`{session_key}`"
+
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -530,13 +543,20 @@ class GatewayStatusCommandsMixin:
             current = t("gateway.agents.this_chat") if row["session_key"] == current_session_key else ""
             sid = f" · `{row['session_id']}`" if row["session_id"] else ""
             model = f" · `{row['model']}`" if row["model"] else ""
-            return [f"{idx}. `{row['session_key']}` · {row['state']} · "
+            label = self._agents_conversation_label(event.source, row["session_key"]) or f"`{row['session_key']}`"
+            return [f"{idx}. {label} · {row['state']} · "
                     f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"]
+
+        def _delegation_row(delegation):
+            label = self._agents_conversation_label(event.source, delegation.get("session_key", ""))
+            return _agents_delegation_lines(delegation, label)
 
         def _proc_row(proc):
             cmd = _clip(" ".join(str(proc.get("command", "")).split()), 90)
+            label = self._agents_conversation_label(event.source, proc.get("session_key", ""))
+            conversation = f" · {label}" if label else ""
             return [f"- `{proc.get('session_id', '?')}` · "
-                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`"]
+                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`{conversation}"]
 
         lines = [t("gateway.agents.header"), "", t("gateway.agents.active_agents", count=len(agent_rows))]
         lines += _capped_rows(list(enumerate(agent_rows, 1)), _agent_row)
@@ -545,7 +565,7 @@ class GatewayStatusCommandsMixin:
         lines += ["", t("gateway.agents.async_jobs", count=len(background_tasks))]
         if delegations:
             lines += ["", t("gateway.agents.background_delegations", count=len(delegations))]
-            lines += _capped_rows(delegations, _agents_delegation_lines)
+            lines += _capped_rows(delegations, _delegation_row)
         if not (agent_rows or running_processes or background_tasks or delegations):
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)

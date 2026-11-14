@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import (
     ensure_profile_subdir, is_staged_upload, removed_on_failure, resolve_upload_home,
@@ -86,7 +86,7 @@ _FS_READDIR_HIDDEN = {
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json",
+    "webhook_subscriptions.json", *HOME_ENV_FILES, "vault.key", "vault.json.enc",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
 })
@@ -94,9 +94,13 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # Directory names whose whole subtree is credential material (the canonical
 # guards deny these as trees: _ROOT_CREDENTIAL_DIRS and the mcp-tokens/ prefix
 # match). The browser can descend into subdirs, so a basename-only guard would
-# still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
-# trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# still expose ``mcp-tokens/<server>.json``; match the store's components as a run
+# anywhere in the path so the trees are blocked wherever they sit under the root,
+# no HERMES_HOME resolution (``whatsapp/session``, not every ``session`` dir).
+# vault/ is covered by its file names above: a bare ``vault`` component is too
+# common (an Obsidian vault) to hide wherever it appears.
+_SENSITIVE_MANAGED_DIR_PARTS = tuple(
+    tuple(PurePosixPath(store).parts) for store in CREDENTIAL_STORE_DIRS if store != "vault")
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -117,7 +121,9 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
-    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+    parts = tuple(part.lower() for part in path.parts)
+    return any(parts[i:i + len(store)] == store
+               for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts) - len(store) + 1))
 
 
 _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit

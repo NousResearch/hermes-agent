@@ -28,7 +28,7 @@ _HERMES_HOME_DIR = (
     r'(?:profiles/[^/\s"\'`]+/)?'
 )
 _HERMES_ENV_PATH = (
-    _HERMES_HOME_DIR + r'\.env\b'
+    _HERMES_HOME_DIR + r'(?:\.op)?\.env\b'
 )
 # ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
 # so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.

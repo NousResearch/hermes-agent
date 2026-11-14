@@ -2362,18 +2362,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with self._lock:
             return self._try_refresh_current_unlocked()
 
-    def try_refresh_matching(
-        self,
-        api_key_hint: Optional[str] = None,
-        credential_id: Optional[str] = None,
-    ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
-
-        Direct integrations may reload the pool after a request failed, so
-        ``current_id`` cannot identify the issuing credential. With no hint,
-        select WITHOUT the normal proactive refresh: the forced refresh below
-        must consume a rotating refresh token exactly once.
-        """
+    def try_refresh_matching(self, api_key_hint: Optional[str] = None, credential_id: Optional[str] = None,
+                             *, force: bool = True) -> Optional[PooledCredential]:
+        """Refresh the entry that supplied the request (forced by default). Direct integrations may
+        reload the pool after a failure, so ``current_id`` cannot identify the issuing credential. With
+        no hint, select WITHOUT the proactive refresh: the forced refresh must spend a rotating refresh
+        token exactly once. ``force=False`` (pre-request) renews only a near-expiry entry and never moves
+        the cursor, so a caller keeps its binding without rotating accounts on every request."""
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id) if credential_id else None
             if entry is None:
@@ -2383,6 +2378,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return None
+            if not force:
+                if self.provider == "anthropic" and entry.source == "claude_code":  # CLI may have rotated it
+                    entry = self._sync_anthropic_entry_from_credentials_file(entry)
+                fresh = not entry.refresh_token or not self._entry_needs_refresh(entry)
+                return entry if fresh else self._refresh_entry(entry, force=False)
             self._current_id = entry.id
             return self._try_refresh_current_unlocked(failed_key=api_key_hint)
 

@@ -86,22 +86,23 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
 
 # -- Provider egress scrubbing -----------------------------------------------
 
-def _scrub(text: str) -> str:
+def _scrub(text: str, *, urls: bool = True) -> str:
     """The shared egress scrub. Like chat-platform and cron delivery it holds even when
     ``security.redact_secrets`` is off (that setting governs local logs, not what leaves the agent)
-    and fails closed. Providers archive rather than navigate, so URL query credentials are masked too."""
-    return redact_for_egress(text, urls=True)
+    and fails closed. ``urls`` also masks URL query credentials: right for what a provider stores,
+    wrong for a tool argument it may fetch (a pre-signed ``?X-Amz-Signature=`` URL to index)."""
+    return redact_for_egress(text, urls=urls)
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_\-./+]{16,}")
 
 
-def _redact_for_provider(*values: Any) -> Any:
+def _redact_for_provider(*values: Any, urls: bool = True) -> Any:
     """Copies of ``values`` with every string scrubbed before it reaches a memory provider.
 
     Providers archive whatever they are handed (#115104), so each manager fan-out (turn sync, recall
     queries, session-end and pre-compress transcripts, memory-tool mirrors, delegation results, provider
-    tool args) goes through ``_scrub``. Walks dicts/lists/tuples so tool-call arguments and multimodal text
+    tool args) goes through ``_scrub``; tool args pass ``urls=False`` because the provider may act on them. Walks dicts/lists/tuples so tool-call arguments and multimodal text
     parts are covered; ``data:`` URLs (inline media) pass through. A value the scrub masked anywhere in the
     hand-off is then masked everywhere in it, so a key detected in a tool result is also caught where the
     model repeats it bare in prose. Never mutates the caller's objects: unchanged values come back as-is,
@@ -123,7 +124,7 @@ def _redact_for_provider(*values: Any) -> Any:
         return value
 
     def scrub(text: str) -> str:
-        out = _scrub(text)
+        out = _scrub(text, urls=urls)
         if out != text:
             learned.update(set(_TOKEN_RE.findall(text)) - set(_TOKEN_RE.findall(out)))
         return out
@@ -619,7 +620,7 @@ class MemoryManager:
         accepted = self._tool_call_keywords(provider)
         if accepted is not None:
             kwargs = {k: v for k, v in kwargs.items() if k in accepted}
-        args = _redact_for_provider(args)
+        args = _redact_for_provider(args, urls=False)  # the provider may fetch a URL argument
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
             result = provider.handle_tool_call(tool_name, args, **kwargs)

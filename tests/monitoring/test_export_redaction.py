@@ -48,7 +48,7 @@ def test_fails_closed_when_redactor_unavailable():
 
 
 def test_prefix_less_url_query_credential_stripped():
-    key = "AQ." + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    key = "Zo4" + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
     out = R.redact_for_export(f"GET https://x.example/y?api_key={key}&page=2 failed")
     assert out is not None
     assert key not in out and "page=2" in out

@@ -117,10 +117,22 @@ def test_on_turn_start_scrubs_user_text_but_hands_identity_through_raw():
 def test_prefix_less_url_query_credential_is_masked_for_providers_but_not_for_chat_delivery():
     # #119852: an opaque api_key in a URL query has no vendor prefix; only the param name identifies it.
     from agent.redact import redact_for_egress
-    key = "AQ." + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    key = "Zo4" + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
     url = f"https://x.example/y?api_key={key}&page=2"
     mgr, provider = _manager()
     mgr.sync_all("hi", f"fetched {url}")
     mgr.flush_pending(timeout=5.0)
     assert key not in repr(provider.seen) and "page=2" in repr(provider.seen)
     assert redact_for_egress(url) == url  # chat delivery keeps magic links / OAuth URLs usable
+
+
+def test_provider_tool_url_argument_reaches_the_provider_unmasked():
+    # #119852 review: a provider tool may fetch its URL argument (openviking's viking_add_resource), so the
+    # archival URL-query mask must not break a pre-signed / share / SAS link on the way in.
+    sig = "Zo4" + "f1c9d2e7a8b3c6d5e4f7a2b9c8d1e6f3a"
+    urls = [f"https://bucket.s3.amazonaws.com/doc.pdf?X-Amz-Signature={sig}&X-Amz-Expires=300",
+            f"https://share.example/f?key={sig}", f"https://acct.blob.core.windows.net/c/b?sv=2024&sig={sig}"]
+    mgr, provider = _manager()
+    for url in urls:
+        mgr.handle_tool_call("rec_tool", {"url": url})
+    assert provider.seen == [{"url": url} for url in urls]

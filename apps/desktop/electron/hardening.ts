@@ -36,6 +36,7 @@ const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
 // Mirrors agent/file_safety.py _CREDENTIAL_FILE_NAMES / _READ_DENIED_DIRS (the
 // canonical read guard) plus hermes_cli/home_data_layout.py SECRET_CACHE_STORES.
 const HERMES_CREDENTIAL_FILES = new Set([
+  '.env',
   'auth.json',
   'auth.lock',
   '.anthropic_oauth.json',

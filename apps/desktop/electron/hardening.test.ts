@@ -1011,6 +1011,8 @@ test('resolveReadableFileForIpc blocks relocated Hermes stores read through thei
   const workHome = path.join(tempDir, 'data', 'work-home')
   const vaultDir = path.join(tempDir, 'data', 'vault')
   const authFile = path.join(tempDir, 'data', 'auth-store.json')
+  const envFile = path.join(tempDir, 'data', 'hermes-secrets')
+  const workEnvFile = path.join(tempDir, 'data', 'work-secrets')
 
   try {
     fs.mkdirSync(path.join(hermesHome, 'profiles'), { recursive: true })
@@ -1020,11 +1022,15 @@ test('resolveReadableFileForIpc blocks relocated Hermes stores read through thei
     fs.writeFileSync(path.join(workHome, 'notes.md'), 'ok', 'utf8')
     fs.writeFileSync(path.join(vaultDir, 'vault.key'), 'TOKEN_MARKER', 'utf8')
     fs.writeFileSync(authFile, 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(envFile, 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(workEnvFile, 'TOKEN_MARKER', 'utf8')
 
     const linked =
       trySymlink(workHome, path.join(hermesHome, 'profiles', 'work'), 'junction') &&
       trySymlink(vaultDir, path.join(hermesHome, 'vault'), 'junction') &&
-      trySymlink(authFile, path.join(hermesHome, 'auth.json'), 'file')
+      trySymlink(authFile, path.join(hermesHome, 'auth.json'), 'file') &&
+      trySymlink(envFile, path.join(hermesHome, '.env'), 'file') &&
+      trySymlink(workEnvFile, path.join(workHome, '.env'), 'file')
 
     if (!linked) {
       return
@@ -1032,7 +1038,13 @@ test('resolveReadableFileForIpc blocks relocated Hermes stores read through thei
 
     setSensitiveHermesHome(hermesHome)
 
-    for (const filePath of [path.join(workHome, 'auth.json'), path.join(vaultDir, 'vault.key'), authFile]) {
+    for (const filePath of [
+      path.join(workHome, 'auth.json'),
+      path.join(vaultDir, 'vault.key'),
+      authFile,
+      envFile,
+      workEnvFile
+    ]) {
       await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
     }
 

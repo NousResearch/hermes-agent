@@ -149,3 +149,15 @@ def test_power_off_whatif_preview_is_not_hardline(cmd):
 ])
 def test_whatif_data_or_a_later_real_power_off_stays_hardline(cmd):
     assert detect_hardline_command(cmd)[0], cmd
+
+
+# Clear-Disk's documented -WhatIf switch previews and does not wipe the disk.
+# Keep this approvable, unlike Format-Volume whose -WhatIf switch is ineffective.
+@pytest.mark.parametrize("cmd", [
+    "Clear-Disk -Number 0 -WhatIf",
+    "Clear-Disk -Number 0 -RemoveData -WhatIf",
+    'pwsh -c "Get-Disk; Clear-Disk -Number 0 -WhatIf"',
+])
+def test_clear_disk_whatif_preview_is_not_hardline(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+    assert detect_dangerous_command(cmd)[0], cmd

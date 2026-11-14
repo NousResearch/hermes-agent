@@ -35,7 +35,7 @@ def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
         (win_cmdpos + r'(?:restart|stop)-computer' + _CMDLET_END + _PS_NOT_WHATIF, "system shutdown/reboot (PowerShell)"),
         (win_cmdpos + r'format-volume' + _CMDLET_END, "format filesystem (Format-Volume)"),
         (win_cmdpos + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
-        (win_cmdpos + r'clear-disk' + _CMDLET_END, "wipe disk (Clear-Disk)"),
+        (win_cmdpos + r'clear-disk' + _CMDLET_END + _PS_NOT_WHATIF, "wipe disk (Clear-Disk)"),
         # Recursive delete of a drive ROOT (`C:\`, `C:\*`, `C:/*.*`; a glued `>nul` or PowerShell `,` ends it). `C:\build`, `C:` (the drive's cwd)
         # and a literal PowerShell `-Include *.tmp` (only matching items; `*`, a list, `"*$x"`, cmd `/s`, after `--`/`#` still wipe) fall through.
         (win_cmdpos + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))' + _PS_INCLUDE_NARROWS +

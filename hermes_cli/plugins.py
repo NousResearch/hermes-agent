@@ -151,6 +151,12 @@ VALID_HOOKS: set[str] = {
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # pre_approval_bypass: before a session's approval bypass is switched on (/yolo, config.set yolo or
+    # approvals.mode off, the session service's yolo control) or a stored one is re-armed; never when
+    # approvals go back on. Kwargs: surface, scope, session_key, identity, platform, user_id,
+    # session_owner. Return {"action": "block", "message"} to refuse: nothing is written
+    # (tools/approval_yolo.approval_bypass_refusal).
+    "pre_approval_bypass",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

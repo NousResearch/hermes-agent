@@ -152,6 +152,12 @@ async def yolo_config(connection, ref, params, write):
     # After a restart only the persisted copy is set until the next turn re-arms it: still ON.
     persisted = getattr(entry, 'yolo', False) is True
     enabled = is_session_yolo_enabled(live.route) or persisted
+    if write and not enabled and (value is None or _YOLO_WORDS[str(value).strip().lower()]):
+        from tools.approval_yolo import approval_bypass_refusal_async
+        refusal = await approval_bypass_refusal_async(surface="session_api", session_key=live.route,
+                                                      identity=getattr(connection, '_identity', None))
+        if refusal is not None:
+            raise RuntimeStoreError('permission_denied', detail=refusal)
     if write:
         persist = (lambda on: store.set_session_yolo(live.route, on)) if store is not None else None
         # Off the loop: the persist is a routing-store write (thread-safe), as in the messaging /yolo.

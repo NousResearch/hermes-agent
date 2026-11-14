@@ -967,13 +967,18 @@ class GatewaySlashCommandsMixin(
     async def _handle_yolo_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
         persisted on the routing entry so it survives a gateway restart."""
-        from tools.approval_yolo import toggle_session_yolo
+        from tools.approval import is_session_yolo_enabled
+        from tools.approval_yolo import approval_bypass_refusal_async, toggle_session_yolo
         session_key = self._session_key_for_source(event.source)
         persisted, persist = False, None
         if (store := self.session_store) is not None:
             # A first-message /yolo has no routing entry yet; materialize it so the flag has a home.
             persisted = (await self.async_session_store.get_or_create_session(event.source)).yolo is True
             persist = lambda on: store.set_session_yolo(session_key, on)
+        if not (persisted or is_session_yolo_enabled(session_key)) and (refusal := await approval_bypass_refusal_async(
+                surface="command", session_key=session_key, platform=event.source.platform,
+                user_id=event.source.user_id, default=t("gateway.hooks.command_blocked", command="yolo"))) is not None:
+            return EphemeralReply(refusal)
         # Off the loop: the persist is a routing-store write (thread-safe, like AsyncSessionStore's calls).
         enable = await asyncio.to_thread(toggle_session_yolo, session_key, persisted=persisted, persist=persist)
         return EphemeralReply(t("gateway.yolo.enabled" if enable else "gateway.yolo.disabled"))

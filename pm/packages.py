@@ -704,6 +704,14 @@ def pnpm_env(base_env: Optional[dict] = None) -> dict[str, str]:
     return env
 
 
+def npm_global_root(prefix: Path, target: str) -> Path:
+    """The global root npm installs into under ``--prefix``. npm resolves this path
+    while building the ideal tree, before reify creates anything, so it has to
+    exist when the self-install starts (npm >= 11.19 realpaths it and exits ENOENT
+    lstat <prefix>/lib on a bare prefix tree)."""
+    return prefix / "node_modules" if target.startswith("win32") else prefix / "lib" / "node_modules"
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -765,6 +773,7 @@ class Npm(BinaryPackage):
             raise InstallError(self.name, "node's entry is missing its bundled npm-cli.js")
 
         staged.mkdir(parents=True, exist_ok=True)
+        npm_global_root(staged, target).mkdir(parents=True, exist_ok=True)
         # npm caches the tarball it installs. The archive's directory is the
         # store's download entry, which must hold only the archive: a cache
         # there turns its removal into a tree delete that fails on Windows

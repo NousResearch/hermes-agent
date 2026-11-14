@@ -10,7 +10,7 @@ import pytest
 from hermes_cli import update_cmd_force_stop as force_stop
 from hermes_cli import update_cmd_posix_pause as posix_pause
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX pre-swap pause")
+pytestmark = pytest.mark.platforms("posix")
 
 
 def _child(ignore_term: bool) -> subprocess.Popen:

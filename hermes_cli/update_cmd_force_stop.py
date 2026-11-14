@@ -17,8 +17,8 @@ each against its own deadline measured from its own stop request.
 
 A gateway that had to be killed never ran that ``kill_all``: its background processes live in
 their own systemd scopes or sessions, so they outlive it. :func:`_sweep_left_behind` stops what its
-process checkpoints still name. A stop that does not settle (the supervisor's stop job still
-running, or the gateway still alive after the kill) raises ``StopUnsettled``, which aborts
+process checkpoints still name as its own (``owner_pid``). A stop that does not settle (the supervisor's stop job still
+running, the gateway or one of its scopes still alive after the kill) raises ``StopUnsettled``, which aborts
 the update before the checkout moves: a rollback start would queue behind that stop job.
 """
 
@@ -58,31 +58,55 @@ def _checkpoint_homes(entry: dict) -> list[Path]:
     return list(unique.values())
 
 
-def _sweep_one(record: dict) -> bool:
-    """Stop one checkpointed process (its tree, then its scope); True when it was ours and is gone.
+def _kill_scope(unit: str) -> None:
+    """SIGKILL every process in a worker scope: what a timed-out ``systemctl stop`` left (a detached
+    child ignoring SIGTERM). Same user bus and client as ``process_registry._stop_systemd_unit``."""
+    import shutil
+    import subprocess
+    from tools.process_registry import systemd_user_bus_env
+    if (binary := shutil.which("systemctl")) is None:
+        return
+    with suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run([binary, "--user", "kill", "--signal=SIGKILL", unit], capture_output=True, timeout=15,
+                       stdin=subprocess.DEVNULL, env=systemd_user_bus_env(), check=False)
+
+
+def _sweep_one(record: dict) -> tuple[bool, str | None]:
+    """Stop one checkpointed process (its tree, then its scope): ``(stopped, leftover)``. *stopped*:
+    it was ours and is gone; *leftover*: its scope that is still not stopped after SIGKILL.
     A PID whose start time does not match the recorded one was recycled and is never signalled."""
     from tools.process_registry import ProcessRegistry, _stop_systemd_unit
     pid, born = record.get("pid"), record.get("host_start_time")
     ours = isinstance(pid, int) and born is not None and ProcessRegistry._host_pid_is_ours(pid, born)
     if ours:
         ProcessRegistry._terminate_host_pid(pid, born)
-    if record.get("systemd_unit"):
-        _stop_systemd_unit(record["systemd_unit"])  # reaps double-forked descendants in the scope
-    return ours and not ProcessRegistry._host_pid_is_ours(pid, born)
+    leftover = None
+    if (unit := record.get("systemd_unit")) and not _stop_systemd_unit(unit):  # reaps double-forked descendants
+        _kill_scope(unit)
+        leftover = None if _stop_systemd_unit(unit) else unit
+    return ours and not ProcessRegistry._host_pid_is_ours(pid, born), leftover
 
 
-def _sweep_left_behind(homes: list[Path]) -> int:
+def _sweep_left_behind(homes: list[Path], owner_pid: int) -> tuple[int, int, list[str]]:
     """What the killed gateway's ``stop()`` would have killed (``kill_all(source="gateway_shutdown")``:
-    persisted jobs included): every host process its checkpoints name. How many were stopped."""
-    records = []
+    persisted jobs included): the host processes its checkpoints name as written by *owner_pid*.
+    ``processes.json`` is shared by every interpreter on the home (an ACP editor's background
+    commands too), so an entry another process wrote, or one with no ``owner_pid`` (written before
+    it was recorded), is not this gateway's and is left alone.
+    ``(stopped, skipped, leftover scopes)``."""
+    records, skipped = [], 0
     for home in homes:
         with suppress(OSError, ValueError):
             listed = json.loads((home / "processes.json").read_text(encoding="utf-8-sig"))
-            records += [r for r in listed if isinstance(r, dict) and (r.get("pid_scope") or "host") == "host"]
+            host = [r for r in listed if isinstance(r, dict) and (r.get("pid_scope") or "host") == "host"]
+            owned = [r for r in host if r.get("owner_pid") == owner_pid]
+            records += owned
+            skipped += len(host) - len(owned)
     if not records:
-        return 0
+        return 0, skipped, []
     with ThreadPoolExecutor(max_workers=min(8, len(records)), thread_name_prefix="update-force-sweep") as pool:
-        return sum(pool.map(_sweep_one, records))
+        results = list(pool.map(_sweep_one, records))
+    return sum(stopped for stopped, _ in results), skipped, [unit for _, unit in results if unit]
 
 
 def _live_work(entry: dict) -> list | None:
@@ -177,8 +201,15 @@ def _stop_one(token: dict, entry: dict, lock: threading.Lock) -> tuple[bool, str
         print(f"  ⚠ gateway PID {entry['pid']} still stopping {FORCE_KILL_AFTER_S:.0f}s after the stop — killing it",
               flush=True)
         _kill(entry)  # a unit: SIGKILL to every process in its cgroup, so the stop job can settle
-        if swept := _sweep_left_behind(homes):  # its own scopes/sessions: outside that cgroup
+        swept, skipped, leftover = _sweep_left_behind(homes, entry["pid"])  # its scopes/sessions: outside that cgroup
+        if swept:
             print(f"  ⏹ {_names([entry])}: also stopped {swept} background process(es) it left behind", flush=True)
+        if skipped:
+            print(f"  ℹ {_names([entry])}: left {skipped} recorded background process(es) running that another "
+                  "process (or an older Hermes) recorded", flush=True)
+        if leftover:
+            return True, (f"background scope(s) {', '.join(leftover)} of gateway PID {entry['pid']} still running "
+                          f"after SIGKILL (check `systemctl --user status {leftover[0]}`)")
         if _wait_gone([entry["pid"]], _SETTLE_S, born):
             return True, (f"gateway PID {entry['pid']} is still running after SIGKILL "
                           f"(check `ps -o pid,stat,cmd -p {entry['pid']}`; a D-state process waits on I/O)")

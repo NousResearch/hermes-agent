@@ -272,3 +272,153 @@ class TestFeishuAllowlistMatchesEveryOperatorId:
         await adapter._resolve_update_prompt(2, "y", "Alice", open_id="ou_x", chat_id="oc_group", user_id="u_tenant")
 
         assert 2 not in adapter._update_prompt_state
+
+
+class TestCachedChatTypeResolution:
+    """Card clicks resolve dm/group/forum from the cache's raw_mode (conversation mode), NOT
+    raw_type (visibility private/public). A private-visibility group must follow group admission,
+    not DM. Unknown chats fail closed to "group"."""
+
+    def test_dm_cached_chat_type_passes_dm_admission(self):
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "private", "raw_mode": "p2p"}
+        seen = []
+
+        def dm_only(user_id, chat_type=None, chat_id=None, **_kw):
+            seen.append((user_id, chat_type, chat_id))
+            return chat_type == "dm"
+
+        adapter.set_authorization_check(dm_only)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert seen == [("ou_requester", "dm", "oc_group")]
+
+    def test_update_prompt_dm_cached_chat_type(self):
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "private", "raw_mode": "p2p"}
+        seen = []
+
+        def dm_only(user_id, chat_type=None, chat_id=None, **_kw):
+            seen.append(chat_type)
+            return chat_type == "dm"
+
+        adapter.set_authorization_check(dm_only)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_update_prompt_click("ou_requester"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert seen == ["dm"]
+
+    def test_cache_miss_fails_closed_to_group(self):
+        adapter = _make_adapter()
+        check = _gateway_check({"ou_requester"})
+        adapter.set_authorization_check(check)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            adapter._on_card_action_trigger(_approval_click("ou_requester"))
+
+        assert check.seen == [("ou_requester", "group", "oc_group")]
+
+    def test_cached_group_mode_stays_group(self):
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "public", "raw_mode": "group"}
+        check = _gateway_check({"ou_requester"})
+        adapter.set_authorization_check(check)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            adapter._on_card_action_trigger(_approval_click("ou_requester"))
+
+        assert check.seen == [("ou_requester", "group", "oc_group")]
+
+    def test_private_visibility_group_mode_maps_to_group_not_dm(self):
+        """Counterexample: raw_type=private (visibility) + raw_mode=group (conversation mode)
+        must be admitted as "group", NOT "dm" — private is about who can see the chat, not
+        whether it is a 1:1 DM."""
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "private", "raw_mode": "group"}
+        seen = []
+
+        def group_only(user_id, chat_type=None, chat_id=None, **_kw):
+            seen.append(chat_type)
+            return chat_type == "group"
+
+        adapter.set_authorization_check(group_only)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert seen == ["group"]
+
+    def test_private_visibility_topic_mode_maps_to_forum(self):
+        """Counterexample: raw_type=private + raw_mode=topic must map to "forum", not "dm"."""
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_topic"] = {"raw_type": "private", "raw_mode": "topic"}
+        seen = []
+
+        def forum_only(user_id, chat_type=None, chat_id=None, **_kw):
+            seen.append(chat_type)
+            return chat_type == "forum"
+
+        adapter.set_authorization_check(forum_only)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester", chat_id="oc_topic"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert seen == ["forum"]
+
+
+class TestIdFormFallback:
+    """Pairing records one Feishu id form while the event may present another; the gate must try
+    every operator id form (open_id/user_id/union_id), like the allowlist branch already does."""
+
+    def test_approved_open_id_passes_when_event_presents_tenant_user_id(self):
+        adapter = _make_adapter()
+        check = _gateway_check({"ou_requester"})
+        adapter.set_authorization_check(check)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(
+                _approval_click("ou_requester", user_id="u_tenant"),
+            )
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert ("u_tenant", "group", "oc_group") in check.seen
+        assert ("ou_requester", "group", "oc_group") in check.seen
+
+    def test_approved_union_id_passes(self):
+        adapter = _make_adapter()
+        check = _gateway_check({"on_union"})
+        adapter.set_authorization_check(check)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(
+                _approval_click("ou_x", user_id="u_other", union_id="on_union"),
+            )
+
+        assert response.card is not None
+        submit.assert_called_once()
+
+    def test_no_matching_form_still_denied(self):
+        adapter = _make_adapter()
+        check = _gateway_check({"ou_someone_else"})
+        adapter.set_authorization_check(check)
+
+        with patch("asyncio.run_coroutine_threadsafe") as submit:
+            response = adapter._on_card_action_trigger(
+                _approval_click("ou_x", user_id="u_y", union_id="on_z"),
+            )
+
+        assert response.card is None
+        submit.assert_not_called()
+        assert 1 in adapter._approval_state

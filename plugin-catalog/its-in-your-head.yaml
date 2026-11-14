@@ -2,21 +2,7 @@ name: its-in-your-head
 repo: https://github.com/hi4c0ck/its-in-your-head
 sha: 8c412052f6c1bedccd7aaa78c81700896b2817e4
 subdir: ""
-description: >-
-  It's in Your Head — observes how you work (tools, turns, friction) with
-  local-only telemetry, a six-dimension perception engine, deterministic
-  directional adaptation (opt-in, one bounded instruction per turn) and a
-  96px desktop signal strip with portrait/drift surfaces. Disclosure —
-  network: zero by default (Tier-0 sketch embeddings, stdlib-only). The
-  optional local ONNX Tier-1 downloads an Apache-2.0 embedding model
-  (onnx-community/paraphrase-multilingual-MiniLM-L12-v2-ONNX) from
-  Hugging Face, pinned by revision and per-file sha256, into the user-data
-  root; it runs in a Hermes-PM isolated environment (onnxruntime
-  >=1.31.1,<1.32, CPU) as a persistent local worker subprocess with one
-  auto-restart and transparent fallback to Tier-0. No other network calls.
-  No credentials are stored, no external telemetry is sent, and raw
-  prompts / reasoning are never stored (transient buffer, derived
-  features only).
+description: "It's in Your Head — observes how you work (tools, turns, friction) with local-only telemetry, a six-dimension perception engine, deterministic directional adaptation (opt-in, one bounded instruction per turn) and a 96px desktop signal strip with portrait/drift surfaces. Disclosure — network: zero by default (Tier-0 sketch embeddings, stdlib-only). The optional local ONNX Tier-1, enabled only by `/mirror engine enable`, downloads an Apache-2.0 embedding model (onnx-community/paraphrase-multilingual-MiniLM-L12-v2-ONNX) from Hugging Face, pinned by revision and per-file sha256, into the profile's plugin-data directory; it runs in a Hermes-PM isolated environment (onnxruntime >=1.31.1,<1.32, CPU) as a persistent local worker subprocess with a minimal environment, one auto-restart and transparent fallback to Tier-0, plus a small detached watchdog process that kills that worker if Hermes exits uncleanly. No other network calls. No credentials are stored, no external telemetry is sent, and raw prompts / reasoning are never stored (transient buffer, derived features only)."
 maintainer: hi4c0ck
 tier: community
 category: desktop

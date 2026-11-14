@@ -19,6 +19,7 @@ from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_env_split import _split_env_string
+from tools.approval_windows_hardline import windows_hardline_patterns
 
 logger = logging.getLogger("tools.approval")
 
@@ -182,25 +183,6 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
 # and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
 _PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
-# Windows drive root (`C:/`, `C:/*`, `C:/*.*`; backslashes are flattened to `/` by the
-# Windows-path detection variant).
-_HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
-# Quoted root that ENDS its shell word (past `./`, `..`, globs; a glued `>nul` ends it too): `"C:\"*.*` is the
-# root, `"C:\"Users\me` one word naming a subdirectory. Bare roots carry each rule's own terminator.
-_HARDLINE_DRIVE_QUOTED = r'["\'](?:' + _HARDLINE_DRIVE_ROOT + r')["\'](?:(?:\.\.?)?/)*(?:\.\.?)?(?:\*(?:\.\*)?)?(?=\s|$|[)`;|&<>])'
-# PowerShell -Recurse and its unambiguous prefixes (same set as _PS_RECURSE below).
-_PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
-_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\n;&|#"\'`]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
-# _CMDPOS, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
-# take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
-# `-File` is not skipped: its operand is a script path (`pwsh -File Stop-Computer.ps1`), not code.
-_WIN_CMDPOS = (_CMDPOS + r'(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
-               r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
-# A cmdlet name ends its token: `Stop-Computer.ps1` / `Clear-Disk-Report` name other commands.
-_CMDLET_END = r'(?![\w.\\/-])'
-# A bare `-WhatIf` of the same invocation only previews; a quote/variable/splat/subexpression/comment before it, a
-# comma right before it (`srv1, -WhatIf` is an array element), or any `-WhatIf:<value>`, voids that (a closing quote may only end it: `pwsh -c "… -WhatIf"`).
-_PS_NOT_WHATIF = r'(?!(?=(?:[^\n;&|"\'`(){}$@#]*[^\n;&|"\'`(){}$@#\s,])?\s+-whatif(?:\s|["\']?$))(?![^\n;&|"\'`(){}$@#]*-whatif:))'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -244,18 +226,7 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
-    # Windows analogues of the shutdown / mkfs / dd / root-rm rules. Command-position anchored like
-    # the POSIX rules (#93392), also behind a powershell/pwsh/cmd launcher because cmdlets are
-    # only reachable that way from git-bash, so `git commit -m "never format c:"` stays runnable.
-    (_WIN_CMDPOS + r'(?:restart|stop)-computer' + _CMDLET_END + _PS_NOT_WHATIF, "system shutdown/reboot (PowerShell)"),
-    (_WIN_CMDPOS + r'format-volume' + _CMDLET_END, "format filesystem (Format-Volume)"),
-    (_WIN_CMDPOS + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
-    (_WIN_CMDPOS + r'clear-disk' + _CMDLET_END, "wipe disk (Clear-Disk)"),
-    # Recursive delete of a drive ROOT (`C:\`, `C:\*`, `C:/*.*`; a glued `>nul` ends it). `C:\build`, `C:` (the drive's cwd)
-    # and a literal PowerShell `-Include *.tmp` (only matching items; `*`, a list, `"*$x"`, cmd `/s`, after `--`/`#` still wipe) fall through.
-    (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))' + _PS_INCLUDE_NARROWS +
-     r'[^\n;&|]*\s(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>]))', "recursive delete of drive root"),
-    (_CMDPOS + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(?:-[^\s]*\s+)*(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
+    *windows_hardline_patterns(_CMDPOS),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out

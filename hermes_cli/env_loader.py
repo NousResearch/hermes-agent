@@ -1076,9 +1076,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         active = None
     if active is not None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
-    policy = _launch_policy()  # read before the publish: see _record_secret_source_writes
-    launch_env_captured = policy is not None and policy._launch_env_captured()
     environ_before = dict(os.environ)
+    # Read the capture state AFTER the copy (and before the publish: see _record_secret_source_writes):
+    # an activation landing first is then seen as captured, so an adopted prior always predates capture.
+    policy = _launch_policy()
+    launch_env_captured = policy is not None and policy._launch_env_captured()
     # Latched before the sources run: a source must not be able to re-select the backend (D32).
     from hermes_cli.config_backend import get_config_backend
 

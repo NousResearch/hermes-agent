@@ -444,6 +444,47 @@ def test_a_source_enabled_after_activation_never_revokes_an_equal_operator_value
         set_multiplex_active(False)
 
 
+def test_an_activation_racing_the_pass_start_never_gives_the_snapshot_a_foreign_prior(launch_home, monkeypatch):
+    """Activation lands just as a pass starts, and another writer sets the name before the pass copies
+    os.environ. The pass must not record that post-activation value as the snapshot's prior: removing
+    the source would otherwise write it into the frozen launch env, which keeps the operator's value."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import get_plugin_manager
+    import tui_gateway.launch_profile_policy as policy
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    monkeypatch.setenv("VAULT_ONLY_KEY", "from-plugin")
+    config = launch_home / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: true\n", "enabled: true\n    override_existing: true\n").replace(
+        "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: []", "enabled: [fixture-secret-source]"), encoding="utf-8")
+
+    real_captured = policy._launch_env_captured
+    raced = []
+
+    def captured_then_activate():
+        was = real_captured()
+        if not raced:
+            raced.append(True)
+            activate_multi_profile_hosting()
+            os.environ["VAULT_ONLY_KEY"] = "F-foreign"
+        return was
+
+    monkeypatch.setattr(policy, "_launch_env_captured", captured_then_activate)
+    try:
+        _refresh(launch_home, manager)
+        assert raced
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_source_reapplying_over_a_value_it_did_not_write_leaves_the_frozen_launch_env(launch_home):
     """The source wrote v1 at boot, then the operator's value replaced it before activation: the
     frozen env holds the operator's value, and the source's next write is not over its own earlier

@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import stat
 import sys
 from pathlib import Path
@@ -775,6 +776,21 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
 _PID_SCAN_SYNTAX_PREFIXES = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
 _KILL_LISTING_OPTIONS = frozenset({"-l", "-L", "--list", "--table"})
 _KILL_SIGNAL_VALUE_OPTIONS = frozenset({"-s", "-n", "--signal"})
+# Signals that leave the gateway running: 0 sends nothing, and SIGUSR2 is the documented
+# faulthandler stack dump (registered with chain=False in gateway/run_startup.py).
+_NONLETHAL_KILL_SIGNALS = frozenset({"0"} | ({"USR2", str(int(signal.SIGUSR2))} if hasattr(signal, "SIGUSR2") else set()))
+
+
+def _is_nonlethal_signal(spec: str) -> bool:
+    return spec.upper().removeprefix("SIG") in _NONLETHAL_KILL_SIGNALS
+
+
+def _is_nonlethal_signal_option(arg: str) -> bool:
+    """``-0`` / ``-s0`` / ``--signal=0``, ``-USR2`` / ``-SIGUSR2`` / ``-sUSR2`` / ``-12`` (Linux numbering)."""
+    return arg[:1] == "-" and (
+        _is_nonlethal_signal(arg.removeprefix("--signal=").lstrip("-"))
+        or (arg[:2] in ("-s", "-n") and _is_nonlethal_signal(arg[2:]))
+    )
 
 
 def _is_pid_operand(token: str, pid: int, *, group: bool = False) -> bool:
@@ -782,7 +798,8 @@ def _is_pid_operand(token: str, pid: int, *, group: bool = False) -> bool:
     supervised gateway leads its own process group, so a group kill reaches it too."""
     if token[:1] == "+" or (group and token[:1] == "-"):
         token = token[1:]
-    return token.isascii() and token.isdecimal() and int(token) == pid
+    # Text compare: int() raises past 4300 digits, which would abort the whole walk.
+    return token.isascii() and token.isdecimal() and token.lstrip("0") == str(pid)
 
 
 def _kill_targets_pid(args: list[str], pid: int) -> bool:
@@ -795,10 +812,11 @@ def _kill_targets_pid(args: list[str], pid: int) -> bool:
         arg = args[position]
         if arg == "--":
             return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
-        if arg in _KILL_LISTING_OPTIONS or arg in ("-0", "-s0", "-n0", "--signal=0"):
+        # Only before a signal was given: after one, `-0` / `-12` are process-group targets.
+        if arg in _KILL_LISTING_OPTIONS or (not signal_given and _is_nonlethal_signal_option(arg)):
             return False
         if arg in _KILL_SIGNAL_VALUE_OPTIONS:
-            if args[position + 1:position + 2] == ["0"]:
+            if _is_nonlethal_signal(args[position + 1] if position + 1 < len(args) else ""):
                 return False
             signal_given = True
             position += 2
@@ -858,13 +876,18 @@ def _string_runner_payload(name: str, args: list[str]) -> Optional[str]:
 _PID_SCAN_SUBSTITUTION_RE = re.compile(r"`([^`]*)`|\$\(([^()]*)\)")
 
 
-def _targets_gateway_pid(command: str, gateway_pid: int, *, depth: int = 0) -> bool:
+def _targets_gateway_pid(
+    command: str, gateway_pid: int, *, depth: int = 0, rescan: Optional[Callable[[str], bool]] = None,
+) -> bool:
     """An executed ``kill`` / ``taskkill`` / ``Stop-Process`` whose LITERAL PID operand is the gateway's
     own (#149944). Dynamic PIDs (``$(pgrep …)``, ``$PPID``) are not resolved. ``sh -c`` payloads and
     referenced scripts reach this through the recursive walk; ``eval`` / ``powershell -c`` / ``cmd /c``
-    payloads and command substitutions are re-scanned here."""
+    payloads go to *rescan* (the walk passes its own ``recurse``, so they open ``sh -c`` payloads and
+    scripts too). Command substitutions are matched on raw text, quotes included, so they are re-scanned
+    by this check alone: the full walk would fail closed on an inert ``'$(bash /dev/null)'``."""
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
+    rescan = rescan or (lambda text: _targets_gateway_pid(text, gateway_pid, depth=depth + 1))
     command = strip_inert_heredoc_bodies(command)
     if depth < _MAX_REFERENCED_SCRIPT_DEPTH:
         for match in _PID_SCAN_SUBSTITUTION_RE.finditer(command):
@@ -873,8 +896,14 @@ def _targets_gateway_pid(command: str, gateway_pid: int, *, depth: int = 0) -> b
                 return True
     for segment in _iter_command_segments(command):
         offset = 0
-        while offset < len(segment) and segment[offset] in _PID_SCAN_SYNTAX_PREFIXES:
-            offset += 2 if segment[offset] == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
+        while offset < len(segment):
+            token = segment[offset]
+            if token in _PID_SCAN_SYNTAX_PREFIXES:
+                offset += 2 if token == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
+            elif redirect := re.match(r"\d*(?:>>?|<<?|<>|>\|)", token):  # `>/dev/null kill N`
+                offset += 2 if redirect.end() == len(token) else 1  # `> f kill` vs `>f kill`
+            else:
+                break
         segment = segment[offset:]
         index = _executed_command_index(segment)
         if index is None:
@@ -887,7 +916,7 @@ def _targets_gateway_pid(command: str, gateway_pid: int, *, depth: int = 0) -> b
             return True
         if name in _PID_SCAN_STRING_RUNNERS and depth < _MAX_REFERENCED_SCRIPT_DEPTH:
             payload = _string_runner_payload(name, args)
-            if payload and _targets_gateway_pid(payload, gateway_pid, depth=depth + 1):
+            if payload and rescan(payload):
                 return True
     return False
 
@@ -1226,18 +1255,20 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command) or (
-        executed and gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
-    ):
-        return True
-    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
-        return executed
 
     def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed, gateway_pid=gateway_pid,
         )
+
+    if _direct_lifecycle_scan(command) or (
+        executed and gateway_pid is not None
+        and _targets_gateway_pid(command, gateway_pid, depth=depth, rescan=lambda text: recurse(text, cwd, True))
+    ):
+        return True
+    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
+        return executed
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
     # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an

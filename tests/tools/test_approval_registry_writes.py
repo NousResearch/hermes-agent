@@ -24,6 +24,11 @@ from tools.approval import detect_dangerous_command
     r"New-ItemProperty -Path HKCU:\Software\Thing -Name X -Value 1",
     r"powershell -NoProfile -Command Set-ItemProperty -Path HKLM:\X -Name Y -Value 0",
     r"cmd /c reg add HKCU\Software\Thing /f",
+    r"reg unload HKLM\TempHive",
+    r"regedit /s C:\tmp\settings.reg",
+    r"sp HKCU:\Environment X y",
+    r"ni -Path 'HKCU:\Software\Thing'",
+    r"New-Item -Path Registry::HKEY_CURRENT_USER\Software\Thing",
 ])
 def test_registry_write_requires_approval(cmd):
     is_dangerous, _key, description = detect_dangerous_command(cmd)
@@ -37,6 +42,9 @@ def test_registry_write_requires_approval(cmd):
     r"reg export HKCU\Software\Thing C:\tmp\out.reg",
     r"Get-ItemProperty -Path HKCU:\Environment",
     "setx=1",
+    "sp notes.txt",
+    "regedit",
+    r"New-Item -Path C:\tmp\notes.txt",
     "echo $setx",
 ])
 def test_registry_reads_do_not_prompt(cmd):

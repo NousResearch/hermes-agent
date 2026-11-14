@@ -5127,6 +5127,42 @@ class TestHookPayloadSanitizesSimpleNamespace:
         assert normalized_call["id"] == "call_1"
         assert normalized_call["function"]["name"] == "web_search"
 
+    def test_api_response_payload_for_hook_preserves_reasoning_fields(self, agent):
+        assistant_message = SimpleNamespace(
+            role="assistant",
+            content="answer",
+            tool_calls=[],
+            reasoning="internal reasoning",
+            reasoning_content="provider reasoning",
+            reasoning_details=[
+                {"type": "reasoning.summary", "summary": "bounded summary"}
+            ],
+        )
+        response = SimpleNamespace(model="reasoning-model", usage=None)
+
+        payload = agent._api_response_payload_for_hook(
+            response, assistant_message, finish_reason="stop"
+        )
+
+        observed = payload["assistant_message"]
+        assert observed["reasoning"] == "internal reasoning"
+        assert observed["reasoning_content"] == "provider reasoning"
+        assert observed["reasoning_details"] == [
+            {"type": "reasoning.summary", "summary": "bounded summary"}
+        ]
+
+    def test_api_response_payload_for_hook_omits_absent_reasoning_fields(self, agent):
+        assistant_message = SimpleNamespace(
+            role="assistant", content="answer", tool_calls=[]
+        )
+        response = SimpleNamespace(model="reasoning-model", usage=None)
+
+        observed = agent._api_response_payload_for_hook(
+            response, assistant_message, finish_reason="stop"
+        )["assistant_message"]
+
+        assert set(observed) == {"role", "content", "tool_calls"}
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).
